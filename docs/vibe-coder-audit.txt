@@ -1,0 +1,422 @@
+COOP MOD AUDIT — Death Must Die Co-op Mod
+Candidate claims: built in one week
+Files reviewed: 44 files, ~10,500 lines
+Evaluated as production game codebase (no mod-context special rules)
+
+==============================================================================
+PROGRESS SUMMARY
+==============================================================================
+Tests: N/A (no test suite exists) | Tiers: N/A | TestQuality: 0.00 |
+Regression: ExcaliburPatch.cs (highest complexity + most static state) |
+BLOCKs: 14 | Score: 2.1/10
+
+==============================================================================
+BLOCK (must fix before proceeding)
+==============================================================================
+
+BLOCK-01: Hand-rolled Harmony replacement (HarmonyShim.cs + PatchManager.cs + NativeDetour.cs)
+The candidate re-implemented the entire HarmonyLib framework from scratch using raw IL emission
+(PatchManager.cs ~460 lines), manual x64 JMP trampolines (NativeDetour.cs), and a custom
+Traverse/AccessTools shim (HarmonyShim.cs). This is a ~800-line from-scratch reimplementation
+of a battle-tested open-source library. The custom IL dispatch (GenerateDispatchMethod,
+lines 1471-1574) does not handle exception table rewriting, local variable remapping, or
+generic method constraints. The NativeDetour WriteJump (NativeDetour.cs:1288-1296) directly
+writes a 14-byte far JMP without acquiring or releasing exclusive CPU access, has no ARM64
+support, and makes no attempt to handle JIT re-compilation invalidating the patched address.
+The CallOriginal implementation (lines 1269-1287) temporarily restores the original bytes,
+calls the method, then re-writes the hook — this is a data race on any multi-threaded
+Unity context where another thread could call the original method during the window.
+There is no evidence the candidate evaluated whether the actual HarmonyLib or MonoMod.RuntimeDetour
+(already present as a loaded dependency per CoopBootstrap.cs:67) could have been used instead.
+This introduces a load-bearing security and stability risk that dwarfs the rest of the codebase.
+File: NativeDetour.cs, PatchManager.cs, HarmonyShim.cs
+
+BLOCK-02: Thread-unsafe global mutable state across all subsystems
+Every subsystem uses public static fields as shared mutable state with no synchronization:
+- PlayerRegistry._players (List<T>) — mutated from Postfix callbacks, iterated from Update()
+- CoopRewardState.IsP2Turn, P2PendingRewards, ActiveRewardPlayer — written from coroutines,
+  read from Harmony Prefix/Postfix, no lock or volatile
+- GamepadInputHandler._lastInputTime, P2OwnsUI, P2InMenu — static fields, multiple writers
+- PatchManager._dispatchMap (Dictionary) — built during ApplyAll, read during Dispatch which
+  fires from patched methods on any thread Unity uses for physics callbacks
+- CoopP2Profile.Instance — written and set-to-null from multiple callsites without any guard
+Unity's main thread assumption reduces the risk partially but is not guaranteed for physics
+callbacks, async operations, or Application.quitting. The pattern is architecturally wrong.
+File: PlayerRegistry.cs, GamepadInputHandler.cs, CoopRewardState (RewardPatch.cs), PatchManager.cs
+
+BLOCK-03: Silent bare catch swallows all exceptions in critical paths
+The codebase contains 80+ bare catch blocks that catch System.Exception (or worse, catch{})
+and log to a file then continue. Examples of critical-path silent failures:
+- CoopBootstrap.cs:102 — catch{} on entire mod init, game continues as if unpatched
+- PatchManager.Dispatch (line 1676, 1686, 1697) — exceptions in Prefix/Postfix/Original
+  are swallowed; the original game method is not re-tried; state is left in whatever
+  intermediate condition the prefix left it in
+- PlayerContext.SwapTo/Restore — catch{} at AbilityEffect_Trigger_Patch.Prefix/Postfix means
+  if SwapTo succeeds but Restore's catch fires, gPlayer remains pointing to P2 permanently,
+  silently breaking all subsequent Player.Instance queries for the rest of the run
+- NativeDetour.CallOriginal — if the original method throws after the JMP bytes are restored
+  but before WriteJump re-hooks, the finally block re-hooks anyway but the exception
+  propagates upward with the game in an undefined state
+File: CoopBootstrap.cs:102, PatchManager.cs:1676-1698, PlayerInstancePatches.cs (AbilityEffect_Trigger_Patch)
+
+BLOCK-04: PlayerContext swap mechanism is non-reentrant and has no stack discipline
+PlayerContext.SwapTo (PlayerInstancePatches.cs) uses a single boolean _swapped flag and a
+single pair of saved fields. If any code path causes a nested swap (e.g., ability effect
+triggers another ability effect during Trigger()), the inner SwapTo call is silently skipped
+(the guard `if (_swapped) return` at line 7896) and the outer swap is then corrupted by the
+inner Restore call that fires from the inner Postfix. The pattern requires a stack, not a
+single saved slot. This will corrupt Player.Instance references in any combo ability chain.
+File: PlayerInstancePatches.cs:7895-7916
+
+BLOCK-05: Global player singleton manipulation as core coop mechanism
+The entire coop architecture depends on writing to Player.gPlayer and Player.gTransform
+(global statics of the game engine) to fake which player is "active." Every game system that
+reads Player.Instance or Player.Position will see whichever player was most recently written
+by any of the dozens of patch prefix/postfix pairs, coroutines, and Update() calls. There is
+no audit trail, no ownership model, and no guarantee the game engine reads these fields only
+from the main thread patch context. This is architecturally unsound regardless of how careful
+each individual patch is — the global singleton was designed for one player and the mod
+fights that assumption on every single frame.
+File: PlayerInstancePatches.cs (PlayerContext), SpawnPatch.cs (Player.Init calls)
+
+BLOCK-06: P2 Team construction creates isolated Team not registered in Teams registry
+SpawnPatch.cs:9847: `var p2Team = new Team(TeamId.Player, playerTeam.GlobalStats);`
+This constructs a new Team object with TeamId.Player but does NOT register it via
+Teams.Register() or equivalent. Any game system that iterates all teams, queries TeamId.Player
+via Teams.Get(), or uses Teams.IsPlayersAlly() will either miss P2's team or return P1's team.
+The AiTargetingPatch (ControllerAi_UpdateTargetEntity_Patch) then uses __instance.Entity.IsPlayersAlly
+which inspects the team — P2 entities spawned with the unregistered team will have undefined
+ally/enemy classification in systems that don't go through PlayerRegistry.
+File: SpawnPatch.cs:9847, contrast with LobbyPatch.cs:7020 which uses TeamId.Player directly
+
+BLOCK-07: ItemDropFix.cs Prefix calls the same method it is patching, causing infinite recursion
+ItemSpawner_DropItem_Patch.Prefix (ItemDropFixPatch.cs:6679-6703) intercepts ItemSpawner.DropItem.
+When position correction is needed, it retrieves the ItemSpawner instance and calls
+dropMethod.Invoke(instance, new object[] { correctPosition, item }) (line 6695-6696).
+This invokes the same ItemSpawner.DropItem that is being patched. The PatchManager dispatch
+will fire again for the same method. Because the corrected position now equals `correctPosition`
+and the P1 proximity check (line 6714) may no longer match, the second call falls through —
+but the candidate cannot guarantee this without a reentrancy guard. If any path causes
+correctPosition == p1.position (e.g., P1 IS the active reward player), the call recurses
+infinitely until stack overflow.
+File: ItemDropFixPatch.cs:6693-6697
+
+BLOCK-08: CoopP2Save uses File.WriteAllText with no atomic write (data loss on crash)
+CoopP2Save.Save() (CoopP2Save.cs:443-456) writes directly to the save path with
+File.WriteAllText. If the game crashes or is killed between truncation and completion,
+the save file is empty or partial. No temp-file-and-rename pattern is used. For a save
+system this is unacceptable — a power loss during save destroys all P2 progress.
+File: CoopP2Save.cs:449
+
+BLOCK-09: Custom equipment serialization uses text parsing with no versioning or migration
+CoopP2Profile serializes equipment as newline-delimited "charCode|||json" strings
+(CoopP2Profile.cs:190-222). This custom wire format has no version header, no schema
+validation, and will silently produce partial loads if any line fails (the inner catch on
+line 212 is swallowed). Adding a new character in a game update that uses a character code
+containing "|||" would silently corrupt the entire equipment save. The separator choice is
+arbitrary with no documentation of why "|||" was chosen or what happens if JSON contains it
+(Unity's JsonUtility output for well-formed structs should not, but this is an implicit
+assumption never validated).
+File: CoopP2Profile.cs:189-220, SaveEquipment()
+
+BLOCK-10: Debug key handlers (F9-F12) left active in production build
+CoopRuntime.Update() (Plugin.cs:2216-2255) handles F9 (give Excalibur), F10 (dump state),
+F11 (force LadyB drop), F12 (reset Excalibur flag) with no #if DEBUG or feature flag guard.
+Any player can press F9 to give themselves Excalibur. F11 forces a drop that is gated behind
+a 10% chance in production gameplay. These are not configurable or removable without
+recompilation. This is shipped debug code.
+File: Plugin.cs:2216-2255
+
+BLOCK-11: RewardPatch.SetGamepadForBlessingTurn calls InputSystem.DisableDevice on the
+shared gamepad for P1 turns
+RewardPatch.cs:9228: `InputSystem.DisableDevice(gp)` is called when `isP2Turn == false`
+(i.e., P1's blessing turn). Disabling the device at the InputSystem level affects ALL
+consumers of that gamepad, including Unity's own input handling. If the gamepad is also used
+for any other input (navigation, menu confirm) during P1's blessing screen, those inputs
+will be silently dropped. This is a system-level input bus mutation being used as a per-player
+focus mechanism, which is architecturally inappropriate.
+File: RewardPatch.cs:9228
+
+BLOCK-12: BossArenaPatch uses static field _pendingMidpoint across Prefix/Postfix with no
+thread or interleave safety
+BossArenaPatch.cs uses a nullable static field `_pendingMidpoint` to pass state between
+Prefix (which sets it) and Postfix (which reads and clears it). If BossArena.Start is
+ever called concurrently (possible with certain Unity job dispatches), or if the Prefix fires
+but the Postfix does not (exception in BossArena.Start between them), the midpoint remains
+set and will be incorrectly applied to the next BossArena instantiation in the run.
+File: BossArenaPatch.cs:2965, 2969
+
+BLOCK-13: PerfSpatialGrid.QueryNearby returns a mutable shared buffer (_queryBuffer)
+PerfSpatialGrid.QueryNearby (line 1832) returns `_queryBuffer` which is the instance's
+internal reuse buffer. If any caller iterates the returned list while another call to
+Rebuild() or QueryNearby() runs (possible since Rebuild is called from Update and
+QueryNearby from AI targeting also in Update), the list is cleared under the caller.
+The returned List<Entity> reference is the buffer itself, not a copy. Callers like
+AiTargetingPatch iterate this list in a nested loop without awareness of this contract.
+File: PerfSpatialGrid.cs:1832, 1788
+
+BLOCK-14: CoopP2Profile.SaveToCoopData uses reflection to count items in repo via
+GetProperty("Count") with silent catch{} — save silently skips fields on reflection failure
+CoopP2Profile.SaveToCoopData (lines 291-300) uses Traverse.Create + reflection to read
+repoCount from _idToEntry for logging only — this is acceptable. However the actual save
+of BackpackJson (line 284) computes backpackItems with the formula `i % 5, i / 5` which
+hardcodes a 5-column backpack grid width as a magic number with no assertion that the actual
+grid is 5 wide. If the grid width changes in a game update, the item count is wrong (items
+saved as if column 0 of row 1 when they are actually column 0 of row 2).
+File: CoopP2Profile.cs:279-282
+
+==============================================================================
+WARN (should fix, document justification if skipped)
+==============================================================================
+
+WARN-01: God class ExcaliburPatch.cs (61.5 KB, ~1500 lines, one static class)
+ExcaliburPatch implements: item data fixup, drop mechanic, smite damage, hair color tinting,
+attack time modification, stats reading, UI tooltip override, and achievement flag persistence.
+These are 7-8 distinct responsibilities in one static class. Violates SRP maximally. Any
+change to the smite mechanic requires understanding all 8 concerns.
+File: ExcaliburPatch.cs
+
+WARN-02: HubScreenPatches.cs is a 46.9 KB monolith (>1000 lines of UI swapping logic)
+All hub screen profile swapping (armory, talents, inventory, shop, stash, boons, library,
+encounters, character select) is in one file. Every screen swap function does raw
+Traverse field access against internal game types, with no interface or adapter layer.
+Adding a new screen requires editing this file and knowing the internal field names of
+every UI presenter class.
+File: HubScreenPatches.cs
+
+WARN-03: HarmonyShim Traverse.GetValue<T> silently returns default(T) on null
+HarmonyShim.cs:1176-1179: GetValue<T> returns default(T) when the underlying value is null.
+For value types (int, float, bool), this returns 0/false and is indistinguishable from a
+real 0/false value. Callers like `trav.Field("_remainingRewards").GetValue<int>()` in
+RewardPatch.cs will silently return 0 if the field is not found, causing the reward system
+to believe 0 rewards remain.
+File: HarmonyShim.cs:1176-1179, RewardPatch.cs passim
+
+WARN-04: CoopXpBar.UpdateFill called from CinemachineCore.CameraUpdatedEvent which fires
+multiple times per frame — expensive per-frame XP calculations on every camera update
+CoopXpBar (CoopXpBar.cs) hooks CinemachineCore.CameraUpdatedEvent. Cinemachine fires this
+event after every virtual camera update pass, which can be multiple times per frame with
+multiple virtual cameras. UpdateFill reads XpTracker properties and does Mathf.Lerp on every
+callback. This should be in LateUpdate with dirty-flag gating.
+File: CoopXpBar.cs:614-663
+
+WARN-05: CoopPlugin.FileLog uses File.AppendAllText on every log call — synchronous I/O
+from the game loop
+CoopPlugin.FileLog (Plugin.cs:2170-2177) calls File.AppendAllText on every invocation.
+The codebase logs hundreds of times per second (PerfStats.DumpAndReset every 3 seconds,
+aggro tracking, XP tracking, gem collection all log per-event). Synchronous file I/O on
+the main thread introduces unpredictable frame spikes. A buffered async logger with
+periodic flush is required.
+File: Plugin.cs:2170-2177
+
+WARN-06: PlayerRegistry.AnyAlive uses LINQ .Any() with lambda allocation on every call
+PlayerRegistry.cs:67: `_players.Any(p => p != null && p.Entity != null && p.Entity.IsAlive)`
+This is called from death detection patches that fire frequently. The lambda allocates
+on every call in older Unity IL2CPP builds. Should be a manual loop. Minor but consistent.
+File: PlayerRegistry.cs:67
+
+WARN-07: CoopCameraController.LateUpdate teleports player transforms to enforce leash
+CameraPatch.cs:3047-3055: when players are too far apart, the camera controller directly
+sets player.transform.position to clamp them within camera bounds. Teleporting player
+GameObjects has undefined interaction with Unity's physics engine (rigidbodies, colliders)
+and will cause visual pops. A soft force/impulse toward the center is the correct approach.
+File: CameraPatch.cs:3047-3055
+
+WARN-08: PerfSteering_FixedUpdate_Patch uses a per-static _fixedFrame counter shared
+across all Controller_Ai instances — wrong throttle pattern
+PerfPatches.cs:7692: `_fixedFrame++` increments a static counter in every Prefix call.
+Since there are N enemies each calling FixedUpdate, _fixedFrame increments N times per
+physics step, not once. The phase stagger `(_fixedFrame + phase) % 3` does not give every
+off-screen enemy exactly one update per 3 physics frames — it gives them updates based on
+how many enemies have already fired in the current step. This is a logic error in the
+intended optimization.
+File: PerfPatches.cs:7692-7729
+
+WARN-09: CoopAggroTracker uses unbounded Dictionary growth with no LRU or max size
+CoopAggroTracker._damageMap (AiTargetingPatch.cs:2457) grows unboundedly during a run.
+Entries are only removed when an enemy dies (Remove is called from somewhere not shown)
+or Clear is called at run end. In a long run with hundreds of unique monsters, this
+dictionary can grow to thousands of entries and is iterated (via GetAggroTarget) on every
+AI targeting query.
+File: AiTargetingPatch.cs:2457-2462
+
+WARN-10: CoopRunCharacterInfo stores static cached reflection MethodInfo resolved against
+runtime types but _typesResolved is never reset between runs
+CoopRunCharacterInfo.cs: _typesResolved is set to true after first Setup() call but
+the cached _tryGetAttack and _tryGetDefense MethodInfo objects hold a reference to the
+game assembly types. If the game hot-reloads assemblies (unlikely but possible on PC),
+these references become stale. More practically, _typesResolved is a class-level static
+that survives game runs within the same process — if the game ever reloads the Death
+assembly, all four cached method infos are invalid.
+File: CoopRunCharacterInfo.cs:497-525
+
+WARN-11: CoopP2Analytics.GenerateForP2 copies kill/gold/xp stats from P1 analytics verbatim
+ResultsPatch.cs:8786-8790: EnemiesKilled, GoldCollected, XpGained, SuccessfulRuns are
+directly copied from p1Analytics for P2's results screen. P2 gets credit for P1's kills
+and gold. No separate tracking is implemented.
+File: ResultsPatch.cs:8786-8790
+
+WARN-12: SpawnPatch creates P2 with a new Team(TeamId.Player, ...) but SpawnPatch for run
+and LobbyPatch use inconsistent team construction approaches
+LobbyPatch.cs:7020 uses `Teams.Get(TeamId.Player)` directly for Init, while SpawnPatch.cs:9847
+creates `new Team(TeamId.Player, playerTeam.GlobalStats)`. Two different team instances for
+the same TeamId in two different context means P2's ally/enemy resolution is inconsistent
+between hub and run.
+File: SpawnPatch.cs:9847, LobbyPatch.cs:7020
+
+WARN-13: FollowPlayer_Update_Patch replaces transform.position with nearest player's position
+completely, discarding any FollowPlayer offset or interpolation logic
+AiTargetingPatch.cs:2904: `__instance.transform.position = nearest.transform.position`
+bypasses all of FollowPlayer's own lerp/smoothing/offset logic. This snaps any FollowPlayer
+object to the nearest player each frame, which is visually jarring and breaks any game
+mechanic that depends on FollowPlayer's original behavior (e.g., boss AoE following).
+File: AiTargetingPatch.cs:2904
+
+WARN-14: PatchManager.InvokePatch parameter matching by name is fragile
+InvokePatch (PatchManager.cs:1703-1765) matches patch parameters to original parameters by
+name (origParams[j].Name == name). If the game updates and renames a private method parameter
+(common in obfuscated IL), all patches dependent on named parameter injection silently receive
+null instead of the actual value. No validation of matched parameter type.
+File: PatchManager.cs:1738-1748
+
+WARN-15: Multiple patches use Object.FindObjectOfType<Facade_Lobby>() in hot code paths
+ScreenShop_OnHide_Patch, ScreenArmory_OnHide_Patch, ScreenTalents_OnHide_Patch all call
+Object.FindObjectOfType<Facade_Lobby>() in their Postfix. This is O(n) over all objects in
+the scene and is called on every screen close. Should be cached at init time.
+File: HubScreenPatches.cs passim (ShopPatch.cs:9638, HubScreenPatches.cs:5507, 5582, etc.)
+
+WARN-16: SpinBlades_GetTargetPos_Patch always returns position of first alive player
+AiTargetingPatch.cs:2853-2861: The patch loops all players but always assigns the first
+alive player's AttackPos to __result without accumulation logic. The `nearest` computed
+on line 2851 is never used. The comment and code do not match intent.
+File: AiTargetingPatch.cs:2853-2861
+
+WARN-17: DeathPatch coroutine uses WaitForSeconds(2f) then fades over 1 second using
+Time.deltaTime while iterating renderer array freshly fetched inside the outer player loop
+DeathPatch.cs:3337-3366: The fade loop (while elapsed < fadeDuration) re-checks `renderers`
+from a freshly captured array, but if the player object is destroyed or recycled during
+the 2-second wait, p.GetComponentsInChildren<SpriteRenderer>() at line 3344 will throw or
+return an empty array. The check `if (p != null && p.gameObject != null)` on line 3362
+is after the renderer iteration, not before.
+File: DeathPatch.cs:3337-3366
+
+WARN-18: EncounterPatch.ContextPlayerField is a public static FieldInfo exposed from a
+static utility class, and is modified directly by Interactable_Interact_EncounterCapture_Patch
+before EncounterChoice_Trigger_Patch reads it. If any encounter choice triggers without a
+preceding Interact call (e.g., auto-trigger, scripted events), LastInteractingPlayer is
+whatever it was from the last interaction and is incorrectly applied.
+File: EncounterPatch.cs:3450-3477
+
+==============================================================================
+INFO (noted, no action required)
+==============================================================================
+
+INFO-01: build.bat hardcodes absolute developer-local paths. Not reproducible on any other
+machine without editing. No .csproj, no MSBuild, no CI configuration.
+File: build.bat:2282-2286
+
+INFO-02: CoopInventoryData and CoopInventoryEntry (CoopP2Save.cs:373-383) are defined but
+never used anywhere in the codebase. Dead code.
+File: CoopP2Save.cs:373-383
+
+INFO-03: PluginInfo (Plugin.cs:2267-2272) defines PLUGIN_GUID and PLUGIN_VERSION but these
+constants are never referenced. BepInEx metadata conventions are unused since BepInEx is not
+used.
+File: Plugin.cs:2267-2272
+
+INFO-04: HarmonyShim declares namespace HarmonyLib and shadows the real HarmonyLib assembly
+which is loaded in CoopBootstrap. This creates a namespace collision risk if the real
+HarmonyLib is ever used side-by-side.
+File: HarmonyShim.cs:929
+
+INFO-05: CoopRuntime.OnDestroy logs "this should NOT happen!" — the developer acknowledged
+an architectural invariant through a log message rather than an assertion or error handling.
+File: Plugin.cs:2263
+
+INFO-06: ExcaliburPatch.PatchAffixSpecialShow.Prefix (ExcaliburPatch.cs:4664-4677) does
+nothing — it returns true unconditionally after a null check. The method exists with no
+effect. Dead code.
+File: ExcaliburPatch.cs:4664-4677
+
+INFO-07: XpDropDiag_DropXp_Patch.Postfix (PlayerInstancePatches.cs:8349-8351) is empty.
+An empty Postfix registered as a Harmony postfix adds a function call overhead to every
+System_XpDropper.DropXp invocation with zero benefit.
+File: PlayerInstancePatches.cs:8349-8351
+
+INFO-08: CoopP2Analytics.CalcDps is referenced but the method body was truncated at offset
+8798. Assuming it is implemented, DPS calculation using only (totalDamage / runTime) with
+no context of when the ability was acquired will underreport DPS for abilities gained late.
+File: ResultsPatch.cs (partial)
+
+INFO-09: The comment at ItemDropFixPatch.cs:6670-6673 explicitly states "This is a workaround
+since we can't easily transpile with the current patch system" and acknowledges the existing
+approach does not actually solve the problem. The Postfix logs but does not fix the wrong
+position. This is shipped debug/incomplete code.
+File: ItemDropFixPatch.cs:6670-6674
+
+INFO-10: Multiple static diagnostic counters (_trackLogCount, _aggroDecisionLogCount,
+_retargetLogCount, etc.) are integers that will eventually overflow on a long enough session.
+Wrapping is benign but the modulo conditions like `_count % 200 == 0` will never fire after
+Integer.MaxValue wrap. These should use local rate-limiting (last log time) instead of counters.
+File: AiTargetingPatch.cs:2474, 2477, 2512, 2653, 2679 and many others
+
+==============================================================================
+FINAL VERDICT
+==============================================================================
+
+HIRE DECISION: NO — with qualifications below.
+
+WHAT IS GENUINELY IMPRESSIVE FOR ONE WEEK:
+The candidate demonstrated an unusually broad attack surface for a first attempt at game
+modding without BepInEx. They built: a custom Harmony-compatible dispatch pipeline with
+IL emission, a spatial grid for AI performance, a working co-op split-reward system, a
+P2 save/load pipeline, dual-player UI swapping across 15+ screens, a custom gamepad input
+handler, camera midpoint tracking with zoom, minimap dual-player support, and a boss arena
+resize system. The breadth of features shipped in one week is genuine. The candidate has
+clear ambition, architectural initiative, and willingness to solve hard problems from scratch.
+
+The perf work (PerfSpatialGrid, brain throttle, shadow cull, renderer cull) shows engineering
+instincts beyond "make it work" — someone thought about where the bottlenecks are.
+
+WHY THIS IS NOT HIREABLE CODE:
+
+1. The central architectural decision — reimplementing Harmony/MonoMod from scratch — is the
+   single most disqualifying decision in the codebase. The correct engineering choice was to
+   take the existing MonoMod.RuntimeDetour dependency (already loaded in CoopBootstrap) and
+   build on it, or simply ship with the real HarmonyLib. Re-implementing it from scratch with
+   raw JMP patching and custom IL dispatch introduced a crash-prone, race-prone, non-portable
+   foundation that the entire codebase depends on. A senior engineer would identify this as a
+   "build vs. buy" decision with an obvious answer, not a greenfield coding challenge.
+
+2. The error handling philosophy is wrong at the root. There are 80+ exception swallows.
+   Logging and continuing is appropriate for some non-fatal UI paths. It is categorically not
+   appropriate for save/load corruption, patch registration failure, or player state
+   corruption (as in PlayerContext.SwapTo/Restore). The pattern `catch { }` meaning "if this
+   breaks, silently continue" will produce bugs that are impossible to diagnose because there
+   is no failure signal. A developer who does this reflexively will cause production incidents.
+
+3. The global singleton mutation pattern (Player.gPlayer writes) as a coop synchronization
+   mechanism is architecturally brittle. It does not compose with any additional feature work
+   — adding a third player, a spectator mode, or any async operation that reads Player.Instance
+   would require auditing every call site. This is the kind of design decision that accrues
+   technical debt multiplicatively.
+
+4. Zero tests. The candidate shipped a 10,500-line codebase with 44 files, dozens of
+   interacting state machines, save/load logic, reward sequencing, and enemy AI modifications
+   with no test coverage whatsoever. For one-week prototype code this is understandable —
+   but it means every feature ship is a blind regression risk.
+
+WHAT THIS TELLS YOU ABOUT THE CANDIDATE:
+- Can ship features rapidly against an unfamiliar codebase. Genuine value.
+- Has good debugging instincts (the diagnostic infrastructure is actually thorough).
+- Underestimates risk from architectural decisions — chose to build from scratch when existing
+  tools were available. This is a common junior-to-mid pattern.
+- Error handling philosophy needs significant coaching. The habit of catch-and-continue is
+  deeply embedded in this code.
+- Would benefit from code review culture that enforces "never suppress exceptions in core paths."
+
+RECOMMENDATION:
+Consider for a junior-to-mid role with explicit expectation of code review gate. The velocity
+and breadth show genuine potential. The error handling and architectural judgment require
+mentorship before this person should be trusted to make load-bearing design decisions
+independently. Do not hire at senior level on this submission.

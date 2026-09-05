@@ -1,0 +1,143 @@
+phase-4D-SURGICAL — Surgical Decomposition for /task
+=====================================================
+
+Status: SHIPPED in C-30 (SCHEMA_VERSION 61 -> 62). This file is the spec
+record. Cross-reference workflow/reasoning/C-30-decisions.md (DECISION-1
+through DECISION-15 plus NOTE-A through NOTE-D) and the implementation in
+.elai_cc/crates/orchestrator/src/surgical_decomposer.rs.
+
+Goal: when a /task is invoked with `--surgical`, replace the default
+ConceptDecomposition pipeline with a DKG blast-radius-driven surgical
+plan that bounds the change to its real impact set, classifies complexity,
+and enforces LOC gates appropriate to the active ExecutionMode.
+
+Spec references:
+  - .elai_cc/crates/orchestrator/src/surgical_decomposer.rs (SurgicalDecomposer
+    + the 6 types below)
+  - .elai_cc/crates/orchestrator/src/context_budget.rs:865 (ExecutionMode)
+  - .elai_cc/crates/cli/src/commands.rs:2414 (parse_task_flags consumes
+    --surgical)
+  - .elai_cc/crates/cli/src/live_cli.rs:2632 (surgical intercept BEFORE
+    DefaultWebResearchRunner construction)
+  - .elai_cc/crates/rules/src/predicate.rs (DkgQuerier trait + 4 new
+    query_callers / query_dependents / query_data_flow / query_subgraph
+    methods)
+  - .elai_cc/crates/orchestrator/src/escalation.rs (EscalationPolicy +
+    autonomous_confirm_above_loc / autonomous_refuse_above_loc)
+  - .elai_cc/crates/orchestrator/src/ssb.rs (SsbActionType::SurgicalPlanCreated
+    and SurgicalLocWarning; SCHEMA 62)
+
+Reads (mandatory):
+  - workflow/reasoning/C-30-decisions.md (DECISION-1 through DECISION-15).
+  - .claude/tools/elai.map for symbols: SurgicalDecomposer, SurgicalPlan,
+    AffectedSet, ComplexityClass, RegressionGate, TestBaseline, SurgicalStep.
+
+Types (verbatim from C-30 DECISION-5 / NOTE-A)
+----------------------------------------------
+
+- SurgicalPlan { steps, complexity_class, affected_set, total_loc_estimate,
+                 regression_gates }
+- AffectedSet { files: Vec<PathBuf>, symbols: Vec<String> }
+- ComplexityClass { Simple, Medium, Complex }    // thresholds below
+- RegressionGate { gate_kind, target_symbols, source_tests }
+- TestBaseline { passing_tests_count, last_recorded_at }
+- SurgicalStep { id, description, target_files, regression_gate_ref }
+
+Complexity thresholds (from C-30 implementation)
+------------------------------------------------
+
+Simple:  files ≤ 3 AND loc ≤ 200   → step cap 1
+Medium:  (files ≤ 8 OR loc ≤ 500) AND not Simple → step cap 4
+Complex: otherwise → step cap 8
+
+Step generation
+---------------
+
+SurgicalDecomposer::decompose(task, dkg, mode) -> SurgicalPlan
+  1. DKG blast-radius traversal: query_callers + query_dependents +
+     query_data_flow at depth ≤ MAX_C30_DEPTH (= 8), cycle-guarded with
+     HashSet<i64>. Collects AffectedSet.
+  2. ComplexityClass classification per the thresholds above.
+  3. RegressionGate injection per step: pulls test-coverage metadata
+     from the DKG (test → covered-symbol edges) and synthesises one
+     `RegressionGate` per SurgicalStep so the audit phase can re-run
+     exactly the right test subset.
+  4. Constrained step generation respecting the per-class step cap
+     (1 / 4 / 8). Steps exceeding the cap are merged or dropped with
+     an explanatory note.
+
+LOC gate
+--------
+
+Threshold constants:
+  SURGICAL_LOC_WARN_THRESHOLD     = 500
+  SURGICAL_LOC_ESCALATE_THRESHOLD = 1000
+
+When `total_loc_estimate > 500`:
+  - Emit SSB row `surgical_loc_warning { loc_estimate, threshold }`.
+  - INTERACTIVE mode returns `ConfirmationRequired` (caller prompts).
+  - AUTONOMOUS mode with `autonomous_confirm_above_loc = 500` blocks
+    until confirmation OR `autonomous_refuse_above_loc = 1000` aborts
+    outright.
+
+CLI / SSB
+---------
+
+- `/task --surgical "<prompt>"` triggers the surgical path.
+  Flag captured by `parse_task_flags` (cli/src/commands.rs:2414).
+- live_cli intercept at L2632 replaces DefaultWebResearchRunner with
+  the SurgicalDecomposer output BEFORE the runner is constructed.
+- SSB action types (SCHEMA 62, atomic 9-tuple bump):
+    surgical_plan_created { complexity_class, blast_radius_files,
+                            total_loc_estimate, step_count }
+    surgical_loc_warning  { loc_estimate, threshold }
+
+WIRING_CONTRACT
+---------------
+
+produces_symbols:
+  - SurgicalDecomposer, SurgicalPlan, AffectedSet, ComplexityClass,
+    RegressionGate, TestBaseline, SurgicalStep
+  - DkgQuerier extension methods (query_callers, query_dependents,
+    query_data_flow, query_subgraph)
+  - EscalationPolicy gains autonomous_confirm_above_loc /
+    autonomous_refuse_above_loc
+  - SSB action types: surgical_plan_created, surgical_loc_warning
+consumes_symbols:
+  - ExecutionMode (context_budget.rs:865)
+  - DKG production db path (knowledge/src/dkg/mod.rs)
+  - parse_task_flags --surgical bit (commands.rs:2414)
+reachable_from:
+  - live_cli.rs:2632 surgical-mode intercept
+  - /task slash command + Task variant
+stub_ban:
+  - DkgQuerier default impls return empty vecs — DkgQuerierAdapter is
+    the only impl with real SQLite-backed traversal (no .unwrap() in
+    library code).
+  - Step cap is constrained (1 / 4 / 8); MUST NOT emit Simple plans
+    with > 1 step.
+observable_effect:
+  trigger: `elai /task --surgical "rename Foo to Bar in core"`
+  expect_ssb: surgical_plan_created row within 2 s
+  expect_dashboard: SurgicalDrawer shows ComplexityClass + AffectedSet
+
+DETERMINISTIC_CHECK
+-------------------
+
+```bash
+# 1. Types defined
+rg "SurgicalDecomposer|SurgicalPlan|AffectedSet|ComplexityClass" \
+   .elai_cc/crates/orchestrator/src
+# 2. SSB variants present
+rg "SurgicalPlanCreated|SurgicalLocWarning" \
+   .elai_cc/crates/orchestrator/src/ssb.rs
+# 3. live_cli intercept present
+rg "surgical=true|surgical && " \
+   .elai_cc/crates/cli/src/live_cli.rs
+# 4. LOC gate constants
+rg "SURGICAL_LOC_WARN_THRESHOLD|SURGICAL_LOC_ESCALATE_THRESHOLD" \
+   .elai_cc/crates/orchestrator/src
+# 5. C-30 contract test passes
+cd .elai_cc && cargo test --package elai-contracts \
+   c30_surgical_oracle_contract 2>&1 | grep "test result"
+```

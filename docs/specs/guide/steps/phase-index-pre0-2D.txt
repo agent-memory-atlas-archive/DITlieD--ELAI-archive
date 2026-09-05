@@ -1,0 +1,161 @@
+PHASE INDEX (pre-phase-0 through phase-2D)
+Concise reference for LLM context. Each entry: what the phase does, key deliverables, dependencies.
+
+
+PRE-PHASE 0: WINDOWS PLATFORM FIXES
+  Make claw-code-rust-port compile and pass all tests on Windows.
+  No feature changes. Pure platform compatibility.
+  Steps: cfg-gate unix-only code (PermissionsExt/set_mode in 3 files), fix plugin hook tests
+    (shell scripts -> .cmd on Windows), fix tools tests (path separators, python3->python,
+    PoisonError on env lock), fix 2 warnings, verify clean baseline.
+  Deliverables: 0 compile errors, 0 test failures, 0 warnings on Windows.
+  Baseline: 69 .rs files, 61K LOC, 684 test annotations.
+  Dependencies: claw-code-rust-port cloned into .elai_cc/
+
+
+PHASE 0: FORK AND STRIP (walking skeleton)
+  Strip claw-code-rust-port into elai_cc: remove unnecessary code (~4K+ LOC), restructure
+  runtime (25K LOC monolith) into 9-crate workspace layout (.elai_cc/crates/).
+  One model (ollama), one FSM loop (IDLE->EXECUTING->IDLE), one tool (file read).
+  No new features. Clean, compiling, tested base.
+  Key risks: runtime is 25K LOC across 38 files, entropy quarantine (60 occurrences),
+    config circular deps, TokenUsage structural refactor.
+  Deliverables: 9-crate workspace compiles, minimal FSM loop works, old code archived.
+  Dependencies: pre-phase-0 complete
+
+
+PHASE 1A: DKG (tree-sitter -> SQLite graph)
+  Parse source code into a dependency knowledge graph stored in SQLite.
+  First layer of knowledge pipeline. Languages: Rust, Python, TypeScript, Go.
+  Schema: dkg_nodes (symbols with kind, name, file, lines, signature) + dkg_edges (caller->callee).
+  Exports DkgNode (AST metadata without content) and DkgEngine with edge/adjacency API.
+  Parse failure fallback: log+skip, no crash. Failed files tracked for Phase 1B indexing.
+  Deliverables: knowledge/ crate with DKG layer, SQLite graph, LanguageGrammar trait.
+  Dependencies: Phase 0 complete (9-crate layout)
+
+
+PHASE 1B: BM25 (tantivy full-text search)
+  Full-text search over codebase via tantivy BM25 index. Per-project isolation.
+  Zero orphan files: every non-binary text file indexed (tree-sitter fallback: 50-line windows).
+  Binary detection: null bytes in first 8KB. Path field: STRING (untokenized) for exact delete.
+  BM25Chunk (path, content, line range, kind). Atomic update_file (<5s).
+  Deliverables: Bm25Index with index_file/query/delete/update, <10ms p99 queries.
+  Dependencies: Phase 1A complete
+
+
+PHASE 1C: VECTOR SEARCH (dual-model ONNX)
+  Semantic code search via dual embedding models: GraphCodeBERT (code, 768d) + Granite (text, 384d).
+  ONNX Runtime inference. Vector cache in SQLite keyed by content hash.
+  Circuit breakers per model, degradation cascade (HYBRID->SPARSE_ONLY->BM25_ONLY).
+  Startup readiness gate with canary query embed("fn main()") within 5s.
+  SPLADE deferred to Phase 1H measurement cycle.
+  Deliverables: dual-vector search, cache, circuit breakers, RRF fusion (BM25+code_vec+text_vec).
+  Dependencies: Phase 1B complete
+
+
+PHASE 1D: PAGERANK REPO MAP
+  Rank code symbols by importance using PageRank on DKG graph.
+  Token-budget-fitted repo maps for context loading (binary search, +-15% tolerance).
+  Key features: density guard at 0.3 (skip PageRank on dense graphs), personalization (10x for
+  task-mentioned nodes), edge-weight boost (*50 for active files), sqrt(ref_count) scaling,
+  dangling node redistribution, self-edges for orphans, line truncation (100 chars).
+  Derived from aider/repomap.py with 3 deliberate divergences and 5 adopted improvements.
+  Deliverables: compute_repo_map(), PageRankConfig, RepoMap, 21+ tests including proptest.
+  Dependencies: Phase 1C complete
+
+
+PHASE 1E: CatRAG + A-RAG (query pipeline assembly)
+  Assemble full retrieval pipeline: query -> BM25 -> vector -> PageRank -> CatRAG -> A-RAG.
+  Graph-aware traversal + hierarchical filtering for token-efficient context.
+  Measure end-to-end query latency and token savings vs raw retrieval.
+  Deliverables: full pipeline returning relevant, token-efficient context.
+  Dependencies: Phase 1D complete
+
+
+PHASE 1F: SPECULATIVE DECODING EVALUATION
+  Evaluate whether speculative decoding improves throughput enough to justify VRAM cost.
+  Decision gate: ADOPT if >1.3x throughput on target hardware (RTX 3060 12GB), DROP if less.
+  Evaluation phase, not feature phase. Output is a measured decision.
+  Tests: API availability check, correctness verification, prompt lookup baseline (zero-VRAM
+  alternative), throughput benchmark with parameter sweep (k=1-7), acceptance rate measurement,
+  VRAM measurement. Decision cascade: availability -> acceptance rate -> prompt lookup comparison
+  -> throughput ratio -> VRAM delta.
+  Deliverables: ADOPT or DROP decision with measurements in metrics files + decision doc.
+  Dependencies: Phase 1C complete (VRAM accounting needed)
+
+
+PHASE 1G: CROSS-ENCODER RERANKER
+  Add cross-encoder reranking (ms-marco-MiniLM-L12-v2, ~120MB ONNX fp32) after A-RAG output.
+  CPU-only, target <50ms for 50 candidates. ONNX with graph optimizations, optional INT8.
+  Concurrency: tokio::Semaphore(1) + bounded mpsc channel (depth 4) + request batching.
+  Circuit breaker with L-6 fallback model tier. SSB degradation events. Startup canary update.
+  Optimization sweep: thread scaling, INT8 quantization (if baseline >30ms), skip threshold tuning.
+  Deliverables: CrossEncoderReranker integrated in pipeline, measured NDCG@10 improvement.
+  Dependencies: Phase 1E complete
+
+
+PHASE 1H: SPLADE KEYWORD EXPANSION (conditional)
+  Evaluate SPLADE sparse keyword expansion. Feature-gated behind cfg(feature="splade").
+  Compare two models: prithivida/Splade_PP_en_v1 vs naver/splade-v3.
+  Critical risk: BERT vocabulary mismatch on code (30522 tokens, no programming-specific tokens).
+  Early-exit gate: if code-specific vocab coverage < 30%, DROP without recall measurement.
+  Full evaluation: 50-query recall measurement with Wilcoxon significance test.
+  KEEP if: mean recall delta >= 5% AND p-value < 0.05. Else DROP.
+  Deliverables: KEEP/DROP decision, module preserved behind feature gate regardless.
+  Dependencies: Phase 1G complete
+
+
+PHASE 1I: RESILIENCE LAYER (circuit breaker, degradation, startup, tracing)
+  Make knowledge pipeline survive individual component failures gracefully.
+  7 sub-steps: (1) Circuit breaker with failure classification (transient/permanent), exponential
+  backoff, fresh ONNX session on probe. (2) SearchMode cascade (HYBRID->SPARSE_ONLY->BM25_ONLY)
+  with auto-recovery. (3) Query validator (empty, >10K chars, null bytes rejected). (4) Startup
+  readiness (READY/DEGRADED/UNAVAILABLE) with canary drift check. (5) Cross-encoder semaphore.
+  (6) QueryTrace + StageTrace for pipeline observability. (7) Index version schema + migration.
+  Deliverables: full resilience layer, pipeline survives ONNX failures, tracing, versioned indexes.
+  Dependencies: Phase 1E AND Phase 1G complete (dep graph needs 1G->1I edge added)
+
+
+PHASE 2A: GRC STATE MACHINE (basic)
+  Implement Grounded Reasoning Chain engine core. All reasoning must cite grounding sources.
+  State machine: observe -> hypothesize -> plan_action -> act -> verify (+ status free echo, converge).
+  Budget system: per-topic call and character limits, forced convergence at remaining_calls <= 1.
+  Grounding validation: format-only (type:reference parsing), GroundingLevel (Verified>High>Uncertain).
+  ThinkStep.scope: Option<Vec<String>> for scope enumeration (proactive thinking completeness).
+  Typed errors: UngroundedStep, BudgetExhausted, InvalidTransition, MalformedGrounding.
+  Deliverables: reasoning/ crate, BasicGrcEngine, GrcEngine trait (6 methods: 4 implemented + 2 stubs), 12+ tests.
+  Dependencies: Phase 0 complete
+
+
+PHASE 2B: GROUNDING VERIFICATION
+  Implement verification methods that check claims against real sources before execution.
+  Six methods: FILE_CHECK, SOURCE_CHECK, TEST_CHECK, WEB_CHECK, API_CHECK, API_REGISTRY_CHECK.
+  Binary pass/fail results (no confidence scores). Plan grounding sweep: decompose plan into
+  claims, classify as GROUNDED/VERIFY_NEEDED/UNGROUNDED, verify, block EXECUTING if any remain
+  UNGROUNDED. Resolves UNCERTAIN grounding levels from Phase 2A.
+  Deliverables: verify_claim() + ground_plan() implemented, plan sweep blocks ungrounded plans.
+  Dependencies: Phase 2A complete
+
+
+PHASE 2C: PER-AGENT GRC CONFIGURATION
+  Different agent roles get different GRC budgets, step sequences, grounding constraints.
+  6 roles: executor (8/1200, full chain), auditor (10/1200, double-verify, anti-rubber-stamp),
+  context-compiler (observe-only, FILE_CHECK/SOURCE_CHECK only), memory-writer (2/400),
+  prompt-engineer (5/800), designer (8/1200, produces PipelineSpec, distinct from executor).
+  AgentGrcConfig has 8 fields including require_scope_enumeration (true for executor/designer).
+  Config layered: [grc.defaults] + [agents.{role}.grc] in elai_cc.toml. Validated at load time.
+  Transition overrides (additive-only). Grounding level enforcement per role.
+  Anti-rubber-stamp: auditor must have >=1 FINDING: before Converge or it's rejected.
+  Deliverables: AgentGrcConfig, TomlConfigLoader, per-role routing, 15+ tests.
+  Dependencies: Phase 2B complete
+
+
+PHASE 2D: CSQ AND INLINE FEASIBILITY
+  Counterfactual Safety Questions on functions touching files/data/network/auth.
+  CSQ severity: CRITICAL (guard mandatory: data_loss, security, financial, auth) vs WARNING.
+  Critical without guard = blocks progression. Warning without guard = logged only.
+  Inline feasibility: max 2 checks per EXECUTING phase. Claims checked against known sources.
+  Outcomes: Pass (proceed), Fail (use original plan), Blocked (emit ReplanRequest for MAJOR replan).
+  Completes the reasoning engine (phases 2A-2D).
+  Deliverables: generate_csq(), check_inline_feasibility(), CsqResult, InlineFeasibilityState.
+  Dependencies: Phase 2C complete

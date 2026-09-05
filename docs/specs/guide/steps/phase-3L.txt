@@ -1,0 +1,251 @@
+phase-3L — Project Intelligence (Convention Extraction + Tier1/2/3 Hooks + Telescope)
+======================================================================================
+
+Scope: extract project-level coding conventions (naming, imports, error-handling,
+commenting) from the indexed codebase and project rule store; surface them through
+ConventionStats / NamingConventions structs; wire three Pi-prefixed
+project-intelligence tier hooks (PiT1Hook, PiT2Hook, PiT3Hook) into the
+prompt-construction pipeline; integrate with the context telescope so convention
+signals receive token-cost-aware priority; calibrate end-to-end latency below 50 ms
+(p50) / 100 ms (p99).
+
+phase-3L SPEC_DRIFT corrections (locked by s-25120 executor):
+  D1. Tier hooks live in elai_knowledge::project_intelligence and are NAMED
+      PiT1Hook / PiT2Hook / PiT3Hook to avoid collision with the SSB-write
+      rule family in elai_plugins::tiered_analysis (T1Hook/T2Hook/T3Hook).
+      Both families implement separate but parallel trait shapes; HookVerdict
+      + TieredAnalysisResult are REUSED from elai_plugins (no fork).
+  D2. Regex compilation uses std::sync::LazyLock (Rust 1.80+ stdlib),
+      NOT once_cell::sync::Lazy. Matches existing codebase pattern in
+      tiered_analysis.rs / engine.rs (CLAUDE.md anti-stale-training).
+  D3. The conventions migration ships at
+      .elai_cc/crates/knowledge/src/conventions_migration_v1.sql (sibling
+      to metadata_migration_v2.sql, NOT in a `migrations/` subdir).
+  D4. NamingConventions is the SINGLE contract surface from
+      elai_core::project_profile. extract_conventions() returns ConventionStats
+      with `naming: NamingConventions` populated via the regex-fallback OR
+      DKG path. No parallel PiNamingConventions type is introduced.
+  D5. ProjectProfile snapshot persists to
+      `.elai_cc/metrics/project_profile.toml` (project boundary anchor),
+      written by elai_knowledge::project_intelligence::persist_profile.
+  D6. ProjectRuleSeeder API is `seed_rules` (not `seed`); PiT2Hook::run
+      invokes it directly.
+  D7. The predecessor link (phase-3K.txt) is RAG production hardening
+      (adaptive chunking, query expansion, HyDE, quality-tier routing),
+      NOT a "Tier0 prompt scaffold". phase-3L extends 3K by adding the
+      project-intelligence convention signal as an upstream prompt input.
+
+Spec references:
+  - .elai_cc/crates/knowledge/src/conventions.rs (ConventionStats,
+    extract_conventions(&CorpusView), CONVENTIONS_SCHEMA_VERSION, regex
+    LazyLock registry, 4-language determinism matrix)
+  - .elai_cc/crates/knowledge/src/project_intelligence.rs (NEW —
+    ProjectIntelligenceHook trait, PiT1Hook / PiT2Hook / PiT3Hook,
+    persist_profile)
+  - .elai_cc/crates/knowledge/src/conventions_migration_v1.sql (NEW —
+    conventions table + conventions_meta schema_version row)
+  - .elai_cc/crates/knowledge/src/telescope.rs
+    (assemble_telescope_with_hooks priority ordering)
+  - .elai_cc/crates/knowledge/src/project_profile.rs
+    (existing serialize_profile + populate_tier2_conventions consumers)
+  - .elai_cc/crates/rules/src/project_rule_seeder.rs (ProjectRuleSeeder
+    seed_rules — auto-rule generation from detected conventions)
+  - .elai_cc/crates/orchestrator/src/indexing_service.rs (DKG ingest path
+    feeding the convention corpus via DkgEngine::extract_conventions)
+  - .elai_cc/crates/core/src/project_profile.rs (canonical
+    ProjectProfile + NamingConventions definitions)
+  - .elai_cc/crates/reasoning/src/prompt_builder.rs (NEW —
+    build_with_conventions injects CONVENTIONS block into SYSTEM section)
+  - .elai_cc/crates/contracts/tests/pi_telescope_contract.rs
+    (pi_telescope_contract test fn: top-K stability + token-budget cap +
+    T3-never-blocks invariant)
+  - .elai_cc/metrics/calibrate_phase_3L.py (NEW — stdlib-only calibration)
+  - .elai_cc/metrics/phase_3L.toml (calibration output)
+
+Reads (mandatory):
+  - .claude/tools/elai.map for symbols: ConventionStats, NamingConventions,
+    extract_conventions, CorpusView, ProjectRuleSeeder::seed_rules,
+    ProjectProfile, PiT1Hook, PiT2Hook, PiT3Hook, ProjectIntelligenceHook,
+    pi_telescope_contract, CONVENTIONS_SCHEMA_VERSION, persist_profile.
+  - docs/specs/guide/steps/phase-3K.txt (predecessor — RAG production
+    hardening: adaptive chunking, query expansion, HyDE, quality tiers).
+
+8-step implementation
+---------------------
+
+Step 1: SKELETON
+  - `ConventionStats` (counts per category) lives in
+    crates/knowledge/src/conventions.rs (existing).
+  - `NamingConventions` lives in crates/core/src/project_profile.rs (D4
+    — single contract surface; do NOT fork).
+  - Public API: `pub fn extract_conventions(corpus: &CorpusView) -> ConventionStats`
+    (NEW free fn; dispatches to extract_from_dkg when CorpusView carries
+    non-empty DKG nodes, else extract_from_regex_fallback).
+  - `CorpusView<'a>` thin newtype in conventions.rs holds Option<&'a
+    [DkgNodeInfo]> + project_root + primary_language.
+  - All regex compiled once at module init via `std::sync::LazyLock` (D2 —
+    NOT once_cell::sync::Lazy; matches existing codebase patterns in
+    tiered_analysis.rs / engine.rs). Static-init .expect() is permitted
+    per CLAUDE.md S1 carve-out (literal patterns, must compile).
+  - `CONVENTIONS_SCHEMA_VERSION: u32 = 1` constant at module scope; bumped
+    only when conventions schema shape changes.
+
+Step 2: VERIFY
+  - A separate conventions.db (sibling to dkg.db / metadata.db) carries the
+    per-language convention rows. Schema lives in
+    crates/knowledge/src/conventions_migration_v1.sql (D3 — flat path
+    matches metadata_migration_v2.sql sibling pattern).
+  - Migration path: PiT2Hook::run gates seeds on CONVENTIONS_SCHEMA_VERSION.
+    On stale schema it Connection::execute_batch's the embedded migration
+    SQL (idempotent: every CREATE uses IF NOT EXISTS) and returns
+    ProjectIntelligenceError::SchemaTooOld so the caller can re-run.
+  - Deterministic check: extract_conventions(&CorpusView) byte-identical on
+    repeat calls — enforced by sorted walker paths +
+    crates/knowledge/src/conventions.rs#determinism_matrix tests for all
+    four target languages (Rust / Python / TypeScript / Svelte).
+
+Step 3: TESTS
+  - Unit tests in knowledge/src/conventions.rs #[cfg(test)] for ≥4 languages
+    (Rust, Python, TypeScript, Svelte). Each test feeds a synthetic 8-file
+    corpus and asserts the expected naming-style majority (snake_case,
+    snake_case, camelCase, PascalCase respectively).
+  - Determinism test: run extraction twice on the same input; assert
+    `ConventionStats == ConventionStats`.
+
+Step 4: TIER1 HOOK
+  - `PiT1Hook::load(project_id, &Connection)` reads conventions from
+    conventions.db (VERSION_GATE on CONVENTIONS_SCHEMA_VERSION).
+  - `ProjectIntelligenceHook::render_block(&profile)` returns a
+    CONVENTIONS block (header "CONVENTIONS\n  ...") for injection into
+    the agent prompt SYSTEM section via
+    elai_reasoning::prompt_builder::build_with_conventions.
+  - Format: per-category Convention summary (fn/types/const/modules +
+    strong/moderate marker) plus error_crate; followed by top-3
+    "avoid" anti-patterns derived from inverse-style hint.
+  - Token-cost cap: PI_T1_TOKEN_BUDGET (200 tokens; char budget = 800).
+    Truncation: char-boundary-safe rfind('\n') trim.
+
+Step 5: TIER2 HOOK
+  - `PiT2Hook::run(project_id, &mut Connection, &profile, &clock)`
+    invokes the existing ProjectRuleSeeder::seed_rules (D6 — API name
+    is seed_rules, not seed) to insert auto-rule rows into rules.db.
+  - VERSION_GATE predicate: PiT2Hook::run refuses to seed when
+    conventions_meta.schema_version is below CONVENTIONS_SCHEMA_VERSION;
+    instead it Connection::execute_batch's the embedded
+    conventions_migration_v1.sql and returns SchemaTooOld.
+  - Ok(None) semantics on `PiT2Hook::evaluate(&CorpusView)`:
+      - unrecognised language returns Ok(None);
+      - synthesised line count > PI_T2_CIRCUIT_BREAKER_LINES returns
+        Ok(None) (mirrors elai_plugins::T2Hook::evaluate per
+        workflow/papers/tiered_analysis-interface.md).
+
+Step 6: TIER3 PROFILE
+  - `ProjectProfile` lives in elai_core::project_profile (canonical).
+    elai_knowledge::project_profile holds the detector + aggregator
+    + serializer (existing).
+  - Aggregation runs after every full reindex via populate_tier2_conventions
+    + populate_tier3.
+  - Persisted under .elai_cc/metrics/project_profile.toml by
+    elai_knowledge::project_intelligence::persist_profile (D5); reloaded
+    at session start by the /profile slash command
+    (cli/src/commands.rs Profile variant).
+  - `PiT3Hook::evaluate(&profile)` is ADVISORY ONLY — categorically
+    cannot emit HookVerdict::Block (mirrors elai_plugins::T3Hook).
+
+Step 7: TELESCOPE
+  - New `assemble_telescope_with_hooks(&profile, &[Box<dyn
+    ProjectIntelligenceHook>]) -> (TelescopeContext, Vec<String>)` in
+    crates/knowledge/src/telescope.rs wires the three Pi tier hooks as
+    ordered priority sources. The legacy `assemble_telescope(profile)`
+    free fn is preserved unchanged so existing callers (cli/src/main.rs,
+    contracts/tests/pi_telescope_contract.rs format / few_shot tests)
+    do not break.
+  - Priority anchors: PI_T1_PRIORITY=100 > PI_T2_PRIORITY=80 >
+    PI_T3_PRIORITY=60. Tied priorities resolve by hook id (stable
+    secondary key).
+  - Cumulative cap: TELESCOPE_MAX_CHARS (1200 chars). Blocks past the
+    cap are dropped whole (no partial-line bleed).
+  - Contract test: `pi_telescope_contract` in
+    .elai_cc/crates/contracts/tests/pi_telescope_contract.rs asserts:
+      (a) top-K block sequence is STABLE across 10 repeats;
+      (b) ordering T1 > T2 > T3;
+      (c) per-hook char budget never exceeded;
+      (d) PiT3Hook NEVER emits HookVerdict::Block;
+      (e) PiT2Hook on unrecognised language returns Ok(None).
+
+Step 8: MEASURE
+  - Calibration script .elai_cc/metrics/calibrate_phase_3L.py (stdlib-only:
+    argparse, statistics, subprocess, tempfile, time, datetime, pathlib)
+    synthesises a 1000-file Rust+Python+TS+Svelte corpus in a tmpdir,
+    runs the language-specific determinism tests via cargo-test as a
+    latency proxy, computes p50/p99, and emits
+    .elai_cc/metrics/phase_3L.toml.
+  - Acceptance gates: p50 <= 50 ms, p99 <= 100 ms.
+  - Expected floor (auditor regression gate): 80% of the gate values.
+  - If gate fails: reduce regex set, shard by language tag, or add a
+    bench harness for in-process measurement.
+
+WIRING_CONTRACT
+---------------
+
+produces_symbols:
+  - ConventionStats, NamingConventions (reused from elai_core::project_profile)
+  - extract_conventions(&CorpusView), CorpusView
+  - CONVENTIONS_SCHEMA_VERSION
+  - ProjectRuleSeeder::seed_rules (reused from elai_rules; PiT2Hook caller)
+  - PiT1Hook, PiT2Hook, PiT3Hook (each impl ProjectIntelligenceHook)
+  - ProjectIntelligenceHook trait
+  - persist_profile + .elai_cc/metrics/project_profile.toml on disk
+  - assemble_telescope_with_hooks
+  - reasoning::prompt_builder::build_with_conventions
+  - pi_telescope_contract test fn passing
+  - metrics/phase_3L.toml emitted by metrics/calibrate_phase_3L.py
+consumes_symbols:
+  - CorpusView (new, in conventions.rs — wraps DkgNodeInfo slice + root)
+  - rules.db via elai_rules::project_rule_seeder::ProjectRuleSeeder
+  - conventions.db via embedded conventions_migration_v1.sql
+  - HookVerdict, TieredAnalysisResult (reused from
+    elai_plugins::tiered_analysis — do NOT fork)
+reachable_from:
+  - prompt construction in reasoning/src/prompt_builder.rs
+    (build_with_conventions injects CONVENTIONS block into SYSTEM)
+  - /profile slash command (cli/src/commands.rs Profile variant)
+  - assemble_telescope_with_hooks ordering: T1 > T2 > T3 (priority
+    anchors 100/80/60)
+stub_ban:
+  - No .unwrap() outside #[cfg(test)] OR module-init LazyLock
+    static-init carve-out (CLAUDE.md S1).
+  - Regex compilation MUST be at module init via std::sync::LazyLock
+    (D2 — NOT once_cell::sync::Lazy).
+  - PiT3Hook NEVER emits HookVerdict::Block (categorical, mirrors T3Hook).
+  - PiT2Hook returns Ok(None) on unrecognised language OR circuit-break.
+observable_effect:
+  trigger: run `cargo test -p elai-knowledge conventions::` AND
+           `cargo test -p elai_cc_contracts pi_telescope_contract`.
+  expect: 4 language-specific determinism assertions pass (Rust/Python/
+          TS/Svelte); pi_telescope_contract passes with all 5 invariants;
+          latency calibration writes .elai_cc/metrics/phase_3L.toml.
+
+DETERMINISTIC_CHECK
+-------------------
+
+```bash
+# 1. Public API present (extract_conventions + CorpusView + schema const)
+rg "pub fn extract_conventions" .elai_cc/crates/knowledge/src
+rg "pub struct CorpusView" .elai_cc/crates/knowledge/src
+rg "CONVENTIONS_SCHEMA_VERSION" .elai_cc/crates/knowledge/src
+# 2. PI tier hooks present (Pi-prefixed; the plugins T1/T2/T3 are a
+#    different family and intentionally untouched)
+rg "PiT1Hook|PiT2Hook|PiT3Hook" .elai_cc/crates/knowledge/src
+rg "ProjectIntelligenceHook" .elai_cc/crates/knowledge/src
+# 3. Migration + persistence
+rg "conventions_migration_v1" .elai_cc/crates/knowledge/src
+rg "fn persist_profile" .elai_cc/crates/knowledge/src
+# 4. Telescope wiring + contract test
+rg "assemble_telescope_with_hooks" .elai_cc/crates/knowledge/src
+rg "fn pi_telescope_contract" .elai_cc/crates/contracts/tests
+# 5. Prompt builder
+rg "fn build_with_conventions" .elai_cc/crates/reasoning/src
+# 6. Calibration outputs
+ls .elai_cc/metrics/calibrate_phase_3L.py .elai_cc/metrics/phase_3L.toml
+```

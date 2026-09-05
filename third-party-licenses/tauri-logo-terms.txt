@@ -1,0 +1,44 @@
+Tauri default logo/design asset record
+======================================
+
+Reviewed: 2026-09-06
+
+Archive asset:
+  .elai_cc/crates/dashboard-v2/src-tauri/icons/icon.png
+  SHA-256: 6fc3751247d4c256e846f09445583125e692df5a28aa51027d6ff5429ced4efc
+  File type: 1280 x 1280 PNG
+
+The bitmap is the standard yellow/cyan Tauri default logo/design asset. The
+official Tauri documentation says that Tauri ships a default iconset based on
+its logo. The official create-tauri-app template includes an icon at:
+
+  https://github.com/tauri-apps/create-tauri-app/tree/dev/templates/_base_/src-tauri/icons
+  https://raw.githubusercontent.com/tauri-apps/create-tauri-app/dev/templates/_base_/src-tauri/icons/icon.png
+
+The create-tauri-app README's license section states:
+
+  Logo: CC-BY-NC-ND
+  Original Tauri Logo Designs by Daniel Thompson-Yvetot and Guillaume Chau
+
+The README does not state a Creative Commons version. This record preserves
+the upstream wording and does not infer a version or copy a different
+Creative Commons legal code into this archive.
+
+The Tauri trademark policy is separate from the software copyright license:
+
+  https://tauri.app/about/trademark/
+
+That policy identifies the Tauri logo as a trademark/design asset, says that
+the software copyright license does not itself grant trademark rights, and
+states that logos may not be changed except by scaling. No redesign or asset
+edit was made in this review. This record does not imply endorsement or grant
+additional trademark permission.
+
+Provenance boundary:
+
+The local file is 1280 x 1280 and is not byte-identical to the current dev
+template's 512 x 512 icon (current dev SHA-256:
+b5d93c8ec365c08b11bd006e46a46e227c681d30bb295af3d017573bfc752a83). The
+imported template revision is not recorded. The archive therefore records the
+standard Tauri logo/design source family and its stated terms without claiming
+byte identity or complete provenance.

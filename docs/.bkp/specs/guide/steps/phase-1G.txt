@@ -1,0 +1,338 @@
+PHASE 1G: CROSS-ENCODER RERANKER
+Prerequisites: Phase 1E complete (CatRAG + A-RAG query pipeline operational)
+
+NOTE (2026-04-07): Phase 1F steps 1F.3-1F.5 were DROPPED. Ollama v0.20.2 does not support
+speculative decoding (PR #8134 closed, never merged). Step 1F.2 probe confirmed: draft_model
+parameter silently ignored. Decision gate result: DROP. Prompt Lookup Decoding (1F.3b) also
+skipped as part of the DROP. Speculative decoding deferred to Phase 2+ (vLLM provider).
+Phase 1F deliverables: OllamaProvider skeleton (1F.1) + probe infrastructure (1F.2) committed.
+No impact on this phase — 1G depends on 1E (pipeline), not 1F (inference speed).
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Add cross-encoder reranking (ms-marco-MiniLM-L12-v2) after A-RAG output, before token-budget fitting.
+CPU-only, target <50ms latency for 50 candidates.
+Concurrency-safe with bounded queue, request batching, and circuit breaker integration.
+ONNX-optimized with graph optimizations and optional INT8 quantization for latency headroom.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/knowledge.txt             Section 3 (query pipeline, reranker position)
+  docs/specs/crates/knowledge.txt             Section 5 (graceful degradation, SSB events)
+  docs/specs/crates/knowledge.txt             Section 6 (circuit breaker per model)
+  docs/specs/crates/knowledge.txt             Section 7 (startup readiness, canary query includes rerank)
+  docs/specs/crates/knowledge.txt             Section 11 (cross-encoder concurrency, queue depth, batching)
+  docs/specs/crates/knowledge.txt             Section 13 (testable invariants, cross-encoder items)
+  docs/specs/architecture-overview.txt        knowledge::KnowledgeEngine trait (rerank method signature)
+
+GROUNDING
+  "cross-encoder/ms-marco-MiniLM-L-12-v2" -> VERIFIED: HuggingFace, 33.4M params, 12 layers, hidden_size=384, base=microsoft/MiniLM-L12-H384-uncased. Uses WordPiece tokenizer (BertTokenizer). Requires tokenizer.json bundled with model.
+  "~120MB ONNX fp32" -> VERIFIED: Xenova/ms-marco-MiniLM-L-12-v2 ONNX export is ~120MB (0.12GB). Original spec says ~130MB — corrected.
+  "~30MB ONNX int8" -> VERIFIED: ONNX int8 dynamic quantization yields ~4x model size reduction (Microsoft Azure blog: BERT-base). 120MB/4 ~ 30MB. No calibration dataset needed for dynamic quantization (onnxruntime.ai/docs/quantization).
+  "ort crate for ONNX Runtime" -> CONDITIONAL: pykeio/ort v2.0.0-rc.12 on crates.io. RC, not stable release. API changed between rc.8 and rc.10. Pin exact version; re-validate API on stable 2.0.0 release.
+  "tokenizers crate" -> VERIFIED: huggingface/tokenizers Rust crate. Required for WordPiece tokenization to produce input_ids, attention_mask, token_type_ids tensors.
+  "<50ms CPU latency for 50 candidates" -> CONDITIONAL: no published CPU benchmarks for L-12. V100 GPU: 960 docs/sec. FlashRank (Python ONNX reranker) claims sub-20ms for 50 candidates on CPU with optimized ONNX. Spec section 13 L258 lists as testable invariant. Empirical gate with 3 optimization levers: graph optimization level, int8 quantization, thread count. If all 3 applied and still >50ms, file spec amendment.
+  "ORT_ENABLE_ALL graph optimization" -> VERIFIED: onnxruntime.ai docs. Enables layout optimizations (NCHWc) specific to CPU execution provider. Accuracy impact: BERT SQuAD F1 87.05 vs 87.03 (QA task, not ranking — proxy acceptable given plan's empirical score-identity test in 1G.2).
+  "INT8 dynamic quantization up to 6x speedup" -> VERIFIED: Microsoft Azure blog. BERT-base on Intel Xeon VNNI: up to 6x. On non-VNNI (AVX2): ~2.9x. No calibration dataset needed.
+  "intra-op thread scaling" -> CONDITIONAL: Milvus AI quick-reference FAQ cites 1->8 threads = 4.2x. Source is AI-generated, not primary benchmark. Actual speedup measured empirically in 1G.5.B on target hardware. Thread scaling is real (ORT docs confirm multi-threaded MATMUL) but exact ratio unverified until measured.
+  "cross-encoder/ms-marco-MiniLM-L-6-v2 as fallback" -> VERIFIED: HuggingFace, 22.7M params, 6 layers. MRR@10=36.81 (vs L-12 39.02). Same WordPiece tokenizer (shared BERT vocab base — both derive from microsoft/MiniLM). SPEC AMENDMENT REQUIRED: current spec L149 defines only "skip reranking" as fallback. L-6 intermediate tier filed as amendment: workflow/reasoning/phase-1G-spec-amendment.md.
+  "skip when candidate set <= 10" -> GROUNDED: knowledge.txt L96 ("below that, ordering noise > signal"). Threshold configurable. Note: arxiv 2403.10407 studies rerank depth k and NDCG@10 sensitivity (not skip threshold directly), but supports the principle that optimal reranking behavior varies by dataset/query type.
+  "tokio::Semaphore(1) + bounded queue depth 4" -> GROUNDED: knowledge.txt L219-220.
+  "batching queued requests" -> GROUNDED: knowledge.txt L221.
+  "circuit breaker for cross-encoder" -> GROUNDED: knowledge.txt L135, L149.
+  "SSB degradation event" -> GROUNDED: knowledge.txt L124. action_type='knowledge_degradation'. Separate from tracing.
+  "startup canary includes rerank" -> GROUNDED: knowledge.txt L159. Canary: embed + BM25 + rerank, all within 5s.
+  "injectable clock for circuit breaker" -> GROUNDED: architecture-overview.txt entropy quarantine.
+  "max sequence length 512 tokens" -> VERIFIED: standard BERT/MiniLM limit.
+  "enable_deterministic_compute for multi-thread" -> VERIFIED: ORT GitHub issue #4611 and threading docs confirm CPU MATMUL with multiple threads uses non-deterministic float reduction order unless enable_deterministic_compute=true.
+
+DECISION: ort vs fastembed-rs
+  Phase 1G uses raw ort + tokenizers crate (not fastembed-rs) because:
+  - Other ONNX models in the knowledge crate (GraphCodeBERT, Granite) already use ort directly
+  - Raw ort allows ORT_ENABLE_ALL, enable_deterministic_compute, and int8 model loading directly
+  - fastembed-rs adds abstraction that limits control over session threading and graph optimization
+  - Decision revisitable at Phase 1I if consistency becomes a concern
+
+DECISION: fp32 vs int8 model
+  Start with fp32 model. Measure latency. If <50ms target met with fp32 + ORT_ENABLE_ALL + configured threads: stop. If not: export int8 dynamically quantized model, re-measure. Accept int8 only if NDCG@10 delta < 0.5 points on benchmark fixture. Data-driven decision made during step 1G.5, not upfront.
+  Evidence: Microsoft Azure blog — BERT int8 on AVX2: ~2.9x speedup, VNNI: up to 6x. Accuracy loss negligible on GLUE.
+  INT8 trigger: evaluate if baseline p50 > 30ms. Ungrounded conjecture: 30ms chosen as 60% of 50ms spec budget, leaving 20ms headroom for queue wait latency under concurrent load (<4 agents per knowledge.txt L222).
+
+DECISION: skip threshold
+  Default 10 (from spec). Configurable via RerankerConfig. Threshold sweep in 1G.5 uses NDCG@10 (aligning with spec invariant format and academic benchmarks) at thresholds 5, 10, 15, 20, 30. Spec value updated if sweep shows different optimum for code search.
+
+DECISION: batching mechanism
+  Use tokio::sync::mpsc bounded channel (capacity 4) for request aggregation. Chosen over tokio::sync::Notify because bounded channel provides atomic drain-and-batch semantics via try_recv loop, avoiding lost-wakeup races inherent in Notify polling patterns. The reranker task drains all pending requests from the channel before acquiring the ONNX session semaphore, merges candidate sets, runs single inference, then splits results back via oneshot channels per caller.
+
+
+STEPS
+
+  1G.1 RERANKER MODULE SKELETON + DEPENDENCIES
+    PRE_GATE:
+      - Phase 1E tests pass: cargo test --package elai-knowledge --lib catrag arag (exit 0)
+      - KnowledgeEngine trait exists with rerank method: grep -r "fn rerank" .elai_cc/crates/knowledge/src/ returns hit. Record exact signature (async? Result type? param types?) for implementation conformance.
+      - ort crate compiles: cargo check --package elai-knowledge after adding ort + tokenizers deps (exit 0)
+      - ONNX model file accessible at configured path AND tokenizer.json present alongside it
+    TASK:
+      - Add dependencies to knowledge crate Cargo.toml: ort (pin exact RC version), tokenizers (HuggingFace Rust crate)
+      - Create reranker module stub in knowledge crate
+      - Define CrossEncoderReranker struct: session (ort::Session), tokenizer (tokenizers::Tokenizer), semaphore (tokio::Semaphore), request_channel (mpsc::Sender for batch aggregation), circuit_breaker (CircuitBreaker), clock (Arc<dyn ClockProvider>)
+      - Define RerankerConfig with fields:
+          model_path: PathBuf                    (primary L-12 model)
+          tokenizer_path: PathBuf                (tokenizer.json — shared by L-12 and L-6, same BERT vocab base)
+          fallback_model_path: Option<PathBuf>   (L-6 variant, SPEC AMENDMENT: workflow/reasoning/phase-1G-spec-amendment.md)
+          quantized_model_path: Option<PathBuf>  (int8 variant, generated in 1G.5 if needed)
+          skip_threshold: usize (default 10)     (configurable, tuned in 1G.5)
+          max_sequence_length: usize (512)
+          max_queue_depth: usize (4)
+          intra_op_threads: usize (1)            (1 for deterministic tests, tuned in 1G.5)
+          graph_optimization_level: GraphOptimizationLevel (ORT_ENABLE_ALL)
+          enable_deterministic_compute: bool (true)  (required for multi-thread score reproducibility)
+      - Implement KnowledgeEngine::rerank trait method stub matching EXACT trait signature from source (returns candidates unchanged)
+      - Wire call site into query pipeline between A-RAG filter output and token-budget fitting
+      - In SPARSE_ONLY and BM25_ONLY modes: skip reranker call entirely (knowledge.txt L118-119)
+    DETERMINISTIC_CHECK:
+      - cargo check --package elai-knowledge returns exit 0
+      - grep -r "CrossEncoderReranker" .elai_cc/crates/knowledge/src/ returns hits
+      - grep -r "fn rerank" .elai_cc/crates/knowledge/src/ returns hits matching trait signature
+      - grep -r "tokenizers" .elai_cc/crates/knowledge/Cargo.toml returns hit
+      - grep -r "ort" .elai_cc/crates/knowledge/Cargo.toml returns hit with pinned version
+      - grep -r "graph_optimization_level\|GraphOptimizationLevel\|ORT_ENABLE_ALL" .elai_cc/crates/knowledge/src/ returns hit
+      - grep -r "enable_deterministic_compute" .elai_cc/crates/knowledge/src/ returns hit
+    ADVERSARIAL:
+      - If ort RC version is yanked or API breaks, compilation fails. Test: cargo check must succeed with pinned version.
+      - If model_path config has no default, runtime panics. Test: RerankerConfig::default() compiles and produces valid defaults.
+      - If trait signature mismatch (async vs sync, wrong error type), compilation fails. Test: PRE_GATE grep captures exact signature; stub matches it.
+
+  1G.2 ONNX MODEL LOADING, TOKENIZER, AND GRAPH OPTIMIZATION
+    PRE_GATE:
+      - Step 1G.1 DETERMINISTIC_CHECK passes
+      - ONNX model file present at test fixture path
+      - tokenizer.json present at test fixture path (download from Xenova/ms-marco-MiniLM-L-12-v2 or cross-encoder/ms-marco-MiniLM-L12-v2)
+      - Verify ort Session builder API against actual rc.12 source/docs: grep or read ort examples for Session creation pattern, graph optimization level enum, and enable_deterministic_compute option
+    TASK:
+      - Implement ONNX model loading via ort session builder (use API pattern verified in PRE_GATE)
+      - Set graph_optimization_level to ORT_ENABLE_ALL (CPU layout optimizations, no accuracy loss)
+      - Set enable_deterministic_compute=true (ensures reproducible float reduction across threads)
+      - CPU execution provider only (no CUDA/TensorRT)
+      - Session creation with configurable intra-op thread count (default 1 for deterministic testing)
+      - Load tokenizer from tokenizer.json via tokenizers::Tokenizer::from_file()
+      - Configure tokenizer truncation: set max_length=512, truncation=true
+      - Model path resolution: check quantized_model_path first (if Some), then model_path, then local cache
+      - Support loading fallback L-6 model lazily via fallback_model_path: L-6 session is NOT pre-loaded at startup. Created on first L-12 circuit breaker open via same builder pattern. Cold-start latency (5-15s per knowledge.txt L165) is acceptable during degradation since circuit breaker fallback has no latency SLA.
+      - Error handling: return Result, no unwrap/panic. Map ort errors to KnowledgeError.
+    DETERMINISTIC_CHECK:
+      - Unit test loads model from fixture path with ORT_ENABLE_ALL + enable_deterministic_compute, session returns Ok
+      - Unit test loads tokenizer from fixture path, tokenizer creation returns Ok
+      - Unit test with invalid model path returns Err (not panic)
+      - Unit test with missing tokenizer.json returns Err (not panic)
+      - Unit test: tokenizer.encode("hello world") produces valid token IDs (non-empty Vec<u32>)
+      - Unit test: tokenizer truncates input >512 tokens to exactly 512 (configure pair, check output length)
+      - Unit test: session with ORT_ENABLE_ALL produces identical scores to ORT_DISABLE_ALL (score identity, not just similar)
+      - Unit test: session with enable_deterministic_compute=true + 4 threads produces identical scores across 5 repeated runs
+    ADVERSARIAL:
+      - If ONNX model file is corrupt or truncated, ort may panic instead of Err. Test: load a 0-byte file, assert Err returned.
+      - If ort RC version changed Session builder API or graph optimization enum, compilation breaks. Test: PRE_GATE verifies API.
+      - If intra-op threads > 1 WITHOUT enable_deterministic_compute, scores may vary. Test: with deterministic=true, 4 threads, 5 runs produce identical scores.
+      - If tokenizer.json is for wrong model (different vocab), tokenization produces garbage. Test: encode known input, assert expected token count.
+      - If fallback_model_path points to nonexistent file and L-12 breaker opens, lazy load fails. Test: assert Err returned (not panic), skip-reranking fallback activates.
+
+  1G.3 PAIR SCORING, RERANKING, AND CONCURRENCY
+    PRE_GATE:
+      - Step 1G.2 DETERMINISTIC_CHECK passes
+      - ONNX session loads successfully in test
+      - Tokenizer loads and encodes successfully in test
+    TASK:
+      - Tokenize (query, chunk) pairs: use tokenizer.encode_batch() with pair encoding to produce input_ids, attention_mask, token_type_ids. Truncation configured in 1G.2.
+      - Batch inference: collect all pair tensors, run single ort session.run()
+      - Extract relevance scores from model output (single logit per pair)
+      - Re-sort candidates by descending score
+      - Skip reranking when candidate count <= skip_threshold (configurable, default 10). Return input unchanged.
+      - Concurrency: tokio::Semaphore(1) guards session access (knowledge.txt L219)
+      - Bounded queue via tokio::sync::mpsc channel (capacity 4). Each caller sends (candidates, oneshot::Sender<Result>) to channel. If channel full (try_send returns Full), return candidates unranked immediately (knowledge.txt L220).
+      - Request batching: reranker task loop drains channel via try_recv after acquiring semaphore. Merges all drained candidate sets into single batch. Runs one ort session.run(). Splits results by caller using tracked offsets. Returns via each caller's oneshot channel. (knowledge.txt L221)
+    DETERMINISTIC_CHECK:
+      - Unit test: 20 candidates reranked, output order differs from input order (scores applied)
+      - Unit test: 5 candidates passed through unchanged (below default skip threshold 10)
+      - Unit test: 10 candidates passed through unchanged (boundary: <= 10)
+      - Unit test: 11 candidates reranked (boundary: > 10)
+      - Unit test: skip_threshold=5 config, 7 candidates reranked (configurable threshold works)
+      - Unit test: empty candidate list returns empty list (no panic)
+      - Unit test: pair with 1000-token chunk produces valid score (truncation works)
+      - Unit test: tokenizer produces input_ids, attention_mask, token_type_ids tensors with correct shapes
+      - Unit test: 5 concurrent rerank requests, only 1 executes at a time (semaphore)
+      - Unit test: 6th concurrent request when 4 already queued returns unranked (channel full)
+      - Unit test: 2 queued requests batched into single inference call (batch count = 1 not 2)
+      - Unit test: 2 concurrent requests with distinct candidate sets, each gets only its own candidates back (no cross-contamination via offset tracking)
+    ADVERSARIAL:
+      - If query + chunk exceeds 512 tokens and truncation missing, ONNX errors. Test: 1000-token chunk, assert no error and valid score.
+      - If scores contain NaN/Inf, sort undefined. Test: inject NaN score, assert graceful handling (filter or lowest rank).
+      - If semaphore not applied, concurrent calls corrupt ONNX session. Test: 4 concurrent calls, all return valid results.
+      - If channel overflow not handled, requests block indefinitely. Test: spawn 10 concurrent requests, assert all complete within timeout. First 5 get ranked, rest get unranked.
+      - If batching splits results to wrong callers via wrong offsets, candidates misattributed. Test: 2 requests with distinct sets, verify no cross-contamination.
+
+  1G.4 CIRCUIT BREAKER, DEGRADATION, SSB EVENTS, AND MODEL TIERING
+    PRE_GATE:
+      - Step 1G.3 DETERMINISTIC_CHECK passes
+      - Circuit breaker infrastructure exists from Phase 1C/1E: grep CircuitBreaker in knowledge crate returns hits
+      - ClockProvider trait exists: grep ClockProvider in core crate returns hits (entropy quarantine)
+      - SSB write mechanism exists: grep -r "action_type" or "ssb" in orchestrator/knowledge crate returns hits
+      - Spec amendment filed: test -f workflow/reasoning/phase-1G-spec-amendment.md (required for L-6 tiering)
+    TASK:
+      - Add independent circuit breaker for cross-encoder L-12 (knowledge.txt L135), using injectable ClockProvider for timeouts (not std::time::Instant)
+      - Fallback cascade on L-12 failure:
+          1. If fallback_model_path configured: lazy-load L-6 session (first failure only, cached after). L-6 gets own circuit breaker instance.
+          2. If L-6 also fails (or not configured): skip reranking, return candidates in A-RAG order (knowledge.txt L149, the spec-defined final fallback).
+          NOTE: L-6 intermediate tier requires spec amendment approval. See workflow/reasoning/phase-1G-spec-amendment.md. If amendment rejected, remove L-6 path and keep spec-defined skip-only fallback.
+      - Wire into graceful degradation: SPARSE_ONLY and BM25_ONLY modes skip reranker entirely (already wired in 1G.1)
+      - Write SSB event on reranker degradation: action_type='knowledge_degradation' with stage='rerank' (knowledge.txt L124). This is SEPARATE from tracing. SSB write failure is non-fatal (log warning, continue with fallback).
+      - Log to tracing at DEBUG level: emit StageTrace for rerank stage in QueryTrace pipeline (knowledge.txt L238)
+      - Circuit breaker config: failure_threshold=3, window=60s, half_open_timeout=30s (knowledge.txt L139-142), all durations via ClockProvider
+    DETERMINISTIC_CHECK:
+      - Unit test: simulate 3 consecutive L-12 failures, circuit breaker opens
+      - Unit test: with L-12 breaker open, rerank returns input unchanged when no L-6 configured (fallback)
+      - Unit test: mock ClockProvider advances past half_open_timeout, probe succeeds, breaker closes (no real sleep, <1s test)
+      - Unit test: on circuit breaker open, SSB event emitted with action_type='knowledge_degradation'
+      - Unit test: on circuit breaker close (recovery), SSB event emitted
+      - Unit test: SSB write failure does not crash reranker (mock SSB returns error, assert fallback still works)
+      - grep "rerank" in StageTrace stage values returns hit
+      - Unit test: query in SPARSE_ONLY mode, rerank stage not called (latency_ms=0 or absent in trace)
+      - Unit test: L-12 breaker open + L-6 configured -> L-6 model lazy-loaded and used for reranking
+      - Unit test: both L-12 and L-6 breakers open -> skip reranking (final fallback per spec L149)
+      - Unit test: L-6 fallback_model_path points to nonexistent file -> graceful skip (not panic), skip-reranking activates
+    ADVERSARIAL:
+      - If circuit breaker state is shared static, tests interfere. Test: each test creates fresh breaker instance.
+      - If ClockProvider not injected, half_open test takes 30s. Test: mock clock, assert <1s.
+      - If SSB write fails and error propagated, reranker crashes. Test: mock SSB error, assert non-fatal.
+      - If SPARSE_ONLY mode still calls reranker. Test: assert no ort session.run() invocation.
+      - If L-6 lazy load takes 15s during degradation and caller has a timeout, request fails. Test: document cold-start in metrics. Acceptable per spec (no latency SLA on circuit breaker fallback path).
+
+  1G.5 STARTUP CANARY UPDATE
+    PRE_GATE:
+      - Step 1G.4 DETERMINISTIC_CHECK passes
+      - readiness_check() function exists: grep -r "readiness_check\|canary" .elai_cc/crates/knowledge/src/ returns hits
+      - Existing canary invokes embed + BM25: verify by reading readiness_check implementation
+    TASK:
+      - Update readiness_check() / startup canary to include rerank call (knowledge.txt L159: "embed + BM25 + rerank")
+      - Canary rerank: use a small synthetic candidate set (e.g. 3 candidates from BM25 canary output), run through reranker
+      - All three operations (embed, BM25, rerank) must return non-error within 5s (knowledge.txt L160)
+      - If reranker fails during canary: enter degraded mode with reranker skipped (consistent with circuit breaker fallback)
+      - Log canary result including reranker latency
+    DETERMINISTIC_CHECK:
+      - Unit test: readiness_check with healthy reranker returns READY, includes rerank in canary stages
+      - Unit test: readiness_check with broken reranker returns DEGRADED (not UNAVAILABLE — embed + BM25 still work)
+      - Unit test: canary completes within 5s timeout (mock models if needed for test speed)
+      - grep -r "rerank" in readiness_check implementation returns hit
+    ADVERSARIAL:
+      - If reranker canary adds >2s to startup, total canary exceeds 5s budget. Test: measure reranker canary latency separately. If >2s on cold start, canary should load model first then measure rerank-only latency.
+      - If canary candidate set is empty (BM25 returned nothing for "main"), reranker receives empty input. Test: empty input to reranker during canary, assert no error.
+
+  1G.6 OPTIMIZATION SWEEP AND PRECISION VALIDATION
+    PRE_GATE:
+      - Steps 1G.1-1G.5 DETERMINISTIC_CHECK all pass
+      - cargo test --package elai-knowledge (all existing tests still pass)
+      - Test fixture committed: tests/fixtures/reranker_benchmark.json containing hand-crafted query + 50 candidates with known relevance labels
+      - INT8 quantization toolchain available (if baseline >30ms): python3 -c "import onnxruntime; print(onnxruntime.__version__)" returns version string. Quantization script committed at scripts/quantize_cross_encoder.py.
+    TASK:
+      - Create and commit benchmark fixture: tests/fixtures/reranker_benchmark.json
+          1 query, 50 candidates, binary relevance labels (relevant/not-relevant), at least 10 relevant in top 50
+          Candidates must be actual code chunks (not lorem ipsum) to exercise tokenizer realistically
+          Note: single fixture query — production threshold should be re-evaluated with real query logs (Phase 1I)
+
+      A. BASELINE MEASUREMENT (fp32, ORT_ENABLE_ALL, enable_deterministic_compute=true, 1 thread)
+        - Benchmark: rerank 50 candidates, warm session, measure p50/p99 latency (10 runs)
+        - Measure NDCG@10 with/without reranker on fixture (aligns with spec invariant and academic benchmarks)
+        - Record to .elai_cc/metrics/phase_1G.toml as baseline
+
+      B. THREAD SCALING SWEEP (fp32, ORT_ENABLE_ALL, enable_deterministic_compute=true, 1/2/4/8 threads)
+        - Run benchmark at each thread count, 10 runs each. Record p50/p99 latency.
+        - Determinism check: with enable_deterministic_compute=true, verify identical ranking order across 5 runs at each thread count. If scores still diverge (possible with some ORT versions), accept ranking-order stability instead of score identity: top-5 candidates must be same set in same order across runs.
+        - Select optimal_threads = thread count with lowest p50 that passes determinism check.
+        - Record thread_sweep results to metrics.
+
+      C. INT8 QUANTIZATION (conditional — only if baseline p50 > 30ms)
+        - Run committed quantization script: python3 scripts/quantize_cross_encoder.py --input <model_path> --output <quantized_path>
+        - Validate quantized model loads in ort: unit test loads .elai_cc/models/cross-encoder-int8.onnx, session.run() returns Ok
+        - Re-run benchmark at optimal_threads with int8 model.
+        - Measure NDCG@10 delta vs fp32. Accept only if delta < 0.5 points.
+        - If int8 accepted: set quantized_model_path in default config.
+        - Record int8_latency, int8_ndcg_delta to metrics.
+
+      D. SKIP THRESHOLD SWEEP
+        - Run benchmark with skip_threshold = 5, 10, 15, 20, 30.
+        - For each: measure NDCG@10 at threshold boundary (N+1 candidates) and at 50 candidates.
+        - Optimal threshold = lowest value where NDCG@10 at N+1 candidates shows measurable improvement (delta > 0.02) over unranked.
+        - Update skip_threshold default in RerankerConfig if sweep shows different optimum than 10.
+        - Record threshold_sweep results to metrics.
+
+      E. FINAL MEASUREMENT
+        - Run full benchmark with all optimizations applied (optimal threads, best model variant, optimal threshold).
+        - Record final_latency_p50, final_latency_p99, final_ndcg_at_10, model_variant (fp32/int8).
+        - If final_latency_p50 > 50ms after all optimizations:
+            File spec amendment at workflow/reasoning/phase-1G-spec-amendment.md (append to existing).
+            Document actual latency, all optimization attempts, recommendation.
+        - Model load time (cold start) recorded separately.
+        - Queue wait p99 under concurrent load (4 agents) recorded for future session pool evaluation (knowledge.txt L224).
+
+    DETERMINISTIC_CHECK:
+      - Benchmark fixture file exists: test -f tests/fixtures/reranker_benchmark.json
+      - Fixture contains code chunks: grep "fn \|struct \|impl \|def \|class " tests/fixtures/reranker_benchmark.json returns hits
+      - Baseline metrics recorded: grep "baseline_latency_p50" .elai_cc/metrics/phase_1G.toml returns hit
+      - Thread sweep recorded: grep "thread_sweep" .elai_cc/metrics/phase_1G.toml returns hit
+      - If int8 attempted: grep "int8_latency\|int8_ndcg_delta" .elai_cc/metrics/phase_1G.toml returns hits
+      - If int8 attempted: unit test loads quantized model file via ort, session.run() returns Ok
+      - Threshold sweep recorded: grep "threshold_sweep" .elai_cc/metrics/phase_1G.toml returns hit
+      - Final metrics recorded: grep "final_latency_p50" .elai_cc/metrics/phase_1G.toml returns hit
+      - NDCG@10 improvement > 0.0 on fixture (reranker must improve over unranked baseline)
+      - If final p50 > 50ms: spec amendment updated at workflow/reasoning/phase-1G-spec-amendment.md
+      - Quantization script committed (if int8 evaluated): test -f scripts/quantize_cross_encoder.py
+    ADVERSARIAL:
+      - If benchmark fixture has no relevance signal, NDCG@10 delta is noise. Test: fixture has known relevant/irrelevant, assert reranker moves at least 1 relevant doc into top 5.
+      - If latency measurement includes model loading, reported latency inflated. Test: warm-up call before measurement.
+      - If int8 model produces very different scores, ranking degrades. Test: NDCG@10 delta, reject if > 0.5 points.
+      - If thread count >1 introduces ranking instability despite enable_deterministic_compute, tests flaky. Test: 5 runs, verify ranking order identical (not just scores).
+      - If quantization script fails silently and produces corrupt model, ort session.run() errors. Test: load quantized model, run inference, assert Ok.
+    ACCEPTANCE:
+      - Reranker compiles and all tests pass: cargo test --package elai-knowledge exit 0
+      - Reranking changes candidate order for >skip_threshold candidates with mixed relevance
+      - Skip logic correct at configured threshold; threshold configurable and tuned via sweep
+      - Circuit breaker opens after 3 failures; L-6 fallback activates if configured (spec amendment); final fallback skips reranking (per spec L149)
+      - SSB degradation event emitted on circuit breaker state changes (non-fatal if SSB unavailable)
+      - Queue overflow at depth >4 returns unranked results immediately (mpsc channel full)
+      - Batching merges queued requests via channel drain + offset-tracked result split
+      - ORT_ENABLE_ALL + enable_deterministic_compute applied to session
+      - Thread count optimized via sweep, determinism verified at chosen count
+      - INT8 quantization evaluated if baseline >30ms; accepted only if NDCG delta <0.5
+      - Startup canary includes rerank call; degraded mode entered if reranker fails during canary
+      - Latency measured with all optimizations. If p50 > 50ms: spec amendment filed with data.
+      - NDCG@10 improvement measurable on committed benchmark fixture
+      - StageTrace emitted for rerank stage in QueryTrace
+      - Semaphore prevents concurrent ONNX session access
+      - ClockProvider injected for all time-dependent logic (no direct Instant::now)
+      - Tokenizer produces correct tensor shapes for ort session input
+      - No unwrap/panic in any code path (all Results propagated)
+
+
+EXIT CRITERIA
+  Reranker measurably improves NDCG@10 on committed benchmark fixture.
+  Latency optimized via graph optimization, deterministic compute, thread scaling, and optional int8 quantization.
+  Final latency documented. If > 50ms after all optimizations: spec amendment filed with data.
+  Skip threshold tuned via sweep; production default set to empirically optimal value.
+  Circuit breaker, graceful degradation (with L-6 tier if amendment approved), SSB events, startup canary all wired and tested.
+  Concurrency-safe: semaphore, bounded mpsc channel (depth 4), overflow returns unranked, batching via channel drain.
+  Tokenization via tokenizers crate produces correct ONNX input tensors.
+  Injectable ClockProvider used for all time-dependent behavior.
+  All Phase 1G tests pass. All pre-existing knowledge crate tests still pass.
+
+MEASUREMENTS
+  Baseline latency p50, p99 (fp32, ORT_ENABLE_ALL, deterministic, 1 thread)
+  Thread scaling sweep (1, 2, 4, 8 threads — latency + ranking determinism)
+  INT8 latency p50, p99 (if evaluated) + NDCG@10 delta vs fp32
+  Skip threshold sweep (5, 10, 15, 20, 30 — NDCG@10 at each)
+  Final optimized latency p50, p99 (all optimizations applied)
+  Model variant selected (fp32 / int8)
+  NDCG@10 delta (with vs without reranker) on committed fixture
+  Model load time (cold start, L-12 and L-6 if applicable)
+  Queue wait p99 under concurrent load (4 agents) — for future session pool evaluation per knowledge.txt L224
+  Circuit breaker recovery time (via mock clock)
+  Startup canary total time and per-stage breakdown

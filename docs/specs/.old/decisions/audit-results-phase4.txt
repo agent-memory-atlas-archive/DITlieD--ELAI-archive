@@ -1,0 +1,527 @@
+ADVERSARIAL AUDIT RESULTS — PHASE 4 (AGENT PROCESS ISOLATION + FULL SPEC)
+Auditor: claude-sonnet-4-6
+Date: 2026-04-05
+Scope: All 20 spec files. Focus: Tier C isolation, cross-spec contradictions,
+  Phase 4 elaboration completeness, risk register, general spec quality.
+
+PROGRESS SUMMARY: Tests: 0/0 passing | Tiers: N/A (plan-mode audit, no tests run) |
+  TestQuality: N/A | Regression: none | BLOCKs: 9 | Score: N/A (plan audit)
+
+CoVe VERIFICATION QUESTIONS GENERATED (answered via grep/read):
+  Q1: Does the seccomp allowlist permit the syscalls required for IPC socket communication
+      on non-researcher agents?
+      Answer: NO. Allowlist is "read, write, open, close, mmap, brk, exit_group,
+      clock_gettime, getrandom, futex, sigaction, rt_sigreturn + socket (researcher only)".
+      Missing: connect, bind, sendmsg, recvmsg, accept, socketpair, getsockname, getpeername.
+      All are required for Unix domain socket IPC. Implementation-plan.txt line 421-422.
+      BLOCK.
+
+  Q2: Is CAP_NET_RAW the correct capability for outbound HTTPS web search?
+      Answer: NO. CAP_NET_RAW enables raw/packet socket creation — raw ICMP, ARP spoofing,
+      packet injection. HTTPS over TCP requires no elevated capabilities beyond network
+      namespace + iptables allowlist. Granting CAP_NET_RAW to researcher gives it privileges
+      far exceeding web search. Orchestrator.txt line 295.
+      BLOCK.
+
+  Q3: If the agent binary contains an LLM client (reqwest/HTTP), how does the executor
+      agent call the LLM when the network namespace has no network and seccomp blocks socket?
+      Answer: Contradiction confirmed. Implementation-plan.txt line 374 states the agent binary
+      "Contains: LLM client". Orchestrator.txt line 269 states executor has no network access.
+      Network namespace is empty (lo only) for executor. LLM (ollama) is on localhost:11434.
+      Loopback exists but socket syscall is blocked by seccomp for non-researcher. Dead end
+      for LLM calls from within the agent process.
+      BLOCK.
+
+  Q4: Does the GRC budget enforcement model hold after process separation?
+      Answer: BROKEN. Implementation-plan.txt line 403: "Budget enforced by agent binary."
+      The agent binary is untrusted. After process separation, an agent can simply not enforce
+      its own budget — no external check. The orchestrator only sees GRC state via IPC messages
+      which the agent controls. An agent can lie about budget state.
+      BLOCK.
+
+  Q5: Is the IPC socket in /tmp secured against hijack by other processes?
+      Answer: NOT ADDRESSED. Socket path /tmp/elai_cc_{session}_{agent_id}.sock is world-
+      accessible by default on Linux unless the orchestrator explicitly sets mode 0600 and
+      directory permissions. Spec does not mention socket file permissions, directory creation,
+      or protection against symlink attacks in /tmp. With PID namespaces, the agent cannot
+      see other processes, but on the host side, any process running as the same user can
+      connect to an agent socket. Implementation-plan.txt line 408.
+      BLOCK.
+
+
+================================================================================
+BLOCK FINDINGS (must fix before Phase 4 implementation begins)
+================================================================================
+
+BLOCK-1: seccomp allowlist kills all non-researcher IPC (self-defeating isolation)
+  File: implementation-plan.txt line 421-422, orchestrator.txt section 12 Tier C
+  The seccomp-bpf allowlist for non-researcher agents explicitly lists:
+    "read, write, open, close, mmap, brk, exit_group, clock_gettime, getrandom,
+    futex, sigaction, rt_sigreturn + socket (researcher only)"
+  Unix domain socket IPC (the only communication channel) requires additional syscalls:
+    socket (to create), connect (to connect to orchestrator socket), bind, listen, accept,
+    sendmsg, recvmsg, recvfrom, sendto, getsockname, getpeername, setsockopt, getsockopt,
+    socketpair.
+  None of these appear for non-researcher agents. The result: executor, auditor, context-
+  compiler, prompt-engineer, and memory-writer processes cannot communicate with the
+  orchestrator at all. They would be spawned and immediately become non-functional.
+  The isolation design defeats itself by over-restricting the very channel it depends on.
+  Fix: enumerate exact syscalls needed for unix domain socket IPC and add them to all roles.
+    Separate allowlists: "IPC baseline" (all roles) vs "network extra" (researcher only).
+    socket + connect + sendmsg + recvmsg + recvfrom + sendto + shutdown + getsockname
+    + getpeername + setsockopt + getsockopt for all roles.
+    socket(AF_INET) can then be blocked via socket-type argument check in seccomp BPF,
+    not by removing socket entirely.
+
+BLOCK-2: CAP_NET_RAW is catastrophically over-privileged for HTTPS web search
+  File: orchestrator.txt section 12 Tier C, line 295
+  CAP_NET_RAW enables: raw socket creation (SOCK_RAW, SOCK_PACKET), ICMP flood,
+  ARP spoofing, packet injection into any network interface the process can reach,
+  and bypassing connect()-level firewall rules. It is not needed for outbound HTTPS.
+  HTTPS requires only: TCP socket + connect to allowed IP:443. This needs zero Linux
+  capabilities — only a network namespace with a veth pair and iptables allowlist,
+  which the spec already describes.
+  A compromised researcher agent with CAP_NET_RAW in a veth-enabled network namespace
+  can send raw packets, craft arbitrary frames, and potentially escape the iptables
+  allowlist via raw sockets (iptables operates on SOCK_STREAM/SOCK_DGRAM; raw packets
+  may bypass OUTPUT chain rules depending on kernel version and iptables configuration).
+  Fix: drop CAP_NET_RAW entirely. The veth + iptables model the spec already describes
+    is sufficient for HTTPS. If any network capability is needed, use CAP_NET_BIND_SERVICE
+    (binding to ports < 1024), not CAP_NET_RAW.
+
+BLOCK-3: LLM call architecture irreconcilable with network isolation + seccomp
+  File: implementation-plan.txt lines 374, 393, 421-422; orchestrator.txt line 269
+  The agent binary "Contains: LLM client" and "receives structured prompt via IPC,
+  calls LLM, returns output" (implementation-plan.txt lines 374, 393). The LLM (ollama)
+  lives at localhost:11434. Making this HTTP call requires:
+    1. socket syscall (blocked for non-researcher by seccomp)
+    2. connect to 127.0.0.1:11434 (TCP, which requires network namespace routing)
+    3. Network namespace: executor gets "empty by default (lo only)"
+  Loopback (lo) exists, but seccomp blocks socket for executor. Even if socket were
+  allowed, the ollama process is on the HOST network stack. The agent is in a NEW network
+  namespace (CLONE_NEWNET). The host's lo:11434 is not visible in the agent's empty
+  namespace. The agent binary cannot reach ollama.
+  Two fundamentally incompatible design choices exist simultaneously:
+    Option A: Agent binary calls LLM directly -> requires network access, breaks isolation.
+    Option B: Agent binary delegates LLM calls to orchestrator via IPC -> agent binary
+      does NOT contain "LLM client", orchestrator relays prompts and streams back tokens.
+  The spec tries to do Option A with Option B's isolation. This is a dead-end contradiction.
+  Fix: Choose one. Recommend Option B (orchestrator proxies LLM): agent emits InferRequest
+    over IPC with the assembled prompt. Orchestrator calls providers::LlmProvider::complete(),
+    streams tokens back to agent via IPC. Agent binary contains NO LLM client, NO reqwest
+    dependency, NO network code. This cleanly solves the isolation/syscall contradiction.
+    Adds ~2 IPC round-trips per token stream but keeps isolation correct.
+  Alternatively: orchestrator assembles full prompt, sends to agent, agent returns raw output
+    (single request/response). Simpler. Loses streaming but preserves isolation.
+
+BLOCK-4: GRC budget enforcement is self-attestation after process separation
+  File: implementation-plan.txt line 403; reasoning.txt sections 2-3, 7
+  "Budget enforced by agent binary" — after Tier C process separation, the agent binary
+  is an untrusted process. Budget limits (max_calls, max_chars per topic) are enforced
+  inside the process being constrained. An adversarial or compromised agent can:
+    1. Simply not decrement the budget counter.
+    2. Reset the counter between sends.
+    3. Lie in the GRC state checkpointed to the orchestrator via IPC.
+  The orchestrator can observe GRC state messages but cannot independently verify they
+  are accurate without replaying the full reasoning trace. The invariant
+  "Budget overflow forces convergence or escalation" (reasoning.txt line 40) depends
+  on the agent enforcing it honestly — which eliminates the isolation model's core premise.
+  Fix: orchestrator tracks call counts externally. Count IPC messages of type ThinkStep per
+    topic per agent. Enforce budget at the IPC gateway: after max_calls messages for a topic,
+    orchestrator stops accepting new ThinkStep messages for that topic and injects
+    convergence signal. Budget enforcement moves from agent binary to orchestrator.
+
+BLOCK-5: IPC socket files in /tmp are world-accessible (TOCTOU + hijack surface)
+  File: implementation-plan.txt line 408
+  Socket path: /tmp/elai_cc_{session}_{agent_id}.sock
+  /tmp is world-readable and world-writable on Linux. The spec does not specify:
+    1. Mode of the socket file (no chmod/umask spec)
+    2. Directory ownership and mode (no spec for creating a 0700 directory first)
+    3. Protection against symlink attacks (another process creating the path before orchestrator)
+    4. Cleanup after agent death
+  Any process running as the same user (or root) can connect to an agent socket, send
+  fabricated responses, or intercept IPC messages. On a multi-user system or container
+  runtime, this is a full isolation bypass.
+  The Linux abstract namespace (AF_UNIX with leading null byte) is NOT specified and would
+  avoid the filesystem exposure but is Linux-only.
+  Fix: create a dedicated 0700 directory: /tmp/elai_cc_{session}/ owned by the elai_cc
+    user before spawning any agent. Create sockets inside that directory. Verify socket
+    file does not exist before bind() to prevent pre-created path attacks. On process death,
+    unlink socket file. Document this in the spec explicitly.
+
+BLOCK-6: Auditor's violation patterns feed self-discovery across the IPC boundary
+    without sanitization
+  File: rules.txt section 6; implementation-plan.txt line 320
+  Self-discovery mechanism: "After each audit, normalize finding description to pattern hash.
+  Increment violation_patterns.occurrences." The auditor is now an untrusted process.
+  Its findings arrive via IPC. The orchestrator writes auditor findings into SSB, and
+  violation_patterns.occurrences drives automatic rule proposal.
+  A compromised auditor can:
+    1. Emit crafted findings that match existing pattern hashes -> inflate occurrences
+       to 3 -> auto-propose rules.
+    2. Auto-proposed rules enter as PROPOSED (from "auditor" source). Rules.txt line 194:
+       "Auditor validates predicate logic and contract tests." If the auditor IS the source
+       of the finding AND the validator of the proposed rule, the review is circular.
+    3. A persistent adversarial auditor can promote malicious rules into SHADOW then ACTIVE
+       by controlling finding patterns over multiple pipelines.
+  The mutable=0 safety rules are protected, but the auditor can propose new rules with
+  mutable=1 and source=AUDITOR that suppress or override effective detection.
+  Fix: violation_patterns feeding must validate finding source. Auditor findings used for
+    self-discovery MUST NOT be validated by the same auditor instance. Proposed rules from
+    auditor findings require human approval (source=AUDITOR -> enter at PROPOSED, never
+    auto-CANDIDATE). Add a second independent auditor verification step for rule proposals.
+    This is a higher-stakes variant of BLOCK 6 from Session 5 audit (reward hacking).
+
+BLOCK-7: Windows Phase 0-1 chroot equivalent is unspecified; ACL deny is insufficient
+  File: tools.txt section 9, lines 148-151; implementation-plan.txt lines 429-437
+  Phase 0-1 bash sandbox: "chroot into project source directory." Chroot does not exist
+  on Windows. The spec provides no Windows Phase 0-1 equivalent. The Phase 3-4 Windows
+  isolation uses "ACL deny entry on the directory for the agent's restricted SID" —
+  but ACL-based denial can be bypassed via:
+    1. CreateFile with FILE_FLAG_BACKUP_SEMANTICS (requires SeBackupPrivilege, but
+       SeChangeNotifyPrivilege retained in the restricted token may allow traversal).
+    2. NTFS junction points / reparse points that redirect paths.
+    3. Win32 API calls that bypass standard ACL checks (NtCreateFile with internal flags).
+  The stated isolation goal ("No access to .elai_cc/ via ACL deny entry") is not
+  equivalent to the Linux namespace isolation and is not documented as a known-weaker
+  fallback. Windows also does not have per-process firewall rules in the traditional
+  sense; Windows Firewall per-process rules require the executable path to be known at
+  rule creation time and can be bypassed if the agent spawns a helper binary (blocked
+  by JOB_OBJECT_LIMIT_ACTIVE_PROCESS=1, but this is a separate restriction).
+  The spec claims Windows and Linux have equivalent security postures — they do not.
+  Fix: document Windows isolation as explicitly weaker. Recommend Linux-only for
+    production security guarantees. If Windows support required, evaluate Windows
+    Sandbox (AppContainer) or WSL2 as isolation primitive rather than ACL deny.
+
+BLOCK-8: Self-modification READ-LOCK enforcement relies on IPC filtering alone —
+    no independent verification layer
+  File: integration/self-modification.txt section 2; implementation-plan.txt lines 526-541
+  "READ-LOCKED during self-mod: metrics code, gate definitions, auditor config, benchmark
+  harness, test suite. Modifying agent cannot write to these. Period."
+  Lock enforcement: "IPC tool request filtering in orchestrator" only. The orchestrator
+  receives a WriteFile IPC request from the self-mod agent. If the path matches a locked
+  file, the request is rejected with a generic error.
+  Vulnerabilities:
+    1. Path normalization attacks: self-mod agent emits WriteFile("./metrics/../metrics.rs")
+       or WriteFile("metrics.rs") (relative) hoping the orchestrator's locked-path check
+       uses a different canonicalization than the filesystem. If normalization differs,
+       lock bypassed. Spec does not state canonical path comparison is used.
+    2. Indirect writes: self-mod agent writes a build script that, when executed via
+       BashRequest, overwrites the locked file. The BashRequest itself may not be
+       on the locked-path list. The spec says "READ-LOCKED via IPC, not filesystem" —
+       this means filesystem-level locking is absent and bash-based indirection bypasses IPC.
+    3. Git operations: self-mod agent could emit a GitCommit request that includes
+       modifications to locked files, if git operations are not subject to path filtering.
+  Fix: apply BOTH IPC-level lock AND filesystem-level read-only mount for locked files
+    during self-mod sessions. Mount locked directories as read-only inside the self-mod
+    agent's namespace. Git operations must also be filtered by locked path list.
+    Canonicalize all paths to absolute realpath before comparison.
+
+BLOCK-9: Phase 4 has no test for IPC message injection / replay attacks
+  File: implementation-plan.txt section 4A TEST block (lines 378-390)
+  The 11 listed tests for 4A cover happy-path isolation scenarios but zero adversarial
+  IPC scenarios:
+    - No test: malformed postcard frame (oversized length prefix -> allocator exhaustion)
+    - No test: agent sends AgentResponse without receiving AgentRequest (unsolicited message)
+    - No test: agent sends ToolResult for a ToolId it never requested
+    - No test: agent sends 100,000 ThinkStep messages in burst (budget exhaustion attack)
+    - No test: simultaneous connection from two processes to same agent socket
+    - No test: agent socket survives agent SIGKILL and orchestrator reconnects safely
+    - No test: agent sends message with mismatched session_id or agent_id in header
+  The IPC boundary is the primary attack surface in Tier C. Testing only connectivity
+  and isolation probes is insufficient. An adversarial agent that can shape IPC responses
+  controls the orchestrator's view of reality.
+  Fix: add adversarial IPC test battery to Phase 4A TEST block covering at minimum:
+    oversized frames, unsolicited messages, mismatched IDs, burst flooding, socket
+    reconnection after crash, and schema-invalid postcard payloads.
+
+
+================================================================================
+WARN FINDINGS (fix before Phase 4 ships, document justification if deferred)
+================================================================================
+
+WARN-1: No IPC message authentication — orchestrator cannot verify messages are from
+    the spawned agent
+  File: orchestrator.txt section 12 Tier C; implementation-plan.txt lines 408-412
+  The orchestrator creates a socket at /tmp/elai_cc_{session}_{agent_id}.sock and the
+  agent connects to it. No authentication protocol (HMAC, nonce-challenge, credential
+  passing via SCM_CREDENTIALS) is specified. Any process that can connect to the socket
+  can impersonate an agent. Combined with BLOCK-5 (/tmp exposure), this is exploitable.
+  Even with a secured socket directory, on Linux it is possible to send SCM_CREDENTIALS
+  with arbitrary PID/UID if PR_SET_NO_NEW_PRIVS is not set before the credential send
+  (though the spec sets it). The spec should mandate SO_PEERCRED verification:
+  orchestrator reads peer PID on accept(), verifies it matches the spawned child PID.
+
+WARN-2: Knowledge engine runs in orchestrator process — no spec for how agents
+    access it under Tier C, creating an implicit in-process assumption
+  File: architecture-overview.txt section 4; knowledge.txt; implementation-plan.txt
+  The architecture states knowledge::KnowledgeEngine runs in the orchestrator. Under
+  Tier C, agents are separate processes. The knowledge engine query pipeline (7 layers,
+  ONNX, SQLite) is entirely in-process in the orchestrator. Agents access knowledge
+  results only via the code_context slot of the assembled prompt. This is architecturally
+  correct but creates a gap:
+    - If an agent requests more context mid-turn (e.g., GRC verify step needs FILE_CHECK),
+      there is no IPC message type defined for "agent requests additional knowledge query."
+    - The GRC verify step (reasoning.txt line 46: FILE_CHECK, SOURCE_CHECK, WEB_CHECK)
+      currently assumes direct file access or tool invocation. Under Tier C, these become
+      IPC ToolRequests. But WEB_CHECK and API_REGISTRY_CHECK in GRC verify require
+      network access — which the spec blocks for all non-researcher agents.
+    - The executor cannot perform GRC WEB_CHECK (verify an algorithm claim) because
+      it has no network access. This breaks the GRC protocol's grounding verification
+      for external claims during EXECUTING phase.
+  Risk: either GRC verification is silently degraded (can no longer perform WEB_CHECK),
+  or agents must somehow get network access which breaks isolation.
+  Fix: explicitly specify which GRC verification methods are available per role under
+    Tier C. Define a new IPC message type: GroundingRequest{method, claim} that the
+    orchestrator handles (using its own network access for WEB_CHECK). Document this
+    proxy pattern in both reasoning.txt and orchestrator.txt.
+
+WARN-3: ShortCoder post-processing on executor output — applied in orchestrator
+    or agent binary? Creates a spec ambiguity under Tier C
+  File: tools.txt section 7, line 95; implementation-plan.txt line 449
+  "Applied as POST-PROCESSING on executor output, before auditor review."
+  "All tools execute in orchestrator process. Agent accesses via IPC ToolRequest."
+  Under Tier C, executor output (the code it wrote) arrives at the orchestrator via IPC
+  AgentResponse. ShortCoder (tree-sitter AST transforms) should run on this output
+  in the orchestrator before the auditor receives it. But the spec does not explicitly
+  state where in the IPC response pipeline ShortCoder fires. If it runs inside the agent
+  binary (as it would in the pre-Tier C design), it runs in untrusted code — an agent
+  could return a ShortCoded version that passes the transforms but re-expands to
+  something different when the auditor reviews the actual file.
+  Fix: explicitly document that ShortCoder runs in the orchestrator process after
+    receiving AgentResponse, before writing to the auditor view filesystem. This must
+    appear in the 4B implementation spec.
+
+WARN-4: Windows Firewall per-process rules are not created programmatically in spec
+  File: implementation-plan.txt line 433
+  "No network: Windows Firewall rule per-process blocking all outbound
+   (researcher: allow HTTPS to configured endpoints)."
+  Windows Firewall per-process rules require either:
+    1. netsh advfirewall commands (requires admin) run before agent spawn
+    2. Windows Filtering Platform (WFP) API integration (requires admin + significant code)
+    3. AppContainer networking isolation (requires AppContainer setup)
+  None of these are specified. If elai_cc does not run as admin, it cannot create
+  Firewall rules. If it does run as admin, the restricted token approach is undermined
+  (agent inherits elevated context). The spec does not address the privilege bootstrapping
+  problem on Windows.
+  Fix: document that Windows network isolation requires admin-level pre-configuration
+    OR commit to AppContainer isolation as the Windows mechanism. This also belongs in
+    the risk register as a new entry.
+
+WARN-5: risk-register.txt ends at R33 — no new risks registered for Tier C
+    despite BLOCK-level issues identified
+  File: risk-register.txt; orchestrator.txt section 12
+  R31 covers the general isolation risk with Tier A/B/C as mitigations. R32 covers
+  sandbox latency. R33 covers visibility filter false negatives.
+  Missing risk entries:
+    - IPC as attack surface (impersonation, message injection, socket hijack)
+    - GRC budget self-attestation under process separation
+    - Auditor self-discovery circular trust
+    - Windows isolation asymmetry with Linux
+    - Self-mod bash-based lock bypass
+    - CAP_NET_RAW over-privilege for researcher
+  Adding Tier C without adding its risk entries is an incomplete risk accounting.
+
+WARN-6: No rollback / recovery spec for partial Tier C agent state on orchestrator crash
+  File: orchestrator.txt section 7; implementation-plan.txt section 4A
+  Agent checkpointing (section 7) saves: state.msgpack, grc_history.msgpack,
+  tool_results.msgpack, output_draft.msgpack. Recovery: "new instance spawned with
+  checkpoint injected as initial context." Under Tier C, checkpoints are built from
+  IPC messages the agent sent. If the orchestrator crashes mid-phase:
+    1. All in-flight IPC messages are lost (not persisted to SSB until orchestrator writes them).
+    2. The agent process may be in a state where it has sent messages the orchestrator
+       never received, then crashes when the socket disconnects.
+    3. On restart, orchestrator reads last SSB checkpoint, but messages sent after the
+       last SSB write are lost. The agent sees a replayed context that diverges from
+       its pre-crash state.
+  The spec does not specify whether IPC messages are written to SSB synchronously before
+  the orchestrator sends ToolResult back to the agent, or asynchronously. Asynchronous
+  creates a race condition where the agent acts on a ToolResult but the corresponding
+  SSB record does not exist yet.
+  Fix: specify that SSB write is synchronous with IPC ToolResult dispatch. Define
+    what constitutes a "committed" IPC transaction for crash safety.
+
+WARN-7: The 64KB IPC message size limit is aspirational, not enforced
+  File: implementation-plan.txt lines 386, 440
+  "<1ms for typical message sizes (<64KB)" — this is a latency target, not a spec limit.
+  There is no defined maximum frame size, no enforcement in the wire protocol, and no
+  test for what happens when a message exceeds a threshold. An agent could send a
+  multi-megabyte ToolResult or AgentResponse (e.g., reading a very large file) that:
+    1. Exhausts orchestrator buffer memory across many agents.
+    2. Delays other agents' IPC processing if the orchestrator reads frames sequentially.
+    3. Causes postcard deserialization to allocate unbounded heap before length validation.
+  Fix: define an explicit MAX_FRAME_SIZE constant in the IPC spec. Orchestrator rejects
+    any frame exceeding this limit with IPC error. Set per-message-type limits
+    (AgentHeartbeat < 1KB, ToolResult < 10MB with hard cap, AgentResponse < context limit).
+
+WARN-8: The agent_id field in IPC socket paths is undefined — no uniqueness guarantee
+  File: implementation-plan.txt line 408
+  Socket path: /tmp/elai_cc_{session}_{agent_id}.sock
+  agent_id format is not specified anywhere in the spec. If agent_id is a role name
+  ("executor", "auditor"), and two executor agents run in the same session (dynamic
+  fan-out, orchestrator.txt section 8), they would both try to create the same socket
+  path. The spec does not address this. If agent_id is a UUID, this is fine but
+  unstated.
+  Fix: specify agent_id format explicitly (e.g., UUID v4 assigned at spawn time).
+    Add to testable invariants: no two live agent sockets share the same path.
+
+WARN-9: Phase 0-1 chroot "PATH restricted to project-local tools + system compilers"
+    provides weaker isolation than claimed
+  File: tools.txt section 9, lines 148-151
+  Phase 0-1 minimal sandbox: chroot + restricted PATH. Chroot is not a security
+  boundary — a process with sufficient privileges can escape via:
+    - open("/proc/self/exe") -> chroot into parent dir
+    - Mounting (blocked if no mount privilege, but chroot doesn't drop CAP_SYS_CHROOT)
+    - pivot_root if mount namespace available
+  More critically: the spec does not state that CAP_SYS_CHROOT is dropped before
+  entering the chroot. If the agent binary retains this capability, chroot escape
+  is trivial. Phase 0-1 uses host execution (no VM), so a chroot escape is an
+  orchestrator process compromise.
+  Additionally: "PATH restricted" does not prevent the agent from using absolute paths
+  to system binaries (e.g., /bin/sh, /usr/bin/curl) that exist in the chroot image.
+  Fix: explicitly specify capability dropping before chroot. Specify which binaries
+    are included in the chroot image. Document Phase 0-1 as "development isolation,
+    not production security" to set correct expectations.
+
+
+================================================================================
+INFO FINDINGS (noted, no action required)
+================================================================================
+
+INFO-1: BLOCK-3 from Session 5 audit (multi-project isolation) is resolved, but
+    PID reuse on Windows is only partially addressed
+  File: audit-results.txt; orchestrator.txt section 11
+  The fix added project_id namespace. PID reuse is not discussed in the Tier C spec
+  since Tier C uses actual OS processes with distinct PIDs. No further concern.
+
+INFO-2: The implementation order rationale in Phase 4 (4A first) is sound
+  Ordering: 4A (isolation) before 4B (tools) before 4C (plugins) is architecturally
+  correct. Tools and hooks operating through IPC are validated under real isolation.
+  This is the right call.
+
+INFO-3: The dynamic fan-out (orchestrator.txt section 8) + Tier C creates an implicit
+    agent count scaling risk that is not blocked but worth tracking
+  If a pipeline triggers parallel agent spawning (spawn_parallel) and each agent is a
+  separate OS process with 20MB baseline + sandbox overhead, 10 parallel agents cost
+  200MB+ in overhead alone. On a 512MB-per-agent limit with 10 agents: 5GB. On a
+  machine with 32GB RAM this is fine; on the hardware target it merits monitoring.
+  R6 (MEDIUM: agent parallelism resource contention) covers this partially.
+
+INFO-4: design_index.txt reference count (R1-R21) is stale — risk register now
+    has entries through R33
+  File: design_index.txt line 31: "R1-R21. 4 closed, 17 active."
+  Actual: R1-R33 with more active entries. Minor documentation debt.
+
+INFO-5: rules.txt seed rule count arithmetic error (minor)
+  File: rules.txt section 9
+  Trading: "25 Tier1 + 5 Tier2" but section 8.1 lists 25 Tier1 rules (14 AST + 11 GREP)
+  and 5 Tier2 (SCHEMA_REQUIRED). Contract test math: 25*3 + 5*2 = 85. This matches.
+  But section 8.1 lists 13 Tier3 rules (not 10) and the rule numbers go to 40,
+  meaning there are actually 40 trading rules total (14+11+5+10=40 per section header,
+  but the Tier3 list has 13 entries). Minor inconsistency, not blocking.
+
+INFO-6: No Phase 5 (Empire) isolation spec exists — D2 is explicitly deferred
+  empire.txt section 2 documents known broken components. Empire's IPC layer uses
+  newline-delimited JSON over AF_UNIX SOCK_STREAM — incompatible with elai_cc's
+  postcard framing. When D2 integration reaches Phase 5, a wire format bridge will
+  be needed. Not blocking D1.
+
+
+================================================================================
+DEAD END ASSESSMENT
+================================================================================
+
+BLOCK-3 (LLM call architecture) approaches dead-end territory but is FIXABLE.
+The contradiction (agent binary contains LLM client + agent has no network access)
+requires a design choice, not a fundamental rethink. Choosing orchestrator-proxied
+LLM calls resolves it without changing the isolation model.
+
+No DEAD END declared. All BLOCKs are in the FIXABLE categories:
+  BLOCK-1: seccomp syscall list (implementation detail)
+  BLOCK-2: wrong capability (implementation detail)
+  BLOCK-3: architecture choice not made explicit (fixable design decision)
+  BLOCK-4: trust boundary placement (move budget tracking to orchestrator)
+  BLOCK-5: socket file permissions (implementation detail)
+  BLOCK-6: self-discovery trust model (add human gate or independent verifier)
+  BLOCK-7: Windows isolation weakness (document, use stronger primitive)
+  BLOCK-8: self-mod lock bypass (add filesystem-level locks)
+  BLOCK-9: missing adversarial IPC tests (add test cases)
+
+
+================================================================================
+CROSS-SPEC CONTRADICTION SUMMARY
+================================================================================
+
+1. orchestrator.txt (Tier C, line 295) vs implementation-plan.txt (line 421-422):
+   Tier C says "Drop all capabilities except CAP_NET_RAW (if researcher), none otherwise."
+   Implementation plan seccomp list includes "socket (researcher only)."
+   Two specs give different descriptions of the same restriction; both are wrong
+   for different reasons (capability too high; syscall allowlist incomplete).
+
+2. implementation-plan.txt (line 374) vs orchestrator.txt (line 269):
+   Agent binary "Contains: LLM client" vs "executor: none [network]."
+   Irreconcilable without a design choice (orchestrator-proxied LLM calls).
+
+3. reasoning.txt (section 4, WEB_CHECK) vs orchestrator.txt (Tier C network isolation):
+   GRC verify requires WEB_CHECK for algorithm grounding. Executor has no network.
+   No IPC proxy for grounding requests is defined.
+
+4. tools.txt (section 9, Phase 0-1 chroot) vs implementation-plan.txt:
+   Windows has no chroot equivalent. Phase 0-1 has no Windows isolation plan.
+
+5. rules.txt (section 6, self-discovery) vs orchestrator.txt (Tier C, auditor isolation):
+   Self-discovery uses auditor findings to propose rules. Auditor is now untrusted process.
+   Auditor serves as both source and validator of proposed rules (circular trust).
+
+
+================================================================================
+PHASE 4 ELABORATION GAPS (items missing from 4A spec)
+================================================================================
+
+Missing from implementation-plan.txt section 4A:
+
+  1. IPC protocol version field — no versioning in the wire format. Any protocol change
+     requires coordinated binary update. Add a version header byte to length-prefixed frames.
+
+  2. Message type enum completeness — only 4 types listed (AgentRequest, AgentResponse,
+     AgentHeartbeat, AgentKill). Missing: ToolRequest, ToolResult, BashRequest, BashResult,
+     ReadFileRequest, WriteFileRequest, EditFileRequest, FileResult, ThinkStep, CheckpointSync,
+     GroundingRequest (if added per WARN-2). The enum is underspecified for the IPC gateway
+     to route correctly.
+
+  3. Agent process environment — "fork agent binary with restricted environment" does not
+     specify which environment variables are passed. If ANTHROPIC_API_KEY or OPENAI_API_KEY
+     are in the parent environment, they would be inherited unless explicitly cleared.
+     The spec says "sanitized, no HOME, no ELAI_CC paths, no API keys" for Phase 0-1 chroot
+     but does not repeat this for Tier C process environment.
+
+  4. IPC connection establishment sequence — who connects to whom? If orchestrator listens
+     and agent connects, the orchestrator must create the socket BEFORE spawning the agent.
+     If agent listens and orchestrator connects, there is a race condition. The spec implies
+     orchestrator creates the socket (path contains session+agent_id) but does not state
+     the listen-before-fork order requirement.
+
+  5. Agent binary versioning — the orchestrator and agent binary must agree on the IPC
+     protocol. If elai_cc is upgraded but elai_cc_agent is not (or vice versa), the
+     connection will fail or produce undefined behavior. No version check at connection
+     establishment is specified.
+
+  6. What happens to in-flight IPC data when SIGKILL is sent — the heartbeat spec says
+     "No response in 15s -> kill + restart." SIGKILL does not flush TCP/unix socket buffers.
+     Any partially-written frame from the agent is left in the socket buffer and will be
+     read as garbage by the orchestrator on the next connection. Spec must require buffer
+     drain or socket close-on-exec before re-accepting.
+
+
+================================================================================
+Sources consulted for verification
+================================================================================
+
+- man7.org Linux manual page: socket(7), capabilities(7), seccomp(2)
+  https://man7.org/linux/man-pages/man7/socket.7.html
+  https://man7.org/linux/man-pages/man7/capabilities.7.html
+  https://man7.org/linux/man-pages/man2/seccomp.2.html
+- container-solutions.com: Linux Capabilities In Practice
+  https://blog.container-solutions.com/linux-capabilities-in-practice
+- Docker seccomp documentation (syscall allowlist reference)
+  https://docs.docker.com/engine/security/seccomp/

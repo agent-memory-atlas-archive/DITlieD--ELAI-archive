@@ -1,0 +1,219 @@
+LLM Code Generation: Placeholder Prevention, File Size Impact, and Incomplete Code Recovery
+Consolidated Summary of Sources 11, 22, 33 (2025-2026 empirical data)
+
+
+1. WHY LLMs PRODUCE INCOMPLETE / PLACEHOLDER CODE
+
+Root causes (not bugs, architectural byproducts):
+
+- RLHF stopping pressure: models penalized for verbosity during fine-tuning; EOS probability rises exponentially with output length. Short edits rarely trigger laziness; long-horizon generation frequently does.
+- Context window truncation: gpt-4-0613 baseline showed 28% of benchmark files exceeded 8k context, hard-capping success at 72%.
+- Ambiguity collapse: vague specs, half-implemented features, or commented-out legacy code cause the model to insert placeholders rather than resolve ambiguity.
+- Cognitive asymmetry (ImplicitMemBench): preference adaptation = 75.0% success, inhibition adaptation = 17.6%. Models can adopt styles easily but cannot inhibit trained-in laziness. Prompt engineering ("emotional appeals", tips, threats) empirically worsened scores.
+- Hallucination snowballing (1-7B models): minor early divergence forces low-probability generation path, model cannot recover, culminates in premature halt or structural collapse.
+
+
+2. TOOL-LEVEL PREVENTION MECHANISMS
+
+2a. Aider - Unified Diff + AST Validation
+- Forces LLM to output unified diffs (machine-consumable patches, not conversational edits).
+- Uses relative leading whitespace, not brittle line numbers.
+- Normalizes hunks via secondary diffs, varies context window sizes, breaks large hunks into overlapping sub-hunks.
+- AST validation via Python ast module: verifies expected node count per function. Single-comment compression instantly detected.
+- Results: GPT-4 Turbo laziness benchmark went from 20% -> 61% success; lazy comments dropped from 12 to 4 tasks.
+- Leaderboard (2025): gpt-5 high = 88.0%, o3-pro high = 84.9%, gemini-2.5-pro = 83.1%, DeepSeek-V3.2-Exp = 74.2% at $1.30.
+- Supports Haskell, Fortran, Julia, Zig, MATLAB, Clojure parsing.
+
+2b. SWE-Agent - Agent-Computer Interface (ACI)
+- Intercepts edit commands, routes through real-time syntax linter before environment modification.
+- Blocks syntactically invalid edits (unmatched brackets, ... ellipses). Agent receives exact error trace, forced to retry.
+- Specialized file viewing utilities replace standard shell tools (cat, grep).
+- Empty output returns deterministic message rather than silence.
+- mini-SWE-agent: 65% resolution on SWE-bench Verified with only 100 lines of Python ACI code.
+
+2c. Continue.dev - Plan Mode + Context Throttling
+- Plan Mode: read-only exploration only, no edits/bash until plan approved by human.
+- Front-loads cognitive reasoning to avoid mid-generation stopping pressure.
+- Hard-coded 2,000 character max per semantic snippet (LSP) to prevent context overflow.
+- Supports shell command hooks and AI-evaluated prompt hooks (v2.1.32+).
+
+2d. Cursor - Intent Binding + Fusion Tab Model
+- .cursorrules config files define directory structures, naming conventions, file access privileges.
+- Custom Fusion Tab Model for rapid code jumps and long-context coherency.
+- Local application model maps generated tokens to file segments; incomplete structures break mapping -> aborted edits.
+- Security note: shipped with VS Code Workspace Trust disabled by default in 2025 (arbitrary code execution risk).
+
+2e. OpenHands - Hierarchical Critic Module
+- Separates generation from evaluation (GAN-like / System 1 vs System 2).
+- Event-stream architecture with Docker sandbox + Jupyter Kernel + Browser Agent API.
+- Critic scores across 4 dimensions (0-25 each): Correctness, Code Quality, Completeness, Best Practices.
+- Overall quality score 0.0-1.0; sub-threshold (< 0.5) triggers automated iterative refinement.
+- Critic module improves ill-formed LLM responses by up to 22% (EXP-Bench).
+- SDK: openhands.sdk.critic module (from commit 79868ae5, late 2025).
+
+2f. Devin - Execution Feedback + CI/CD Integration
+- Persistent Linux VPC environment with browser + terminal access.
+- Execution feedback loop: generates code -> compiles -> captures stdout/stderr -> iteratively patches until clean exit.
+- Test generation from human-written playbooks; increases org test coverage from 50-60% to 80-90%.
+- Integrates SonarQube, Veracode; resolves security flags avg 1.5 min vs 30 min human (20x).
+- 67% PR merge rate in 2025 (up from 34%).
+- DeepWiki: indexes 500GB repos / 5M LOC COBOL. ACU cost: $2.25/unit.
+- Weakness: degrades with mid-task requirement changes.
+
+2g. Sourcegraph Cody - Whole-Codebase Intelligence
+- Enterprise-wide knowledge graph; multi-repo semantic search.
+- Eliminates informational ambiguity that causes placeholders by flooding context with precise implementations.
+- Autonomous review agents scan multi-file architectural changes.
+- 84-97% adoption rates among enterprise developers.
+- Governance: SSO, audit logs, granular permissions.
+
+
+3. FILE SIZE, CONTEXT, AND OUTPUT LENGTH EMPIRICS
+
+3a. Lost in the Middle Effect
+- Transformer attention follows U-shaped curve: primacy + recency strong, middle discounted.
+- Most frequent hallucination type: "Behavior Conflicting" (ignores central logic).
+- LongCodeBench data:
+  Claude 3.5 Sonnet: 29.0% (32k) -> 3.0% (256k context)
+  Qwen 2.5 72B: 70.2% (short) -> 40.0% (long context)
+- Expanding context window is actively detrimental past robust attention span.
+
+3b. Optimal RAG Chunk Sizing
+- Monolithic file ingestion triggers catastrophic attention decay.
+- RepoCoder/GraphCoder: similarity-based retrieval beats full-file ingestion by 10%+ on RepoBench.
+- Optimal chunk size: 200-500 tokens.
+  < 150 tokens: excellent granularity but broken cross-file dependencies.
+  200-500 tokens: high precision + excellent semantic context, low attention decay.
+  > 1000 tokens: Lost in the Middle re-emerges within chunk.
+- Enrich chunks with metadata (file paths, class headers, summary docstrings).
+
+3c. Output Length: Mechanical Truncation vs Semantic Conciseness
+- Mechanical truncation (hard max_tokens cap): avg 19.45% Pass@1 drop across models. DeepSeekCoder-Instruct 1.3B: 21.34% -> 16.46% (22.87% relative drop).
+- Semantic conciseness (Constrained Chain-of-Thought): eliminates scope creep, overengineering. Mistral VC frequency reduced from 63.81% -> 16.16%.
+- Verbosity Compensation (VC): uncertain models generate bloated code. GPT-4 VC frequency = 50.40%.
+- LLM patches vs human gold standard (SWE-bench, 140 instances): no model coded as concisely as humans. Bloat driven by: verbose implementations (60%), scope creep (50-65%), overly defensive programming (20-30%), excessive docs (20-30%), overengineering (10%).
+- DPO alignment: 10-20% shorter code + lower runtime + higher correctness vs SFT.
+
+3d. Complexity vs Generation Length
+- HumanEval Pro: o1-mini drops from 96.2% (standard) -> 76.2% (self-invoking extended tasks).
+- Failure patterns compound autoregressively: wrong problem mapping, flawed algorithm design, formatting mistakes, edge case mishandling.
+- Generating one 300-line function is inherently more error-prone than three 100-line functions.
+
+3e. Language-Specific Context Dynamics
+- Semantic density varies wildly: Python (very high, concise), Java (low, heavy boilerplate), C++ (medium).
+- Formatting removal (indentation, whitespace, newlines) before inference: avg 24.5% token reduction, virtually zero accuracy degradation.
+- Security: AI-generated code has 23.7% more vulnerabilities per 1K LOC vs human. C++ AI code: 34.8% increase in vulnerabilities.
+- AI generates 12% fewer low-severity vulns but 47% more high-severity and 89% more critical vulns.
+- Code duplication: human baseline 4.2% -> AI-generated 8.7% (p=0.002).
+- AI doc coverage: 68.3% vs human 41.7%, but 34% of AI docs are inaccurate/hallucinated.
+
+3f. Modularity: Single Responsibility Principle
+- AI agents thrive on well-structured multi-file projects, consistently fail on monolithic codebases.
+- Feature fragmentation: editing a logging flag in a massive file cascades into unrelated reflection-based lookup changes.
+- Optimal file size = one responsibility, not arbitrary line count.
+
+3g. Benchmark Contamination Warning
+- SWE-bench: 32.67% of successful resolutions involved solution leakage (fix visible in issue/PR comments).
+- Models memorize benchmarks; accuracy drops on equivalent tasks from non-benchmark repos.
+- Newer benchmarks: SWE-PolyBench (2000 issues, 4 languages), MirrorCode (reimplementing 16K LOC Go from spec only).
+
+3h. Test-Driven Prompting
+- TDP: embedding test cases in prompt. 6.09% avg improvement across 8 models on HumanEval/MBPP/CodeContests (95% CI [4.01, 8.18], p < 0.0001).
+- CodeContests-O (iterative test refinement): TPR 89.35%, TNR 90.30% against 11M solution pool.
+- Qwen2.5-7B fine-tuned on CodeContests-O: +9.52% Pass@1 on LiveCodeBench.
+- FixAudit (Auditor+Fixer iterative repair): 7B model surpasses avg zero-shot 32B model; +35.1% to 36.8% Pass@1.
+
+
+4. RECOVERY STRATEGIES FOR INCOMPLETE CODE (1-7B MODELS)
+
+4a. Retry with Error Feedback (Self-Correction)
+- Accuracy model: Acc_t = Upp - alpha^t * (Upp - Acc_0)
+  Upp = theoretical upper bound (limited by parametric knowledge).
+  Without external oracles, self-correction can degrade performance (coherence-seeking bias).
+- With extrinsic execution feedback (stack traces, unit test pass/fail): CodeLlama-7B up to +5% absolute on HumanEval.
+- GSR-7B outperforms best-of-N and fusion models on hard edge cases.
+- Typical gain: 2-4% absolute without heavy external support.
+- Relaxed verification thresholds recover +2-4 point additional Pass@1.
+- Limitation: heavily oracle-dependent; volatile for standalone edge deployment.
+
+4b. Task Decomposition (Highest Semantic Gain)
+- MoTCoder-7B (Multi-Level Reasoning Graphs): +5.9% Pass@1 on APPS, +5.8% on CodeContests.
+- Modular output enables localized bug detection; surpasses prior self-correction SOTA by +3.3%.
+- Self-PR (Llama-3 8B): +4.9% HumanEval, +5.5% MBPP via adaptive plan selection + database clustering.
+- Blueprint2Code: 96.3% Pass@1 on HumanEval (split-dependent).
+- WARNING: naive multi-agent decomposition (ChatDev) drops to 25% correctness, 41-86.7% failure rate. Must use rigid templates (MLR Graphs), not free-form agents.
+- Directly addresses root cause: working memory exhaustion in small models.
+
+4c. Best-of-N Sampling (Statistical Recovery)
+- Pass@5: Qwen2.5-Coder-7B = 0.84, DeepSeek-R1-Distill-Qwen-7B = 0.83.
+- Requires N > 32 for substantial gains, often N > 100 for complex tasks.
+- O(N) inference cost + O(C_RM) reward model cost per sample.
+- ModeX (evaluator-free): self-consistency clustering, no external verifier needed.
+- ReasonFlux-Coder 7B: +9.0% Best-of-N accuracy over baseline Qwen2.5-Instruct.
+- Limitation: defeats purpose of using small models (efficiency); cannot fix fundamental knowledge gaps.
+
+4d. Accept-and-Complete / Interleaved Generation (Best Efficiency-to-Success)
+- Plantain (Plan-Thought-Answer Interleaving) algorithm.
+- Model generates NL plan first -> AutoRater evaluates -> accept or Rewind & Repeat.
+- Rejected plans stored in history tensor H to prevent repetition.
+- ~6% Pass@1 improvement + 60%+ latency reduction.
+- Rewound P@1 recovery rates: MATH500 86.6%, Text-to-SQL 85.0%, MBPP 72.7%.
+- Plans requiring rewind: ~21-24% of tasks.
+- Prevents hallucination snowballing before it reaches syntax generation.
+
+4e. Constrained Decoding (Syntactic Guarantee)
+- CFG/regex enforcement via Outlines/Guidance frameworks.
+- Mathematically prohibits EOS until AST requirements fulfilled -> 100% syntactic validity.
+- Alignment tax: forcing grammar constraints degrades semantic/analytical capability in instruction-tuned models.
+- CRANE algorithm: augments grammar with transitional rules; +10pp accuracy over unconstrained/rigid baselines on symbolic reasoning.
+- AdapTrack (Qwen2.5-Coder-7B): unconstrained 61.58% -> constrained+AdapTrack 66.11% EM@1 on TensorFlow v1.
+- CodeFast (training-free token-level early stopping): +34% to +452% inference speed, zero Pass@1 degradation. Addresses excess token phenomenon (endless repetition).
+
+4f. Optimal Hybrid Strategy for 1-7B Models
+- Primary: Task Decomposition (MoT) + Accept-and-Complete (Interleaved Generation) = ~5-6.5% absolute Pass@1 gains + reduced latency + reduced compute waste.
+- Final-mile safeguard: Constrained Decoding with adaptive variants (CRANE/AdapTrack) to prevent premature stopping without alignment tax.
+- Retry with feedback as supplementary layer when external execution environment available.
+- Best-of-N only when compute budget allows and problem requires broad exploration.
+
+
+5. ENTERPRISE AND FUTURE DIRECTIONS
+
+- Model Context Protocol (MCP): universal connector for AI agents to external data sources, APIs, databases. Reduces placeholder generation from information asymmetry.
+- Pre-commit hooks (lefthook): regex scanning for TODO, FIXME, "not implemented" strings. Commit rejected without human-verified ticket.
+- Task-scoped agent identity (Strata): short-lived OBO token exchange; limits agent permissions to exact task parameters.
+- MultiDevin: Manager Devins oversee Worker Devins swarms; continuous autonomous review before PR approval.
+- METR Productivity Study (2025 RCT): developers predicted 24% speedup with AI; perceived 20% boost; actual measurement = 19% SLOWER. Root cause: cognitive overhead debugging incomplete AI output. Follow-up (2026): 18% speedup for returning devs, 4% for new (with selection bias caveat).
+
+
+6. KEY BENCHMARKS REFERENCED
+
+SWE-bench / SWE-bench Verified / SWE-bench+ / Multi-SWE-bench / SWE-PolyBench
+HumanEval / HumanEval Pro / MBPP / MBPP Pro
+LongCodeBench (LongCodeQA, LongSWE-Bench) - up to 1M token context
+CodeContests / CodeContests+ / CodeContests-O
+ClawBench (153 real-world tasks, Claude Sonnet 4.6 best at 33.3%)
+KnowU-Bench (personalized GUI, frontier models < 50%)
+PokeGym (30-220 step long-horizon, "Aware Deadlocks" phenomenon)
+ImplicitMemBench (unconscious behavioral adaptation)
+MirrorCode (reimplementation from spec, no source access)
+RepoBench (line/API/function completion)
+EXP-Bench (critic module evaluation)
+LiveCodeBench
+APPS benchmark
+
+
+7. KEY NUMERICAL TAKEAWAYS
+
+- Optimal RAG chunk size: 200-500 tokens
+- Formatting removal saves avg 24.5% tokens with ~0% accuracy loss
+- Mechanical output truncation: avg -19.45% Pass@1
+- Semantic conciseness: reduces VC from 63.81% -> 16.16% (Mistral)
+- Task decomposition: +5.5-5.9% Pass@1 on competitive benchmarks (7B models)
+- Interleaved generation: +6% Pass@1, -60% latency (7B models)
+- Constrained decoding + AdapTrack: +4.5% EM@1 (7B models)
+- Self-correction with execution feedback: +2-5% Pass@1 (7B models)
+- Best-of-5 sampling: 0.83-0.84 pass rate (7B models)
+- AI code: +23.7% vulns/1K LOC vs human; C++ specifically +34.8%
+- AI code duplication: 8.7% vs human 4.2%
+- Devin security remediation: 20x faster than human (1.5 min vs 30 min)
+- Context decay: Claude 3.5 Sonnet drops from 29% -> 3% accuracy at 256k tokens

@@ -3,7 +3,7 @@ PROCEDURAL VOXEL ENGINES, ASSETS, AND CREATURES
 RESEARCH RECORD
 
 Research date: 2026-08-13
-Project root: /home/user/teikoku/elai/.elai_cc
+Project root: .elai_cc
 Research scope: voxel data structures, procedural terrain and asset generation, voxel-native creatures, animation, LOD, streaming, rendering, physics, and UE5 integration
 Named subjects: Lay of the Land, Daniel Schroeder / dan5sch, MishMash95
 Parallel research: 12 read-only tracks, followed by primary-source checks and an adversarial fact-check pass

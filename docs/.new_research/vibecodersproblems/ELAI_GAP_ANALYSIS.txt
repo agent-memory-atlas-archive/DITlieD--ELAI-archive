@@ -1,0 +1,546 @@
+ELAI GAP ANALYSIS
+Cross-reference of current ELAI capabilities vs problems mapped in
+docs/.new_research/vibecodersproblems/ (6 research files).
+Generated 2026-04-18.
+
+Completion baseline (per user):
+  Phases pre-0 through 4E: DONE
+  A-steps A-0 through A-48: DONE
+  Phase 4K.1-4K.5 (dashboard core): DONE
+Not yet done:
+  Phases 4F, 4G, 4H, 4I, 4J
+  Phase 4K.6+ (remaining dashboard polish, intervention controls, notifications)
+  A-steps A-49 through A-57 (focus tunnel, A-50 split)
+Coverage of mapped non-coder problem space: ~30-40%.
+
+
+================================================================================
+SECTION 0 -- WHAT ELAI ALREADY DOES
+================================================================================
+
+Architecture & execution
+  9-crate Rust workspace with FSM (9 states), SSB (single-writer SQLite WAL),
+  BSP supersteps, agent system with checkpointing/supervision, project
+  isolation, evidence-gated FSM transitions, dispatch tables.
+  Process isolation Tier A (visibility filter) shipped; Tier C requires Phase 4A.
+  Context budget allocator (8 slots, prefix-cache-aware).
+  Hierarchical plan management (skeleton + per-phase detail).
+
+Reasoning & rules
+  GRC engine (per-topic budgets, 6 grounding methods, plan grounding sweep,
+  CSQ, inline feasibility).
+  Rules engine: 6 predicate types incl. AST_PATTERN, GRAPH_REACHABILITY.
+  3 enforcement tiers (deterministic <1ms, constrained decoding, prompt).
+  Self-discovery proposes new rules after 3 audit hits; counterfactual shadow
+  testing; time-aware confidence decay; safety rules immutable.
+
+Knowledge
+  7-layer pipeline: DKG (tree-sitter -> SQLite), BM25 (tantivy), dual vectors
+  (GraphCodeBERT + Granite via ONNX), SPLADE optional, PageRank repo map,
+  CatRAG, A-RAG, cross-encoder rerank, token-budget fit. Per-project isolation.
+  Currently Rust-grammar primary; Python/TS/Go planned.
+
+Tools
+  Read/Write/Edit (3-tier matching), sandboxed Bash, git2 phase-level commits,
+  5-tier validation pipeline, DAIRA trace, ShortCoder (18-38% token savings),
+  failure taxonomy, visibility filter, tool-schema sanitization.
+  Incremental compilation feedback (post Phase 4B step).
+
+Pipeline factory
+  L1 Designer + Research Agent (FlashResearch tree, source-tier classification).
+  L2 Builder (DAG with Kahn cycle detection, phase sizing, DAG repair).
+  L3 Executor (FSM in INTERACTIVE mode; AUTONOMOUS pending Phase 4G).
+  Surgical / Oracle / normal pipeline modes.
+  QualitySpec / MediaSpec / PerfSpec.
+
+Anti-staleness (A-2..A-15, A-39, A-41 done)
+  VERSION_GATE predicate, deprecated_patterns table, freshness scoring in RAG,
+  constitutional injection, ETC entropy monitoring, freshness steering vectors,
+  AST import extraction, nightly dep audit across registries.
+
+Reasoning architecture (A-17..A-25 done)
+  6-layer error recovery: deterministic templates -> micro-reflection ->
+  interrogation tree -> AB-MCTS -> cloud diagnostic -> cloud generation.
+  MistakeBook (structured, NOT narrative, 150-token cap).
+  Compressed-context replay per retry; never shows model its failed CoT.
+  Temperature 1.0 for repair; cloud spend $0.01-0.05/day typical.
+
+Cloud mode (A-40..A-44 done)
+  LOCAL / CLOUD / HYBRID modes. Cost tracking in SSB, per-task and per-day
+  ceilings, pre-task estimation. Privacy redaction patterns and blocked paths.
+  Validation pipeline identical across all modes.
+
+Dashboard (4K.1-4K.5, A-45..A-48 done)
+  SSB read-only data extraction, Axum local server, three-column interactive
+  layout (plan tree | activity stream | context inspector), monitoring view,
+  intervention controls scaffolding.
+  Remaining: full notifications, browser/OS alerts, intervention queue polish.
+
+Local model stack
+  Qwen2.5-Coder-7B-abliterated NF4+FA2 default, 3B fallback, 32B target.
+  Custom sidecar (python/elai_inference/) with FA2/DoLa/TQ4. Ollama fallback.
+  Baseline measured: 7B 90% pass@1, 3B 72%. Gemma 4 rejected.
+
+
+================================================================================
+GAP-1 -- SPEC STAGE (idea -> executable task)
+Source: AI IDE Spec Stage Problem Mapping.txt
+Coverage today: ~50%
+================================================================================
+
+Have
+  Pipeline Designer L1 with Research Agent.
+  PLANNING and FEASIBILITY_PROBE FSM states (4F gates the latter).
+  Hierarchical plan (skeleton + per-phase detail).
+  Plan grounding sweep blocks ungrounded claims pre-EXECUTING.
+  Contract extraction; coherence enforced by auditor.
+  ReplanRequest (MINOR fast-track, MAJOR human-approval).
+  Surgical / Oracle modes.
+
+Missing
+  Mandatory Architect Mode that BLOCKS code generation until a reviewed PRD
+    exists in SSB.
+  NFR elicitation interview: security, RBAC, scale, observability, audit log,
+    DR, data residency. Non-coder cannot ask for what they do not know.
+  Disambiguation protocol for destructive ops (soft / hard / cascade delete,
+    overwrite vs append, etc.) -- forces multiple-choice resolution.
+  Per-prompt change-budget enforcement (max files, max LOC delta, max new deps)
+    to prevent silent wiring / aggressive refactor of unrelated modules.
+  App Store / Apple / Google Play / web-extension-store policy feasibility
+    pre-check.
+  Regulatory feasibility pre-flight (HIPAA / GDPR / PCI scope detection from
+    the request itself, not after deployment).
+  Cost / time / model-tier estimate shown to user pre-execution.
+  Persona-aligned interview ("act as senior co-founder, challenge contradictory
+    assumptions, propose missing NFRs").
+  Exit-criteria enforcement (defined "done" before EXECUTING starts) to fight
+    feature thrash / Scope Creep Kraken.
+
+Where it slots
+  Phase 4F (Feasibility probe) absorbs NFR elicitation, regulatory pre-check,
+    cost/time estimate, persona interview.
+  New Phase 4L (Spec-Stage Elicitation) for Architect Mode, disambiguation
+    protocol, change-budget allocator, exit-criteria contract, App Store
+    policy gate.
+  New rule predicates: SCOPE_BUDGET (METRIC_GATE variant), DISAMBIG_REQUIRED
+    (COMPOSITE), POLICY_GATE (registry of platform/regulatory rules).
+
+
+================================================================================
+GAP-2 -- INFRASTRUCTURE / DEPLOYMENT
+Source: AI Code Deployment Challenges for Non-Coders.txt
+Coverage today: ~20%
+================================================================================
+
+Have
+  Sandboxed bash (chroot now, Firecracker/gVisor at 4A).
+  Anti-staleness VERSION_GATE.
+  Cloud-mode redaction & blocked paths.
+  Validation pipeline.
+  Local-first by default.
+
+Missing
+  Stripe / Paddle / PayPal webhook validator: HMAC raw-body parsing gate,
+    sandbox-vs-prod secret detection (whsec_test_ vs whsec_live_), idempotency
+    key enforcement on event.id, dunning logic stubs, 3DS / refund / cancel
+    branch coverage check.
+  OAuth callback validator: env-var swap on deploy, IdP-console URL
+    registration verification, http-vs-https / trailing-slash / proxy-rewrite
+    detection.
+  JWT lifecycle enforcement: refresh-token rotation, server-side revocation,
+    multi-device session invalidation on password change.
+  Frontend secret-leak detector: NEXT_PUBLIC_ / VITE_ / REACT_APP_ prefixes
+    matched against secret patterns (sk_, whsec_, AWS_, Bearer) before bundle
+    build. Block ship.
+  Supabase / Firebase RLS gate: every table requires RLS or explicit-public
+    annotation; service_role / sb_secret_ keys forbidden in client bundle
+    statically; impersonation test in CI.
+  Database performance gate: EXPLAIN ANALYZE on all generated SQL; pagination
+    required on collection queries; B-tree / Trigram index suggestions; p95
+    monitor stub.
+  Schema-migration orchestrator: typed migration scripts with up/down,
+    structural-change detection, automatic data-shape transform script
+    generation, dry-run on shadow DB, rollback marker.
+  Email auth pre-launch: SPF / DKIM / DMARC / BIMI DNS verification against
+    chosen provider (SendGrid / Resend / Postmark / SES); transactional vs
+    bulk subdomain split; bounce + unsubscribe compliance scaffolding.
+  Rate-limit / backoff / queue scaffolding for outbound API calls; idempotency
+    keys on outbound mutations.
+  SSL / Certbot / Cloudflare-proxy / Let's-Encrypt orchestration including
+    HTTP-01 vs DNS-01 selection when behind a proxy.
+  Push notification migration logic (FCM token mapping when swapping
+    providers).
+  Discord / Slack / Apple / Facebook OAuth-scope review-gate (warn on broad
+    scopes that block App Review).
+  Secrets manager wiring (Doppler / Infisical / 1Password / env-only) instead
+    of hardcoded keys; runtime-injection contract.
+
+Where it slots
+  New Phase 4M (Production Infrastructure Validators).
+  Sub-rule packs in rules engine: PAYMENTS, AUTH, EMAIL, DB_PERF, FRONTEND_SECRETS,
+    SSL_DNS. Each ships as Tier 1/2 deterministic predicates plus Tier 3
+    semantic auditor checks.
+  Knowledge Engine extension: provider-API interface maps for Stripe, Supabase,
+    Firebase, Auth0, Clerk, SendGrid, Twilio, FCM, Pusher (paper-ingestor mode
+    = source).
+  Pipeline Factory L1 must add per-integration phase templates so the Designer
+    emits the validator gates by default whenever a request triggers payments
+    / auth / email / DB.
+
+
+================================================================================
+GAP-3 -- POST-SHIP LIFECYCLE
+Source: AI Code Post-Ship Challenges For Non-Coders.txt
+Coverage today: ~25%
+================================================================================
+
+Have
+  Anti-staleness rules + nightly dep audit (A-15, A-41).
+  6-layer reasoning + MistakeBook for repair.
+  Self-improving rules with shadow testing.
+  Plugin hooks (PreToolUse, PostToolUse, Stop, PreCompact).
+  Pipeline templates ranked by outcome.
+  Anti-Slopsquatting CLAUDE.md rule (NOT architectural).
+
+Missing
+  Continuous CVE / npm-audit / pip-audit / cargo-audit / Dependabot-equivalent
+    on the user's deployed project (currently audit only runs on ELAI itself).
+  Slopsquatting architectural defense: registry-existence pre-install check,
+    download-count + age threshold, name-similarity-to-popular-package check,
+    block on anomaly. Currently a prompt rule, not a predicate.
+  Production observability bridge: Sentry-MCP / Datadog / Honeycomb / PostHog
+    integration. AI agent fetches stack traces, correlates with DKG, proposes
+    fix diff, validates in shadow env.
+  "Open project from 6 months ago" workflow: full project rehydration --
+    Project Intelligence re-scan, dep-rot diff report, MistakeBook recall,
+    CVE delta, framework-breaking-change detector.
+  Schema migration tool (cross-references GAP-2): converts type changes into
+    multi-step migration scripts with data-shape transforms.
+  End-user bug-intake pipeline: structured bug-report form -> reproduction
+    harness generator -> failing-test creation -> fix -> regression suite.
+  Incident-response runbook: compromise detection on unusual auth patterns,
+    automated key rotation through secrets manager, lateral-movement isolation,
+    audit-log preservation.
+  CI/CD pipeline scaffolding (GitHub Actions / GitLab / CircleCI templates
+    with the validator gates baked in).
+  Diagnostic-theater prevention in autonomous mode: deterministic verification
+    rejects "100% complete" claims, Replit-style mirroring blocked because the
+    auditor must find at least one issue.
+
+Where it slots
+  New Phase 4N (Post-Ship Lifecycle).
+  Reuse 4H Self-Modification mechanism for rule-pack updates as user's project
+    framework versions move.
+  Plugin sub-system for observability MCP bridges.
+  Pipeline-template sub-class "MaintenancePipeline" with rehydration,
+    bug-intake, CVE-patch as first-class kinds.
+
+
+================================================================================
+GAP-4 -- SHIP QUALITY (a11y, i18n, SEO, design, content, legal, CMS, analytics)
+Source: AI IDEs Ship-Quality Gaps For Non-Coders.txt
+Coverage today: ~10% -- LARGEST GAP
+================================================================================
+
+Have
+  Media validator design (Phase 4I, NOT YET BUILT): SSIM/LPIPS, VLM modes,
+    Render-Capture-Evaluate, visual feedback loop.
+
+Missing
+  Accessibility (WCAG 2.2 AA) gate
+    Semantic HTML rule (forbid div+onClick where button/a applies).
+    ARIA-labels on form inputs, live regions on errors, focus-state required.
+    Color contrast 4.5:1 (3:1 for large text) computed from generated CSS.
+    Keyboard-nav verification: every interactive element reachable via Tab.
+    Alt text required on <img>, decorative-image opt-out marker.
+    Heading-hierarchy linter (h1->h2->h3 structural).
+    Run axe-core / pa11y / Lighthouse a11y in validation pipeline.
+  Internationalization (i18n)
+    String-extraction rule: forbid hardcoded user-facing strings in JSX/HTML.
+    Intl.NumberFormat / Intl.DateTimeFormat enforcement (forbid hardcoded
+      currency/date/number formatting).
+    Pluralization via ICU MessageFormat / i18next plural rules.
+    RTL: dir attribute pluggable, logical CSS properties (margin-inline-start
+      etc.) enforced over physical (margin-left).
+    Translation-key central dictionary required as a manifest file.
+  SEO / discoverability
+    Title / meta-description / canonical URL required per route.
+    Open Graph + Twitter Card + favicon + apple-touch-icon.
+    Sitemap.xml + robots.txt auto-generation tied to route table.
+    JSON-LD structured data (Organization, Product, FAQ, Article, Software).
+    Core Web Vitals gate (LCP, INP, CLS) via Lighthouse in CI.
+    SSG-vs-SPA recommendation per page kind.
+  Brand voice / copywriting
+    Style-guide manifest (tone, vocab, banned phrases) loaded into Tier 3
+      semantic rules.
+    Cliche / AI-tell phrase blocklist ("revolutionize", "seamlessly", em-dash
+      patterns).
+    Cross-page tone consistency check.
+  Legal pages
+    Privacy policy / Terms of Service / Cookie banner / Accessibility statement
+      generators tied to ACTUAL data flow detected from code (not generic
+      copy-paste).
+    GDPR / CCPA / EAA jurisdiction inference.
+    Sub-processor list auto-generated from imported SDKs.
+  Post-ship CMS layer (huge -- non-coder cannot edit copy without reprompting)
+    Extract user-facing strings to a content store (JSON / DB / headless CMS).
+    Lightweight editor UI in dashboard for content updates without code touch.
+    Content versioning + preview + rollback.
+  Analytics
+    Event-taxonomy contract (single namespace; one canonical event name).
+    GA4 / PostHog / Plausible scaffold with consent-gated firing.
+    Funnel-tracking templates per pipeline kind (signup, checkout, activation).
+  Visual regression
+    Baseline screenshot capture per route per breakpoint per theme.
+    Diff threshold per CI run, masked dynamic regions.
+    Mobile / tablet / desktop viewport matrix.
+
+Where it slots
+  Phase 4I (Media Validator) absorbs visual regression + accessibility visual
+    checks (color contrast, focus rings, layout).
+  New Phase 4O (Ship Quality Gates) for the bulk: a11y, i18n, SEO, brand,
+    legal, CMS, analytics.
+  Rules engine new tiers: A11Y, I18N, SEO, BRAND, LEGAL, ANALYTICS.
+  Pipeline Factory L1 must elicit jurisdiction + locale + brand-style early
+    so generated apps ship with a11y/i18n/SEO/legal scaffolding from step 1.
+  Knowledge Engine: ingest WCAG, ICU, Schema.org, GA4, GDPR/EAA reference docs
+    via paper-ingestor mode=source.
+  Dashboard sub-module for the CMS editor (extends Phase 4K).
+
+
+================================================================================
+GAP-5 -- GOVERNANCE (IP, lock-in, collaboration, compliance)
+Source: AI IDE Governance and Non-Coder Challenges.txt
+Coverage today: ~25%
+================================================================================
+
+Have
+  Local-first (data sovereignty by default).
+  Project isolation, agent visibility filter, sanitised tool schemas.
+  Cloud-mode redaction + blocked paths + audit trail.
+  Anti-Slopsquatting rule (CLAUDE.md, soft).
+  Code generated locally is owned by the user; no telemetry-mandatory path.
+
+Missing
+  Open-source license scanner (DevLicOps): static SPDX detection on every
+    generated function; copyleft (GPL/AGPL/LGPL) BLOCK before commit; record
+    SPDX-FileCopyrightText / SPDX-License-Identifier headers.
+  Training-data regurgitation detector: substring / n-gram match against a
+    reference corpus of high-risk OSS (top GPL repos, NYT-style content);
+    flag suspicious verbatim spans.
+  Code provenance tracking: every generated chunk recorded in SSB with model,
+    prompt hash, retrieval citations; exportable as SBOM-style manifest.
+  Multi-user collaboration: two non-coders on one project. Currently SSB
+    enforces single-writer per session and cross-session file locks; no
+    intent-merge, no behavioral diff review for non-readers of code.
+  Subagent behavioral merge: when two agents produce parallel feature branches,
+    run end-to-end behavioral tests (not syntax diff) before merge; auditor
+    surfaces semantic conflicts (e.g. agent B silently bypassed agent A's RBAC).
+  Intent-review UI: natural-language behavior summary per diff for non-coders;
+    accept / reject by behavior not syntax.
+  HIPAA / SOC 2 / PCI-DSS compliance packs: rule packs + policy templates +
+    audit-log emitters + sub-processor manifest + BAA-required-vendor blocklist
+    when domain detected as healthcare / fintech.
+  GDPR DSAR tooling: data-flow map -> per-user data lookup -> erasure script
+    incl. RAG embedding purge + cached-response purge.
+  Immutable audit log surfaceable as SOC 2 evidence (currently SSB is
+    append-only but not designed for external auditor view).
+  RBAC enforcement gate (cross-references GAP-2 auth).
+  Handoff-to-developer package: clean Docker image, schema export, environment
+    manifest, architectural map (DKG export), README from project intelligence,
+    decision-log from SSB. One command produces a tarball a senior dev can
+    onboard against in <1 day.
+  Vendor-independence guarantee: ELAI itself runs entirely local; export of
+    rules.db + knowledge.db + SSB + project artifacts; no required cloud calls.
+    Document explicitly.
+  Model-deprecation migration: when a configured cloud model is retired,
+    automatic fallback selection + benchmark re-validation.
+
+Where it slots
+  Existing 4H (Self-Modification) hosts the rule-pack lifecycle and can be
+    extended for license/compliance rule packs.
+  New Phase 4P (Governance & Compliance) for license scan, regurgitation
+    detector, DSAR tooling, audit-log surface, handoff package.
+  Multi-user / behavioral merge -> extension of SSB + Pipeline Factory; new
+    sub-phase 4G.x or 4P.x.
+  Knowledge Engine ingests SPDX list, top-100 GPL repos hashes, regulation
+    text (HIPAA, GDPR, SOC 2 controls, PCI-DSS).
+
+
+================================================================================
+GAP-6 -- COGNITIVE / PEDAGOGICAL / EMOTIONAL
+Source: AI Coding Tools Non Coder Cognitive Challenges.txt
+Coverage today: ~5% -- ALMOST ENTIRELY UNSOLVED
+================================================================================
+
+Have
+  Anti-spiral detection (3x same step on same issue -> escalate).
+  Dashboard intervention controls (pause, skip, retry, switch to cloud, abort).
+  Reasoning-trace visibility, activity stream, context inspector.
+  Auditor must find at least one issue (rejects rubber-stamping).
+
+Missing
+  User cognitive-state model. Currently zero modelling of the human.
+  Frustration-loop interruption: detect semantic-similar prompts + recurring
+    error within N turns -> AI refuses to generate, runs diagnostic step-back
+    protocol, forces environment / assumption verification.
+  Pedagogical scaffolding (Learning Mode): inject TODO(human) markers when
+    generated complexity exceeds the user's historical skill profile; require
+    micro-quiz pass before compile.
+  Cognitive load balancing: cap user-facing choices at 2 architectural
+    pathways with simulated impact forecast; AI absorbs minor decisions via
+    opinionated defaults derived from project-intelligence + style-guide.
+  Mixed-initiative context UI: visible, manipulable representation of which
+    files / past messages the AI currently holds in working memory; user can
+    sever stale context with one click.
+  Architectural blueprint visualization: live node-graph of the application
+    persisted across sessions; force user to visually trace flow before V2
+    feature edits to bridge the V1-to-V2 plateau.
+  Virtual mentorship emulation: proactive "push" interruptions when the AI
+    detects a dangerous pattern (anti-pattern about to be committed, missing
+    NFR, stuck-state warning), framed as a senior-dev intervention.
+  Confidence-calibrated visual friction: render low-confidence code with
+    intentional UI friction (jagged underline, dimmed colour, "verify before
+    accept" badge) so non-coders don't blindly accept halo-effect output.
+  Session fatigue model: track typo rate, prompt cadence, error recurrence;
+    suggest break, simplify dashboard, suppress non-critical suggestions.
+  Affective signals (stretch): GazeCopilot-style eye-tracking, keystroke
+    dynamics; optional integration, never required.
+  Onboarding / progressive-disclosure UI tied to skill profile.
+
+Where it slots
+  Phase 4K extension (4K.6+) for dashboard-side cognitive UI: context
+    visualization, blueprint graph, friction styling, mentorship pop-ups.
+  New Phase 4Q (Cognitive Scaffolding) for the orchestrator-side model:
+    user state tracker, frustration detector, learning-mode injector,
+    fatigue model.
+  Self-modification (4H) feeds the user-skill profile from observed
+    interactions over time.
+  GRC engine extension: a new step_type "user_check" that consults the
+    cognitive model before tool call.
+
+
+================================================================================
+PROPOSED PHASE PLAN -- GAP CLOSURE
+================================================================================
+
+Existing-not-yet-done phases (priorities, with gap mapping)
+  4F  Feasibility probe                     -> GAP-1 (NFR/regulatory pre-check)
+  4G  Autonomous mode enablement            -> GAP-3 (diagnostic-theater
+                                               prevention is core); also reduces
+                                               GAP-6 frustration loops by
+                                               removing user from inner loop.
+  4H  Self-modification (DGM/CEL/DarwinNet) -> rule-pack lifecycle for GAP-2
+                                               GAP-4 GAP-5; user-skill profile
+                                               for GAP-6.
+  4I  Media validator                       -> GAP-4 visual a11y + visual
+                                               regression.
+  4J  Empire integration                    -> deferred, no gap-mapping.
+  4K.6+ Dashboard polish                    -> GAP-6 cognitive UI hooks.
+  A-49 Notification system                  -> GAP-3 + GAP-6 (intervention).
+  A-51..A-57 Focus tunnel                   -> token efficiency, indirect to
+                                               GAP-2 latency on infra calls.
+
+New phases (proposed)
+  4L  Spec-Stage Elicitation                -> GAP-1
+       Architect Mode gate, NFR interview, disambiguation protocol,
+       change-budget allocator, exit-criteria contract, App Store /
+       platform-policy gate.
+
+  4M  Production Infrastructure Validators  -> GAP-2
+       Stripe HMAC + idempotency, OAuth callback validator, JWT lifecycle,
+       frontend secret-leak scanner, RLS gate, EXPLAIN-ANALYZE gate, schema
+       migration orchestrator, SPF/DKIM/DMARC pre-launch, SSL/Certbot/proxy
+       orchestration, OAuth-scope review.
+
+  4N  Post-Ship Lifecycle                   -> GAP-3
+       Continuous CVE audit on user project, slopsquatting registry check,
+       observability MCP bridges (Sentry/Datadog/Honeycomb/PostHog),
+       project-rehydration workflow, end-user bug-intake pipeline,
+       incident-response runbook, CI/CD scaffolding.
+
+  4O  Ship Quality Gates                    -> GAP-4 (largest)
+       WCAG 2.2 AA rule pack (axe-core/pa11y/Lighthouse integration),
+       i18n rule pack (string-extraction, Intl.*, RTL, ICU plurals),
+       SEO rule pack (meta, OG, sitemap, robots, JSON-LD, CWV),
+       brand-voice + cliche linter,
+       legal-pages generator tied to data-flow detection,
+       headless CMS layer with dashboard editor,
+       analytics taxonomy + consent gating.
+
+  4P  Governance & Compliance               -> GAP-5
+       SPDX license scanner, regurgitation detector, code-provenance manifest,
+       multi-user collab + behavioral merge + intent-review UI,
+       HIPAA/SOC2/PCI rule packs, GDPR DSAR tooling, audit-log surface,
+       handoff-to-developer package, model-deprecation migration.
+
+  4Q  Cognitive Scaffolding                 -> GAP-6
+       User cognitive-state model, frustration-loop interrupt, Learning Mode
+       with TODO(human) markers, choice cap to 2 pathways with impact forecast,
+       mixed-initiative context UI, architectural blueprint visualization,
+       virtual mentorship emulation, confidence-calibrated visual friction,
+       session fatigue model.
+
+Suggested execution order (pragmatic; revenue-bearing first)
+  Tier 1 (ship-blocking for non-coders):
+    4F -> 4L -> 4M -> 4O.a11y+i18n+SEO -> 4G
+  Tier 2 (post-ship survival):
+    4N -> 4O.legal+CMS+analytics -> 4P.license+handoff
+  Tier 3 (compliance / enterprise):
+    4P.HIPAA+SOC2+PCI+DSAR -> 4I (full media validator)
+  Tier 4 (differentiator):
+    4Q -> 4K.6+ -> 4H
+
+
+================================================================================
+CROSS-CUTTING ARCHITECTURE NOTES
+================================================================================
+
+Rules engine extensions
+  New predicate types or sub-namespaces:
+    SCOPE_BUDGET, DISAMBIG_REQUIRED, POLICY_GATE (4L)
+    PAYMENTS, AUTH, EMAIL, DB_PERF, FRONTEND_SECRETS, SSL_DNS (4M)
+    A11Y, I18N, SEO, BRAND, LEGAL, ANALYTICS (4O)
+    LICENSE_GUARD, REGURGITATION (4P)
+    USER_STATE (4Q, advisory only, never blocks code, only UX).
+
+Knowledge engine ingestion (paper-ingestor mode=source)
+  Stripe API, Supabase API, Auth0, Clerk, Firebase, SendGrid, Twilio (4M).
+  WCAG 2.2, ARIA Authoring Practices, ICU MessageFormat, Schema.org, GA4
+    schema (4O).
+  SPDX license list, top-100 GPL/AGPL repos hash manifest, HIPAA Security
+    Rule, GDPR Articles 13/15/17, SOC 2 trust criteria, PCI-DSS v4 (4P).
+
+Pipeline Factory L1 changes
+  Designer must, per project-domain detection, attach the appropriate gate
+  packs by default. A "non-coder profile" attached to PipelineSpec selects
+  more aggressive elicitation, larger validator gate set, simpler
+  intervention UI.
+
+Dashboard implications (4K extensions)
+  Three new panels: Architect Mode review (4L), Compliance status (4O+4P),
+  Cognitive state + blueprint graph (4Q).
+
+Out of scope (explicit)
+  Imposter-syndrome / identity-crisis support beyond UX framing.
+  Eye-tracking hardware integration -- optional plugin only.
+  Real-time multi-user editing of the same source file (use feature branches
+  with behavioral merge instead).
+
+
+================================================================================
+SUMMARY TABLE
+================================================================================
+
+GAP                     Coverage  Phase home (existing or new)
+----                    --------  ----------------------------
+1 Spec stage            ~50%      4F + 4L (new)
+2 Infra / deployment    ~20%      4M (new)
+3 Post-ship lifecycle   ~25%      4N (new) + 4G + 4H
+4 Ship quality          ~10%      4O (new) + 4I
+5 Governance            ~25%      4P (new) + 4H
+6 Cognitive             ~5%       4Q (new) + 4K.6+ + 4H
+
+Aggregate weighted coverage of mapped non-coder problem space: ~30-40%.
+Closing all gaps brings ELAI from "task-runner harness" to
+"AI-first IDE for non-coders" as positioned.

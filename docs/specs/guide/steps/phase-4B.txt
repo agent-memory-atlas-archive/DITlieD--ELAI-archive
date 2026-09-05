@@ -1,0 +1,429 @@
+PHASE 4B: TOOLS (git, validation, trace, edit matching, incremental compilation)
+Prerequisites: Phase 4A complete (agent process isolation, IPC channel working)
+
+COMPLETION STATUS (updated 2026-04-16, commit 55ece36):
+  4B.1-4B.4: DONE — 10 tool modules, IpcToolRegistry, 15 typed arg structs, 19/19 tests pass.
+    Bundled RA-1 (DiagnosticResult/RootCause), RA-3 (DKG query tools), PM (integration check).
+    Audit: 3 BLOCKs fixed (ValidateHandler file_path, CompileCheckHandler stream, GrepFallback direction/depth).
+  4B.5 MEASURE: DEFERRED to next session — base tools complete, metrics collection remaining.
+  4B.6-4B.7 IntegrationTestRunner: DEFERRED — blocked on Phase 4E types (IntegrationSpec, IntegrationCheckpoint).
+    Do NOT attempt until 4E.7+ is complete.
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+
+GOAL
+
+Full tool suite executing in orchestrator process. Agents access tools via IPC
+ToolRequest/ToolResult messages over the Phase 4A wire protocol.
+Deliverables: git2 native ops, 5-tier validation, DAIRA trace, 3-tier edit matching,
+ShortCoder AST transforms, failure taxonomy classifier, file read enhancement,
+incremental compilation feedback.
+
+
+READ BEFORE IMPLEMENTING
+
+  docs/specs/crates/tools.txt                    Full spec (all tool types, edit matching,
+                                                   ShortCoder, visibility, sandbox, incr. compilation)
+  docs/specs/crates/orchestrator.txt             Section 12 (IPC protocol, wire format, message types)
+  docs/specs/decisions/external-analysis.txt     DAIRA (L83-89), ShortCoder (L94-95), failure taxonomy (L18)
+  docs/specs/decisions/audit-results-phase4.txt  BLOCKs 1-5 (IPC security fixes from Phase 4A audit)
+  docs/specs/architecture-overview.txt           Section 4 (ToolRegistry trait: execute, available_tools)
+  docs/specs/decisions/risk-register.txt         R51 (incremental compilation overhead + async mitigation)
+
+PAPER GROUNDING (required before TESTING_FIRST):
+  DAIRA (arxiv 2603.22048v2)      -> workflow/papers/daira-interface.md (MISSING — ingest)
+  ShortCoder (arxiv 2601.09703v1) -> workflow/papers/shortcoder-interface.md (MISSING — ingest)
+
+
+SCOPE EXCLUSIONS (tools.txt sections owned by other phases)
+
+  VisibilityFilter (tools.txt section 8): Phase 4A deliverable (agent isolation Tier A).
+  Tool schema sanitization (tools.txt section 8 L163-169): Phase 4A deliverable (agent isolation).
+  BashSandbox trait (tools.txt section 9): HostBash is Phase 0-1, Firecracker is Phase 3-4.
+    Phase 4B inherits the sandbox — it does not implement it.
+  lsp_client.rs evaluation (tools.txt section 12): deferred evaluation, no phase assigned.
+    Decision: evaluate during Phase 4B MEASURE if time permits, otherwise defer to Phase 5.
+
+
+RISKS TO WATCH
+
+  R1: IPC serialization schema drift. Phase 4A defines ToolRequest/ToolResult message types.
+      If Phase 4B adds new fields without updating the shared postcard schema, deserialization
+      fails silently (postcard skips unknown fields in some configs). Mitigation: contract test
+      that round-trips every ToolRequest variant through serialize+deserialize.
+  R2: Incremental compilation false positives. cargo check may report errors in valid code
+      that depends on unwritten modules (during EXECUTING, not all files exist yet).
+      Mitigation: compilation check only runs on the specific file written, not workspace-wide.
+      If the error references an unresolved import from a file not yet written, classify as
+      DEFERRED (not COMPILATION_ERROR) and skip retry.
+  R3: ShortCoder AST transform correctness. tree-sitter grammar version mismatch between
+      knowledge/ crate (used for DKG) and tools/ crate (used for ShortCoder) could produce
+      different ASTs for the same code. Mitigation: both crates pin identical grammar versions
+      in Cargo.toml (workspace-level dependency).
+  R4: Concurrent tool access. Multiple agents may issue ToolRequests simultaneously during
+      BSP supersteps. ToolRegistry must check SSB file locks before executing write tools
+      (orchestrator.txt L619: "No two agents write to same file simultaneously").
+
+
+STEPS
+
+4B.1 SKELETON — type stubs, trait impls, IPC message variants
+  PRE_GATE:
+    - Phase 4A contract tests pass: cargo test -p contracts --test ipc_*
+      (filter by actual Phase 4A test files, not cargo features — cargo silently ignores
+      unknown features, so --features phase_4a would pass even if no such feature exists)
+    - IPC channel functional: grep for "impl IpcChannel" in orchestrator crate returns hits
+    - ToolRegistry trait exists: grep for "trait ToolRegistry" returns exactly 1 hit
+    - DAIRA paper ingested: test -f workflow/papers/daira-interface.md
+    - ShortCoder paper ingested: test -f workflow/papers/shortcoder-interface.md
+  TASK:
+    - Define ToolRequest/ToolResult IPC message variants for all tool types:
+      git2 (GitCommit, GitUndo, GitBranch), validation (ValidateRequest),
+      trace (TraceRequest), edit (EditRequest with tier hint), simplify (SimplifyRequest),
+      classify (ClassifyRequest), file_read (FileReadRequest with force_full flag),
+      compile_check (CompileCheckRequest)
+    - Stub all tool handler functions in tools/ crate with todo!() bodies
+    - Register all tools in ToolRegistry with phase-aware filtering (tools.txt L17-18)
+    - Wire ToolRequest dispatch in orchestrator IPC handler (extend Phase 4A message loop)
+  DETERMINISTIC_CHECK:
+    - cargo check -p tools --all-features exits 0
+    - grep for "todo!()" in tools/src/ returns exactly N hits (one per stub, count documented)
+    - cargo test -p contracts --test ipc_* still passes (no regression)
+  ADVERSARIAL:
+    - If ToolRequest enum variants don't match ToolResult variants 1:1, deserialization
+      panics on mismatched discriminant. Test: round-trip every variant through postcard.
+    - If phase-aware filtering is wrong, PLANNING state could access edit tools.
+      Test: ToolRegistry::available_tools(FsmState::Planning) must NOT contain EditRequest.
+  ACCEPTANCE:
+    - All tool types have ToolRequest + ToolResult variants (verified by enum variant count)
+    - cargo check passes with 0 errors
+    - Phase 4A contract tests still pass (0 regressions)
+
+4B.2 VERIFY — compilation and regression check
+  PRE_GATE:
+    - Step 4B.1 ACCEPTANCE criteria met
+  TASK:
+    - Full workspace cargo check (not just tools crate)
+    - Run all existing contract tests
+    - Verify no warnings in tools/ crate (deny(warnings) in lib.rs)
+  DETERMINISTIC_CHECK:
+    - cargo check --workspace exits 0
+    - cargo test -p contracts exits 0
+    - cargo check -p tools 2>&1 | grep -c "warning" returns 0
+  ADVERSARIAL:
+    - If tools/ depends on knowledge/ for tree-sitter but knowledge/ isn't built yet,
+      workspace check fails. Test: cargo check -p tools --no-default-features to verify
+      tools/ compiles without optional knowledge dependency.
+  ACCEPTANCE:
+    - Zero errors, zero warnings in workspace check
+    - All prior contract tests pass
+
+4B.3 TEST — write failing tests for all deliverables
+  PRE_GATE:
+    - Step 4B.2 passes (workspace compiles clean)
+    - tools/tests/ directory exists: test -d crates/tools/tests
+  TASK:
+    - git2 auto-commit test: create temp repo, make changes, trigger auto-commit,
+      verify commit exists with deterministic message format
+    - 5-tier validation pipeline test: feed known-bad code through pipeline,
+      verify tiers execute in order (1->2->3->4->5), verify each tier returns findings
+    - DAIRA trace test: trace a known function, verify output contains [CALL], [RETURN],
+      [MUTATION] markers in correct order. Verify MarkerReport fields populated including
+      raw_line_count and marker_line_count (ratio drives AdaptiveTool budget decisions).
+    - 3-tier edit matching test: exact match succeeds, whitespace-normalized match
+      succeeds when exact fails, ellipsis match succeeds when both fail.
+      Verify failed edit returns SequenceMatcher similarity hint.
+    - ShortCoder test: simplify known code snippet, verify tree-sitter parse of output
+      matches structure of input (AST equivalence). Test R4/R6 configurable toggle.
+    - Failure taxonomy test: feed each error category (SYNTAX_ERROR, TYPE_ERROR, etc.)
+      through classifier, verify deterministic output (same input -> same classification).
+    - File read enhancement test: create file >300 lines, verify outline mode returned.
+      Create file <=300 lines, verify full mode. Test force_full=true bypasses threshold
+      but budget guard warns when file > 50% of remaining context.
+    - IPC round-trip test: serialize ToolRequest, send through mock IPC channel,
+      deserialize, verify fields match. Test error sanitization on response.
+    - Incremental compilation tests:
+      a. Write file with syntax error -> verify COMPILATION_ERROR returned to executor
+      b. Executor fixes error on retry -> verify file accepted
+      c. 3 failed rounds (initial + 2 retries) -> verify NEEDS_AUDIT flag set
+      d. During TESTING_FIRST phase -> verify compilation check NOT triggered
+      e. Compilation check runs async (does not block next file write)
+      f. Error referencing unwritten module -> DEFERRED classification (not COMPILATION_ERROR)
+  DETERMINISTIC_CHECK:
+    - Test count check: count=$(cargo test -p tools -- --list 2>/dev/null | grep -c ': test$'); test $count -ge 15
+    - cargo test -p tools exits with non-zero (tests fail because stubs return todo!())
+    - Each test function name matches pattern test_{tool_name}_{scenario}
+  ADVERSARIAL:
+    - If edit matching test uses trivial input, it passes on tier 1 and never exercises
+      tiers 2-3. Test: include whitespace-only and ellipsis-only test cases that MUST
+      fail tier 1 to verify fallthrough.
+    - If ShortCoder test input is already simplified, no rules fire and test is vacuous.
+      Test: input must contain constructs matching R1 (redundant assignment), R2 (boolean
+      simplification), R3 (single-use variable) descriptions from tools.txt section 7.
+      Verify SimplifiedCode.applied_rules.len() >= 3.
+    - If incremental compilation test uses a language not in the supported list,
+      it silently skips. Test: one test per supported language (Rust, Python, TS, Go).
+  ACCEPTANCE:
+    - >= 15 test functions defined across all deliverables
+    - All tests compile (cargo test -p tools --no-run exits 0)
+    - All tests fail at runtime (todo!() stubs — expected)
+
+4B.4 IMPLEMENT — make tests pass
+  PRE_GATE:
+    - Step 4B.3 tests compile (cargo test -p tools --no-run exits 0)
+    - All tests currently fail (confirmed by step 4B.3)
+  TASK:
+    - git2 native operations:
+      Auto-commit with deterministic message from phase outcome (not LLM prose).
+      Branch per plan: plan-{pipeline_id}. WIP commits for large phases (>5 edits).
+      Session-owned commit tracking with safe undo protocol (tools.txt section 4).
+    - 5-tier validation pipeline:
+      Tier 1 (determinism), Tier 2 (quality/AST), Tier 3 (unit), Tier 4 (integration),
+      Tier 5 (stress/adversarial). All run by auditor, executor never runs own tests
+      (tools.txt section 5).
+    - DAIRA trace with structured markers:
+      Tracing crate for Rust, sys.settrace for Python. Markers: [CALL], [RETURN],
+      [MUTATION], [BRANCH], [ERROR], [PANIC], [TIMEOUT], [FINDING], [PATTERN],
+      [ANOMALY], [STAT:name], [DURATION:name], [MEMORY:name], [CHECKPOINT], [STEP:n].
+      AdaptiveTool<T> wrapper with budget-based scope reduction (max 3 reductions).
+      (tools.txt section 6)
+    - 3-tier edit matching:
+      Tier 1 exact -> Tier 2 whitespace-normalized (preserve original indentation) ->
+      Tier 3 ellipsis-elision ("..." matches any line sequence).
+      On failure: SequenceMatcher similarity hint. Never silently apply wrong match.
+      (tools.txt section 3)
+    - ShortCoder AST-preserving simplification:
+      10 tree-sitter transform rules (R1-R10, tools.txt section 7). R4/R6 configurable.
+      Applied as post-processing on executor output before auditor review.
+    - Failure taxonomy (deterministic regex classification):
+      9 categories: SYNTAX_ERROR, TYPE_ERROR, IMPORT_ERROR, ASSERTION_ERROR, TIMEOUT,
+      EMPTY_OUTPUT, RUNTIME_PANIC, PERMISSION_DENIED, RESOURCE_EXHAUSTED.
+      Each with deterministic suggested_action. Auditor reads classification BEFORE raw
+      output. 3+ same-category failures in one phase -> anti-spiral trigger.
+      (tools.txt section 11)
+    - File read enhancement:
+      Outline mode for files >300 lines (tree-sitter parsed sections). force_full flag.
+      Budget guard: warns if file > 50% remaining context budget. INTERACTIVE: user decides.
+      AUTONOMOUS: auto-downgrade to outline. (tools.txt section 2)
+    - Incremental compilation feedback (ASYNC):
+      After each file write during EXECUTING: run cargo check / ruff / tsc / go vet
+      on the written file. Runs in background (async, per risk-register R51) — executor
+      proceeds to next file immediately. Results delivered via IPC when ready.
+      On failure: sanitized error + COMPILATION_ERROR category to executor.
+      Retry semantics: round 1 = initial check, round 2 = retry after executor fix,
+      round 3 = final retry. Max 3 rounds total (2 retry opportunities).
+      After round 3 failure: NEEDS_AUDIT flag, auditor gets compilation context.
+      NOT applied during TESTING_FIRST (test files expected to fail until EXECUTING).
+      DEFERRED classification for errors referencing unwritten modules (Risk R2).
+      (tools.txt section 10, risk-register R51)
+    - IPC ToolRequest/ToolResult serialization:
+      All tools dispatch through orchestrator IPC handler. Error messages sanitized before
+      reaching agent (strip rule_id, predicate types, hook names — tools.txt section 8).
+      ToolRegistry checks SSB file locks before executing write tools
+      (orchestrator.txt L619).
+  DETERMINISTIC_CHECK:
+    - cargo test -p tools exits 0 (all tests pass)
+    - count=$(cargo test -p tools -- --list 2>/dev/null | grep -c ': test$'); test $count -ge 15
+    - grep -r "todo!()" tools/src/ returns 0 hits
+    - grep -r "unimplemented!()" tools/src/ returns 0 hits
+    - cargo clippy -p tools -- -D warnings exits 0
+  ADVERSARIAL:
+    - If git2 auto-commit uses system time instead of ClockProvider, commits are
+      non-deterministic. Test: two commits with same ClockProvider seed -> identical timestamps.
+    - If validation pipeline tiers can run out of order (e.g., tier 3 before tier 1),
+      downstream tiers may operate on unchecked input. Test: inject a tier-1 failure,
+      verify tiers 2-5 do not execute.
+    - If AdaptiveTool scope reduction doesn't converge, it loops forever.
+      Test: feed input that always exceeds budget -> verify exactly 3 reduction attempts
+      then error return.
+    - If incremental compilation runs synchronously, executor blocks for 2-5s per file
+      (R51). Test: use mock compilation backend with 500ms configurable delay. Verify
+      executor's next ToolRequest is dispatched BEFORE mock compilation completes
+      (event ordering, not wall-clock — avoids CI scheduling jitter false failures).
+  ACCEPTANCE:
+    - All tool tests pass (cargo test -p tools exits 0)
+    - Zero todo!()/unimplemented!() in tools/src/
+    - Zero clippy warnings
+    - Incremental compilation runs async (verified by event-ordering test in 4B.4 ADVERSARIAL)
+    - cargo test -p tools -- test_shortcoder_ast_equivalence exits 0
+    - cargo test -p tools -- test_failure_taxonomy_deterministic exits 0 (runs 100 iterations internally)
+
+4B.5 MEASURE — collect performance and quality metrics
+  PRE_GATE:
+    - Step 4B.4 ACCEPTANCE criteria met (all tests pass)
+  TASK:
+    - Tool execution latency via IPC vs direct call
+      Metric: IPC dispatch overhead (serialization + routing + deserialization).
+      Target: <2ms overhead per tool call. Note: this is dispatch overhead only.
+      Raw IPC message latency is ~0.1ms (orchestrator.txt L554). Architecture-overview
+      "<5ms" includes tool execution time, not just dispatch.
+    - Compilation check latency per language:
+      Rust (cargo check): expected 2-5s per file.
+      Python (ruff check): expected <500ms per file. (UNGROUNDED — measure actual)
+      TypeScript (tsc --noEmit): expected <2s per file. (UNGROUNDED — measure actual)
+      Go (go vet): expected <1s per file. (UNGROUNDED — measure actual)
+    - Auditor BLOCK reduction from compilation feedback:
+      UNGROUNDED PROJECTION: design-time estimate is ~30% reduction in syntax/type error
+      BLOCKs (external-analysis.txt L348). Actual value unknown until Phase 4G operational
+      data. Measure: count COMPILATION_ERROR catches during EXECUTING, compare against
+      auditor BLOCK findings that would have caught the same errors.
+    - ShortCoder token savings: measure on 10 representative code samples.
+      Paper claims 18-38% (arxiv 2601.09703v1). Verify against actual codebase.
+  DETERMINISTIC_CHECK:
+    - Metrics file written: test -f .elai_cc/metrics/phase_4B.toml
+    - Metrics file contains keys: ipc_overhead_ms, compile_check_latency_rust_ms,
+      compile_check_latency_python_ms, compile_check_latency_typescript_ms,
+      compile_check_latency_go_ms, shortcoder_savings_pct, test_count, loc_tools
+    - IPC overhead < 2ms (extracted from metrics file)
+  ADVERSARIAL:
+    - If latency measured on first call only (cold cache), results are misleading.
+      Test: measure 100 calls, report p50/p95/p99 (not just mean).
+    - If ShortCoder savings measured on already-clean code, results are inflated.
+      Test: use representative executor output, not hand-crafted samples.
+  ACCEPTANCE:
+    - Metrics file exists with all required keys
+    - IPC dispatch overhead < 2ms (p95)
+    - All Phase 4B tests still pass after measurement instrumentation
+
+
+EXIT CRITERIA
+
+  All tools accessible through IPC ToolRequest/ToolResult protocol.
+  Validation pipeline catches errors before auditor (measured reduction logged).
+  Incremental compilation runs async, bounded at 3 retries, skips TESTING_FIRST.
+  All contract tests (Phase 0 through 4B) pass.
+  No todo!() or unimplemented!() remaining in tools/ crate.
+  Metrics recorded in .elai_cc/metrics/phase_4B.toml.
+  Every call site and struct that participates in request routing must wire ssb, fsm, and clock through the single RuntimeClient; no step may leave these fields as None or uninitialized after construction.
+
+
+BABY STEP INTEGRATION TEST RUNNER EXTENSION
+
+  The base 4B tools operate per-file. This extension adds an IntegrationTestRunner
+  that operates per-baby-step and per-level in the DecompositionTree (Phase 4E extension).
+
+  NEW TOOL: IntegrationTestRunner
+    Runs integration checks at 4 granularity levels:
+      BABY_STEP: cargo check on affected files after each baby step completion.
+        Target: <5s. Catches import errors, type mismatches immediately.
+      STEP: cargo test on step's module after all baby steps in step complete.
+        Target: <30s. Verifies baby steps compose correctly within a step.
+      PHASE: cargo test -p crate after all steps in phase complete.
+        Target: <60s. Verifies phase integrates with rest of crate.
+      CONCEPT: cargo test --workspace -- concept_tag after all phases in concept complete.
+        Target: <120s. End-to-end verification of concept.
+
+    struct IntegrationTestRunner {
+        level: IntegrationLevel,
+    }
+
+    enum IntegrationLevel { BabyStep, Step, Phase, Concept }
+
+    fn run_integration(
+        level: IntegrationLevel,
+        target: &IntegrationSpec,            // from DecompositionTree
+        project_root: &Path,
+    ) -> IntegrationResult
+
+    struct IntegrationResult {
+        level: IntegrationLevel,
+        passed: bool,
+        test_count: u32,
+        failures: Vec<String>,               // test names that failed
+        stdout_hash: [u8; 32],               // deterministic replay
+        elapsed_ms: u64,
+    }
+
+    Integration with existing tools:
+      - Uses existing BashSandbox for test execution (tools.txt S9)
+      - Uses existing FailureTaxonomy for error classification (tools.txt S11)
+      - Results returned via IPC ToolResult (Phase 4A wire protocol)
+      - BABY_STEP level uses incremental compilation infrastructure (4B S10)
+
+    Added to ToolRegistry: tool_id="integration_test", available in AUDITING state.
+    IntegrationTestRunner is NOT available during EXECUTING (executor writes code, not tests).
+    Integration tests are triggered by orchestrator after baby step acceptance, not by agent.
+
+  STEPS (4B.6-4B.7, extend base 4B.1-4B.5)
+
+  4B.6 INTEGRATION TEST RUNNER SKELETON + TESTS
+    PRE_GATE:
+      - 4B.5 MEASURE complete (base tools working)
+      - Phase 4E.7+ types exist (IntegrationSpec, IntegrationCheckpoint)
+    TASK:
+      - IntegrationTestRunner struct + IntegrationLevel enum + IntegrationResult struct
+      - run_integration() stub
+      - Tests:
+        - BABY_STEP: cargo check on single file -> IntegrationResult
+        - STEP: cargo test on module -> IntegrationResult with test count
+        - PHASE: cargo test -p crate -> IntegrationResult
+        - CONCEPT: cargo test --workspace -> IntegrationResult
+        - Failure at BABY_STEP level -> failures list populated
+        - Timeout handling: long-running test -> timeout, not hang
+    DETERMINISTIC_CHECK:
+      - cargo check -p tools (exit 0)
+      - grep -r "IntegrationTestRunner" .elai_cc/crates/tools/src/ | wc -l >= 1
+      - cargo test -p tools --lib -- integration_test (>= 6 tests)
+    ACCEPTANCE:
+      - Types compile, 6+ tests exist (initially failing)
+
+  4B.7 INTEGRATION TEST RUNNER IMPLEMENT + MEASURE
+    PRE_GATE:
+      - 4B.6 tests exist and fail
+    TASK:
+      - Implement run_integration for all 4 levels
+      - Use BashSandbox with appropriate timeouts per level
+      - Classify failures via FailureTaxonomy
+      - Measure: integration test latency per level, pass rate on test corpus
+    DETERMINISTIC_CHECK:
+      - All 6+ tests pass
+      - Metrics appended to .elai_cc/metrics/phase_4B.toml
+    ACCEPTANCE:
+      - BABY_STEP integration < 5s
+      - STEP integration < 30s
+      - Zero regressions
+
+
+GROUNDING
+
+  "tools execute in orchestrator process"
+    -> GROUNDED: tools.txt L75 ("All run by auditor agent"), architecture-overview L157-160
+  "IPC ToolRequest access"
+    -> GROUNDED: orchestrator.txt L427-429 (IPC wire format), phase-4A.txt L28-30 (message types)
+  "git2 native ops"
+    -> GROUNDED: tools.txt section 4, design PART 7.2
+  "5-tier validation"
+    -> GROUNDED: tools.txt section 5, design PART 7.3
+  "DAIRA trace, 80.8% resolution"
+    -> HIGH CONFIDENCE: external-analysis.txt L84 (secondary source). Paper (arxiv 2603.22048v2)
+       NOT YET INGESTED. Will be GROUNDED after paper-ingestor runs.
+  "ShortCoder 18-38% token savings"
+    -> HIGH CONFIDENCE: external-analysis.txt L95 (secondary source). Paper (arxiv 2601.09703v1)
+       NOT YET INGESTED. Will be GROUNDED after paper-ingestor runs.
+  "3-tier edit matching"
+    -> GROUNDED: tools.txt section 3, adopted from Aider (external-analysis.txt L50)
+  "failure taxonomy deterministic"
+    -> GROUNDED: tools.txt section 11, design 30.4
+  "<2ms IPC overhead"
+    -> PARTIALLY GROUNDED: orchestrator.txt L554 says ~0.1ms raw IPC. The <2ms target is for
+       dispatch overhead (serialization + routing + deserialization). Architecture-overview L260
+       says "<5ms per message" which includes tool execution. Metrics are distinct.
+  "~30% auditor BLOCK reduction"
+    -> UNGROUNDED: design-time estimate only (external-analysis.txt L348). No measured data.
+       Assumed because: compilation errors currently caught at AUDITING phase. Earlier feedback
+       should reduce these. Actual reduction to be measured post-Phase 4G.
+  "cargo check 2-5s per file"
+    -> UNGROUNDED: risk-register R51 states this. Training-derived estimate, not measured.
+  "ruff check <500ms"
+    -> UNGROUNDED: training-derived estimate. Measure during 4B.5.
+  "mypy <2s per file"
+    -> UNGROUNDED: training-derived estimate. Measure during 4B.5.
+  "async compilation (not blocking executor)"
+    -> GROUNDED: risk-register.txt L305-306 ("run in background while executor works on next file")
+  "SSB conflict detection for concurrent writes"
+    -> GROUNDED: orchestrator.txt L619 ("No two agents write to same file simultaneously")
+  "tree-sitter grammar shared with knowledge/"
+    -> GROUNDED: tools.txt L4 ("Depends on: core/, knowledge/ (for tree-sitter AST)")
+  "AdaptiveTool max 3 reductions"
+    -> GROUNDED: tools.txt L98 ("Max 3 reductions")

@@ -1,0 +1,182 @@
+Coding AI Model & Framework Analysis - Technical Summary
+
+2026 LANDSCAPE:
+From code completion to autonomous stateful orchestration
+- Specialized reasoning models + custom inference hardware
+- Focus on Cognition SWE-1.5, Windsurf Phoenix Alpha, Claude 4.6 ecosystem
+- Hardware-accelerated vs general-purpose models
+
+TOP FRONTIER SYSTEMS:
+
+1. Claude 4.6 Ecosystem:
+   - Opus 4.6: Deep reasoning, multi-agent orchestration
+   - Sonnet 4.6: Cost-effective, large-scale reasoning
+   - Claude Code CLI: Stateful orchestration framework
+
+2. Cognition SWE-1.5:
+   - Hardware-accelerated (Cerebras WSE-3)
+   - 950 tokens/second generation speed
+   - RLHF optimized for software engineering
+   - Native engineering judgment
+
+3. Windsurf Phoenix Alpha:
+   - Fast iteration, rapid prototyping
+   - Cascade agentic harness with RAG
+   - SWE-grep sub-agents for AST retrieval
+   - 128K context optimization
+
+TECHNICAL ARCHITECTURES:
+
+Claude 4.6 Reasoning Paradigm:
+- Variable thinking budget with <thinking> tags
+- Effort parameter: low/medium/max
+- Max effort: Exhaustive reasoning depth
+- Context Compaction: Server-side summarization
+- Context rot mitigation via compact_control
+
+SWE-1.5 Architecture:
+- Reinforcement Learning from Human Feedback (RLHF)
+- IDE telemetry training data
+- Terminal execution log analysis
+- Browser trajectory optimization
+- Internalized senior engineering judgment
+
+Windsurf Cascade System:
+- Retrieval-Augmented Generation (RAG) pipeline
+- Local indexing engine
+- SWE-grep AST snippet retrieval
+- Fast Context for efficient workflows
+- 128K context window management
+
+HARDWARE STRATEGIES:
+
+Distributed GPU/TPU Clusters:
+- Massive parallel processing capability
+- High memory bandwidth utilization
+- Suitable for Claude 4.6 Opus
+- Enterprise-grade infrastructure
+
+Specialized Wafer-Scale Silicon:
+- Cerebras WSE-3 for SWE-1.5
+- 950 tokens/second generation
+- Eliminates context-switching tax
+- Synchronous flow state maintenance
+
+Local Optimization:
+- Standard GPU/TPU deployments
+- Cost-effective for smaller models
+- Suitable for Sonnet 4.6, Phoenix Alpha
+- Prosumer workstation configurations
+
+BENCHMARK PERFORMANCE:
+
+SWE-bench Verified:
+- Claude Opus 4.6: 80.8%
+- Claude Sonnet 4.6: 79.6%
+- SWE-1.5: Comparable to Claude 4.6
+- Statistical tie between Opus and Sonnet
+
+OSWorld (UI Traversal):
+- Claude Sonnet 4.6: 72.5%
+- Near-human competence
+- Visual testing optimization
+- Arbitrary UI understanding
+
+API Cost Structure:
+- Claude Opus 4.6: $5 input/$25 output per million tokens
+- Claude Sonnet 4.6: $3 input/$15 output per million tokens
+- Sonnet: 1/5th cost, 2x speed vs Opus
+
+CONTEXT MANAGEMENT STRATEGIES:
+
+Claude Context Compaction:
+- Server-side intervention at threshold
+- <summary> XML tag injection
+- Conversation history truncation
+- Prevents multi-stage task failures
+
+Limitations:
+- Forensic data loss during compaction
+- "Summaries of summaries" hallucinations
+- Raw upstream data stripping
+- Requires compact_control management
+
+Windsurf Fast Context:
+- Local indexing engine
+- AST snippet retrieval only
+- 128K window optimization
+- Cost-effective sequential modifications
+
+APPLICATION DOMAINS:
+
+High-Frequency Iteration:
+- Frontend UI development
+- Rapid prototyping
+- Real-time collaboration
+- SWE-1.5 optimal (950 tokens/sec)
+
+Autonomous Background Tasks:
+- CI/CD pipeline integration
+- Ticket resolution workflows
+- Large-scale test generation
+- Claude Code CLI optimal
+
+Reverse Engineering:
+- Complex binary analysis
+- Legacy codebase understanding
+- Deep architectural reasoning
+- Claude Opus 4.6 optimal
+
+DEPLOYMENT RECOMMENDATIONS:
+
+Workflow Selection:
+- Fast iteration: Windsurf Phoenix Alpha
+- Background automation: Claude Code CLI + Sonnet 4.6
+- Deep analysis: Claude Opus 4.6
+- Cost-sensitive: Sonnet 4.6 over Opus
+
+Hardware Configuration:
+- Enterprise: Multi-node GPU/TPU clusters
+- Prosumer: Single high-end workstation
+- Specialized: Cerebras WSE-3 for SWE-1.5
+- Local: Standard GPU optimization
+
+Context Strategy:
+- Disable compaction for forensic tasks
+- Use Fast Context for sequential workflows
+- Monitor context rot in long sessions
+- Optimize token usage via effort parameters
+
+CRITICAL THRESHOLDS:
+
+Performance Metrics:
+- SWE-bench Verified: >79% for production use
+- Token generation: >500/sec for real-time workflows
+- Context window: >100K for complex tasks
+- API cost: <$20/million tokens for enterprise
+
+Quality Indicators:
+- Reasoning depth consistency
+- Multi-agent coordination success
+- Context preservation across sessions
+- Error handling robustness
+
+FUTURE DIRECTIONS:
+
+Architecture Evolution:
+- Beyond variable thinking budgets
+- Advanced context compaction algorithms
+- Hardware-software co-design
+- Cross-framework interoperability
+
+Model Specialization:
+- Domain-specific fine-tuning
+- Workflow-optimized architectures
+- Hardware-aware model design
+- Cost-performance optimization
+
+Integration Trends:
+- Unified development environments
+- Cloud-edge hybrid deployments
+- Automated workflow orchestration
+- Real-time collaboration tools

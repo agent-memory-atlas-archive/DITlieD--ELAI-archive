@@ -1,0 +1,1260 @@
+PHASE 4D: PIPELINE FACTORY L1 (designer + FlashResearch)
+Prerequisites: Phase 4A complete (agent process isolation Tier C operational)
+Status: IMPROVED 2026-04-06
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Research Agent designs pipelines from task descriptions. Tree-structured research
+with GRC grounding. Produces PipelineSpec + QualitySpec via structured ResearchReport.
+Paper reference: arxiv 2510.05145 (FlashResearch — up to 5x speedup over sequential).
+
+READ BEFORE IMPLEMENTING
+  docs/specs/integration/pipeline-factory.txt   Sections 1-9 (L1 designer, Research Agent, tree architecture, source quality, output types, progress tracking)
+  docs/specs/crates/reasoning.txt               GRC grounding (sec 2-5) + IPC-proxied verification (sec 9)
+  docs/specs/decisions/external-analysis.txt    FlashResearch entry + deep research survey refs
+  workflow/papers/flashresearch-interface.md     Ingested paper interface map (hyperparameters, invariants, failure modes)
+
+
+STEPS
+
+  4D.1 SKELETON (types + stubs)
+    PRE_GATE:
+      - Phase 4A contract tests pass: cargo test -p orchestrator --lib -- agent_process (exit 0)
+      - Agent IPC operational: grep -r "AgentProcess" .elai_cc/crates/orchestrator/src/ returns matches
+      - GRC engine exists: cargo test -p reasoning --lib (exit 0)
+    TASK:
+      - Research Agent role config (model: cloud preferred or Gemma4, GRC budget: 10/1200)
+      - Designer role config (DISTINCT from Executor):
+          Role: AgentRole::Designer (not Executor). Model: reuses executor model (Gemma 4 31B).
+          GRC budget: 8/1200. required_steps: [Observe, Hypothesize, PlanAction, Verify, Converge].
+          role_prompt: "Design a phased execution plan from the research findings.
+            Output: TOML PipelineSpec with phases, dependencies, tool requirements,
+            resource estimates, and quality metrics. Do not implement. Plan only."
+          Designer produces PipelineSpec from Research Report + user task.
+          Different from Executor: different role_prompt, required_steps, output format.
+          Source: technical-analysis-v3.txt Concern 5.
+      - L1 Designer receives SystemConstraints as input:
+          SystemConstraints (extended): { model_max_context, available_for_work,
+            avg_file_tokens, avg_test_tokens }
+          When knowledge index has < 10 files: avg_file_tokens = elai_cc.toml
+            [planning.sizing.default_avg_file_tokens] (default: 150), avg_test_tokens =
+            elai_cc.toml [planning.sizing.default_avg_test_tokens] (default: 80).
+          When index has >= 10 files: use knowledge_engine.index_stats() values.
+          L1 Designer's Observe step includes context budget constraint as planning input.
+          Source: technical-analysis-v3.txt Concern 4, orchestrator.txt S13A.
+      - ResearchTree + ResearchNode types (from pipeline-factory.txt sec 5):
+          ResearchTree { plan:ResearchPlan, state:SharedResearchState, root:NodeId,
+            breadth_factor:u32, depth_limit:u32, max_iterations:u32,
+            phi_min:f64, psi_min:f64, speculative_depth:u32, time_budget:Duration }
+          ResearchNode { question:String, parent:Option<NodeId>, children:Vec<NodeId>,
+            phi:f64, psi:f64, status:NodeStatus, info_gain:f64, iterations:u32 }
+          NodeId: newtype over u64 (typed index into node arena)
+          NodeStatus enum { Pending, Active, Converged, Pruned }
+          ResearchPlan { query:String, complexity:QueryComplexity, sub_questions:Vec<String> }
+          SharedResearchState { nodes:HashMap<NodeId,ResearchNode>, next_id:NodeId }
+          QueryComplexity enum { Simple, Moderate, Complex }
+      - Supporting types for output (pipeline-factory.txt sec 8):
+          ResearchTreeSnapshot { nodes:Vec<ResearchNodeSnapshot>, edges:Vec<(NodeId,NodeId)> }
+          ConvergenceStatus enum { Converged { phi:f64, psi:f64 }, Partial { phi:f64, psi:f64, reason:String }, Failed { reason:String } }
+          Alternative { description:String, sources:Vec<SourceCitation>, evidence_level:EvidenceLevel }
+          Contradiction { claim_a:String, claim_b:String, source_a:SourceCitation, source_b:SourceCitation }
+          EvidenceLevel enum { Benchmark(1.0), OfficialDocs(0.8), BlogPost(0.6), Training(0.4) }
+            Ranking formula: evidence_level.score() * source_quality_avg (pure arithmetic, pipeline-factory.txt L144)
+      - PipelineSpec + QualitySpec types (from pipeline-factory.txt sec 10):
+          QualityMetric { name, target, unit, method, phase, hard_fail }
+          MediaSpec { output_name, format, resolution, ssim_threshold, vlm_check,
+            output_type: OutputType }
+          OutputType enum { Web, Model3D, Audio, UiScreenshot, Animation, Image, Custom(String) }
+          PerfSpec { name, target, unit, method, sample_count }
+      - ResearchReport + SubQuestionResult types (from pipeline-factory.txt sec 8):
+          ResearchReport { query:String, tree:ResearchTreeSnapshot, sub_questions:Vec<SubQuestionResult>,
+            total_sources_fetched:usize, total_sources_used:usize, total_iterations:usize,
+            total_nodes_explored:usize, total_nodes_pruned:usize, speculative_hit_rate:f64,
+            convergence_status:Vec<(String, ConvergenceStatus)> }
+          SubQuestionResult { question:String, answer:String, sources:Vec<SourceCitation>,
+            confidence:f64, phi:f64, psi:f64, depth:u32,
+            alternatives:Vec<Alternative>, contradictions:Vec<Contradiction> }
+          Confidence formula (pipeline-factory.txt L166): source_count * avg_quality * agreement_ratio
+      - SourceCitation { url, extracted_quote, quality_tier:SourceQuality }
+      - Source quality tiering (5-tier, deterministic, domain-based lookup — pipeline-factory.txt sec 7):
+          SourceQuality enum { Tier1(1.0), Tier2(0.8), Tier3(0.6), Tier4(0.4), Tier5(0.2) }
+          Assignment: domain lookup table + heuristic rules. No LLM.
+          Configurable: elai_cc.toml [research.trusted_domains]
+      - GRC-grounded task decomposition stubs (observe -> sub-questions -> per-node research loop)
+      - SSB progress tracking stubs: action_type='research_step' per iteration (sec 9)
+      - Research Agent runs as isolated process (Tier C):
+          Network: web search tool only, via orchestrator IPC proxy
+          GRC verification: proxied via IPC GroundingRequest (reasoning.txt sec 9)
+          Filesystem: no access to .elai_cc/ or project source
+          Model access: via IPC to orchestrator's LlmProvider
+      - Adaptive complexity assessment stub (pipeline-factory.txt sec 5 L113-118):
+          Simple (single concept): breadth=2, depth=3, phi_min=0.8, psi_min=0.7
+          Moderate (comparison): breadth=3, depth=4, phi_min=0.7, psi_min=0.6
+          Complex (novel domain): breadth=4, depth=5, phi_min=0.6, psi_min=0.5
+          (phi_min/psi_min adapted per complexity — flashresearch-interface.md L49 pitfall: no hardcoded thresholds)
+      - information_gain_threshold:f64 (range [0.1, 0.9], flashresearch-interface.md L8):
+          Below threshold for 3 consecutive iterations -> prune node
+      - Deferred aggregation node for parallel sub-question collection (pipeline-factory.txt sec 6):
+          Root children: parallel (independent sub-questions)
+          Local models: sequential within each tree level (one GPU)
+          Cloud APIs: parallel across breadth, rate-limit aware (via orchestrator.txt sec 8 Dynamic Fan-Out)
+          Pruned branches: resources freed immediately for active branches
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator (exit 0, types compile)
+      - grep -r "ResearchTree" .elai_cc/crates/orchestrator/src/ | wc -l  # >= 1
+      - grep -r "ResearchReport" .elai_cc/crates/orchestrator/src/ | wc -l  # >= 1
+      - grep -r "SourceQuality" .elai_cc/crates/orchestrator/src/ | wc -l  # >= 1
+      - grep -r "QualityMetric" .elai_cc/crates/orchestrator/src/ | wc -l  # >= 1
+      - grep -r "ConvergenceStatus" .elai_cc/crates/orchestrator/src/ | wc -l  # >= 1
+      - grep -r "EvidenceLevel" .elai_cc/crates/orchestrator/src/ | wc -l  # >= 1
+      - grep -r "research_step" .elai_cc/crates/orchestrator/src/ | wc -l  # >= 1 (SSB tracking stub)
+      - grep -r "MediaSpec" .elai_cc/crates/orchestrator/src/ | wc -l  # >= 1
+    ADVERSARIAL:
+      - If ResearchTree allows cycles, tree traversal diverges. Test: construct node with parent=self, assert rejection.
+      - If SourceQuality uses LLM instead of lookup table, results are non-deterministic. Test: same URL returns same tier across 100 calls.
+      - If GRC budget is not set to 10/1200, Research Agent may exhaust budget mid-research. Test: assert config matches spec.
+    ACCEPTANCE:
+      - All types from pipeline-factory.txt sec 5, 7, 8, 10 have Rust struct/enum definitions
+      - Research Agent role config exists with GRC budget 10/1200
+      - Source quality assignment is pure function (no async, no LLM, no network)
+      - SSB tracking stub compiles
+    GROUNDING:
+      - "ResearchTree fields (plan,state,root,breadth,depth,max_iter,phi_min,psi_min,spec_depth)" -> GROUNDED: pipeline-factory.txt L65-75
+      - "ResearchTree.time_budget" -> GROUNDED: flashresearch-interface.md L8 (mandatory input)
+      - "ResearchNode fields (question,parent,children,phi,psi,status)" -> GROUNDED: pipeline-factory.txt L77-84
+      - "ResearchNode.info_gain" -> GROUNDED: flashresearch-interface.md L8 (information_gain_threshold) + pipeline-factory.txt L179 (SSB payload)
+      - "ResearchNode.iterations" -> GROUNDED: pipeline-factory.txt L71 (max_iterations field on tree, tracked per node)
+      - "ResearchPlan, SharedResearchState" -> GROUNDED: pipeline-factory.txt L66-67 (named in ResearchTree struct)
+      - "ResearchTreeSnapshot, ConvergenceStatus" -> GROUNDED: pipeline-factory.txt L151, L159
+      - "Alternative, Contradiction" -> GROUNDED: pipeline-factory.txt L170-171
+      - "EvidenceLevel enum values" -> GROUNDED: pipeline-factory.txt L53 (BENCHMARK > OFFICIAL_DOCS > BLOG_POST > TRAINING)
+      - "Source quality 5 tiers" -> GROUNDED: pipeline-factory.txt L133-144
+      - "GRC budget 10/1200" -> GROUNDED: pipeline-factory.txt L51 + reasoning.txt L96
+      - "IPC-proxied verification" -> GROUNDED: reasoning.txt L136-154
+      - "Adaptive complexity ranges" -> GROUNDED: pipeline-factory.txt L113-118
+      - "Adaptive phi_min/psi_min per complexity" -> GROUNDED: flashresearch-interface.md L49 (pitfall: no hardcoded thresholds)
+      - "information_gain_threshold" -> GROUNDED: flashresearch-interface.md L8 (mandatory, sensitivity=high)
+      - "Deferred aggregation + Dynamic Fan-Out" -> GROUNDED: pipeline-factory.txt L121-130
+      - "MediaSpec" -> GROUNDED: pipeline-factory.txt L191
+      - "Confidence formula" -> GROUNDED: pipeline-factory.txt L166
+
+  4D.2 VERIFY (compilation + existing tests)
+    PRE_GATE:
+      - 4D.1 DETERMINISTIC_CHECK all pass
+    TASK:
+      - Full workspace compilation: cargo build --workspace
+      - All existing contract tests still pass: cargo test --workspace
+      - No new warnings in orchestrator crate
+    DETERMINISTIC_CHECK:
+      - cargo build --workspace (exit 0)
+      - cargo test --workspace (exit 0)
+      - cargo clippy -p orchestrator -- -D warnings (exit 0)
+    ADVERSARIAL:
+      - If new types conflict with existing orchestrator types (name collision), build fails. Test: cargo build exit code.
+    ACCEPTANCE:
+      - Zero compilation errors, zero new warnings, zero test regressions
+
+  4D.3 TESTS (contract + integration, expected to FAIL)
+    PRE_GATE:
+      - 4D.2 passes (workspace compiles clean)
+    TASK:
+      - Contract tests for ResearchTree invariants (pipeline-factory.txt sec 16):
+          - Tree depth bounded by depth_limit (default 5, never exceeded)
+          - Tree breadth bounded by breadth_factor per node (default 3)
+          - Research tree is always acyclic (child never references ancestor)
+          - Every node has bounded iterations (max_iterations enforced per node)
+          - Dual-threshold convergence: node converged only when phi >= phi_min AND psi >= psi_min
+          - Source quality scores are deterministic (domain lookup, no LLM)
+          - Research Report confidence = source_count * avg_quality * agreement_ratio (pipeline-factory.txt L166)
+          - Contradictions surfaced, never silently resolved
+          - Parallel sub-questions bounded by resource limits (local: sequential)
+          - Speculative execution disabled when local model (single GPU)
+          - Speculative execution bounded by speculative_depth * breadth_factor nodes
+          - Pruned speculative branches free resources immediately
+          - speculative_hit_rate tracked for adaptive tuning
+          - Total sources tracked (fetched vs used) for efficiency metrics
+      - Integration tests:
+          - Task description -> ResearchReport with grounded alternatives
+          - PipelineSpec generated from ResearchReport (only grounded references)
+          - QualitySpec has measurable metrics (unmeasurable -> REJECT via L2 validation)
+          - Research Agent has web search access via IPC proxy only
+          - Research Agent cannot access .elai_cc/ or project source (Tier C isolation)
+          - SSB receives research_step events during research
+          - time_budget enforcement: research terminates within budget
+          - Adaptive complexity: simple query gets breadth=2/depth=3, complex gets breadth=4/depth=5
+      - Property-based tests (proptest):
+          - Random tree construction never produces cycles
+          - Random node phi/psi values always in [0.0, 1.0]
+          - Source quality tier assignment is idempotent
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- research_tree (compiles, tests exist, expected FAIL)
+      - Test count >= 14 (one per testable invariant from pipeline-factory sec 16)
+      - grep -c "#\[test\]" in research test files >= 14
+    ADVERSARIAL:
+      - If phi/psi thresholds are not validated at construction, node can have phi=2.0. Test: assert ResearchNode::new rejects phi > 1.0.
+      - If speculative execution runs on local GPU, it starves the main research. Test: assert speculative_depth=0 when provider.is_local().
+      - If time_budget is not enforced, research runs forever on complex queries. Test: set time_budget=1s, assert termination.
+      - If info_gain is not tracked, tree cannot prune low-value branches. Test: after 3 iterations with info_gain=0.0, node status=Pruned.
+    ACCEPTANCE:
+      - >= 14 contract tests exist and compile
+      - >= 3 integration tests exist and compile
+      - >= 3 proptest strategies exist and compile
+      - All tests FAIL (stubs not implemented yet — red phase of TDD)
+
+  4D.4 ADVERSARIAL TESTS (security + edge cases)
+    PRE_GATE:
+      - 4D.3 tests compile (cargo test -p orchestrator --lib --no-run exits 0)
+    TASK:
+      - Research Agent filesystem escape: attempt to read /etc/passwd or .elai_cc/config.toml via tool call, assert BLOCKED
+      - Research Agent direct network access: attempt raw HTTP from agent process, assert BLOCKED (only IPC proxy allowed)
+      - GRC budget exhaustion: set budget to 1/100, run complex research, assert forced convergence (not hang)
+      - Tree depth bomb: task that generates recursive sub-questions, assert depth_limit enforced
+      - Tree breadth bomb: task where every node spawns max children, assert breadth_factor enforced
+      - Speculative branch pruning: parent changes direction after speculative children started, assert children pruned and resources freed
+      - Source quality gaming: URL with misleading domain (e.g. arxiv.phishing.com), assert Tier5 not Tier1
+      - Empty task description: assert graceful error, not panic
+      - All-TRAINING Research Report: assert flagged HIGH_RISK per pipeline-factory.txt sec 3 L36-37
+      - Contradictions in sources: two sources disagree, assert contradiction surfaced in SubQuestionResult.contradictions
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- adversarial_research (compiles, tests exist)
+      - grep -r "#\[test\]" .elai_cc/crates/orchestrator/tests/adversarial_research/ | wc -l  # >= 8
+    ADVERSARIAL:
+      - If domain lookup uses substring match, "arxiv.evil.com" matches "arxiv". Test: exact domain or subdomain match only.
+      - If agent can specify arbitrary IPC message types, it could forge GroundingResult. Test: agent can only send GroundingRequest, never GroundingResult.
+    ACCEPTANCE:
+      - >= 8 adversarial tests exist and compile
+      - All adversarial tests FAIL (stubs not implemented — red phase)
+    GROUNDING:
+      - "filesystem escape blocked" -> GROUNDED: reasoning.txt L148 (agent never makes network calls)
+      - "IPC proxy only" -> GROUNDED: reasoning.txt L136-148
+      - "ALL-TRAINING flagged HIGH_RISK" -> GROUNDED: pipeline-factory.txt L36-37
+      - "contradictions surfaced" -> GROUNDED: pipeline-factory.txt L171, sec 16 L241
+
+  4D.5 IMPLEMENT (make tests pass)
+    PRE_GATE:
+      - 4D.3 and 4D.4 tests compile (cargo test -p orchestrator --no-run exits 0)
+      - All tests currently FAIL (red phase confirmed)
+    TASK:
+      - Research Agent with GRC-grounded decomposition:
+          Per-node research loop (pipeline-factory.txt sec 5 L87-101):
+            1. FORMULATE: GRC generates search query from sub-question + prior findings
+            2. SEARCH: web search tool returns top N results (default 10) via IPC
+            3. EXTRACT: fetch page content, sampling-based relevance filtering
+               (read first 500 tokens, score, read full if above threshold)
+            4. REFLECT: GRC evaluates phi (goal satisfaction), psi (quality),
+               contradictions, new sub-questions, information gain
+            5. CONVERGE/EXPAND/ITERATE: based on thresholds and limits
+      - ResearchTree with tree-structured expansion:
+          Node lifecycle: Pending -> Active -> (Converged | Pruned)
+          Tree invariant: acyclic (parent chain check on every child spawn)
+          Bounded: depth_limit, breadth_factor, max_iterations per node
+      - Speculative execution (cloud only, pipeline-factory.txt sec 5 L104-111):
+          Trigger: node phi > 0.4 suggests likely child questions
+          Execute top speculative_depth children before parent converges
+          Pruning: parent direction change -> cancel speculative children
+          Local models: speculative_depth forced to 0
+          Bounded cost: speculative_depth * breadth_factor max wasted nodes
+      - Dual-threshold convergence, adaptive breadth/depth:
+          Convergence: phi >= phi_min AND psi >= psi_min
+          Adaptive: complexity assessment adjusts breadth_factor and depth_limit
+      - Source quality tiering (deterministic domain lookup, no LLM):
+          5-tier assignment per pipeline-factory.txt sec 7
+          Ranking formula: evidence_level * source_quality_avg (pure arithmetic)
+      - PipelineSpec + QualitySpec generation from ResearchReport:
+          L1 can ONLY reference alternatives from ResearchReport (sec 3 L39)
+          QualityMetric must have automated check method (unmeasurable -> REJECT)
+      - Parallel sub-question processing (pipeline-factory.txt sec 6):
+          Dynamic Fan-Out via orchestrator.txt sec 8
+          Deferred aggregation node collects all sub-results after tree converges
+          Rate-limit aware for cloud APIs
+      - SSB progress tracking: write research_step per iteration to SSB
+      - time_budget enforcement: check elapsed time in research loop, terminate gracefully
+      - information_gain_threshold enforcement: prune nodes below threshold for 3 consecutive iterations
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- research_tree (all pass, exit 0)
+      - cargo test -p orchestrator --lib -- adversarial_research (all pass, exit 0)
+      - cargo test --workspace (zero regressions)
+    ADVERSARIAL:
+      - If EXTRACT reads full page for every result, token budget explodes. Test: assert sampling filter invoked (mock 100 results, count full reads < 100).
+      - If convergence check uses OR instead of AND for phi/psi, low-quality answers pass. Test: node with phi=0.8,psi=0.1 must NOT converge.
+      - If time_budget check is only at tree root, deep branches can run past budget. Test: set tight budget, assert no node starts after budget expired.
+    ACCEPTANCE:
+      - All contract tests from 4D.3 pass (>= 14 green)
+      - All adversarial tests from 4D.4 pass (>= 8 green)
+      - All integration tests pass
+      - Zero test regressions across workspace
+      - Source quality assignment produces identical output for same input across 1000 calls
+      - Research Agent process has no direct network socket:
+          Unix: lsof -i -p $PID returns empty
+          Windows: netstat -ano | findstr $PID returns only named pipe / no TCP/UDP
+          (test uses platform-conditional check via cfg(target_os))
+
+  4D.6 MEASURE
+    PRE_GATE:
+      - 4D.5 DETERMINISTIC_CHECK all pass
+    TASK:
+      - Research quality: grounding level distribution (% VERIFIED vs HIGH vs UNCERTAIN in ResearchReport)
+      - Pipeline spec size: token count of generated PipelineSpec
+      - Tree depth/breadth utilization: avg depth used vs depth_limit, avg breadth vs breadth_factor
+      - Convergence speed: iterations to convergence per node (mean, p50, p95)
+      - speculative_hit_rate: % of speculative branches that contributed to final report
+      - Source quality distribution: % of sources per tier in final report
+      - time_budget adherence: actual_time / time_budget ratio
+      - SSB event count: research_step events emitted per research run
+      - info_gain per iteration: trend (should increase then plateau, not flat)
+    DETERMINISTIC_CHECK:
+      - Metrics file exists: test -f .elai_cc/metrics/phase_4D.toml
+      - All metric keys present: grep -c "grounding_distribution\|spec_token_count\|depth_utilization\|convergence_p50\|speculative_hit_rate\|source_tier_distribution\|time_budget_ratio\|ssb_event_count\|info_gain_trend" .elai_cc/metrics/phase_4D.toml >= 9
+    ACCEPTANCE:
+      - Metrics file written with all 9 metric categories
+      - grounding_distribution has zero UNCERTAIN entries (all resolved before output)
+      - time_budget_ratio <= 1.1 (within 10% of budget)
+      - speculative_hit_rate tracked (even if 0.0 for local-only runs)
+
+
+REQUIRED DOCS (created before EXECUTING, per CLAUDE.md):
+  workflow/reasoning/phase-4D-decisions.md   (what, key decision, expected test outcome, unknowns)
+  workflow/reasoning/phase-4D-grounding.md   (grounding sweep results for all claims)
+
+EXIT CRITERIA
+  Research Agent produces grounded pipeline designs from arbitrary task descriptions.
+  All 14 contract invariants from pipeline-factory.txt sec 16 tested and passing.
+  All 8+ adversarial tests passing.
+  Source quality tiering is deterministic (provable via repeated runs).
+  SSB progress tracking operational for INTERACTIVE mode visibility.
+  PipelineSpec contains only grounded references from ResearchReport.
+  QualitySpec rejects unmeasurable metrics.
+  time_budget enforced within 10% tolerance.
+  Every call site and struct that participates in request routing must wire ssb, fsm, and clock through the single RuntimeClient; no step may leave these fields as None or uninitialized after construction.
+
+
+RECURSIVE DECOMPOSITION EXTENSION (Fractal Research Pipeline)
+
+  The base 4D steps (4D.1-4D.6) produce a flat ResearchTree for a single task.
+  This extension makes FlashResearch recursive: it operates at all 4 levels of the
+  decomposition tree (Concept -> Phase -> Step -> BabyStep), with grounded research
+  at every node. The LLM never controls flow. The orchestrator drives traversal.
+
+  DESIGN PRINCIPLE
+    The system is a PIPELINE, not a session. Each agent is a tool. The orchestrator
+    (Rust code) drives everything deterministically. The LLM does not decide what to
+    research next — the TreeNavigator does. The LLM does not choose frameworks — it
+    receives grounded options from research and either picks (autonomous) or presents
+    (interactive). The LLM cannot implement something unverified.
+
+  DECOMPOSITION LEVELS
+    Level 0 — IDEA: user input. System runs top-level FlashResearch.
+      Output: ConceptDecomposition (list of N concepts with feasibility scores).
+      Research scope: profitability, usefulness, tech stack feasibility, language choice.
+      Gate: all concepts must have grounded feasibility > threshold or be dropped.
+
+    Level 1 — CONCEPT: e.g. "Database Schema & RLS", "Core API Backend".
+      Each concept gets its own research cycle via FlashResearch.
+      Output: PhaseDecomposition per concept (frameworks, packages, approach).
+      Research scope: which framework, which packages, API compatibility, version constraints.
+      Gate: each phase must reference grounded package/framework (verified exists + compatible).
+
+    Level 2 — PHASE: e.g. "concept1_phase1: JWT Auth with Axum".
+      Each phase gets research on specific implementation approach.
+      Output: StepDecomposition per phase (ordered implementation steps).
+      Research scope: exact API usage, version-specific behavior, edge cases.
+      Gate: each step must have a grounded implementation path (not training-derived).
+
+    Level 3 — STEP -> BABY STEPS: e.g. "concept1_phase1_stepA: Argon2 hashing".
+      Each step decomposed into atomic baby steps (<2K token context each).
+      Output: Vec<BabyStepSpec> per step. Each BabyStepSpec has full 8-block structure.
+      Research scope: exact function signatures, error handling, test patterns.
+      Gate: each baby step must be independently executable and testable.
+
+  NEW TYPES (added to orchestrator crate alongside existing ResearchTree types)
+
+    struct ConceptDecomposition {
+        idea: String,
+        concepts: Vec<ConceptNode>,
+        research: ResearchReport,              // top-level research findings
+        feasibility_scores: Vec<(String, f64)>, // per concept, [0.0, 1.0]
+    }
+
+    struct ConceptNode {
+        concept_id: ConceptId,
+        name: String,                          // e.g. "Database Schema & RLS"
+        description: String,
+        research: Option<ResearchReport>,      // populated at Level 1
+        phases: Vec<PhaseNode>,                // populated at Level 2
+        feasibility: f64,                      // from research, [0.0, 1.0]
+        tech_stack: Option<TechStackDecision>, // framework + language + packages
+    }
+
+    struct PhaseNode {
+        phase_id: PhaseId,
+        concept_id: ConceptId,                 // parent
+        name: String,                          // e.g. "JWT Auth with Axum"
+        research: Option<ResearchReport>,      // populated at Level 2
+        steps: Vec<StepNode>,                  // populated at Level 3
+        framework: Option<String>,
+        packages: Vec<PackageRef>,
+        depends_on: Vec<PhaseId>,              // cross-concept dependencies
+    }
+
+    struct StepNode {
+        step_id: StepId,
+        phase_id: PhaseId,                     // parent
+        name: String,                          // e.g. "Argon2 password hashing"
+        research: Option<ResearchReport>,      // populated at Level 3
+        baby_steps: Vec<BabyStepSpec>,
+    }
+
+    struct BabyStepSpec {
+        baby_step_id: BabyStepId,
+        step_id: StepId,                       // parent
+        grounding: BabyStepGrounding,
+        pre_gate: Vec<PreGateCondition>,
+        task: TaskSpec,
+        tdd: TddSpec,
+        deterministic_check: Vec<DeterministicCheck>,
+        acceptance: AcceptanceCriteria,
+        integration: IntegrationSpec,
+        exit_criteria: Vec<ExitCriterion>,
+    }
+
+    struct BabyStepGrounding {
+        research_findings: Vec<SourceCitation>, // relevant findings for THIS baby step
+        overall_context_summary: String,        // max 500 tokens, compressed from parent chain
+        required_types: Vec<String>,            // types this baby step must know about
+        required_imports: Vec<String>,           // packages/modules needed
+    }
+
+    struct PreGateCondition {
+        description: String,
+        check_command: String,                  // deterministic shell command
+        expected_exit_code: i32,
+    }
+
+    struct TaskSpec {
+        description: String,                    // what to implement
+        max_lines: u32,                         // budget for this baby step
+        target_file: String,                    // which file to edit/create
+        entry_point: Option<String>,            // function/struct to connect to
+    }
+
+    struct TddSpec {
+        test_file: String,                      // where tests go
+        test_count: u32,                        // minimum tests to write
+        test_framework: String,                 // e.g. "cargo test", "pytest"
+        write_before_code: bool,                // always true — TDD
+    }
+
+    struct DeterministicCheck {
+        description: String,
+        command: String,                        // runnable by auditor
+        expected_output: Option<String>,
+    }
+
+    struct AcceptanceCriteria {
+        min_tests_passing: u32,
+        max_retry_alternatives: u32,            // default 3, matches feasibility probe
+        on_all_fail: AcceptanceFailAction,
+    }
+
+    enum AcceptanceFailAction {
+        BubbleUp,                               // escalate to parent step
+        ResearchAlternative,                     // go back to research for this step
+        Replan,                                  // trigger ReplanRequest(MAJOR)
+    }
+
+    struct IntegrationSpec {
+        connects_to: Vec<String>,               // e.g. ["main.rs:main", "lib.rs:AppState"]
+        integration_test_command: Option<String>, // run if not dependent on unfinished siblings
+        deferred: bool,                          // true if siblings must complete first
+    }
+
+    struct ExitCriterion {
+        description: String,
+        check: DeterministicCheck,
+    }
+
+    struct TechStackDecision {
+        language: String,
+        framework: String,
+        packages: Vec<PackageRef>,
+        decision_source: DecisionSource,
+    }
+
+    enum DecisionSource {
+        Research(Vec<SourceCitation>),           // grounded from research
+        UserChoice,                              // user picked in INTERACTIVE mode
+        AutoSelected { reason: String },         // system picked in AUTONOMOUS mode
+    }
+
+    struct PackageRef {
+        name: String,
+        version: String,                        // pinned version, verified exists
+        registry: String,                       // e.g. "crates.io", "pypi", "npm"
+        verified: bool,                         // API_REGISTRY_CHECK passed
+    }
+
+    struct ResearchCache {
+        entries: BTreeMap<String, CachedResearch>, // keyed by normalized query
+        max_entries: usize,                     // prevent unbounded growth
+        ttl_seconds: u64,                       // cache expiry
+    }
+
+    struct CachedResearch {
+        query: String,
+        report: ResearchReport,
+        cached_at: u64,                         // from ClockProvider
+        hit_count: u32,
+    }
+
+    Newtype IDs:
+      struct ConceptId(u64);
+      struct BabyStepId(u64);
+      // StepId and PhaseId reuse existing types from 4E
+
+  RECURSIVE RESEARCH PROTOCOL
+
+    The orchestrator drives this loop. No LLM decides what happens next.
+
+    fn research_decompose(idea: &str, mode: ExecutionMode) -> DecompositionTree {
+        // Level 0: top-level research
+        let top_research = flash_research(idea, complexity=Complex);
+        let concepts = extract_concepts(top_research);  // deterministic extraction
+
+        for concept in concepts {
+            // Level 1: per-concept research
+            let cache_key = normalize_query(&concept.name);
+            let concept_research = research_cache.get_or_research(cache_key, || {
+                flash_research(&concept.name, complexity=Moderate)
+            });
+
+            if mode == Interactive {
+                present_options(concept_research.alternatives);  // user picks
+            } else {
+                auto_select(concept_research, by=evidence_level);  // highest-grounded wins
+            }
+
+            let phases = extract_phases(concept_research);
+
+            for phase in phases {
+                // Level 2: per-phase research
+                let phase_research = research_cache.get_or_research(
+                    normalize_query(&phase.name), || {
+                        flash_research(&phase.name, complexity=Simple)
+                    }
+                );
+                verify_packages(&phase_research);  // API_REGISTRY_CHECK each package
+
+                let steps = extract_steps(phase_research);
+
+                for step in steps {
+                    // Level 3: per-step -> baby steps
+                    let step_research = research_cache.get_or_research(
+                        normalize_query(&step.name), || {
+                            flash_research(&step.name, complexity=Simple)
+                        }
+                    );
+                    let baby_steps = decompose_to_baby_steps(step, step_research);
+                    // Each baby_step gets compressed grounding from parent chain
+                }
+            }
+        }
+    }
+
+    Research cache prevents redundant calls. Siblings researching similar topics
+    (e.g. two phases both need "Axum routing") hit the cache. Cache keyed by
+    normalized query string. TTL prevents stale research across sessions.
+
+    Package verification: every PackageRef gets API_REGISTRY_CHECK (reasoning.txt S4).
+    If package doesn't exist or version is wrong, research agent retries with corrected info.
+    This is the anti-hallucination gate for dependencies. The LLM cannot invent a package.
+
+  STEPS (4D.7 through 4D.10 — extend the base 4D.1-4D.6)
+
+  4D.7 RECURSIVE TYPES SKELETON
+    PRE_GATE:
+      - 4D.6 MEASURE complete (base FlashResearch working)
+      - All base 4D tests passing
+    TASK:
+      - Add all types from RECURSIVE DECOMPOSITION EXTENSION section above
+      - ConceptDecomposition, ConceptNode, PhaseNode, StepNode, BabyStepSpec
+      - BabyStepGrounding, PreGateCondition, TaskSpec, TddSpec, DeterministicCheck
+      - AcceptanceCriteria, AcceptanceFailAction, IntegrationSpec, ExitCriterion
+      - TechStackDecision, DecisionSource, PackageRef, ResearchCache, CachedResearch
+      - Newtype IDs: ConceptId, BabyStepId
+      - Stub: fn research_decompose(idea, mode) -> Result<DecompositionTree>
+      - Stub: fn extract_concepts(report) -> Vec<ConceptNode>
+      - Stub: fn extract_phases(report) -> Vec<PhaseNode>
+      - Stub: fn extract_steps(report) -> Vec<StepNode>
+      - Stub: fn decompose_to_baby_steps(step, report) -> Vec<BabyStepSpec>
+      - Stub: fn verify_packages(refs: &[PackageRef]) -> Vec<PackageRef>  // marks verified=true/false
+      - Stub: ResearchCache::get_or_research()
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator (exit 0)
+      - grep -r "ConceptDecomposition" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "BabyStepSpec" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "ResearchCache" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "TechStackDecision" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "IntegrationSpec" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+    ADVERSARIAL:
+      - If ConceptId/BabyStepId are not newtypes (just u64), type confusion between IDs.
+        Test: ConceptId(1) != BabyStepId(1) at type level (won't compile if mixed).
+      - If ResearchCache has no max_entries, memory grows unbounded on large projects.
+        Test: insert max_entries+1, assert oldest evicted.
+    ACCEPTANCE:
+      - All recursive types compile
+      - All stubs return Err("not implemented")
+      - Zero changes to base 4D behavior (existing tests still pass)
+
+  4D.8 RECURSIVE RESEARCH TESTS (expected to FAIL)
+    PRE_GATE:
+      - 4D.7 compiles clean
+    TASK:
+      - Level 0 test: idea -> ConceptDecomposition with >= 2 concepts
+      - Level 1 test: concept -> PhaseDecomposition with grounded framework choice
+      - Level 2 test: phase -> StepDecomposition with verified packages
+      - Level 3 test: step -> Vec<BabyStepSpec> with all 8 blocks populated
+      - Cache test: same query twice -> second call hits cache (no FlashResearch invoked)
+      - Cache TTL test: expired entry -> re-researched
+      - Package verification test: nonexistent package -> verified=false
+      - Package verification test: real package (e.g. "serde" on crates.io) -> verified=true
+      - Grounding compression test: baby step grounding < 500 tokens from full parent chain
+      - INTERACTIVE mode test: alternatives presented to user (mock gate)
+      - AUTONOMOUS mode test: highest-evidence alternative auto-selected
+      - Cross-concept dependency test: phase in concept2 depends on phase in concept1
+      - proptest: random idea string -> research_decompose never panics
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- recursive_research (compiles, >= 13 tests, all FAIL)
+    ACCEPTANCE:
+      - >= 13 tests exist, all fail for right reason (stubs not implemented)
+
+  4D.9 RECURSIVE RESEARCH IMPLEMENT
+    PRE_GATE:
+      - 4D.8 tests compile and fail correctly
+    TASK:
+      - Implement research_decompose: orchestrator-driven loop through 4 levels
+      - Implement extract_concepts/phases/steps: deterministic extraction from ResearchReport
+        (structured output parsing, not free-form LLM text)
+      - Implement decompose_to_baby_steps: break step into atomic units, each <2K token context
+        Baby step sizing: estimate tokens from task description + grounding.
+        If estimated > 2K tokens, split further. Max split depth 2.
+      - Implement BabyStepGrounding compression: walk parent chain (concept -> phase -> step),
+        extract only citations relevant to THIS baby step's task. Compress to max 500 tokens.
+      - Implement ResearchCache with LRU eviction at max_entries
+      - Implement package verification via API_REGISTRY_CHECK (reasoning.txt S4)
+      - Implement INTERACTIVE vs AUTONOMOUS branching at each level:
+        INTERACTIVE: present alternatives with evidence levels, wait for user choice
+        AUTONOMOUS: select alternative with highest evidence_level * source_quality
+      - Implement cross-concept dependency detection: if phase A references types from phase B,
+        add depends_on edge. Uses DKG (if available) or structural analysis of task descriptions.
+      - SSB progress tracking: emit research_decompose_level event per level transition
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- recursive_research (all pass)
+      - cargo test --workspace (zero regressions)
+    ACCEPTANCE:
+      - All 13+ recursive research tests pass
+      - Package verification rejects nonexistent packages
+      - Cache hit rate > 0 on multi-concept decomposition
+      - Baby step grounding always < 500 tokens
+      - Zero regressions
+
+  4D.10 RECURSIVE RESEARCH MEASURE
+    PRE_GATE:
+      - 4D.9 all tests pass
+    TASK:
+      - Decomposition depth utilization: avg levels used per idea
+      - Research calls per level: count (should decrease at deeper levels due to cache)
+      - Cache hit rate across full decomposition
+      - Baby step count per idea: average and max
+      - Baby step grounding size: p50, p95 token count
+      - Package verification pass rate: % of packages that exist
+      - Time per level: Level 0 (seconds), Level 1 (seconds), Level 2 (ms), Level 3 (ms)
+    DETERMINISTIC_CHECK:
+      - Metrics appended to .elai_cc/metrics/phase_4D.toml (existing file extended)
+      - grep "cache_hit_rate\|baby_step_count\|grounding_p50" .elai_cc/metrics/phase_4D.toml >= 3
+    ACCEPTANCE:
+      - All recursive metrics collected
+      - Cache hit rate > 0% (cache is working)
+      - Baby step grounding p95 < 500 tokens
+
+
+WEB RESEARCH INFRASTRUCTURE EXTENSION (Deep Research)
+
+  Steps 4D.1-4D.10 design the Research Agent and tree-structured research protocol.
+  They assume a "web search tool" exists via IPC proxy. This extension builds that
+  infrastructure: search, extraction, quality scoring, token budgeting, and
+  VRAM-tiered configuration. Each step is 1 session.
+
+  Paper grounding:
+    arxiv 2508.12752  Deep Research: A Survey of Autonomous Research Agents
+    arxiv 2506.18096  Deep Research Agents: A Systematic Examination And Roadmap
+    arxiv 2508.05668  A Survey of LLM-based Deep Search Agents
+    arxiv 2510.05145  FlashResearch (already adopted, tree structure)
+    arxiv 2602.03442  A-RAG (already implemented for code, adapt for web)
+    Interface maps: workflow/papers/deep-research-survey-interface.md
+                    workflow/papers/deep-research-agents-2506.18096-interface.md
+                    workflow/papers/deep-search-agents-2508.05668-interface.md
+                    workflow/papers/flashresearch-interface.md
+                    workflow/papers/arag-interface.md
+
+  Trusted source list: docs/Seeking Verified AIFree Information.txt (200+ domains)
+  Baseline data: .elai_cc/metrics/baseline_findings_and_actions.md
+
+  DESIGN PRINCIPLES (from surveyed papers):
+    1. API-based retrieval, not browser automation (2506.18096: browser = 2-3x resource
+       cost, prohibitive below 8GB VRAM). SearXNG self-hosted = zero API cost.
+    2. ManuSearch-style deterministic orchestration (2508.12752: no RL needed for
+       rule-based planner + search + extraction agents). LLM does not control flow.
+    3. Progressive disclosure from A-RAG (2602.03442): snippets first, selective full
+       read. 90% token savings vs naive full-chunk retrieval.
+    4. Evidence grows monotonically (2508.12752 invariant). Pruning is separate from
+       evidence collection — prune at synthesis, not at retrieval.
+    5. Hybrid tree-based search strategy preferred in tuning-free settings (2508.05668).
+       Our FlashResearch tree + per-node research loop matches this.
+    6. Source quality is deterministic domain lookup, never LLM-scored (4D spec, sec 7).
+
+
+  4D.11 WEB SEARCH CLIENT (SearXNG integration)
+    PRE_GATE:
+      - Phase 4A contract tests pass (agent process isolation operational)
+      - Docker available: docker --version exits 0
+      - SearXNG image pulled: docker images searxng/searxng returns match
+        (if not available, step includes pulling it)
+    TASK:
+      - New crate: .elai_cc/crates/web_search/
+      - SearXNG Docker setup script (.elai_cc/scripts/start-searxng.sh):
+          docker run -d --name elai-searxng -p 8888:8080 \
+            -v ./searxng-settings:/etc/searxng \
+            searxng/searxng:latest
+          Custom settings.yml: enable JSON output format, configure engine weights,
+          disable telemetry, set result_count=20.
+      - SearxClient struct:
+          base_url: String (default http://localhost:8888)
+          timeout: Duration (default 10s)
+          max_results: usize (default 20)
+      - fn search(&self, query: &str) -> Result<Vec<SearchResult>>
+          HTTP GET to /search?q={query}&format=json&pageno=1
+          Parse JSON response into Vec<SearchResult>
+      - SearchResult struct:
+          title: String
+          url: String
+          snippet: String            // SearXNG returns HTML snippet
+          engine: String             // which search engine provided this
+          score: f64                 // SearXNG relevance score
+          parsed_domain: String      // extracted from URL for quality lookup
+      - fn health_check(&self) -> Result<bool>
+          GET / with 2s timeout, returns true if 200
+      - Rate limiting: max 1 request per second (configurable)
+      - Retry: 1 retry with exponential backoff on 5xx
+      - IPC proxy integration: SearxClient lives in orchestrator process,
+          Research Agent (Tier C) sends search queries via IPC, orchestrator
+          proxies to SearXNG. Agent never has direct network access.
+      - No LLM dependency. Pure HTTP client + JSON parsing.
+    DETERMINISTIC_CHECK:
+      - cargo check -p web_search (exit 0)
+      - grep -r "SearxClient" .elai_cc/crates/web_search/src/ | wc -l >= 1
+      - grep -r "SearchResult" .elai_cc/crates/web_search/src/ | wc -l >= 1
+      - grep -r "health_check" .elai_cc/crates/web_search/src/ | wc -l >= 1
+    ADVERSARIAL:
+      - If SearXNG is down, search must not panic. Test: mock 503 response, assert
+        Result::Err with meaningful error, not panic.
+      - If query contains special characters (quotes, &, <), URL encoding must handle.
+        Test: search("fn foo<T: Clone>(&self)") returns valid HTTP request.
+      - If SearXNG returns HTML in snippets, raw HTML must be stripped before returning.
+        Test: snippet with <b>tags</b> returns "tags" not "<b>tags</b>".
+    ACCEPTANCE:
+      - SearxClient compiles and passes unit tests (mocked HTTP)
+      - Docker setup script creates working SearXNG instance
+      - Search results include parsed_domain field
+      - Rate limiting enforced (2 rapid calls take >= 1s total)
+    GROUNDING:
+      - "SearXNG JSON API" -> GROUNDED: https://docs.searxng.org/ (verified via web search)
+      - "zero API cost self-hosted" -> GROUNDED: 2506.18096 interface map (DuckDuckGo/Brave free, SearXNG aggregates both)
+      - "API-based not browser" -> GROUNDED: 2506.18096 (browser 2-3x resource cost)
+      - "IPC proxy for Tier C" -> GROUNDED: phase-4D.txt L87-89, reasoning.txt L136-148
+
+
+  4D.12 CONTENT EXTRACTION (HTML to clean text)
+    PRE_GATE:
+      - 4D.11 SearxClient compiles (search results provide URLs to fetch)
+    TASK:
+      - Add web content fetcher + extractor to web_search crate.
+      - WebFetcher struct:
+          client: reqwest::Client with:
+            timeout: 15s
+            max_redirects: 5
+            user_agent: "ELAI-Research/0.1 (research-agent)"
+            max_body_size: 2MB (reject larger responses)
+          rate_limiter: per-domain, max 2 req/s/domain
+      - fn fetch(&self, url: &str) -> Result<FetchedPage>
+          FetchedPage { url, status, content_type, html, fetch_time_ms }
+      - ContentExtractor trait:
+          fn extract(&self, html: &str, url: &str) -> Result<ExtractedContent>
+          ExtractedContent { title, text, word_count, page_type, extracted_at }
+      - ReadabilityExtractor (initial implementation):
+          Use readability-rust crate (Rust port of Mozilla Readability).
+          Falls back to raw text extraction (strip all HTML tags) if Readability fails.
+          Verify: cargo search readability-rust (crate exists on crates.io).
+          If readability-rust not viable: implement basic extraction:
+            - Remove <script>, <style>, <nav>, <header>, <footer> elements
+            - Extract text from <p>, <article>, <main>, <section>, <div> elements
+            - Collapse whitespace, trim
+      - robots.txt respect:
+          fn check_robots(&self, url: &str) -> Result<bool>
+          Parse robots.txt for the domain, respect Disallow rules.
+          Cache robots.txt per domain for 1 hour.
+          If robots.txt disallows, return Result::Err (do not fetch).
+      - IPC integration: WebFetcher lives in orchestrator, proxied for Tier C agents.
+    DETERMINISTIC_CHECK:
+      - cargo check -p web_search (exit 0)
+      - grep -r "ContentExtractor" .elai_cc/crates/web_search/src/ | wc -l >= 1
+      - grep -r "WebFetcher" .elai_cc/crates/web_search/src/ | wc -l >= 1
+      - grep -r "robots" .elai_cc/crates/web_search/src/ | wc -l >= 1
+    ADVERSARIAL:
+      - If page returns non-UTF8, extraction must not panic. Test: ISO-8859-1 encoded
+        page returns lossy-converted text, not crash.
+      - If page is >2MB, fetch must reject before reading full body.
+        Test: mock 5MB response, assert rejection without OOM.
+      - If domain has no robots.txt (404), treat as fully allowed.
+        Test: mock 404 on /robots.txt, assert fetch proceeds.
+      - If extraction returns empty text (JavaScript-only page), result must indicate
+        page_type=Empty, not silently return empty string as valid content.
+    ACCEPTANCE:
+      - WebFetcher handles redirects, timeouts, body size limits
+      - ContentExtractor produces clean text from real-world HTML
+      - robots.txt check works (blocks disallowed, allows rest)
+      - Non-UTF8 pages handled gracefully
+    GROUNDING:
+      - "readability-rust" -> VERIFY: cargo search readability-rust (exists on crates.io, confirmed via web search)
+      - "rs-trafilatura F1=0.966" -> GROUNDED: https://github.com/Murrough-Foley/rs-trafilatura (verified via web search)
+        NOTE: rs-trafilatura is higher quality but larger dependency. Start with readability-rust,
+        evaluate rs-trafilatura in 4D.18 measurement if extraction quality is insufficient.
+      - "2MB body limit" -> GROUNDED: common practice, prevents memory exhaustion on constrained hardware
+      - "robots.txt respect" -> GROUNDED: standard web crawling ethics, RFC 9309
+
+
+  4D.13 SOURCE QUALITY TABLE (trusted domain lookup)
+    PRE_GATE:
+      - 4D.12 passes (content extractor provides parsed_domain)
+    TASK:
+      - Parse docs/Seeking Verified AIFree Information.txt into a structured domain table.
+      - SourceQualityTable struct:
+          domains: HashMap<String, SourceTier>
+          subdomain_rules: Vec<(String, SourceTier)>   // e.g. "*.gov" -> Tier1
+      - SourceTier enum (matches pipeline-factory.txt sec 7):
+          Tier1(1.0)  — Government (.gov), UN agencies (.int), peer-reviewed journals
+                        arxiv.org, pubmed.ncbi.nlm.nih.gov, ieee.org, acm.org,
+                        data.gov, clinicaltrials.gov, cdc.gov, nasa.gov, who.int
+          Tier2(0.8)  — Institutional repositories, curated preprint servers
+                        zenodo.org, osf.io, cochranelibrary.com, semanticscholar.org,
+                        biorxiv.org, medrxiv.org, core.ac.uk, doaj.org
+          Tier3(0.6)  — University-backed, professional associations
+                        plato.stanford.edu, quantamagazine.org, examine.com,
+                        nutritionsource.hsph.harvard.edu, nber.org
+          Tier4(0.4)  — Known-quality commercial, code registries
+                        docs.rs, crates.io, pypi.org, npmjs.com,
+                        stackoverflow.com, github.com (with star threshold check)
+          Tier5(0.2)  — Unknown / unverified (everything else)
+      - fn lookup(&self, domain: &str) -> SourceTier
+          Exact domain match first, then subdomain rules (*.edu -> Tier3, *.gov -> Tier1).
+          Default: Tier5 for unknown domains.
+      - fn score(&self, domain: &str) -> f64
+          Returns numeric score (1.0, 0.8, 0.6, 0.4, 0.2).
+      - Table populated from TOML config in elai_cc.toml:
+          [research.trusted_domains]
+          tier1 = ["arxiv.org", "pubmed.ncbi.nlm.nih.gov", ...]
+          tier2 = ["zenodo.org", "osf.io", ...]
+          # Subdomain rules
+          [research.trusted_subdomain_rules]
+          tier1 = ["*.gov", "*.int"]
+          tier3 = ["*.edu", "*.ac.uk"]
+      - Domain table generation script: parse the trusted sites list (200+ domains)
+        into the TOML format. One-time manual curation step.
+      - Deterministic: same URL always returns same tier. No LLM. No network.
+    DETERMINISTIC_CHECK:
+      - cargo check -p web_search (exit 0)
+      - grep -r "SourceQualityTable" .elai_cc/crates/web_search/src/ | wc -l >= 1
+      - grep -r "SourceTier" .elai_cc/crates/web_search/src/ | wc -l >= 1
+      - TOML config section exists in elai_cc.toml
+    ADVERSARIAL:
+      - If domain lookup uses substring match, "arxiv.evil.com" matches "arxiv".
+        Test: "arxiv.evil.com" returns Tier5, "arxiv.org" returns Tier1.
+        Implementation: exact match on registered domain, not substring.
+      - If URL has port number (localhost:8080), domain extraction must strip port.
+        Test: "http://localhost:8080/page" -> domain "localhost" -> Tier5.
+      - If URL has path (github.com/user/repo), only domain part is checked.
+        Test: "github.com/rust-lang/rust" -> Tier4 (github.com), not Tier1.
+    ACCEPTANCE:
+      - >= 200 domains in table (from trusted sites list)
+      - lookup() is deterministic: 1000 calls with same input return same tier
+      - Subdomain rules work (*.gov -> Tier1, *.edu -> Tier3)
+      - Unknown domains default to Tier5
+    GROUNDING:
+      - "5-tier source quality" -> GROUNDED: pipeline-factory.txt sec 7 L133-144
+      - "domain lookup, no LLM" -> GROUNDED: pipeline-factory.txt sec 7 (pure function)
+      - "200+ domains" -> GROUNDED: docs/Seeking Verified AIFree Information.txt (counted)
+      - "Configurable in elai_cc.toml" -> GROUNDED: phase-4D.txt L83 (research.trusted_domains)
+
+
+  4D.14 WEB A-RAG (hierarchical retrieval for fetched web content)
+    PRE_GATE:
+      - 4D.12 passes (content extraction working)
+      - Existing A-RAG compiles: cargo test -p knowledge --lib -- arag (exit 0)
+    TASK:
+      - Extend knowledge crate A-RAG for web research content.
+      - WebContentIndex struct (distinct from code DkgSnapshot):
+          chunks: HashMap<String, WebChunk>
+          sentences: Vec<String>
+          embeddings: Option<Vec<Vec<f32>>>     // None until GPU/CPU embedding runs
+          sentence_to_chunk: Vec<String>
+      - WebChunk struct:
+          chunk_id: String
+          source_url: String
+          source_tier: SourceTier              // from 4D.13 lookup
+          text: String
+          sentences: Vec<String>
+          word_count: usize
+      - Sentence splitting for PROSE (distinct from code):
+          Code (existing): AST-aware, function/class boundaries
+          Prose (new): regex split on [.!?\n]+ with min length 10 chars
+          Source: A-RAG paper L36-37 (arag-interface.md)
+      - Chunk size: ~500 tokens for prose (smaller than A-RAG paper's 1000
+          because our models have smaller context ceilings)
+          Configurable per VRAM tier (see 4D.15)
+      - Three retrieval tools (reusing RetrievalTool enum from arag.rs):
+          KeywordSearch: count(keyword, text) * len(keyword) scoring
+            Source: A-RAG paper L72-77, scoring formula
+          SemanticSearch: embed query, dot product against sentence embeddings,
+            3x oversampling then chunk aggregation (arag-interface.md L109-113)
+          ChunkRead: full text with ContextTracker dedup (already implemented)
+      - Embedding strategy:
+          If GPU available and model not loaded: use sentence-transformers on CPU
+          If sidecar running: proxy embedding through sidecar /v1/embed endpoint
+          Fallback: keyword-only search (no semantic, still functional)
+      - Progressive disclosure (A-RAG paper key insight):
+          Search tools return SNIPPETS (matched sentences only), not full chunks
+          Agent evaluates snippets, decides which chunks worth reading in full
+          chunk_read returns full text, context tracker prevents re-reading
+          This is the mechanism that saves 90% of tokens (arag-interface.md L273)
+    DETERMINISTIC_CHECK:
+      - cargo check -p knowledge (exit 0)
+      - grep -r "WebContentIndex" .elai_cc/crates/knowledge/src/ | wc -l >= 1
+      - grep -r "WebChunk" .elai_cc/crates/knowledge/src/ | wc -l >= 1
+      - Existing A-RAG tests still pass: cargo test -p knowledge --lib -- arag (exit 0)
+    ADVERSARIAL:
+      - If sentence splitting uses only [.!?\n]+, URLs get split mid-sentence
+        (e.g. "Visit https://arxiv.org. Results show..."). Test: URL-containing
+        text splits correctly after the sentence, not mid-URL.
+      - If keyword scoring does not normalize by chunk length, long chunks always
+        score higher. Test: short chunk with 5 keyword hits scores higher than
+        long chunk with 5 hits (same absolute count, higher density).
+      - If embeddings are not L2-normalized, dot product != cosine similarity.
+        Test: assert all embeddings have norm ~1.0 after indexing.
+    ACCEPTANCE:
+      - WebContentIndex can ingest extracted web pages
+      - Keyword search returns scored, ranked results
+      - Semantic search works when embeddings available, degrades gracefully when not
+      - Progressive disclosure: search returns snippets, not full chunks
+      - ContextTracker prevents duplicate reads
+      - Zero regressions in existing code A-RAG
+    GROUNDING:
+      - "count * len scoring" -> GROUNDED: arag-interface.md L72 (Score_kw formula)
+      - "3x oversampling" -> GROUNDED: arag-interface.md L109 (top_k*3 then aggregate)
+      - "progressive disclosure" -> GROUNDED: arag-interface.md L273-280 (how token savings work)
+      - "sentence split [.!?\\n]+" -> GROUNDED: arag-interface.md L243 (regex from paper)
+      - "~500 token chunks" -> ADAPTED: paper uses 1000, we halve for smaller model contexts
+
+
+  4D.15 VRAM-TIERED RESEARCH CONFIG
+    PRE_GATE:
+      - 4D.14 compiles (WebContentIndex and retrieval tools exist)
+      - Baseline data exists: .elai_cc/metrics/baseline_findings_and_actions.md
+    TASK:
+      - Add [research.vram_tiers] section to elai_cc.toml:
+          [research.vram_tiers.8gb]
+          model = "Qwen2.5-Coder-3B"
+          quant = "NF4"
+          context_ceiling = 16384      # projected, needs measurement
+          research_context_budget = 12000  # 75% of ceiling for research evidence
+          chunk_size = 300             # smaller chunks for tighter context
+          breadth_factor = 2
+          depth_limit = 3
+          phi_min = 0.8
+          psi_min = 0.7
+          embedding_device = "cpu"     # no VRAM for embedding model
+          max_sources_per_node = 5
+          max_concurrent_fetches = 2
+
+          [research.vram_tiers.12gb]
+          model = "Qwen2.5-Coder-3B"
+          quant = "NF4+FA2"
+          context_ceiling = 40000      # MEASURED
+          research_context_budget = 30000
+          chunk_size = 500
+          breadth_factor = 3
+          depth_limit = 4
+          phi_min = 0.7
+          psi_min = 0.6
+          embedding_device = "cpu"     # model uses most VRAM, embed on CPU
+          max_sources_per_node = 10
+          max_concurrent_fetches = 4
+
+          [research.vram_tiers.12gb_7b]
+          model = "Qwen2.5-Coder-7B"
+          quant = "NF4+FA2+TQ8"
+          context_ceiling = 35000      # projected with KV quant
+          research_context_budget = 26000
+          chunk_size = 400
+          breadth_factor = 3
+          depth_limit = 4
+          phi_min = 0.7
+          psi_min = 0.6
+          embedding_device = "cpu"
+          max_sources_per_node = 8
+          max_concurrent_fetches = 3
+
+          [research.vram_tiers.16gb]
+          model = "Qwen2.5-Coder-7B"
+          quant = "NF4+FA2"
+          context_ceiling = 40000      # projected
+          research_context_budget = 30000
+          chunk_size = 500
+          breadth_factor = 3
+          depth_limit = 5
+          phi_min = 0.7
+          psi_min = 0.6
+          embedding_device = "gpu"     # spare VRAM for 0.6B embedding model
+          max_sources_per_node = 10
+          max_concurrent_fetches = 4
+
+          [research.vram_tiers.24gb]
+          model = "Qwen2.5-Coder-14B"
+          quant = "NF4+FA2"
+          context_ceiling = 25000      # projected
+          research_context_budget = 18000
+          chunk_size = 500
+          breadth_factor = 3
+          depth_limit = 5
+          phi_min = 0.6
+          psi_min = 0.5
+          embedding_device = "gpu"
+          max_sources_per_node = 10
+          max_concurrent_fetches = 4
+
+          [research.vram_tiers.48gb]
+          model = "Qwen2.5-Coder-32B"
+          quant = "NF4+FA2"
+          context_ceiling = 24000      # projected, conservative
+          research_context_budget = 18000
+          chunk_size = 600
+          breadth_factor = 4
+          depth_limit = 5
+          phi_min = 0.6
+          psi_min = 0.5
+          embedding_device = "gpu"
+          max_sources_per_node = 15
+          max_concurrent_fetches = 6
+          speculative_depth = 2        # only tier with speculative execution
+
+      - ResearchTierConfig struct in orchestrator crate:
+          Parsed from TOML at startup. Auto-detected from GPU VRAM query
+          (nvidia-smi or CUDA API), or manually specified via --vram-tier flag.
+      - fn detect_vram_tier() -> VramTier
+          Query GPU VRAM, map to nearest tier. Round DOWN (conservative).
+      - fn research_config_for_tier(tier: VramTier) -> ResearchTierConfig
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator (exit 0)
+      - grep -r "ResearchTierConfig" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "VramTier" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - TOML config has >= 5 tier entries (8gb, 12gb, 16gb, 24gb, 48gb)
+    ADVERSARIAL:
+      - If VRAM detection fails (no GPU, or nvidia-smi not found), must not panic.
+        Test: mock nvidia-smi failure, assert fallback to 8gb tier.
+      - If user has 10GB VRAM (non-standard), rounding must go DOWN to 8gb tier, not up.
+        Test: 10GB VRAM -> 8gb tier, not 12gb.
+    ACCEPTANCE:
+      - All 6 tier configs parse from TOML without error
+      - VRAM auto-detection works or degrades gracefully
+      - research_context_budget < context_ceiling for every tier
+      - speculative_depth only >0 for 48gb tier
+    GROUNDING:
+      - "40K measured for 3B on 12GB" -> GROUNDED: baseline_findings_and_actions.md L69-81
+      - "25K measured for 7B on 12GB" -> GROUNDED: baseline_findings_and_actions.md L188-206
+      - "FlashResearch adaptive thresholds" -> GROUNDED: flashresearch-interface.md L49
+      - "speculative depth for cloud/large only" -> GROUNDED: phase-4D.txt L252-257
+
+
+  4D.16 TOKEN BUDGET MANAGER (evidence pruning for small models)
+    PRE_GATE:
+      - 4D.15 compiles (tier configs available with context budgets)
+      - Existing context_budget.rs compiles: grep -r "ContextBudget" orchestrator/src/
+    TASK:
+      - ResearchBudgetManager struct:
+          tier_config: ResearchTierConfig
+          current_evidence_tokens: usize
+          current_sources: usize
+      - Evidence admission policy:
+          fn can_admit(&self, new_evidence_tokens: usize) -> bool
+          Returns true if current + new <= research_context_budget
+          Prevents context overflow before it happens.
+      - Evidence pruning (when budget exceeded):
+          fn prune_to_budget(&self, evidence: &mut Vec<EvidenceItem>) -> usize
+          Strategy: drop lowest-tier sources first (Tier5 before Tier4).
+            Within same tier, drop lowest phi-scored items first.
+            Never drop Tier1 evidence (government, peer-reviewed).
+            Returns number of items pruned.
+      - Evidence compression (for tight budgets, 8gb/12gb tiers):
+          fn compress_evidence(&self, item: &EvidenceItem) -> CompressedEvidence
+          Strategy: keep first 3 sentences + last sentence of each chunk.
+            Preserves intro context + conclusion. Discards middle.
+            Source: 2508.12752 (evidence grows monotonically — we compress
+            representation, not discard the evidence record).
+      - Integration with A-RAG progressive disclosure:
+          After snippet-based search, budget manager decides which chunks
+          to read in full vs keep as snippets only.
+          High-tier sources: read full. Low-tier: keep snippets unless critical.
+      - Token counting: use byte-level approximation (1 token ~ 4 bytes for English).
+          Exact counting requires tokenizer. Approximate is sufficient for budgeting.
+          Overcount by 10% for safety margin.
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator (exit 0)
+      - grep -r "ResearchBudgetManager" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "prune_to_budget" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+    ADVERSARIAL:
+      - If pruning removes all evidence, research has nothing to synthesize.
+        Test: budget=100 tokens, 5 evidence items of 50 tokens each.
+        Assert at least 1 item retained (highest tier + highest phi).
+      - If compression removes key information (e.g. the answer is in the middle
+        of a chunk), synthesis quality degrades. Test: assert compressed evidence
+        retains source_url and source_tier for citation purposes.
+      - If token approximation underestimates by >20%, context overflow occurs.
+        Test: known-length strings, assert estimate within 20% of actual.
+    ACCEPTANCE:
+      - Budget manager prevents context overflow (never admits beyond budget)
+      - Pruning preserves highest-quality evidence (Tier1 never pruned)
+      - Compression reduces token count by >= 40% while retaining citations
+      - Integration point with A-RAG progressive disclosure documented
+    GROUNDING:
+      - "evidence grows monotonically" -> GROUNDED: 2508.12752 interface map (invariant)
+      - "progressive disclosure" -> GROUNDED: arag-interface.md L273-280
+      - "1 token ~ 4 bytes" -> GROUNDED: common approximation for English text, BPE tokenizers
+
+
+  4D.17 RESEARCH ORCHESTRATOR (wire everything together)
+    PRE_GATE:
+      - 4D.11-4D.16 all compile (all infrastructure crates exist)
+      - 4D.1-4D.6 base FlashResearch types exist (ResearchTree, ResearchNode, etc.)
+      - SearXNG Docker container running: curl http://localhost:8888 returns 200
+    TASK:
+      - WebResearchOrchestrator struct (in orchestrator crate):
+          searx_client: SearxClient         // from 4D.11
+          web_fetcher: WebFetcher           // from 4D.12
+          quality_table: SourceQualityTable  // from 4D.13
+          content_index: WebContentIndex    // from 4D.14
+          budget_manager: ResearchBudgetManager // from 4D.16
+          tier_config: ResearchTierConfig    // from 4D.15
+      - Per-node research loop (implements 4D.5 FORMULATE-SEARCH-EXTRACT-REFLECT-CONVERGE):
+          1. FORMULATE: LLM generates search query from sub-question + prior findings
+             (via IPC to sidecar, existing SidecarClient)
+          2. SEARCH: SearxClient.search(query) -> Vec<SearchResult>
+          3. QUALITY GATE: SourceQualityTable.lookup(domain) -> sort by tier
+             Tier1-3 fetched first. Tier4-5 only if budget allows.
+          4. FETCH + EXTRACT: WebFetcher.fetch(url) -> ContentExtractor.extract(html)
+             Parallel fetches up to max_concurrent_fetches (from tier config)
+          5. INDEX: add extracted content to WebContentIndex (chunk + embed)
+          6. RETRIEVE: A-RAG progressive disclosure on WebContentIndex
+             keyword_search for entities, semantic_search for concepts
+             Budget manager decides which chunks to read in full
+          7. REFLECT: LLM evaluates phi (goal satisfaction), psi (quality),
+             contradictions, new sub-questions, information gain
+             (via IPC to sidecar)
+          8. CONVERGE or EXPAND: based on thresholds from tier config
+      - FlashResearch tree integration:
+          WebResearchOrchestrator drives the ResearchTree traversal.
+          Each ResearchNode runs the per-node loop above.
+          Tree invariants (acyclic, bounded depth/breadth) enforced by existing 4D types.
+      - IPC proxy wiring:
+          Research Agent (Tier C process) sends:
+            SearchRequest -> orchestrator -> SearxClient -> SearXNG
+            FetchRequest -> orchestrator -> WebFetcher -> target URL
+            EmbedRequest -> orchestrator -> sidecar /v1/embed
+            InferenceRequest -> orchestrator -> sidecar /v1/completions
+          Research Agent NEVER has direct network access.
+      - SSB progress tracking: emit web_research_step per node iteration
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator (exit 0)
+      - grep -r "WebResearchOrchestrator" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "SearchRequest" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "FetchRequest" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+    ADVERSARIAL:
+      - If SearXNG is unavailable, entire research pipeline blocks.
+        Test: mock SearXNG down, assert orchestrator returns partial result
+        with error note, not hang.
+      - If all fetched pages are Tier5, research quality is low.
+        Test: assert ResearchReport flags confidence=LOW when >80% sources are Tier5.
+      - If sidecar is unavailable (no LLM), research cannot formulate queries or reflect.
+        Test: assert clear error "sidecar required for web research", not silent failure.
+      - If concurrent fetches exceed rate limit, domains may block us.
+        Test: 10 URLs from same domain, assert max 2 concurrent per rate limiter.
+    ACCEPTANCE:
+      - Full research loop compiles and types check
+      - IPC proxy messages defined for all 4 request types
+      - SSB progress tracking emits events
+      - Error handling for SearXNG/sidecar/fetch failures is explicit
+      - Research Agent process isolation maintained (no direct network)
+    GROUNDING:
+      - "per-node research loop" -> GROUNDED: phase-4D.txt L241-273 (FORMULATE-SEARCH-EXTRACT-REFLECT-CONVERGE)
+      - "IPC proxy" -> GROUNDED: reasoning.txt L136-148
+      - "ManuSearch deterministic orchestration" -> GROUNDED: 2508.12752 interface map (rule-based, no RL)
+      - "SSB progress tracking" -> GROUNDED: phase-4D.txt L271
+
+
+  4D.18 END-TO-END MEASUREMENT (full pipeline at each VRAM tier)
+    PRE_GATE:
+      - 4D.17 all tests pass (full pipeline wired)
+      - SearXNG running, sidecar running with appropriate model
+    TASK:
+      - Benchmark suite: 10 research queries of varying complexity:
+          3 Simple (single-concept lookup, e.g. "What is the latest version of tokio?")
+          4 Moderate (comparison, e.g. "Compare blake3 vs sha256 for non-cryptographic hashing")
+          3 Complex (novel domain, e.g. "Design a CRDT-based collaborative editor architecture")
+      - Metrics per query:
+          research_time_seconds: wall clock for full research cycle
+          total_sources_fetched: URLs fetched
+          total_sources_used: sources that made it into final report
+          source_tier_distribution: % per tier in final report
+          tree_depth_used: actual depth vs depth_limit
+          tree_breadth_used: actual breadth vs breadth_factor
+          convergence_iterations: iterations to converge per node (mean, p50, p95)
+          token_budget_utilization: actual_tokens / research_context_budget
+          evidence_items_pruned: count of items pruned by budget manager
+          report_grounding_level: % of claims with Tier1-3 sources
+      - Run on available hardware (12GB RTX 3060) with both 3B and 7B models.
+      - Record results in .elai_cc/metrics/phase_4D_web_research.toml
+      - Compare against baseline: is the system usable? Does it produce grounded
+        research reports within the VRAM tier's context budget?
+      - Extraction quality check: sample 20 fetched pages, manually verify
+        content extraction quality (clean text, no HTML artifacts, no nav/footer).
+        If >20% have extraction issues, evaluate rs-trafilatura as replacement
+        for readability-rust.
+    DETERMINISTIC_CHECK:
+      - Metrics file exists: test -f .elai_cc/metrics/phase_4D_web_research.toml
+      - All 10 metric keys present per query
+      - grep "source_tier_distribution\|convergence_iterations\|token_budget_utilization" >= 3
+    ADVERSARIAL:
+      - If benchmark queries are too easy (all answered by first search result),
+        tree structure is untested. Include at least 3 queries that require
+        multi-hop reasoning (answer not in any single source).
+      - If SearXNG returns different results on re-run (non-deterministic),
+        metrics are noisy. Mitigation: run each query 3 times, report median.
+    ACCEPTANCE:
+      - All 10 queries produce a ResearchReport (no crashes, no hangs)
+      - token_budget_utilization < 1.0 for all queries on all tiers
+        (budget manager prevents overflow)
+      - source_tier_distribution has >= 30% Tier1-3 sources for complex queries
+      - research_time < 5 minutes for simple, < 15 minutes for complex (12GB tier)
+      - Extraction quality: >= 80% of fetched pages produce clean, usable text
+    GROUNDING:
+      - "3 complexity levels" -> GROUNDED: phase-4D.txt L92-94 (Simple/Moderate/Complex)
+      - "metrics categories" -> GROUNDED: phase-4D.txt L297-305 (existing 4D.6 metrics, extended)
+      - "token_budget_utilization < 1.0" -> GROUNDED: 4D.16 budget manager design

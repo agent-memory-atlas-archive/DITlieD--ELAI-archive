@@ -1,0 +1,662 @@
+PHASE 4J: EMPIRE INTEGRATION -- 2026-04-08
+Prerequisites: Phase 4A complete (process isolation), Phase 3B complete (SSB),
+  Phase 4D complete (pipeline factory L1), Phase 4G complete (autonomous mode).
+Dependency: Phase 4A provides Tier C isolation for Empire-facing IPC proxy.
+  Phase 3B provides SSB for bridging Empire events into elai_cc state.
+  Phase 4D provides pipeline factory for generating Empire repair pipelines.
+  Phase 4G provides autonomous mode for unattended Empire operation.
+Condition: only implement when Empire codebase is accessible and deployed.
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Connect elai_cc to the Empire ecosystem. elai_cc speaks the FactoryLine protocol,
+registers as a brain, subscribes to Empire events (live GRC/SSB data source),
+exposes its capabilities back to Empire as a neuron, and replaces the broken
+brainctl CLI. Empire gains self-improvement, grounded reasoning, and pipeline
+execution. elai_cc gains a live deployment environment and multi-brain coordination.
+
+Empire architecture (verified from source, empire.txt section 1):
+  Engine hierarchy: EngineMKI -> EngineMKII -> EngineMKIII (inheritance).
+  Two bus layers: IPC engine socket (/tmp/brain-engine.sock, module-to-engine)
+    + FactoryLine control socket (/tmp/brain-factory.sock, factory-to-brain).
+  Both: newline-delimited JSON over AF_UNIX SOCK_STREAM.
+  Brain = deployment unit (brain.json manifest). Neuron = module registered to brain.
+  HookRegistry (route|event hooks), BusRegistry (fnmatch pattern subscriptions).
+  FSB binary transport: 12-byte header (frame_id:u32, part_idx:u16, part_total:u16, payload_len:u32).
+
+What is solid in Empire (leverage, verified 2026-04-08):
+  IPC layer (src/lib/ipc.py): pure stdlib, tested. Max 65536 bytes. Event format:
+    {type, agent, channel, payload, timestamp, mac, ip}.
+  FactoryLine bus (src/core/bus.py): pure stdlib, tested. Protocol "v":1. Command format:
+    {cmd: register|heartbeat|list|request_update, v, brain, dir, pid, ts}.
+  HookRegistry: route|event kinds, reserved paths, conflict detection.
+  BusRegistry: named buses, fnmatch pattern subscriptions, dedup dispatch.
+  Multi-brain isolation: tested (3 test classes: separate dbs, hooks, neurons, buses).
+  FSB binary transport: clean framing (12-byte header, 256KB max frame).
+  SmartCatalog: recursive discovery, manifest validation, unlimited depth.
+  Engine handler types (MKI): REGISTER_HOOK, EMIT, QUERY_HOOKS, SUBSCRIBE, UNSUBSCRIBE,
+    BUS_CREATE, BUS_JOIN, BUS_LEAVE, BUS_LIST. MKII adds persistence. MKIII adds WS.
+What is broken (fix via 4J.6, verified 2026-04-08):
+  brainctl<->brain_lifecycle circular dep (lazy imports in both directions).
+  EngineMKII hard-imports slc at module level (try/except fallback disables HTTP).
+  unique-factory/types directory shadows stdlib types module.
+  (3 issues only. Previously listed _send_event stub, ECS dynamic imports, workforce
+  lambdas were incorrect -- see empire.txt section 2 for correction log.)
+What is dead code (supersede, not integrate, verified 2026-04-08):
+  workforce/assembly/runtime/actions.py (7 lines, all lambda: None stubs).
+  brain.json (no schema validation -- PipelineSpec supersedes with 6 enforcement layers).
+  (MetricsStore and SeedState are ALIVE and used. InternAgent does not exist.
+  See empire.txt sections 6-7 for correction log.)
+
+READ BEFORE IMPLEMENTING
+  docs/specs/integration/empire.txt         Full integration spec (6-step plan, broken/solid inventory)
+  docs/specs/integration/pipeline-factory.txt  Pipeline factory (L1 Designer produces PipelineSpec)
+  docs/specs/crates/orchestrator.txt        Section 3 (SSB), Section 7 (agents), Section 12 (Tier C)
+  Empire codebase:
+    workspace/factory-brain/src/lib/ipc.py    IPC layer (solid, reference for protocol)
+    workspace/factory-brain/src/core/bus.py   FactoryLine bus (solid, reference for protocol)
+    workspace/factory-brain/src/catalog/      Brain/neuron registration
+    workspace/factory-brain/tests/            Existing integration tests (multi-brain isolation)
+
+RISKS TO WATCH
+  R-NEW-1: Transport portability. Empire uses AF_UNIX sockets (Linux only).
+    elai_cc develops on Windows. Need transport abstraction: UnixStream (Linux prod),
+    TcpStream (Windows dev / remote), with protocol parity.
+    Mitigation: trait FactoryLineTransport abstracts socket type. Protocol tests run
+    over both transports. Wire format identical (newline-JSON).
+  R-NEW-2: Protocol drift. Empire's FactoryLine protocol has no formal spec beyond
+    the Python source. If Empire changes wire format, elai_cc breaks silently.
+    Mitigation: contract tests deserialize real Empire messages (captured fixtures).
+    Canary health check on connect verifies protocol version.
+  R-NEW-3: Circular dependency injection. Importing brainctl in Empire triggers
+    lazy-import chains that fail. elai_cc must NOT import or depend on brainctl.
+    elai_cc drives FactoryLine directly, bypassing brainctl entirely.
+    Mitigation: zero Python imports from Empire. Pure Rust FactoryLine client.
+  R-NEW-4: Empire event flood. Empire buses use fnmatch pattern subscriptions.
+    Subscribing to "factory:*" on a busy deployment could flood SSB with events.
+    Mitigation: rate limiter on bridge (configurable events/sec cap), SSB write
+    batching, event priority classification (action_type filtering).
+  R-NEW-5: Bidirectional trust. When elai_cc registers as a neuron (step 5),
+    Empire can invoke elai_cc capabilities. Untrusted Empire commands must not
+    bypass Tier C isolation or evidence gates.
+    Mitigation: all Empire-originated requests enter through IPC proxy with
+    ToolFilter whitelist. Empire cannot trigger FSM transitions or bypass gates.
+
+
+STEPS
+
+4J.1 SKELETON
+  PRE_GATE:
+    - Phase 4A contract tests pass: cargo test -p elai_orchestrator --lib -- tier_c
+    - Phase 3B SSB operational: cargo test -p elai_orchestrator --lib -- ssb
+    - Empire codebase accessible: test -d workspace/factory-brain/src/lib/ipc.py
+      (or configured path in elai_cc.toml [empire.codebase_path])
+    - Empire integration spec read: docs/specs/integration/empire.txt exists
+  TASK:
+    Types and stubs for Empire integration:
+
+    - Transport abstraction:
+        trait FactoryLineTransport: AsyncRead + AsyncWrite + Send + Sync {
+            async fn connect(config: &TransportConfig) -> Result<Self>;
+            async fn health_check(&self) -> Result<ProtocolVersion>;
+        }
+        TransportConfig enum: Unix { path: PathBuf } | Tcp { host: String, port: u16 }
+        Implementations: UnixTransport (cfg(unix)), TcpTransport (all platforms)
+
+    - FactoryLine protocol client:
+        FactoryLineClient<T: FactoryLineTransport> {
+            transport: T,
+            config: FactoryLineConfig,
+            event_tx: mpsc::Sender<EmpireEvent>,
+        }
+        FactoryLineConfig { transport: TransportConfig, heartbeat_interval: Duration,
+            reconnect_backoff: ExponentialBackoff, event_rate_limit: u32 }
+
+    - Wire format types (newline-delimited JSON, matching Empire Python source):
+        Two distinct protocols (both newline-JSON over AF_UNIX SOCK_STREAM):
+
+        FactoryLine protocol (src/core/bus.py, brain<->factory):
+          FactoryLineCommand { cmd: FactoryCmd, v: u8, brain: String,
+              dir: Option<PathBuf>, pid: Option<u32>, ts: f64 }
+          FactoryCmd enum: Register | Heartbeat | List | RequestUpdate
+          FactoryLineResponse { ok: bool, data: Option<serde_json::Value> }
+          Note: "v" field = protocol version (currently 1). Use for version negotiation.
+
+        IPC engine protocol (src/lib/ipc.py, module<->engine):
+          IpcMessage { msg_type: IpcMessageType, agent: String, channel: Option<String>,
+              payload: Option<serde_json::Value>, timestamp: Option<u64>,
+              mac: Option<String>, ip: Option<String> }
+          IpcMessageType enum: RegisterHook | Emit | QueryHooks | Subscribe |
+              Unsubscribe | BusCreate | BusJoin | BusLeave | BusList
+          IpcResponse { status: String, data: Option<serde_json::Value> }
+
+        Shared types used by both:
+          Event { source: String, event_type: String, data: serde_json::Value }
+          Command { target: String, action: String, args: serde_json::Value }
+          Response { request_id: String, status: String, data: serde_json::Value }
+
+    - BrainManifest (replaces brain.json, adds schema validation):
+        BrainManifest { brain_id: String, version: String, engine_tier: EngineTier,
+            neurons: Vec<NeuronRegistration>, capabilities: Vec<Capability>,
+            heartbeat_interval_ms: u64 }
+        EngineTier: MKI | MKII | MKIII (matching Empire engine hierarchy)
+        NeuronRegistration { neuron_id: String, role: String, hooks: Vec<HookBinding> }
+        HookBinding { kind: HookKind, pattern: String }
+        HookKind: Route | Event (matching Empire HookRegistry)
+        Capability { name: String, description: String, input_schema: serde_json::Value,
+            output_schema: serde_json::Value }
+
+    - Empire event bridge (Empire events -> SSB entries):
+        EmpireEventBridge { ssb_writer: SsbWriter, rate_limiter: RateLimiter,
+            event_filter: EventFilter }
+        EventFilter { allowed_patterns: Vec<String>, priority_map: HashMap<String, Priority> }
+        Priority: High | Normal | Low
+        Bridge maps Empire Event -> SSB action_type='empire_event' with typed payload.
+
+    - Capability exposure (elai_cc -> Empire):
+        ElaiNeuron { capabilities: Vec<Capability>, ipc_proxy: IpcProxy }
+        Registers elai_cc as a neuron in Empire. Commands from Empire enter
+        through IPC proxy with ToolFilter (Tier C isolation preserved).
+        ElaiNeuron does NOT expose: FSM transitions, evidence gates, rules engine,
+        SSB direct access, config modification. Only: task submission, status query,
+        pipeline result retrieval.
+
+    - Empire repair types (3 verified issues only, see empire.txt section 2):
+        EmpireRepairTarget { file_path: PathBuf, issue: EmpireIssue, fix_type: FixType }
+        EmpireIssue: CircularDep | HardImport | StdlibShadow
+          CircularDep: brainctl.py <-> brain_lifecycle.py lazy import cycle.
+          HardImport: EngineMKII imports slc at module level (try/except fallback).
+          StdlibShadow: unique-factory/types shadows stdlib types module.
+        FixType: Refactor | Replace | Remove
+        Repair uses standard pipeline factory (4D): research -> plan -> execute -> audit.
+        elai_cc generates and validates fixes. Not hard-coded patches.
+
+  DETERMINISTIC_CHECK:
+    - cargo check -p elai_empire 2>&1 | grep -c "error" == 0
+    - grep -r "trait FactoryLineTransport" .elai_cc/crates/ | wc -l >= 1
+    - grep -r "struct FactoryLineClient" .elai_cc/crates/ | wc -l >= 1
+    - grep -r "struct BrainManifest" .elai_cc/crates/ | wc -l >= 1
+    - grep -r "struct EmpireEventBridge" .elai_cc/crates/ | wc -l >= 1
+    - grep -r "struct ElaiNeuron" .elai_cc/crates/ | wc -l >= 1
+    - grep -r "enum EmpireIssue" .elai_cc/crates/ | wc -l >= 1
+    - grep -r "enum FactoryCmd" .elai_cc/crates/ | wc -l >= 1
+    - grep -r "enum IpcMessageType" .elai_cc/crates/ | wc -l >= 1
+  ADVERSARIAL:
+    - If transport trait is not generic, switching Unix<->Tcp requires code changes
+      at every call site. Test: FactoryLineClient compiles with both UnixTransport
+      and TcpTransport as type parameter.
+    - If BrainManifest lacks schema validation, invalid manifests crash Empire
+      on registration (Empire's brain.json has zero validation -- empire.txt section 6).
+      Test: BrainManifest::validate() rejects empty brain_id, empty neurons, duplicate
+      neuron_ids.
+    - If EventFilter is not configurable, subscribing to "factory:*" on a busy
+      deployment floods SSB. Test: rate limiter drops events above configured threshold,
+      dropped count tracked in metrics.
+  ACCEPTANCE:
+    - All types compile with no errors
+    - FactoryLineClient is generic over transport (compiles with both Unix and Tcp)
+    - BrainManifest has validate() method that catches invalid manifests
+    - EmpireEventBridge has rate_limiter field (not Option -- always present)
+  GROUNDING:
+    - "newline-delimited JSON over AF_UNIX" -> GROUNDED: empire.txt section 1 + verified from source (ipc.py, bus.py)
+    - "EngineMKI -> MKII -> MKIII" -> GROUNDED: empire.txt section 1 + verified from source (engines/)
+    - "brain.json has no schema validation" -> GROUNDED: empire.txt section 6
+    - "HookRegistry kinds: route | event" -> GROUNDED: empire.txt section 1 + verified (hook_registry.py)
+    - "FactoryLine bus tested" -> GROUNDED: empire.txt section 3 + verified (test_control_bus.py)
+    - "brainctl circular dependency" -> GROUNDED: empire.txt section 2 + verified (brainctl.py:127, brain_lifecycle.py:7)
+    - "FactoryLine protocol v:1" -> GROUNDED: verified from source (bus.py)
+    - "IPC mac/ip fields" -> GROUNDED: verified from source (ipc.py make_event())
+
+
+4J.2 VERIFY
+  PRE_GATE:
+    - 4J.1 ACCEPTANCE criteria all pass
+  TASK:
+    - cargo check --workspace compiles clean
+    - cargo test --workspace -- --ignored=false (existing tests still pass)
+    - Cross-platform transport compilation:
+        cfg(unix): UnixTransport compiles
+        cfg(windows): TcpTransport compiles, UnixTransport conditionally excluded
+  DETERMINISTIC_CHECK:
+    - cargo check exit code 0
+    - cargo test exit code 0 (no regressions)
+    - On Windows: grep "UnixTransport" in compiled output == 0 (cfg-gated out)
+  ADVERSARIAL:
+    - If cfg(unix) gate is missing, Windows build fails on tokio::net::UnixStream.
+      Test: cargo check on Windows with no Unix socket imports outside cfg(unix).
+  ACCEPTANCE:
+    - Zero new compile errors. Zero new test failures. Cross-platform gates verified.
+
+
+4J.3 TEST (FactoryLine protocol -- steps 1+2)
+  PRE_GATE:
+    - 4J.2 passes (clean compile)
+    - Empire ipc.py source read for protocol fixtures (capture real wire format)
+  TASK:
+    Step 1 tests (elai_cc speaks both protocols):
+    - Serialize/deserialize FactoryLine commands (4 FactoryCmd variants, round-trip fidelity).
+    - Serialize/deserialize IPC messages (9 IpcMessageType variants, round-trip fidelity).
+    - Newline delimiter: message + "\n" exactly. No trailing whitespace.
+    - Parse real Empire messages (captured from workspace/factory-brain/tests/):
+        Deserialize actual FactoryLine test fixtures into Rust types.
+        Verify "v":1 protocol version field preserved in round-trip.
+        Verify IPC mac/ip/timestamp fields preserved in round-trip.
+        Re-serialize and compare (byte-exact after JSON normalization).
+    - Connect to mock FactoryLine server (in-process tokio listener):
+        Send FactoryLineCommand{cmd:Register, v:1, brain, dir, pid, ts}, receive {ok:true}.
+        Send malformed JSON, receive {ok:false} with error detail.
+        Server drops connection mid-message: client detects and reconnects.
+    - Transport abstraction: same test suite runs over both Unix and Tcp transports.
+        Use cfg(unix) to conditionally include Unix transport tests.
+
+    Step 2 tests (brain registration + heartbeat):
+    - Register: send FactoryLineCommand{cmd:Register} with brain manifest data,
+        receive FactoryLineResponse{ok:true}.
+    - Heartbeat: periodic FactoryLineCommand{cmd:Heartbeat} at configured interval.
+        Test: mock server asserts heartbeat arrives within interval + 1s tolerance.
+    - Heartbeat timeout: if server does not respond to 3 consecutive heartbeats,
+        client enters reconnection backoff.
+    - Re-registration: after reconnect, client re-sends Register (not just Heartbeat).
+    - Manifest validation: invalid manifest (empty brain_id) rejected before sending
+        (client-side validation, no round-trip needed).
+
+  DETERMINISTIC_CHECK:
+    - cargo test -p elai_empire -- factoryline (all protocol tests pass)
+    - cargo test -p elai_empire -- registration (all registration tests pass)
+    - FactoryLine round-trip tests cover all 4 FactoryCmd variants
+    - IPC round-trip tests cover all 9 IpcMessageType variants
+    - Protocol version "v":1 preserved in FactoryLine round-trip
+    - Heartbeat interval test: mock server receives >= 3 heartbeats in 3*interval
+  ADVERSARIAL:
+    - If newline delimiter is "\r\n" instead of "\n", Empire Python parser chokes
+      (Python splitlines() treats both, but Empire's custom parser uses "\n" only).
+      Test: assert serialized messages end with exactly "\n" (not "\r\n").
+    - If reconnection does not re-register, Empire thinks brain is new (loses state).
+      Test: disconnect, reconnect, assert FactoryLineCommand{cmd:Register} sent again
+      (not just Heartbeat).
+    - If heartbeat interval drifts (tokio::time::interval is not wall-clock aligned),
+      Empire marks brain as dead. Test: 100 heartbeats, assert max jitter < 500ms.
+  ACCEPTANCE:
+    - All protocol round-trip tests pass. All registration tests pass.
+    - Reconnection re-registers. Heartbeat jitter bounded.
+  GROUNDING:
+    - "newline-delimited JSON" -> GROUNDED: empire.txt section 1 + verified from source
+    - "FactoryLine control socket" -> GROUNDED: empire.txt section 1 + verified (bus.py /tmp/brain-factory.sock)
+    - "heartbeat monitoring" -> GROUNDED: empire.txt section 4 step 2
+    - "IPC layer pure stdlib tested" -> GROUNDED: empire.txt section 3 + verified (test_control_bus.py)
+
+
+4J.4 TEST (event subscription + SSB bridge -- steps 3+4)
+  PRE_GATE:
+    - 4J.3 passes (protocol operational)
+    - SSB writer available (Phase 3B)
+  TASK:
+    Step 3 tests (replace brainctl):
+    - elai_cc orchestrator sends FactoryLine commands directly (no brainctl import).
+        Test: grep for "brainctl" in elai_empire crate == 0 matches.
+    - Engine lifecycle control via FactoryLine:
+        Start brain: send Command { action: "start", target: brain_id }
+        Stop brain: send Command { action: "stop", target: brain_id }
+        Status query: send Command { action: "status" }, receive brain list.
+    - Zero Python dependency: entire FactoryLine client is pure Rust.
+        Test: cargo tree -p elai_empire | grep -c "pyo3\|cpython" == 0
+
+    Step 4 tests (event subscription + SSB bridge):
+    - Subscribe to Empire events: send IpcMessage{msg_type:Subscribe, patterns:["factory:*"]}.
+    - Receive events: mock server sends 10 events, client receives all 10.
+    - Event bridge to SSB:
+        EmpireEventBridge receives Empire Event, writes SSB entry with
+        action_type='empire_event' and structured payload.
+        Test: subscribe, receive 5 events, assert 5 SSB entries with correct payloads.
+    - Rate limiting:
+        Configure rate_limit=10 events/sec. Mock server sends 100 events in 1 second.
+        Assert: SSB receives <= 10 entries. Dropped count tracked in bridge metrics.
+    - Event filtering:
+        Configure EventFilter with allowed_patterns=["factory:deploy:*"].
+        Mock server sends 10 events (5 matching, 5 not). Assert: 5 SSB entries.
+    - Priority classification:
+        High-priority events (factory:error:*, factory:deploy:*) bypass rate limiter.
+        Test: rate limit=1/sec, send 1 high-priority + 10 normal in 1 second.
+        Assert: high-priority always arrives, normals rate-limited.
+    - Empire as GRC data source:
+        Empire events with action_type='factory:metrics' include live deployment data.
+        Reasoning engine can reference SSB entries with source='empire' as grounding.
+        Test: write empire_event SSB entry, query SSB with source filter, assert found.
+
+  DETERMINISTIC_CHECK:
+    - cargo test -p elai_empire -- brainctl_replacement (zero brainctl references)
+    - cargo test -p elai_empire -- event_bridge (all event bridge tests pass)
+    - cargo test -p elai_empire -- rate_limiter (rate limiting enforced)
+    - grep -r "brainctl" .elai_cc/crates/empire/ | wc -l == 0
+    - cargo tree -p elai_empire | grep -c "pyo3" == 0
+  ADVERSARIAL:
+    - If rate limiter is per-pattern instead of global, N patterns with limit L each
+      allow N*L events/sec total, defeating the purpose. Test: 3 active patterns,
+      global limit=10/sec, send 30 events (10 per pattern), assert total SSB entries <= 10.
+    - If high-priority events bypass rate limiter without bound, a flood of
+      factory:error events still overwhelms SSB. Test: 1000 high-priority events in 1s,
+      assert high-priority has its own elevated cap (e.g., 100/sec), not unlimited.
+    - If event bridge drops events silently (no metric), debugging production issues
+      becomes impossible. Test: trigger rate limit, assert dropped_count metric > 0.
+  ACCEPTANCE:
+    - Zero brainctl references in elai_empire crate. Zero Python dependencies.
+    - Event bridge writes to SSB. Rate limiting enforced. Filtering works.
+    - High-priority events have elevated but bounded throughput.
+    - Dropped event count tracked in metrics.
+  GROUNDING:
+    - "brainctl circular dependency" -> GROUNDED: empire.txt section 2 + verified from source
+    - "IPC SUBSCRIBE with patterns" -> GROUNDED: empire.txt section 4 step 4 + verified (engineMKI handler)
+    - "Empire becomes live GRC data source" -> GROUNDED: empire.txt section 4 step 4
+    - "BusRegistry fnmatch pattern subscriptions" -> GROUNDED: empire.txt section 1 + verified (bus_registry.py)
+
+
+4J.5 TEST (capability exposure -- step 5)
+  PRE_GATE:
+    - 4J.4 passes (event bridge operational)
+    - Phase 4A Tier C isolation active
+  TASK:
+    - ElaiNeuron registers elai_cc as a neuron in Empire:
+        Send RegisterBrain with NeuronRegistration containing elai_cc capabilities.
+        Capabilities exposed: task_submit, task_status, pipeline_result, health_check.
+        Capabilities NOT exposed: fsm_transition, evidence_gate, rules_query,
+          ssb_direct_write, config_modify, agent_spawn.
+    - Command routing:
+        Empire sends Command { target: "elai_cc", action: "task_submit", args: {...} }.
+        ElaiNeuron receives via FactoryLine, routes through IPC proxy to orchestrator.
+        Orchestrator treats it as a new task (same path as CLI /task command).
+        Response sent back via FactoryLine.
+    - Trust boundary enforcement:
+        All Empire-originated commands pass through ToolFilter whitelist.
+        Test: Empire sends Command { action: "fsm_transition" } -> rejected with
+          "capability not available" (no internal state leak).
+        Test: Empire sends Command { action: "config_modify" } -> rejected.
+        Test: Empire sends Command with path traversal in args -> rejected.
+    - Capability discovery:
+        Empire can query available capabilities: Command { action: "capabilities" }.
+        Response lists only exposed capabilities (not internal ones).
+        Test: capabilities response contains exactly 4 entries (task_submit,
+          task_status, pipeline_result, health_check).
+    - Async task lifecycle:
+        task_submit returns task_id immediately (non-blocking).
+        task_status returns current FSM state + progress.
+        pipeline_result returns final output after completion.
+        Test: submit task, poll status until COMPLETE, retrieve result.
+
+  DETERMINISTIC_CHECK:
+    - cargo test -p elai_empire -- capability (all capability tests pass)
+    - cargo test -p elai_empire -- trust_boundary (all trust tests pass)
+    - grep -r "fsm_transition\|evidence_gate\|rules_query" in ElaiNeuron capability
+      list == 0 (not exposed)
+  ADVERSARIAL:
+    - If capability list is dynamically generated from internal registry (not hardcoded
+      whitelist), new internal capabilities auto-expose to Empire. Test: add a mock
+      internal capability, assert it does NOT appear in Empire-facing capability list.
+    - If task_submit does not validate args schema before forwarding to orchestrator,
+      malformed Empire commands crash the task pipeline. Test: submit task with
+      missing required fields -> immediate error response, no pipeline started.
+    - If response to rejected commands leaks internal state (e.g., "FSM is in
+      EXECUTING state, cannot transition"), Empire learns internal structure.
+      Test: all rejection responses are generic "capability not available" with
+      no state information.
+  ACCEPTANCE:
+    - Exactly 4 capabilities exposed. Zero internal capabilities leaked.
+    - Rejected commands return generic error (no state leak).
+    - Async task lifecycle works (submit -> poll -> result).
+    - ToolFilter enforced on all Empire-originated commands.
+  GROUNDING:
+    - "elai_cc exposes MCP server" -> GROUNDED: empire.txt section 4 step 5
+    - "Factory-brain registers elai_cc as neuron" -> GROUNDED: empire.txt section 4 step 5
+    - "ToolFilter whitelist enforced at IPC layer" -> GROUNDED: phase-4A (orchestrator.txt S12)
+    - "Neuron = module registered to brain" -> GROUNDED: empire.txt section 1 line 20
+
+
+4J.6 TEST (Empire repair pipeline -- step 6)
+  PRE_GATE:
+    - 4J.5 passes (capability exposure operational)
+    - Phase 4D pipeline factory L1 operational
+    - Empire codebase accessible for analysis
+  TASK:
+    - Detect 3 verified Empire issues programmatically (empire.txt section 2, 2026-04-08):
+        Circular dependency detection: parse Python imports, build dependency graph,
+          find cycles. Test: analyze workspace/factory-brain/ imports, detect
+          brainctl<->brain_lifecycle cycle.
+        Hard import detection: find unconditional imports that fail when dependency
+          missing (try/except that disables functionality is not graceful fallback).
+          Test: detect EngineMKII slc import (disables HTTP on ImportError).
+        Stdlib shadow detection: find local modules/directories that shadow stdlib names.
+          Test: detect unique-factory/types shadowing stdlib types module.
+
+    - Generate repair pipelines via pipeline factory:
+        Each EmpireIssue maps to a PipelineSpec:
+          CircularDep -> refactor into separate modules with explicit interface.
+          HardImport -> convert to conditional/lazy import with proper fallback.
+          StdlibShadow -> rename conflicting module/directory.
+        Test: generate PipelineSpec for CircularDep issue, verify it has
+          research phase + plan phase + execute phase + audit phase.
+
+    - Repair validation:
+        After repair pipeline executes, re-run issue detection on repaired code.
+        Test: mock repair that fixes circular dep, re-detect, assert cycle gone.
+        Regression check: Empire's existing tests still pass after repair.
+          Test: mock Empire test suite, run before and after repair, assert no
+          PASS_TO_FAIL (uses TestOutcomeReport from Phase 4H).
+
+    - Repair scope control:
+        Each repair pipeline targets ONE issue at a time (not batch).
+        Repair must not modify files outside the issue's blast radius.
+        Test: CircularDep repair touches only brainctl.py and brain_lifecycle.py
+          (not unrelated modules).
+
+  DETERMINISTIC_CHECK:
+    - cargo test -p elai_empire -- issue_detection (all detection tests pass)
+    - cargo test -p elai_empire -- repair_pipeline (all repair pipeline tests pass)
+    - Each of 3 EmpireIssue variants has at least 1 detection test
+    - Each of 3 EmpireIssue variants has at least 1 repair pipeline generation test
+  ADVERSARIAL:
+    - If issue detection has false positives (flags valid lazy imports as circular deps),
+      repair pipeline breaks working code. Test: valid lazy import pattern (guarded by
+      TYPE_CHECKING) is NOT flagged as CircularDep.
+    - If repair pipeline modifies files outside blast radius, unrelated Empire modules
+      break. Test: repair pipeline file list is subset of blast_radius(issue).
+    - If repairs are batched (multiple issues in one pipeline), a failed fix for
+      issue A blocks the fix for independent issue B. Test: repair pipelines are
+      independent (one PipelineSpec per issue, no cross-dependencies).
+  ACCEPTANCE:
+    - All 3 issue types detected in Empire codebase (or mocked equivalent).
+    - Repair pipelines generated with proper phase structure.
+    - No repair touches files outside blast radius.
+    - TestOutcomeReport: zero PASS_TO_FAIL after repair.
+  GROUNDING:
+    - "brainctl<->brain_lifecycle circular" -> GROUNDED: empire.txt section 2 line 27
+    - "EngineMKII hard-imports slc" -> GROUNDED: empire.txt section 2 line 28
+    - "unique-factory shadows stdlib types" -> GROUNDED: empire.txt section 2 line 29
+    - "PipelineSpec supersedes brain.json" -> GROUNDED: empire.txt section 6
+    - "3 issues only (not 6)" -> GROUNDED: empire.txt section 2 correction log (2026-04-08)
+
+
+4J.7 TEST (cross-platform + resilience)
+  PRE_GATE:
+    - 4J.3 through 4J.6 tests exist
+  TASK:
+    - Cross-platform transport parity:
+        Run full protocol test suite over TcpTransport (Windows-compatible).
+        Assert: identical behavior to UnixTransport tests (same message flow,
+        same error handling, same reconnection logic).
+    - Connection resilience:
+        Empire server restarts: client detects disconnect, reconnects, re-registers.
+        Empire server unreachable on startup: client retries with exponential backoff
+          (max 5 attempts, then Error::EmpireUnreachable).
+        Network partition (socket alive but no response): heartbeat timeout triggers
+          reconnection (3 missed heartbeats).
+    - Graceful degradation:
+        Empire unavailable: elai_cc continues operating without Empire integration.
+        All Empire features (event bridge, capability exposure) disabled cleanly.
+        Test: start elai_cc without Empire connection, assert all non-Empire tests pass,
+        EmpireEventBridge returns Ok(()) with no SSB writes, ElaiNeuron is dormant.
+    - FSB binary transport (future evaluation):
+        Parse FSB 12-byte header (frame_id:u32, part_idx:u16, part_total:u16,
+          payload_len:u32). Assemble multi-part frames. Round-trip test.
+        Note: step 6 of empire.txt says "start with Option A (newline-JSON),
+        evaluate FSB/msgpack later." FSB parsing is EVALUATE, not required for MVP.
+
+  DETERMINISTIC_CHECK:
+    - cargo test -p elai_empire -- cross_platform (all transport parity tests pass)
+    - cargo test -p elai_empire -- resilience (all resilience tests pass)
+    - cargo test -p elai_empire -- degradation (graceful degradation tests pass)
+    - cargo test -p elai_empire -- fsb_parse (FSB header parsing tests pass)
+  ADVERSARIAL:
+    - If graceful degradation is not implemented, missing Empire connection panics
+      the orchestrator. Test: start with TransportConfig pointing to nonexistent
+      socket, assert elai_cc starts successfully (Empire features disabled).
+    - If reconnection loop has no backoff, rapid reconnect attempts flood the
+      network and waste CPU. Test: 5 reconnection attempts, assert total time
+      >= sum(backoff_delays) (exponential, not instant).
+    - If FSB frame reassembly has no size limit, a malicious Empire server sends
+      frame with payload_len=u32::MAX, causing OOM. Test: reject frames with
+      payload_len > MAX_FSB_PAYLOAD (configurable, default 16MB).
+  ACCEPTANCE:
+    - TcpTransport passes same test suite as UnixTransport.
+    - Reconnection with backoff works. Graceful degradation works.
+    - FSB header parsing correct. Frame size bounded.
+  GROUNDING:
+    - "start with Option A (newline-JSON), evaluate FSB later" -> GROUNDED: empire.txt section 4 line 65
+    - "FSB 12-byte header" -> GROUNDED: empire.txt section 1 line 22
+    - "multi-brain isolation tested" -> GROUNDED: empire.txt section 3 line 39
+
+
+4J.8 IMPLEMENT
+  PRE_GATE:
+    - All tests from 4J.3-4J.7 written and failing (TDD)
+    - Decision doc exists: workflow/reasoning/phase-4J-decisions.md
+  TASK:
+    - FactoryLine protocol client (pure Rust, zero Python deps):
+        tokio UnixStream (Linux) / TcpStream (Windows) via generic transport.
+        Newline-delimited JSON serialization (serde_json + "\n").
+        Connection management: connect, reconnect with backoff, health check.
+        Heartbeat loop: tokio::time::interval, configurable period.
+        Re-registration on reconnect.
+
+    - Brain registration:
+        Generate BrainManifest with elai_cc capabilities.
+        Send via FactoryLine. Handle acknowledgment or rejection.
+        Manifest validation before send (client-side).
+
+    - Event subscription and SSB bridge:
+        Subscribe with configurable patterns.
+        EmpireEventBridge: receive events, rate-limit, filter, write to SSB.
+        SSB action_type='empire_event' with structured payload.
+        Empire events available to GRC as grounding source (type: EMPIRE_EVENT).
+
+    - Capability exposure:
+        ElaiNeuron with hardcoded whitelist of 4 capabilities.
+        Command routing through IPC proxy with ToolFilter.
+        Async task lifecycle (submit -> poll -> result).
+        Generic error responses on rejected commands (no state leak).
+
+    - Empire repair pipeline:
+        Python AST analysis for issue detection (tree-sitter Python grammar
+        from Phase 1A, or standalone Python parser).
+        PipelineSpec generation per issue type.
+        Repair validation with TestOutcomeReport.
+        One issue per pipeline, blast radius enforcement.
+
+    - Graceful degradation:
+        Empire connection optional. All features disable cleanly when unavailable.
+        Feature gate: cfg(feature = "empire") for the entire crate.
+        Non-empire builds: zero compile-time or runtime cost.
+
+  DETERMINISTIC_CHECK:
+    - cargo test -p elai_empire (all tests pass -- previously failing now green)
+    - cargo test --workspace (no regressions)
+    - cargo build --workspace --no-default-features (builds without empire feature)
+  ADVERSARIAL:
+    - If empire crate is not feature-gated, non-Empire users pay compile time and
+      binary size for unused code. Test: cargo build without empire feature,
+      assert elai_empire is not linked.
+    - If event bridge SSB writes are synchronous (blocking FactoryLine read loop),
+      slow SSB writes cause Empire event backpressure. Test: mock slow SSB writer
+      (100ms per write), send 100 events, assert FactoryLine read loop does not
+      stall (events buffered in channel).
+  ACCEPTANCE:
+    - All 4J.3-4J.7 tests pass (green)
+    - Zero workspace regressions
+    - Feature gate: empire feature builds and non-empire builds both succeed
+    - Graceful degradation: elai_cc starts without Empire connection
+  GROUNDING:
+    - "zero Empire changes needed" (step 1) -> GROUNDED: empire.txt section 4 step 1
+    - "brainctl is broken, elai_cc orchestrator drives via FactoryLine" -> GROUNDED: empire.txt section 4 step 3
+    - "elai_cc brings self-improvement TO Empire" -> GROUNDED: empire.txt section 7 (verified 2026-04-08)
+
+
+4J.9 MEASURE
+  PRE_GATE:
+    - 4J.8 passes (implementation complete, all tests green)
+  TASK:
+    - Connection latency: time from connect() call to first successful Heartbeat response.
+        Target: <100ms on localhost (Unix socket), <500ms on TCP (same machine).
+    - Heartbeat jitter: max deviation from configured interval over 100 heartbeats.
+        Target: <500ms jitter.
+    - Event bridge throughput: events/sec from Empire -> SSB at steady state.
+        Measure with rate_limit=100/sec, assert sustained throughput >= 90/sec.
+    - Event bridge latency: time from Empire Event arrival to SSB write completion.
+        Target: <10ms p95 (excluding rate-limited drops).
+    - Capability exposure round-trip: time from Empire Command to Response.
+        Target: <50ms for status queries, <500ms for task_submit (includes validation).
+    - Repair pipeline: time to detect all 3 verified Empire issues.
+        Target: <5s for full codebase scan.
+    - Binary size impact: cargo build with and without empire feature.
+        Report delta in bytes.
+    - Test count and coverage.
+    - Store in .elai_cc/metrics/phase_4J.toml
+
+  DETERMINISTIC_CHECK:
+    - .elai_cc/metrics/phase_4J.toml exists and contains: connection_latency_ms,
+        heartbeat_jitter_ms, event_throughput_per_sec, event_latency_p95_ms,
+        capability_roundtrip_ms, repair_scan_time_ms, binary_size_delta_bytes,
+        test_count
+    - All metric fields populated (no None/null values)
+    - test_count >= 40
+  ACCEPTANCE:
+    - Metrics file complete with all fields.
+    - Connection latency < 100ms (Unix) / < 500ms (TCP).
+    - Event bridge throughput >= 90% of configured rate limit.
+    - Heartbeat jitter < 500ms.
+  GROUNDING:
+    - "FactoryLine bus tested" -> GROUNDED: empire.txt section 3 (bus is tested,
+      our metrics validate elai_cc's client matches expected performance)
+
+
+EVALUATE (wire format upgrade):
+  Current: newline-delimited JSON (empire.txt step 6 "Option A").
+  Future: FSB binary transport (12-byte header + msgpack payload).
+  CONDITIONAL TRIGGER: only pursue if JSON serialization becomes bottleneck
+    (measured event_latency_p95 > 5ms consistently, indicating serialization overhead).
+  If JSON performance is adequate, FSB upgrade adds complexity without benefit.
+  FSB header parsing is implemented in 4J.7 as evaluation-ready code.
+  Full FSB integration requires Empire-side changes (dual-protocol support).
+
+EVALUATE (multi-brain orchestration):
+  Current: elai_cc registers as ONE brain in Empire.
+  Future: elai_cc orchestrates MULTIPLE brains (Empire's multi-brain isolation is tested).
+  CONDITIONAL TRIGGER: only pursue when multiple elai_cc instances run concurrently
+    and need coordination beyond SSB's multi-session protocol.
+  Empire's multi-brain isolation (tested) provides the infrastructure.
+  elai_cc's multi-session protocol (multi-session.md) provides the coordination model.
+  Merge: each elai_cc session registers as a separate brain, Empire mediates.
+
+
+EXIT CRITERIA:
+  elai_cc connects to Empire via FactoryLine protocol (pure Rust, zero Python deps).
+  Registers as a brain with heartbeat monitoring. Re-registers on reconnect.
+  Subscribes to Empire events. Event bridge writes to SSB with rate limiting.
+  Empire events available as GRC grounding source.
+  Exposes 4 capabilities to Empire (task_submit, task_status, pipeline_result, health_check).
+  Zero internal state leaked to Empire. ToolFilter enforced on all Empire commands.
+  Replaces broken brainctl CLI (orchestrator drives FactoryLine directly).
+  Detects and generates repair pipelines for 3 verified Empire issues.
+  Graceful degradation: works without Empire connection.
+  Cross-platform: Unix socket (Linux) + TCP (Windows).
+  Feature-gated: cfg(feature = "empire"), zero cost when disabled.
+  All tests pass (>= 40).
+  Every call site and struct that participates in request routing must wire ssb, fsm, and clock through the single RuntimeClient; no step may leave these fields as None or uninitialized after construction.

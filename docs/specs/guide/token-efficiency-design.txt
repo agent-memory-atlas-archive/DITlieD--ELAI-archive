@@ -1,0 +1,1809 @@
+TOKEN EFFICIENCY DESIGN: MAKING LOCAL MODELS PRODUCE OPUS-LEVEL OUTPUT
+Date: 2026-04-12
+Status: PROPOSAL — needs user review + baseline measurement
+Author: Claude Opus 4.6 (design session, not implementation)
+
+
+========================================================================
+BENCHMARK HARNESS DESIGN (build this first)
+========================================================================
+
+Location: .elai_cc/benches/model_capability/
+Binary:   .elai_cc/benches/model_capability/main.rs
+Output:   .elai_cc/metrics/model_baseline.toml
+Config:   .elai_cc/benches/model_capability/bench_config.toml
+Fixtures: .elai_cc/benches/model_capability/fixtures/
+
+PURPOSE: measure the REAL capabilities of a local model on the user's
+hardware BEFORE any token-efficiency logic depends on assumptions.
+Every number in this document (attention ceiling, retry budget, swap
+latency) must be REPLACED by measured values from this harness.
+
+
+ARCHITECTURE:
+
+  main.rs
+    |-- bench_config.toml (which measurements to run, model endpoint, etc.)
+    |-- mod attention.rs      (Measurement 1: attention quality curve)
+    |-- mod retry.rs          (Measurement 2: retry success rate)
+    |-- mod few_shot.rs       (Measurement 3: few-shot vs zero-shot)
+    |-- mod structured.rs     (Measurement 4: structured vs free-form)
+    |-- mod template.rs       (Measurement 5: template fill vs open-ended)
+    |-- mod turboquant.rs     (Measurement 6: TurboQuant impact)
+    |-- mod swap.rs           (Measurement 7: model swap latency)
+    |-- mod report.rs         (aggregate results into model_baseline.toml)
+    |-- fixtures/
+          |-- tasks.json      (50 baby-step-sized coding tasks)
+          |-- templates.json  (20 template-fillable tasks)
+          |-- padding.txt     (irrelevant context for attention curve)
+
+  Dependencies: reqwest (HTTP to sidecar), serde/toml (config+output),
+    tiktoken-rs or tokenizers (token counting), std::time (latency).
+    NO dependency on elai_cc crates — this is standalone.
+
+
+BENCH CONFIG (bench_config.toml):
+
+  [model]
+  endpoint = "http://127.0.0.1:8000"   # vLLM or ollama API
+  api_format = "openai"                  # "openai" | "ollama"
+  model_name = "Qwen2.5-Coder-7B-Instruct"
+  tokenizer = "Qwen/Qwen2.5-Coder-7B-Instruct"
+
+  [hardware]
+  gpu_name = "RTX 3060"
+  total_vram_mb = 12288
+  usable_vram_mb = 10240                 # after OS/display
+
+  [measurements]
+  run_attention = true
+  run_retry = true
+  run_few_shot = true
+  run_structured = true
+  run_template = true
+  run_turboquant = false                 # requires sidecar restart with TQ
+  run_swap = false                       # requires multiple models available
+
+  [attention]
+  context_sizes = [1024, 2048, 4096, 8192, 12288, 16384, 24576]
+  task_repeats = 5                       # repeat each size N times
+  pass_threshold = 0.8                   # 80% correct = "attention works"
+
+  [retry]
+  max_retries = 7
+  temperatures = [0.7, 0.3, 0.5, 0.1, 0.7, 0.3, 0.1]
+
+  [output]
+  path = "../../metrics/model_baseline.toml"
+
+
+MEASUREMENT 1 DETAIL: ATTENTION QUALITY CURVE (attention.rs)
+
+  For each context_size in config:
+    1. Build prompt:
+       - System: "You are a code generator. Output ONLY the function body."
+       - Padding: random code snippets from fixtures/padding.txt, totaling
+         (context_size - task_tokens - system_tokens) tokens.
+         Padding inserted BEFORE the task (simulates "lost in the middle").
+       - Task: one of 5 simple tasks, rotated:
+         a. "Write fn reverse(s: &str) -> String"
+         b. "Write fn fibonacci(n: u32) -> u32"
+         c. "Write fn is_palindrome(s: &str) -> bool"
+         d. "Write fn max_element(v: &[i32]) -> Option<i32>"
+         e. "Write fn count_words(s: &str) -> usize"
+    2. Send to model endpoint. Collect output.
+    3. Validate: extract code, attempt to parse with tree-sitter.
+       If parses AND passes a simple correctness check (hardcoded
+       test cases per task): PASS. Else: FAIL.
+    4. Repeat task_repeats times per context_size.
+    5. Record: context_size -> pass_rate (0.0 to 1.0)
+
+  Output to report:
+    [attention_curve]
+    # context_tokens = pass_rate
+    1024 = 1.0
+    2048 = 1.0
+    4096 = 0.95
+    8192 = 0.6
+    12288 = 0.3
+    16384 = 0.1
+    24576 = 0.0
+    attention_ceiling = 4096   # last size with pass_rate >= threshold
+
+  The attention_ceiling value feeds directly into ModelCapabilityProfile.
+
+
+MEASUREMENT 2 DETAIL: RETRY SUCCESS RATE (retry.rs)
+
+  Load 50 tasks from fixtures/tasks.json.
+  Each task is a baby-step-sized coding problem:
+    {
+      "id": "task_01",
+      "description": "Add a validate_email function...",
+      "file_context": "// existing code in the file...",
+      "expected_signature": "fn validate_email(email: &str) -> bool",
+      "test_cases": [
+        {"input": "\"user@example.com\"", "expected": "true"},
+        {"input": "\"not-an-email\"", "expected": "false"}
+      ],
+      "language": "rust"
+    }
+
+  For each task:
+    attempt = 0
+    error_history = []
+    while attempt < max_retries:
+      1. Build prompt with retry-appropriate modifications:
+         - attempt 0: base prompt (task + file_context)
+         - attempt 1: base + lower temperature
+         - attempt 2: base + "Previous error: {last_error}. Fix this."
+         - attempt 3+: base + error history + "Try a different approach."
+      2. Send to model. Collect output.
+      3. Validate: tree-sitter parse + test case execution.
+         If ALL test cases pass: record (task_id, attempt, PASS). Break.
+         Else: record error, increment attempt.
+    Record: (task_id, attempts_needed, final_status)
+
+  Output to report:
+    [retry_curve]
+    # after_N_attempts = cumulative_pass_rate
+    1 = 0.62
+    2 = 0.74
+    3 = 0.82
+    4 = 0.86
+    5 = 0.88
+    6 = 0.89
+    7 = 0.89
+    optimal_retries = 4        # point of diminishing returns (delta < 2%)
+    futility_same_error = 3    # if same error class 3x, model is stuck
+
+
+MEASUREMENT 3 DETAIL: FEW-SHOT VS ZERO-SHOT (few_shot.rs)
+
+  Same 50 tasks, run TWICE:
+    Run A: zero-shot (task + context only)
+    Run B: few-shot (task + context + 1 solved example from same domain)
+
+  Few-shot examples: hand-crafted, one per task category:
+    - String manipulation: reverse() example
+    - Numeric: factorial() example
+    - Data structure: stack push/pop example
+    - Validation: is_valid_url() example
+    - I/O: read_config_file() example
+
+  Each run uses attempt 1 only (no retries). Measures raw capability delta.
+
+  Output to report:
+    [few_shot]
+    zero_shot_pass_rate = 0.58
+    few_shot_pass_rate = 0.76
+    delta = 0.18
+    few_shot_token_cost = 280    # avg tokens per example
+    verdict = "ADOPT"            # ADOPT if delta > 0.10, SKIP if <= 0.05
+
+
+MEASUREMENT 4 DETAIL: STRUCTURED VS FREE-FORM (structured.rs)
+
+  Same 50 tasks, run TWICE:
+    Run A: free-form ("Write the function. Output code only.")
+    Run B: structured (JSON schema enforced via vLLM guided decoding):
+      {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" },
+          "reasoning": { "type": "string", "maxLength": 100 }
+        },
+        "required": ["code"]
+      }
+
+  Measures:
+    - Valid output rate (can we extract code from the response?)
+    - Correctness rate (extracted code passes test cases)
+    - Latency delta (structured decoding overhead)
+
+  Output to report:
+    [structured_output]
+    freeform_valid_rate = 0.72      # produced parseable code
+    freeform_correct_rate = 0.58    # code also passes tests
+    structured_valid_rate = 0.98    # always valid JSON
+    structured_correct_rate = 0.68  # code passes tests
+    latency_overhead_pct = 8.5      # % slower generation
+    verdict = "ADOPT"               # ADOPT if correct_rate delta > 0.05
+
+
+MEASUREMENT 5 DETAIL: TEMPLATE FILL VS OPEN-ENDED (template.rs)
+
+  20 tasks from fixtures/templates.json. Each has two forms:
+    Form A (open-ended):
+      "Write fn validate_input(input: &UserInput) -> Result<ValidatedInput, Error>"
+    Form B (template):
+      "Fill in the blanks:
+       fn validate_input(input: &UserInput) -> Result<ValidatedInput, Error> {
+           let email = ___BLANK_1___;  // validate email format
+           let name = ___BLANK_2___;   // validate name length 1-100
+           Ok(ValidatedInput { email, name })
+       }"
+
+  Measures: correctness rate + output token count per form.
+
+  Output to report:
+    [template_fill]
+    open_ended_correct = 0.55
+    template_correct = 0.80
+    open_ended_avg_tokens = 320
+    template_avg_tokens = 85
+    token_savings_pct = 73.4
+    verdict = "ADOPT"
+
+
+MEASUREMENT 6 DETAIL: TURBOQUANT IMPACT (turboquant.rs)
+
+  Requires two sidecar configurations:
+    Config A: standard fp16 KV cache
+    Config B: TurboQuant 4-bit KV cache
+
+  Runs Measurement 1 (attention curve) under both configs.
+  Additionally measures: max context before OOM under each config.
+
+  Output to report:
+    [turboquant]
+    fp16_max_context = 20480
+    tq4_max_context = 65536
+    fp16_attention_ceiling = 4096
+    tq4_attention_ceiling = 4096    # TQ doesn't improve attention quality
+    tq4_quality_delta = -0.02       # small quality loss from quantization
+    vram_savings_mb = 1800
+    verdict = "ADOPT_FOR_VRAM"      # more context capacity, same quality ceiling
+
+
+MEASUREMENT 7 DETAIL: MODEL SWAP LATENCY (swap.rs)
+
+  Requires: at least 2 models available (e.g., Qwen2.5-Coder-7B + Qwen2.5-Coder-3B).
+
+  Protocol per swap measurement:
+    1. Ensure model A is loaded and warm (run one inference)
+    2. Record timestamp T0
+    3. Unload model A (ollama stop / vLLM unload)
+    4. Record timestamp T1 (unload_time = T1 - T0)
+    5. Load model B (ollama run / vLLM load)
+    6. Record timestamp T2 (load_time = T2 - T1)
+    7. Run one inference to measure warmup
+    8. Record timestamp T3 (warmup_time = T3 - T2)
+    9. Total swap time = T3 - T0
+
+  Run 5 times per direction (A->B, B->A). Report mean + p95.
+  Also run: cold swap (model not in OS page cache, after clearing cache)
+  vs warm swap (model was loaded within last 5 minutes, in page cache).
+
+  Output to report:
+    [swap_latency]
+    cold_swap_mean_ms = 6200
+    cold_swap_p95_ms = 7800
+    warm_swap_mean_ms = 1400
+    warm_swap_p95_ms = 2100
+    unload_mean_ms = 350
+    load_cold_mean_ms = 4500
+    load_warm_mean_ms = 800
+    warmup_mean_ms = 1350
+
+
+FIXTURES FORMAT (fixtures/tasks.json):
+
+  [
+    {
+      "id": "task_01",
+      "category": "string",
+      "description": "Write a function that checks if a string is a valid IPv4 address.",
+      "signature": "fn is_valid_ipv4(s: &str) -> bool",
+      "file_context": "",
+      "test_cases": [
+        {"input": "\"192.168.1.1\"", "expected": "true"},
+        {"input": "\"256.1.1.1\"", "expected": "false"},
+        {"input": "\"abc.def.ghi.jkl\"", "expected": "false"},
+        {"input": "\"0.0.0.0\"", "expected": "true"}
+      ],
+      "language": "rust",
+      "difficulty": "easy",
+      "few_shot_example": {
+        "description": "Check if a string is a valid hex color code",
+        "signature": "fn is_valid_hex_color(s: &str) -> bool",
+        "solution": "fn is_valid_hex_color(s: &str) -> bool {\n    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())\n}"
+      },
+      "template": "fn is_valid_ipv4(s: &str) -> bool {\n    let parts: Vec<&str> = s.split('.').collect();\n    ___BLANK_1___  // check exactly 4 parts\n    parts.iter().all(|p| {\n        ___BLANK_2___  // parse as u8, reject leading zeros, reject empty\n    })\n}"
+    }
+  ]
+
+  Task distribution (50 tasks):
+    10 easy   (single function, <10 lines, string/numeric)
+    15 medium (single function, 10-25 lines, data structures/algorithms)
+    15 hard   (single function, 15-40 lines, error handling/edge cases)
+    10 multi  (2 functions that must work together, <30 lines total)
+
+  Languages: 30 Rust, 10 Python, 10 TypeScript.
+  All tasks have deterministic test cases (no randomness, no I/O).
+
+
+REPORT FORMAT (model_baseline.toml):
+
+  [meta]
+  model_name = "Qwen2.5-Coder-7B-Instruct"
+  model_size_b = 7.61
+  quantization = "NF4 (bitsandbytes)"
+  gpu = "RTX 3060 12GB"
+  usable_vram_mb = 10000
+  benchmark_date = "2026-04-14"
+  benchmark_version = "1.0"
+
+  [attention_curve]
+  # ... (from measurement 1)
+
+  [retry_curve]
+  # ... (from measurement 2)
+
+  [few_shot]
+  # ... (from measurement 3)
+
+  [structured_output]
+  # ... (from measurement 4)
+
+  [template_fill]
+  # ... (from measurement 5)
+
+  [turboquant]
+  # ... (from measurement 6, optional)
+
+  [swap_latency]
+  # ... (from measurement 7, optional)
+
+  [derived]
+  # Computed from measurements above
+  model_tier = "MICRO"                   # from attention_ceiling
+  attention_ceiling = 4096               # from measurement 1
+  recommended_prompt_budget = 3000       # attention_ceiling - output_reserve
+  output_reserve = 750                   # from model tier table
+  optimal_retries = 4                    # from measurement 2
+  few_shot_recommended = true            # from measurement 3
+  structured_output_recommended = true   # from measurement 4
+  template_recommended = true            # from measurement 5
+  effective_context_with_tq = 65536      # from measurement 6
+  swap_strategy = "single_model"         # if swap > 3s, avoid swapping
+
+
+BUILD INSTRUCTIONS (for the session that implements this):
+
+  1. Create .elai_cc/benches/model_capability/ directory
+  2. cargo init --name elai-bench in that directory (standalone binary)
+  3. Add dependencies: reqwest, serde, serde_json, toml, tokio, tree-sitter,
+     tree-sitter-rust, tree-sitter-python, tree-sitter-typescript
+  4. Write fixtures/tasks.json (50 tasks, see format above)
+  5. Write fixtures/templates.json (20 template tasks, subset of tasks.json)
+  6. Write fixtures/padding.txt (5000 lines of random valid Rust code,
+     can be generated by extracting functions from any open-source Rust project)
+  7. Implement each measurement module
+  8. Implement report.rs (aggregate + derive ModelCapabilityProfile)
+  9. Test with sidecar running Qwen2.5-Coder-7B NF4+FA2 locally
+  10. Run full benchmark suite, commit results to metrics/
+
+  The harness must work with BOTH ollama and vLLM API formats.
+  Detection: try /v1/models (vLLM) first, fall back to /api/tags (ollama).
+
+  Estimated implementation time: 1 session (2-4 hours).
+  Estimated benchmark runtime: 15-30 minutes per model.
+
+
+========================================================================
+
+
+EXECUTIVE SUMMARY
+
+elai_cc has two equal objectives:
+  1. TRUST: make LLM output verifiable via deterministic enforcement
+  2. EFFICIENCY: make a 12GB VRAM local model produce frontier-model-quality artifacts
+
+This document designs objective 2. The core economic insight:
+
+  CLOUD MODEL: 1 attempt x $0.03 x high accuracy = paid quality
+  LOCAL MODEL: N attempts x $0.00 x low accuracy + system compensation = FREE quality
+
+  Time replaces parameters. The system is the intelligence, not the model.
+
+This is not about making the model smarter. It is about making the model's
+job so small, so well-defined, and so thoroughly verified that even a 3B
+parameter model produces correct output — eventually.
+
+
+========================================================================
+1. THREE CEILINGS (the real constraints)
+========================================================================
+
+A local model on consumer hardware hits three distinct ceilings.
+Confusing them leads to wrong design decisions.
+
+CEILING 1 — VRAM (hardware limit)
+  What fits in GPU memory. Model weights + KV cache + FFN activation scratch.
+  RTX 3060 12GB: ~10GB usable (Windows + display driver eat ~2GB).
+  MEASURED (2026-04-14, baseline_findings_and_actions.md):
+    Qwen2.5-Coder-3B NF4: 1.92GB weights, ~8GB free for KV+compute
+    Qwen2.5-Coder-7B NF4: 5.18GB weights, ~4.8GB free for KV+compute
+  KV cache per token: 3B = 1 KB, 7B = 56 KB (56x difference).
+  FFN activation scratch is the hidden VRAM consumer at long contexts:
+    7B at 25K tokens: peak FFN = 1.9GB per layer (mitigated by chunked prefill).
+  This ceiling determines WHAT CAN BE LOADED, not what works well.
+
+CEILING 2 — CONTEXT WINDOW (in-VRAM KV cache limit)
+  How many tokens fit in GPU memory with the model loaded.
+  MEASURED (2026-04-14):
+    3B NF4+FA2 on 12GB: ~40K tokens in-VRAM, ~81K with CPU overflow
+    7B NF4+FA2 on 12GB: ~25K tokens in-VRAM, ~35K projected with 8-bit KV
+  Bottleneck differs by model:
+    3B: FFN activation scratch (1 KB/token KV is trivial)
+    7B: KV cache (56 KB/token dominates), chunked prefill helps marginally
+  8-bit KIVI KV compression: 1.78x savings, lossless for code, ~25% speed cost.
+  Only worthwhile for 7B+ (3B KV is already trivial).
+  This ceiling determines THE HARD TOKEN BUDGET.
+
+CEILING 3 — ATTENTION QUALITY (model capability limit)
+  How many tokens the model can attend to EFFECTIVELY.
+  MEASURED (2026-04-14, 100% pass rate at all tested sizes):
+    3B NF4+FA2: 16K+ context tokens (25K real) — 100% pass through highest test
+    7B NF4+FA2: 16K+ context tokens (25K real) — 100% pass through highest test
+    3B NF4+SDPA: 4K context (6.2K real) — drops to 0% at 8K (timeout)
+    7B bf16+SDPA: ~1K context — not viable on 12GB
+  FA2 is the critical factor: 4x ceiling improvement over SDPA.
+  FA2 requires: head_dim <= 256, uniform architecture (no mixed head_dim).
+  Gemma 4 E2B REJECTED: mixed head_dim (256+512) blocks FA2 on 7/35 layers.
+  This ceiling determines THE REAL PROMPT BUDGET.
+
+  CRITICAL: with FA2, ceiling 3 is NOT the binding constraint on 12GB.
+  Ceiling 2 (in-VRAM KV) is binding for 7B. Ceiling 3 exceeds ceiling 2.
+  For 3B, neither ceiling 2 nor 3 binds until ~40K tokens.
+  DESIGN PRINCIPLE: the context budget allocator (Phase 3E) must enforce
+  min(ceiling 2, ceiling 3) per model. On 12GB with FA2, that's ceiling 2.
+
+
+========================================================================
+2. EFFECTIVE CONTEXT BUDGET (tuned per model tier)
+========================================================================
+
+Different models on different VRAM budgets have different effective ceilings.
+The context budget must ADAPT to the loaded model, not use fixed allocations.
+
+VRAM TIER TABLE (grounded by measurement where marked, projected otherwise):
+
+  VRAM   Model                      Weights   KV/tok   In-VRAM Ctx    Prompt Budget   Features                Status
+  8GB    Qwen2.5-Coder-3B NF4+FA2   1.92GB    1 KB     ~25K (proj)    20K             no DoLa, no steering    PROJECTED
+  12GB   Qwen2.5-Coder-3B NF4+FA2   1.92GB    1 KB     ~40K           35K             no DoLa, no steering    MEASURED
+  12GB   Qwen2.5-Coder-7B NF4+FA2   5.18GB    56 KB    ~25K (35K TQ8) 20K (30K TQ8)   TQ8 default             MEASURED
+  16GB   Qwen2.5-Coder-7B NF4+FA2   5.18GB    56 KB    ~50K (proj)    45K             TQ8 default             PROJECTED
+  24GB   Qwen2.5-Coder-14B NF4+FA2  ~10GB     ~112 KB  ~40K (proj)    35K             TQ8, test DoLa          PROJECTED
+  48GB   Qwen2.5-Coder-32B NF4+FA2  ~20GB     256 KB   ~35K (proj)    30K             TQ4, DoLa, steering     PROJECTED
+  any    Cloud frontier              0         0        128K+          per-provider    per-provider             N/A
+
+  PROJECTED rows must be measured on real hardware before shipping.
+  All local models require FA2 (flash-attn). Without FA2, ceiling drops 4x.
+  Output reserve: 512 tokens (measured: real code outputs rarely exceed 256).
+
+  Model family: Qwen2.5-Coder-Instruct (dense, uniform layers, head_dim=128).
+  Gemma 4: REJECTED (mixed head_dim blocks FA2, 18x larger KV, dead end).
+  MoE models (Qwen3-Coder-30B-A3B, DeepSeek): REJECTED for DoLa/steering
+    (expert routing breaks layer contrasting and activation addition).
+
+  12GB DEFAULT: 7B NF4+FA2+TQ8.
+    Rationale: 7B has 90% code pass rate vs 3B's 72%. TQ8 pushes ceiling
+    from 25K to ~35K. 3B available as --long-context fallback (40K ceiling).
+  48GB DEFAULT: 32B NF4+FA2+TQ4.
+    Rationale: 64 dense layers enable DoLa. 256 KB/token KV needs TQ4.
+    HumanEval 92.7%, MBPP 90.2% (highest among local models).
+
+  FA2 requirement: Python env elai-fa2 (Python 3.12, flash-attn 2.7.4).
+    Python 3.13: no FA2 wheel available (Windows). Falls back to SDPA.
+    SDPA ceiling: ~4K tokens (not viable for production use).
+
+  DoLa status by model size (measured/projected):
+    3B:  not tested, likely harmful (too few layers)
+    7B:  HARMFUL (measured: -15% code quality, -6% factuality, 4.7x slower)
+    14B: untested, likely harmful (similar layer count to 7B)
+    32B: untested, projected viable (64 layers, sufficient early/late contrast)
+
+  Steering status: NEUTRAL on 7B (infrastructure works, generic contrast pairs
+    have zero effect). Needs domain-specific pairs (anti-staleness design).
+
+CONTEXT BUDGET ADAPTATION:
+
+  Current 8-slot allocation (from Phase 3E) assumes ~14K tokens.
+  With measured ceilings, allocations per VRAM tier:
+
+  Slot                    48GB (30K)   12GB-7B (20K)   12GB-3B (35K)   8GB (20K)
+  1. SystemPrompt         330          330              330             200
+  2. Rules                500          400              500             300
+  3. Context Telescope    1500         800              1500            600
+  4. RepoMap              3000         1500             3000            1500
+  5. CodeContext           10000        8000             14000           8000
+  6. SSB entries          3000         1500             3000            1500
+  7. GRC history          2000         1000             2000            1000
+  8. OutputReserve        512          512              512             512
+  ---                     ---          ---              ---             ---
+  Total                   20842        14042            24842           13612
+
+  Key insight: 3B on 12GB gets MORE context than 7B on 12GB (35K vs 20K).
+  The 7B model is smarter per-token but sees less. This is the tradeoff.
+  RepoMap is NO LONGER dropped for any tier — all models have enough ceiling.
+
+IMPLEMENTATION:
+  ModelCapabilityProfile {
+    tier: ModelTier,                     // MICRO/SMALL/MEDIUM/LARGE/CLOUD
+    attention_ceiling: usize,            // tokens where quality degrades
+    recommended_prompt_budget: usize,    // ceiling - output_reserve
+    output_reserve: usize,              // tokens for generation
+    slot_weights: SlotWeights,          // per-slot allocation percentages
+    features: ModelFeatures,            // structured_output, few_shot_needed, etc.
+  }
+
+  Loaded from elai_cc.toml [models.{name}.capability] or auto-detected
+  by running a calibration prompt at startup (see section 11).
+
+
+========================================================================
+3. TASK GRANULARITY CALIBRATION (decompose to model capability)
+========================================================================
+
+Core principle: decomposition depth is a FUNCTION of model capability.
+Bigger model = fewer, larger baby steps. Smaller model = more, tinier steps.
+
+BABY STEP SIZING RULES (revised with measured attention ceilings):
+
+  VRAM     Model   Max LOC/Step   Max Files   Max Symbols   Rationale
+  8GB      3B      25 lines       1 file      2 functions   72% pass@1, 20K budget
+  12GB     7B      40 lines       2 files     3 functions   90% pass@1, 20K budget
+  12GB     3B      25 lines       1 file      2 functions   72% pass@1, 35K budget (more context, same quality)
+  16GB     7B      50 lines       2-3 files   4 functions   90% pass@1, 45K budget
+  24GB     14B     60 lines       2-3 files   4 functions   projected higher pass rate
+  48GB     32B     100 lines      3-5 files   5+ functions  92.7% HumanEval, 30K budget
+  cloud    API     100 lines      3-5 files   5+ functions  frontier quality
+
+  Previous MICRO tier assumed 15 LOC / 1 file because attention ceiling was
+  guessed at 4K. Measured ceiling is 16K+ with FA2. Baby step sizing is
+  driven by CODE QUALITY (pass rate), not context capacity.
+  7B at 90% pass rate handles 40 LOC reliably. 3B at 72% needs smaller steps.
+
+  PER-FILE LIMITS: unchanged. Each file touched by a baby step must stay
+  within language-specific file size limits (code-completeness-enforcement-design.txt).
+
+DECOMPOSITION DEPTH ADAPTATION (revised):
+
+  For a MEDIUM complexity surgical task (5-15 files, multi-module):
+
+  Model   Decomposition Depth    Approximate Baby Steps
+  3B      3 levels               30-50 baby steps
+  7B      2-3 levels             15-30 baby steps
+  14B     2 levels               10-20 baby steps
+  32B     2 levels               5-15 baby steps
+
+  More baby steps = more wall clock time, but each succeeds more reliably.
+  The tradeoff is explicit: 3B tasks take 3-5x longer but cost $0.
+
+COMPLEXITY THRESHOLDS (per model, for surgical mode):
+
+  Classification    7B/14B/32B Criteria      3B Override
+  TRIVIAL           1 file, <50 LOC          1 file, <25 LOC
+  SMALL             2-5 files, <200 LOC      1-3 files, <100 LOC
+  MEDIUM            5-15 files               3-10 files
+  LARGE             >15 files                >10 files
+
+  3B classifies more tasks as MEDIUM/LARGE, triggering deeper decomposition.
+  7B handles SMALL tasks without deeper decomposition (90% pass rate).
+
+
+========================================================================
+4. PROMPT STRATEGY FOR SMALL MODELS
+========================================================================
+
+Small models need fundamentally different prompting than frontier models.
+This is not about "dumbing down" — it is about PRECISION.
+Model family: Qwen2.5-Coder-Instruct (all sizes). Not Gemma.
+
+PRINCIPLE 1: LITERAL OVER ABSTRACT
+  BAD (any language):
+    "Implement authentication middleware following the project's patterns."
+  GOOD (language-specific, from FILE_PLAN + ProjectProfile):
+    Rust:       "Write function validate_jwt(token: &str) -> Result<Claims, AuthError>
+                 in file src/middleware/auth.rs. Use the jsonwebtoken crate already in
+                 Cargo.toml. Return Claims { sub, exp, iat }. See reference:
+                 src/middleware/cors.rs:validate_origin() for similar pattern."
+    Python:     "Write function validate_jwt(token: str) -> Claims in file
+                 src/middleware/auth.py. Use the pyjwt package already in
+                 pyproject.toml. Return Claims(sub, exp, iat). See reference:
+                 src/middleware/cors.py:validate_origin() for similar pattern."
+    TypeScript: "Write function validateJwt(token: string): Claims in file
+                 src/middleware/auth.ts. Use the jose package already in
+                 package.json. Return { sub, exp, iat }. See reference:
+                 src/middleware/cors.ts:validateOrigin() for similar pattern."
+    Go:         "Write function ValidateJWT(token string) (*Claims, error) in file
+                 middleware/auth.go. Use the golang-jwt/jwt/v5 module already in
+                 go.mod. Return &Claims{Sub, Exp, Iat}. See reference:
+                 middleware/cors.go:ValidateOrigin() for similar pattern."
+
+  The literal prompt is assembled from: FILE_PLAN (target file, function signature),
+  ProjectProfile (dependencies, naming conventions), and DKG (reference patterns).
+  Language-specific formatting is automatic — the prompt assembler uses the
+  project's detected language to format signatures, imports, and references.
+
+  The bad prompt requires the model to: find patterns, identify the right
+  library, choose a return type, pick a file location. Each is a failure
+  point for small models. The good prompt eliminates ALL ambiguity.
+
+PRINCIPLE 2: SHOW, DON'T TELL (few-shot is mandatory for MICRO/SMALL)
+  Every baby step prompt includes 1-2 CONCRETE examples from the same
+  codebase. Retrieved via DKG (find similar function signatures) or BM25
+  (find similar implementations). The examples show:
+  - How THIS codebase handles error types
+  - What naming conventions THIS project uses
+  - How THIS project structures tests
+
+  Cost: ~200-400 tokens per example. Worth it: reduces retry count by ~50%
+  for small models (based on SWE-bench few-shot ablation studies).
+
+PRINCIPLE 3: FILL-IN-THE-BLANK OVER OPEN-ENDED
+  Instead of: "Write a function that validates user input"
+  Generate a TEMPLATE with blanks (language-specific skeleton from
+  code-completeness-enforcement-design.txt section 2.1):
+
+  Rust:
+    pub fn validate_input(input: &UserInput) -> Result<ValidatedInput, ValidationError> {
+        // CHECK 1: email format
+        ___BLANK_1___
+        // CHECK 2: password strength (min 8 chars, 1 upper, 1 digit)
+        ___BLANK_2___
+        // CHECK 3: username length (3-32 chars, alphanumeric + underscore)
+        ___BLANK_3___
+        Ok(ValidatedInput { email, password, username })
+    }
+
+  Python:
+    def validate_input(input: UserInput) -> ValidatedInput:
+        # CHECK 1: email format
+        ___BLANK_1___
+        # CHECK 2: password strength (min 8 chars, 1 upper, 1 digit)
+        ___BLANK_2___
+        # CHECK 3: username length (3-32 chars, alphanumeric + underscore)
+        ___BLANK_3___
+        return ValidatedInput(email=email, password=password, username=username)
+
+  TypeScript:
+    export function validateInput(input: UserInput): ValidatedInput {
+        // CHECK 1: email format
+        ___BLANK_1___
+        // CHECK 2: password strength (min 8 chars, 1 upper, 1 digit)
+        ___BLANK_2___
+        // CHECK 3: username length (3-32 chars, alphanumeric + underscore)
+        ___BLANK_3___
+        return { email, password, username };
+    }
+
+  The model fills blanks. The structure is guaranteed correct.
+  Skeleton template generated from: FILE_PLAN (signatures) + DKG type info
+  + LanguageTemplateRegistry (language-specific patterns). See
+  code-completeness-enforcement-design.txt section 2.1 for fill protocol.
+
+  Template generation cost: deterministic (tree-sitter + type info). No LLM.
+  Template fill: LLM generates ONLY the blank contents. Much shorter output.
+  Orchestrator patches blanks into the skeleton buffer and writes once.
+
+PRINCIPLE 4: STRUCTURED OUTPUT WITH ADAPTIVE CONSTRAINTS
+  Small models hallucinate more when generating free-form text.
+  ALL model outputs must be structured:
+
+  For code:    grammar-guided generation (vLLM supports EBNF grammars)
+  For plans:   JSON schema constrained (vLLM json_schema parameter)
+  For GRC:     structured ThinkStep format (already designed in Phase 2A)
+  For edits:   diff format only (unified diff, not full file rewrite)
+
+  Grammar-guided generation prevents entire categories of errors:
+  - Unclosed brackets/braces
+  - Invalid syntax
+  - Mixed code + natural language in code blocks
+  - Runaway generation (grammar has explicit end markers)
+
+  ADAPTIVE CONSTRAINED DECODING (research-grounded):
+  Research (LLM-Code-Generation-Summary.txt section 4e):
+    "Alignment tax: forcing grammar constraints degrades semantic/analytical
+    capability in instruction-tuned models."
+    "CRANE algorithm: augments grammar with transitional rules; +10pp accuracy
+    over unconstrained/rigid baselines on symbolic reasoning."
+    "AdapTrack: unconstrained 61.58% -> constrained+AdapTrack 66.11% EM@1."
+    "CodeFast (training-free token-level early stopping): +34% to +452%
+    inference speed, zero Pass@1 degradation."
+
+  Implementation:
+    - Use CRANE-style adaptive constraints: relax grammar at semantic decision
+      points (algorithm choice, variable naming), enforce strictly at structural
+      points (brackets, function boundaries, return types). This avoids the
+      alignment tax of rigid grammars while preventing structural errors.
+    - Use CodeFast early stopping: detect when the model enters repetition
+      loops (excess token phenomenon) and terminate generation cleanly.
+      This prevents runaway generation without hard max_tokens truncation
+      (which causes avg 19.45% Pass@1 drop per section 3c).
+    - vLLM: implement via custom LogitsProcessor chain:
+      [CRANE_grammar, CodeFast_early_stop, language_syntax_enforcer]
+    - ollama fallback: JSON schema mode only (no custom LogitsProcessor).
+      Compensate with stronger T2 AST validation post-generation.
+
+
+========================================================================
+5. RETRY ECONOMICS (time is the currency)
+========================================================================
+
+On a cloud API: each retry costs money. Minimize retries.
+On a local model: each retry costs ONLY wall-clock time. Maximize quality.
+
+MEASURED RETRY DATA (2026-04-14, Qwen2.5-Coder-7B NF4+FA2):
+  Pass@1: 90% (18/20 tasks). Optimal retries: 1.
+  Two tasks (task_06, task_15) fail consistently across all configs.
+  Retry 1 recovers the remaining ~2% (72% -> 76% for 3B, 90% -> ~92% for 7B).
+  Beyond retry 1: diminishing returns. Structural retry (decompose) is better.
+
+RETRY BUDGET PER LEVEL (revised with measured data):
+
+  Level          Max Retries    Wall-Clock Budget    Escalation Target
+  Baby Step      3              3 minutes            Step (redecompose)
+  Step           2              20 minutes           Phase (replan)
+  Phase          2              2 hours              Concept (research)
+  Concept        1              4 hours              Human / cloud fallback
+
+  Reduced from 5 to 3 baby step retries: measured data shows retry 2+
+  rarely succeeds if retry 1 failed. Structural change (decompose/template)
+  is more effective than repeated attempts at the same granularity.
+  Total worst case for a MEDIUM task: ~6 hours.
+  Compared to: same task on cloud API = 5-15 minutes, $0.50-$5.00.
+  The user gets: privacy, zero cost, full control. Tradeoff: time.
+
+RETRY STRATEGY (structural only — research proves instructional retries fail):
+
+  Research (LLM-Code-Generation-Summary.txt section 1): "Prompt engineering
+  ('emotional appeals', tips, threats) empirically worsened scores."
+  "Inhibition adaptation = 17.6%." Models cannot be instructed out of failure.
+  ALL retries must change the STRUCTURE, not the instruction.
+
+  Each retry is a STRUCTURAL modification:
+
+  Retry 1: DECOMPOSE — split the baby step, each function gets its own step
+           Research: MoTCoder-7B +5.9% Pass@1 via decomposition.
+  Retry 2: TEMPLATE — generate skeleton with blanks, model fills only blanks
+           Research: Interleaved generation +6% Pass@1, -60% latency.
+  Retry 3: FEW-SHOT — add a WORKING example from same codebase (DKG lookup)
+           Research: TDP +6.09% avg improvement across 8 models.
+  Retry 4: simplify the task further (split baby step into 2 sub-steps)
+  Retry 5: BEST-OF-3 — generate 3 candidates, pick the one that passes
+
+  After retry 5: BubbleUp. The task is too hard for this model at this
+  granularity. The step must be redecomposed or the model must be swapped.
+
+REASONING PIPELINE INTEGRATION (reasoning-architecture-design.txt):
+
+  The 6-layer reasoning pipeline runs BEFORE structural retries above.
+  When a baby step fails, the sequence is:
+
+  1. Layer 1 (deterministic, 0 tokens, <100ms): classify error, localize via
+     DKG/compiler, generate fix template. If resolved: no retry needed.
+  2. Layer 2 (micro-reflection, ~600 tokens, 2-5s): one focused JSON question.
+     If diagnosis resolves: inject fix instruction into next attempt.
+  3. Layer 3 (interrogation, ~2K tokens, 10-30s): system-guided Q&A tree.
+  4. Layer 4 (AB-MCTS, 3-18K tokens, 30-90s): branch at failure point.
+     GG intrinsic signals (token confidence + novelty) score branches.
+  5. Layers 5-6 (cloud, $0.002-$2.00): diagnosis then generation.
+
+  Only AFTER the reasoning pipeline is exhausted (Layer 4 fails, or cloud
+  budget depleted) do the STRUCTURAL retries above activate:
+  Retry 1 (decompose) -> Retry 2 (template) -> etc.
+
+  This means most errors are resolved WITHOUT consuming retry budget.
+  Projected: ~85-90% of errors resolve at Layers 1-4 (zero cloud cost).
+  Structural retries handle the remaining ~10-15%.
+
+  REPAIR CONTEXT PROFILE:
+  Retries triggered by the reasoning pipeline use Compressed Context Replay
+  (reasoning-architecture-design.txt): fresh 1400-token context per attempt.
+  This is a NEW SlotWeights profile (REPAIR_CONTEXT) in the context budget
+  allocator (Phase 3E). Different from first-attempt allocation:
+    System prompt:        50 tokens
+    Baby step spec:       200 tokens
+    MistakeBook:          150 tokens (forbidden diffs + constraints)
+    Relevant code (DKG):  500 tokens
+    Working example:      300 tokens
+    Fix instruction:      100 tokens
+    Output reserve:       100 tokens
+    TOTAL:                ~1400 tokens (fits ANY model tier)
+
+  GENERATION PARAMETERS FOR REPAIR (FixAudit, arXiv:2604.05560):
+  First attempt: temperature 0.3, top-p 0.9 (focused).
+  Repair retries: temperature 1.0, top-p 1.0 (prevents cyclic traps).
+  AB-MCTS branches: [0.7, 1.0, 0.3] (diversity + exploration + focus).
+  See reasoning-architecture-design.txt GENERATION PARAMETERS section.
+
+FUTILITY DETECTION (stop grinding early):
+
+  Same-error-class detection: if 3 consecutive retries produce the SAME
+  FailureTaxonomy category (e.g., MISSING_IMPORT three times), stop.
+  The model doesn't know how to fix it. BubbleUp immediately.
+
+  Regression detection: if retry N breaks tests that retry N-1 passed,
+  the model is thrashing. Stop at retry N, revert to best previous state.
+
+  Output stagnation: if retry N produces >90% identical output to retry N-1
+  (measured by diff size), the model is stuck in a loop. BubbleUp.
+
+BEST-OF-N SELECTION (ensemble at system level):
+
+  For critical baby steps (marked in decomposition tree): generate N=3
+  independent completions with different seeds/temperatures. Score each:
+
+  Score = compile_success * 100
+        + tests_passed * 50
+        + token_confidence_mean * 20  // GG intrinsic signal (free from sidecar)
+        + novelty_vs_previous * 10   // GG: divergence from failed attempts
+        + zero_warnings * 10
+        + code_length_penalty (shorter = better, within bounds)
+
+  GG INTRINSIC VERIFICATION (reasoning-architecture-design.txt):
+  token_confidence (mean logprob) and generation_novelty (cosine divergence
+  from last failed output) are extracted from the sidecar at zero cost during
+  generation. They replace external PRM verifiers, saving VRAM.
+  See reasoning-architecture-design.txt GG INTRINSIC VERIFICATION section.
+
+  Pick highest score. Cost: 3x wall-clock, but dramatically higher
+  success rate for tricky implementations.
+
+  When to use best-of-N:
+  - Baby steps marked CRITICAL by decomposer
+  - Baby steps touching auth/security/financial code
+  - First baby step of a new concept (sets the pattern for siblings)
+  - Never for TRIVIAL steps (waste of time)
+
+
+========================================================================
+6. OUTPUT CONSTRAINTS (structured generation)
+========================================================================
+
+Small models waste tokens on:
+  - Natural language explanations mixed with code
+  - Verbose variable names and excessive comments
+  - Repeating the prompt back before answering
+  - Generating code that already exists (failing to use the provided context)
+
+CONSTRAINT 1: OUTPUT FORMAT ENFORCEMENT
+  Every LLM call specifies an output schema. The model MUST produce:
+
+  For EXECUTING (code generation):
+    {
+      "edits": [
+        { "file": "path", "old": "existing code", "new": "replacement" }
+      ],
+      "reasoning": "one sentence max"
+    }
+
+  For TESTING_FIRST (test generation):
+    {
+      "test_file": "path",
+      "test_code": "full test function",
+      "expected_behavior": "one sentence"
+    }
+
+  For PLANNING (decomposition):
+    TOML structure matching BabyStepSpec schema.
+
+  Enforced via vLLM json_schema or grammar-guided generation.
+  If the model fails to match the schema: automatic retry (does NOT
+  count toward the baby step retry budget — this is an output format
+  issue, not a capability issue).
+
+CONSTRAINT 2: DIFF-ONLY EDITS
+  The model NEVER outputs a full file. Only unified diffs.
+  Benefits:
+  - 5-10x fewer output tokens (function body vs entire file)
+  - Forces the model to reference existing code (it must specify "old")
+  - Prevents "rewrite the world" tendencies of small models
+  - Edit application is deterministic (patch, not overwrite)
+
+  Implementation: the baby step prompt includes the target code section
+  (from CodeContext slot) and instructs: "Output ONLY the edit diff."
+
+CONSTRAINT 3: ONE FUNCTION PER TURN
+  For MICRO tier: each LLM call generates AT MOST one function/method.
+  If a baby step requires 3 functions, it takes 3 LLM calls.
+  Each call gets fresh context assembly (updated with previous edits).
+
+  Benefits:
+  - Shorter output = fewer errors per call
+  - Immediate T1/T2/T3 verification after each function
+  - If function 2 fails, function 1 is already committed and correct
+  - The model sees its own previous output via DKG incremental update
+
+  Cost: 3 context assemblies instead of 1. ~50ms * 3 = 150ms overhead.
+  Token cost: 3 * 3K (MICRO budget) = 9K total input. But each individual
+  call is within the attention ceiling. Quality >> speed here.
+
+
+========================================================================
+7. MODEL SWAPPING STRATEGY (one model at a time on 12GB)
+========================================================================
+
+On 12GB VRAM, only one model fits. Agent roles must share.
+
+SINGLE-MODEL STRATEGY (12GB / default):
+  All roles use the SAME model (Qwen2.5-Coder-7B NF4+FA2). No swapping needed.
+  Roles differentiated by: system prompt + rules + context, not model.
+  This is the simplest and most VRAM-efficient approach.
+
+  Role-specific behavior via prompt prefix:
+    Executor: "You are writing code. Output JSON edits only."
+    Auditor:  "You are reviewing code. Output findings as JSON."
+    Designer: "You are decomposing a task. Output TOML plan structure."
+
+  GRC budgets already differ per role (Phase 2C). Same model, different
+  behavior. This works because the SYSTEM is the intelligence, not the model.
+
+DUAL-MODEL STRATEGY (24GB VRAM):
+  Keep two models resident: primary (larger, executor/designer) +
+  secondary (smaller, auditor/memory-writer).
+  Predictive loading: orchestrator knows FSM transitions, pre-loads
+  the next model while current model finishes last tokens.
+  Swap latency: <2s (model already in VRAM when needed).
+
+MULTI-MODEL STRATEGY (48GB+ VRAM):
+  All role-specific models resident simultaneously.
+  Zero swap latency. Maximum quality per role.
+  This is the PRODUCTION target for teams/companies.
+
+MODEL SWAP PROTOCOL:
+  1. Current model finishes generation (do not interrupt mid-token)
+  2. All pending output written to SSB (artifacts persisted)
+  3. Model unloaded from VRAM (vLLM handles this, or ollama stop)
+  4. Next model loaded (vLLM from disk, or ollama run)
+  5. New model receives fresh context assembly from budget allocator
+  6. Context is assembled from SSB + DKG + knowledge engine (no state
+     transfer between models — all state is in infrastructure)
+
+  Swap time: ~5-10s cold, ~1-2s warm (see benchmark measurement 7).
+  This happens between FSM states (EXECUTING -> AUDITING), so it
+  overlaps with test execution and auditing preparation.
+
+
+7B. MODEL SWAP OPTIMIZATION (minimizing swap latency)
+
+  Swap latency breakdown (cold, 7GB model, NVMe SSD):
+    Unload from VRAM:     ~100-500ms   (CUDA buffer deallocation)
+    Read from disk:       ~1-2.3s      (NVMe sequential ~3-7 GB/s)
+    PCIe transfer to GPU: ~220-500ms   (PCIe 4.0 x16 ~32 GB/s)
+    Driver/CUDA overhead: ~300-800ms   (kernel compilation, memory mapping)
+    Warmup (first pass):  ~1-3s        (KV cache allocation, CUDA graph capture)
+    Total cold swap:      ~3-7s
+
+  Six strategies to eliminate or hide this cost:
+
+  STRATEGY 1: AVOID SWAPPING (12GB default)
+    On 12GB: ALL roles use the SAME model. Zero swap. Ever.
+    Role differentiation via system prompt + rules + constrained decoding.
+    Executor prompt: "Output JSON edits only. No explanation."
+    Auditor prompt: "Output findings as JSON. Must cite line numbers."
+    The model doesn't change. The instructions change. The GRC budget changes.
+    This is the CORRECT default for <=16GB VRAM.
+    Only override if user explicitly provides multiple models.
+
+  STRATEGY 2: PREDICTIVE PRELOADING (hide disk I/O behind useful work)
+    When the model WILL change (24GB+ or explicit multi-model config):
+    The orchestrator knows the FSM: EXECUTING always -> AUDITING.
+    While executor generates its last tokens:
+      - Begin loading the auditor model from disk INTO SYSTEM RAM (not VRAM)
+      - Use mmap: model file mapped into virtual memory, OS prefetches pages
+      - Cost: zero VRAM, uses system RAM (~7GB), happens in background
+    When executor finishes:
+      - Unload executor from VRAM (~200ms)
+      - Transfer pre-loaded model from RAM to VRAM (~500ms-1s)
+      - Warmup (~1s with pre-compiled CUDA graphs)
+      - Total visible swap: ~1.5-2s (vs 5-7s cold)
+
+    Implementation:
+      PredictiveLoader {
+        next_model: Option<ModelId>,        // set by FSM lookahead
+        preload_state: PreloadState,        // IDLE | LOADING_RAM | READY_IN_RAM
+        mmap_handle: Option<MmapHandle>,    // memory-mapped model file
+      }
+
+      Trigger: when current agent enters its LAST baby step (or LAST GRC step),
+      PredictiveLoader starts mmap preload of the next role's model.
+      Detection: orchestrator tracks baby step index within current phase.
+
+  STRATEGY 3: MMAP + OS PAGE CACHE (make repeated loads near-instant)
+    OS page cache keeps recently-accessed file pages in RAM.
+    First load of a 7GB model: full disk I/O (1-2.3s).
+    Second load (within ~5-30 min, depending on RAM pressure): ~200-500ms.
+    The model file is ALREADY in RAM from last time.
+
+    Exploitation:
+    - On 64GB RAM: ALL models fit in page cache. Every swap after the
+      first is warm. Alternating executor/auditor = ~1.5s each swap.
+    - On 32GB RAM: the two most recent models fit. Good enough for
+      executor/auditor alternation.
+    - On 16GB RAM: only current model cached. Cold swaps every time.
+      -> Use strategy 1 (single model, no swap).
+
+    Implementation: nothing to do. The OS handles this. But the harness
+    (measurement 7) must measure BOTH cold and warm swap times so the
+    system knows whether page cache is effective on the user's hardware.
+
+    Config option:
+      [performance]
+      preload_models_on_startup = true   # touch all model files at startup
+                                          # to populate OS page cache.
+                                          # Adds ~10-30s to startup but makes
+                                          # all subsequent swaps warm.
+
+  STRATEGY 4: OVERLAP SWAP WITH DETERMINISTIC WORK (free latency hiding)
+    After executor finishes and before auditor starts, the system runs:
+      - T1 rules check: CPU, <1ms
+      - T2 tree-sitter parse: CPU, <10ms
+      - T3 compilation: CPU, typically 2-15s for incremental
+      - Test execution: CPU, typically 1-30s
+      - DKG re-indexing: CPU, <1s
+      - SSB write: CPU + disk, <10ms
+
+    ALL of these are CPU-only. GPU is idle during this entire window.
+    Total deterministic work: 3-45s.
+    Model swap: 1.5-7s.
+
+    The swap runs IN PARALLEL with deterministic work.
+    In the common case: swap completes before tests finish.
+    The auditor model is warm and ready when test results arrive.
+
+    Implementation:
+      After executor signals "done":
+        tokio::join!(
+          async { run_post_edit_checks().await },   // CPU work
+          async { swap_model(next_role).await },      // GPU swap
+        )
+      Both complete before auditor's context is assembled.
+      Zero visible swap latency in practice.
+
+  STRATEGY 5: CUDA GRAPH CACHING (eliminate warmup cost)
+    The warmup cost (~1-3s) comes from CUDA compiling execution graphs
+    for the model's specific shapes (batch size, sequence length, etc.).
+    vLLM caches CUDA graphs by default: first inference is slow,
+    subsequent inferences with same shapes are fast.
+
+    Optimization: at model load time, immediately run a DUMMY inference
+    with a minimal prompt (e.g., "Hello") to trigger CUDA graph compilation.
+    This moves warmup INTO the swap window (parallel with CPU work)
+    rather than delaying the first real inference.
+
+    Implementation: model loader sends a warmup ping after load completes.
+    The warmup result is discarded. Time: ~500ms-1s (single short inference).
+
+  STRATEGY 6: WARM MODEL POOL (24GB+ only)
+    Keep multiple models loaded simultaneously:
+      24GB: primary (7GB) + secondary (3-4GB) = fits with room for KV
+      48GB: primary (14GB) + secondary (7GB) + tertiary (7GB) = luxury
+
+    Model routing: no swap at all. The request goes to the right model.
+    vLLM natively supports serving multiple models from one instance.
+    ollama keeps recently-used models warm (configurable keep-alive).
+
+    Implementation:
+      ModelPool::route(role: AgentRole) -> &ModelEndpoint
+      Routing table from elai_cc.toml:
+        [agents.executor.backend]
+        model = "Qwen2.5-Coder-32B-Instruct"
+        [agents.auditor.backend]
+        model = "Qwen2.5-Coder-32B-Instruct"
+
+    For 12GB: ModelPool has exactly 1 entry. route() always returns it.
+    No overhead. Just a thin abstraction for when more VRAM is available.
+
+
+  SWAP LATENCY BY HARDWARE TIER (expected, confirmed by benchmark):
+
+    VRAM     Strategy                   Visible Swap Latency
+    12GB     Single model, no swap      0ms (no swap ever)
+    16GB     Single model preferred     0ms (or ~2s if 2 small models)
+    24GB     Predictive + overlap       0-500ms (hidden behind CPU work)
+    48GB+    Warm pool, no swap         0ms (all models resident)
+
+  THE BOTTOM LINE: on 12GB, there is NO swap problem because there is
+  NO swap. One model, all roles, differentiated by prompt. When the user
+  upgrades hardware or uses cloud fallback, the swap infrastructure
+  activates automatically. The system ADAPTS to what's available.
+
+
+7C. STATELESS INFERENCE (why context never grows)
+
+  CRITICAL ARCHITECTURAL PROPERTY: elai_cc does NOT maintain a conversation
+  with the model. Every LLM call is an independent, stateless request.
+
+  This is fundamentally different from ChatGPT / Claude Code / any chat UI:
+
+    CHAT UI (Claude Code, ChatGPT):
+      Turn 1: [system + user message]          -> KV cache: 2K tokens
+      Turn 2: [system + turn 1 + user message] -> KV cache: 5K tokens
+      Turn 3: [system + turn 1-2 + user msg]   -> KV cache: 9K tokens
+      ...
+      Turn N: context grows until limit. Need compaction or summarization.
+      PROBLEM: tokens wasted on stale history. Quality degrades as history
+      fills the attention window with irrelevant past turns.
+
+    ELAI_CC (stateless per-call):
+      Call 1: [fresh prompt assembled from SSB+DKG+knowledge] -> 3K tokens
+      (KV cache freed)
+      Call 2: [fresh prompt assembled from SSB+DKG+knowledge] -> 3K tokens
+      (KV cache freed)
+      Call 3: [fresh prompt assembled from SSB+DKG+knowledge] -> 3K tokens
+      (KV cache freed)
+      ...
+      Call N: still 3K tokens. No growth. No degradation. No compaction.
+
+  VRAM LIFECYCLE PER CALL:
+
+    IDLE:       model weights [7.2GB] + empty [3GB free]
+    INFERENCE:  model weights [7.2GB] + KV cache [~1-3GB building]
+    GENERATING: model weights [7.2GB] + KV cache [~1-3GB peak]
+    COMPLETE:   model weights [7.2GB] + KV cache FREED [3GB free again]
+
+    The KV cache is EPHEMERAL. Built from scratch for each prompt.
+    Released completely after the response is generated.
+    No accumulation. No growth. No reset needed. No OOM risk from context.
+
+  HOW BABY STEPS MAINTAIN CONTINUITY WITHOUT CONVERSATION:
+
+    The model has complete amnesia between calls. All continuity lives in
+    deterministic infrastructure:
+
+    1. Baby step N finishes. Its output (code edits) is written to DISK.
+    2. SSB records: "step N wrote fn X in file Y. Tests: 3/3 pass." (~50 tokens)
+    3. DKG re-indexes the changed files (<1s, CPU). New code is now searchable.
+    4. Baby step N+1's prompt is assembled FRESH by the context budget allocator:
+       - Queries SSB: "what happened recently?" -> gets step N's summary
+       - Queries DKG: "what code exists at the edit target?" -> sees N's code
+       - Queries knowledge engine: "what's relevant to this task?" -> retrieval
+    5. The model receives a curated 3K-token prompt. No stale history. No bloat.
+       Every token is relevant to THIS baby step, not residue from past steps.
+
+    Result: baby step 80 gets the SAME quality context as baby step 1.
+    No context window degradation over time. No "lost in the middle" problem.
+    The system's understanding of the project IMPROVES over time (DKG gets
+    richer, SSB has more records to filter from) while the prompt size
+    stays CONSTANT within the attention ceiling.
+
+  PREFIX CACHING (vLLM optimization, not context growth):
+
+    vLLM and some ollama backends cache the KV computation for common
+    prompt prefixes. If Slot 1-3 (system prompt, rules, telescope) are
+    identical across consecutive baby steps, the prefix KV cache is REUSED.
+
+    This is pure speedup:
+    - Without prefix cache: each call computes KV for all ~1K prefix tokens
+    - With prefix cache: prefix KV reused, only new tokens computed
+    - Saves ~200-500ms per call on MICRO tier prompts
+    - Evicts automatically when the prefix changes (e.g., new phase starts)
+
+    This is NOT context growth. The cached prefix occupies the SAME VRAM
+    it would during inference. It just persists between calls to avoid
+    redundant computation. If VRAM is needed for a larger prompt, the
+    cache evicts. Zero risk.
+
+  WHY THIS MATTERS FOR TOKEN EFFICIENCY:
+
+    In a chat UI, you pay the "context tax" — every turn carries all
+    previous turns as dead weight. A 20-turn coding session on Claude Code
+    might have 80% of the context window filled with stale conversation.
+
+    In elai_cc, 100% of the context window is active, relevant content.
+    The budget allocator has FULL CONTROL over every token. There is no
+    "history" competing for space with the actual task.
+
+    This is how a 3K-token MICRO prompt outperforms a 16K-token chat
+    prompt: no noise, no history tax, every token selected by code.
+
+
+========================================================================
+8. QUALITY COMPENSATION MECHANISMS
+========================================================================
+
+Five strategies that make the SYSTEM compensate for model weakness:
+
+STRATEGY A: NARROWING (decompose until trivial)
+  Make each baby step so small that even a weak model succeeds.
+  Metric: "Could a first-year CS student implement this given the
+  function signature, test, and one example?" If no, decompose further.
+  The decomposer is calibrated per model tier (section 3).
+
+STRATEGY B: TEMPLATING (reduce generation to slot-filling)
+  For common patterns (CRUD, REST handlers, tests, config loading),
+  maintain per-project and per-language code templates.
+  Sources:
+  - DKG: extract patterns from existing codebase (surgical mode)
+  - Rules engine: language-specific idiom templates (greenfield)
+  - FlashResearch: best-practice templates from official docs
+
+  Template application:
+  1. Identify pattern match (baby step task matches template category)
+  2. Generate template skeleton with blanks
+  3. LLM fills only the blanks (domain-specific logic)
+  4. Template structure guarantees correctness of everything around blanks
+
+  Template categories (initial set):
+  - FUNCTION_IMPL: signature given, fill body
+  - TEST_CASE: function under test given, fill assertions
+  - ERROR_HANDLER: error type given, fill match arms
+  - CONFIG_STRUCT: fields given, fill validation logic
+  - API_ENDPOINT: route + types given, fill handler logic
+
+STRATEGY C: VERIFICATION DENSITY (catch errors faster)
+  Small model = more errors. Response: check more frequently.
+
+  MICRO tier check frequency:
+  - After EVERY line of generated code (not every edit — every LINE)
+    via grammar-guided generation that validates syntax incrementally
+  - T1 rules check after every edit (same as larger tiers)
+  - T2 tree-sitter parse after every edit (same as larger tiers)
+  - T3 compilation check after EVERY function (not every baby step)
+
+  This catches errors within seconds, not minutes. The model fixes one
+  broken line instead of debugging 15 lines of cascading errors.
+
+STRATEGY D: ENSEMBLE VIA BEST-OF-N (limited use, research-constrained)
+  Research (LLM-Code-Generation-Summary.txt section 4c):
+    "Requires N > 32 for substantial gains, often N > 100 for complex tasks."
+    "Defeats purpose of using small models (efficiency)."
+    "Cannot fix fundamental knowledge gaps."
+  Best-of-3 is insufficient for statistical recovery on 7B models.
+  USE ONLY for: first baby step of each concept (pattern-setting step where
+  correctness matters most — siblings copy this pattern).
+  For all other steps: decomposition + constrained decoding are cheaper and
+  more effective (section 4f: +5.5-6.5% Pass@1 vs best-of-N's diminishing returns).
+
+STRATEGY E: PROGRESSIVE ESCALATION
+  Start with the smallest model that MIGHT work. Escalate only on failure.
+
+  Escalation chain (model depends on VRAM tier):
+  12GB:
+    1. Qwen2.5-Coder-7B NF4+FA2+TQ8 — try first (90% pass@1)
+    2. Qwen2.5-Coder-3B NF4+FA2 — on BubbleUp (less quality, more context)
+    3. CLOUD fallback (API, costs money) — last resort, user must approve
+    4. HUMAN — system shows what it tried, what failed, asks for help
+  48GB:
+    1. Qwen2.5-Coder-32B NF4+FA2+TQ4 — try first (92.7% HumanEval)
+    2. Qwen2.5-Coder-7B NF4+FA2 — on BubbleUp (faster, more context)
+    3. CLOUD fallback
+    4. HUMAN
+
+  Each level in the chain gets a FRESH context assembly and the full
+  retry budget (not the remaining retries from the previous level).
+  The higher model gets the benefit of seeing what the lower model
+  attempted and why it failed (via SSB records).
+
+  Expected distribution (based on SWE-bench small model data):
+  - MICRO handles: ~60-70% of baby steps on first try
+  - After 5 retries: ~85-90% of baby steps
+  - Needing escalation: ~10-15% of baby steps
+  - Needing human: <2% of baby steps (architectural decisions, ambiguous requirements)
+
+
+========================================================================
+9. CONTEXT WINDOW OPTIMIZATION (every token earns its place)
+========================================================================
+
+FORMATTING REMOVAL (research-grounded, free token savings):
+
+  Research (LLM-Code-Generation-Summary.txt section 3e):
+    "Formatting removal (indentation, whitespace, newlines) before inference:
+    avg 24.5% token reduction, virtually zero accuracy degradation."
+
+  On a MICRO tier 3K budget, 24.5% = ~735 tokens saved. That's enough for
+  an entire additional function example in context — or 3 more SSB entries.
+
+  Implementation:
+    1. CODE CONTEXT (Slot 5) formatting removal:
+       - Strip leading/trailing whitespace per line
+       - Collapse multiple blank lines to single blank
+       - Remove trailing comments that just repeat the code
+       - Preserve: string literals, docstrings, significant indentation (Python)
+       Language-specific: Python preserves indentation (semantic). All others strip.
+
+    2. OUTPUT FORMATTING RESTORATION:
+       After LLM generates code (in diff format), apply tree-sitter pretty-print
+       to restore proper indentation before writing to disk.
+       The model generates semantically correct but minimally formatted code.
+       The system restores formatting deterministically.
+
+    3. SSB ENTRIES (Slot 6) compression:
+       SSB summaries already use ~50 tokens per entry. Further compress by
+       removing redundant fields (agent_id in every entry when same agent).
+
+    4. GRC HISTORY (Slot 7) compression:
+       Keep only the conclusion of each GRC step, not the full reasoning chain.
+       Full chain available via SSB lookup if needed.
+
+  This is applied during context budget assembly (Phase 3E).
+  Zero model quality impact. Purely mechanical token savings.
+  Benchmark harness (Measurement 8, to add): verify accuracy with/without
+  formatting removal on the 50 task fixtures.
+
+
+TOKEN AUDIT CHECKLIST (applied to every slot):
+
+  Slot 1 (SystemPrompt):
+  - MICRO: strip to absolute minimum. No explanation of the system.
+    Just: role, output format, 3 critical rules.
+  - Remove all "you are a helpful assistant" framing (wastes tokens, no value)
+  - Remove examples from system prompt (move to few-shot in CodeContext)
+  - Target: 200 tokens for MICRO, 330 for LARGE.
+
+  Slot 2 (Rules):
+  - MICRO: top 5 rules only, selected by: (1) rules that triggered in last
+    3 baby steps, (2) rules for the file being edited, (3) CRITICAL rules.
+  - Rules stored as compact DSL, not natural language.
+    BAD:  "When writing error handling code, always use the Result type
+           instead of panicking with unwrap()."
+    GOOD: "RULE: no_unwrap | scope: non-test | action: WARN"
+  - Target: 150 tokens for MICRO, 500 for LARGE.
+
+  Slot 3 (Context Telescope):
+  - MICRO: skip Layer 1 (project vision) and Layer 2 (concept summary).
+    Include only Layer 3 (phase goal) and Layer 4 (step context).
+    The model doesn't need the big picture for a 15-line baby step.
+  - LARGE: full telescope (all 4 layers).
+  - Target: 400 tokens for MICRO, 1000 for LARGE.
+
+  Slot 4 (RepoMap):
+  - MICRO: OMITTED. Not worth the tokens. The baby step already names
+    the exact file and function. The model doesn't need to know about
+    other files it's not touching.
+  - SMALL: top 10 symbols only (by PageRank, personalized).
+  - MEDIUM+: full personalized repo map.
+  - Target: 0 for MICRO, 2000 for LARGE.
+
+  Slot 5 (CodeContext):
+  - MICRO: max 3 code snippets. Each snippet: function signature +
+    body OR just signature if body not needed.
+    Selection priority: (1) the function being edited, (2) one caller,
+    (3) one similar function (few-shot example).
+  - A-RAG compression: enabled for all tiers, more aggressive for MICRO.
+  - ShortCoder (Phase 4B): apply AST simplification to context snippets,
+    removing unnecessary details (comments, long string literals, etc.)
+  - Target: 1200 tokens for MICRO, 6000 for LARGE.
+
+  Slot 6 (SSB entries):
+  - MICRO: last 2 entries only, filtered by file overlap.
+    Compressed format: "prev_step: wrote fn X in file Y. Tests: 3/3 pass."
+  - Not the full SSB record with all metadata. Just the ARTIFACT summary.
+  - Target: 200 tokens for MICRO, 1500 for LARGE.
+
+  Slot 7 (GRC history):
+  - MICRO: last CONVERGE step only (the conclusion, not the reasoning chain).
+    100 tokens max. If the model needs to reason, it uses its own GRC budget.
+  - LARGE: last 3 steps of reasoning chain.
+  - Target: 100 tokens for MICRO, 1000 for LARGE.
+
+  Slot 8 (OutputReserve):
+  - MICRO: 750 tokens. One function + one test + structured JSON wrapper.
+    If the model needs more: the task is too big. Split it.
+  - LARGE: 4000 tokens. Room for longer implementations.
+
+TOKEN RECLAMATION TECHNIQUES:
+  1. Abbreviate file paths: src/middleware/auth.rs -> middleware/auth.rs
+     (model can infer src/ from context)
+  2. Strip doc comments from code snippets (comments waste small model attention)
+  3. Collapse import blocks: show as "// [12 imports]" with expand-on-request
+  4. Use symbol names instead of full signatures when context is clear
+  5. Deduplicate: if the same type appears in 3 snippets, define it once
+
+
+========================================================================
+10. CONSTRAINED DECODING (vLLM integration for output quality)
+========================================================================
+
+vLLM supports several constrained generation modes that directly improve
+small model output quality:
+
+JSON SCHEMA MODE:
+  vLLM --guided-decoding-backend=outlines can enforce JSON schemas.
+  Every LLM call in elai_cc should specify its output schema.
+  This eliminates: mixed code/prose, missing fields, wrong types.
+  Cost: minimal latency overhead (~5% slower generation).
+
+GRAMMAR-GUIDED GENERATION:
+  For code output: define EBNF grammars per language.
+  The model can ONLY generate syntactically valid code.
+  This eliminates: unclosed brackets, invalid syntax, runaway generation.
+  Pre-built grammars for: Rust, Python, TypeScript, Go (from tree-sitter).
+  Cost: moderate latency overhead (~10-15% slower generation).
+
+REGEX CONSTRAINTS:
+  For structured fields (file paths, function names, version strings):
+  constrain to regex patterns. Prevents hallucinated paths.
+
+STOP SEQUENCES:
+  Aggressive stop sequences prevent the model from over-generating:
+  - For code: stop at closing brace matching the function level
+  - For edits: stop after the "new" field in the diff JSON
+  - For plans: stop after the TOML closing bracket
+
+IMPLEMENTATION:
+  ConstrainedDecodingConfig {
+    mode: DecodingMode,               // JSON_SCHEMA | GRAMMAR | REGEX | NONE
+    schema: Option<JsonSchema>,        // for JSON_SCHEMA mode
+    grammar: Option<String>,           // for GRAMMAR mode (EBNF)
+    regex: Option<String>,             // for REGEX mode
+    stop_sequences: Vec<String>,       // always applied
+    max_tokens: usize,                 // hard output limit
+  }
+
+  Each agent role has a default ConstrainedDecodingConfig.
+  Each baby step can override specific fields.
+  The orchestrator passes this to the provider (vLLM, ollama) at call time.
+
+
+========================================================================
+11. BASELINE MEASUREMENT PLAN (what to test first)
+========================================================================
+
+COMPLETED. Measured data in .elai_cc/metrics/baseline_findings_and_actions.md.
+
+MEASUREMENT 1: ATTENTION QUALITY CURVE — DONE
+  Tested: Qwen2.5-Coder-3B and 7B, NF4+FA2, ctx 512 to 49152.
+  Result: 100% pass rate at ALL tested sizes up to 16384 (25K real tokens).
+  3B in-VRAM ceiling: ~40K tokens. 7B in-VRAM ceiling: ~25K (35K with TQ8).
+  FA2 is the critical factor: 4x ceiling improvement over SDPA.
+
+MEASUREMENT 2: RETRY SUCCESS RATE — DONE
+  Tested: 20 coding tasks on 7B NF4+FA2.
+  Result: Pass@1 = 90% (18/20). Optimal retries = 1.
+  3B: Pass@1 = 72%. Optimal retries = 1.
+  Beyond retry 1: diminishing returns. Structural retry beats re-prompting.
+
+MEASUREMENT 3: FEW-SHOT VS ZERO-SHOT — INCOMPLETE
+  Result: 0% on both (fixture tasks or validation logic needs debugging).
+  Not reliable. Needs re-run with fixed fixtures.
+
+MEASUREMENT 4: STRUCTURED VS FREE-FORM — INCOMPLETE
+  Result: 0% (same fixture issue as measurement 3).
+  Needs re-run with fixed fixtures.
+
+MEASUREMENT 5: TEMPLATE FILL VS OPEN-ENDED — INCOMPLETE
+  Result: 0% (same fixture issue). Needs re-run.
+
+MEASUREMENT 6: KV COMPRESSION IMPACT — DONE (8-bit KIVI, not TurboQuant)
+  Tested: 8-bit KIVI per-group quantization on 7B.
+  Result: lossless (EXACT output match), 1.78x compression, ~25% speed cost.
+  4-bit: garbage on code (RoPE outliers destroy attention scores at 7B scale).
+  8-bit saves ~624MB at 25K context, pushing ceiling from ~25K to ~35K.
+
+MEASUREMENT 7: MODEL SWAP LATENCY — NOT YET RUN
+  Needed when multi-model routing is implemented.
+  Vary: Qwen2.5-Coder 3B, 7B, 14B, 32B. Storage: NVMe SSD.
+  Measure: cold swap time + warm swap time (if model was recently loaded).
+  This gives us: real swap costs for the multi-role strategy.
+
+TEST HARNESS:
+  Full design at the TOP of this document (BENCHMARK HARNESS DESIGN section).
+  Location: .elai_cc/benches/model_capability/
+  Output: .elai_cc/metrics/model_baseline.toml
+  Build instructions, fixture format, report schema all specified there.
+  Implementation: 1 session (2-4 hours). Benchmark runtime: 15-30 min/model.
+
+  Target: run this harness ONCE per model at first use. Cache results.
+  Re-run when: model changes, VRAM config changes, or user requests.
+
+
+========================================================================
+12. INTEGRATION WITH EXISTING PHASES
+========================================================================
+
+This design touches multiple existing phases. Changes required:
+
+PHASE 3E (Context Budget Allocator):
+  - ModelCapabilityProfile input (new type, keyed by VRAM tier + model)
+  - Slot weights adapt per VRAM tier (see section 2 allocation table)
+  - Ceiling enforcement: min(in-VRAM ceiling, attention ceiling) per model
+  - ShortCoder integration for context compression
+
+PHASE 3J (vLLM + Providers):
+  - ConstrainedDecodingConfig propagation to provider
+  - Grammar-guided generation support
+  - JSON schema mode support
+  - Model capability detection at startup
+
+PHASE 4D (Pipeline Factory L1 — Designer):
+  - Decomposition depth adapts to ModelCapabilityProfile
+  - Baby step sizing enforced per model tier
+  - Template generation for common patterns
+  - Few-shot example selection from DKG
+
+PHASE 4E (Pipeline Factory L2 — Builder):
+  - Phase sizing uses model tier for complexity estimation
+  - SurgicalPlan shallower decomposition for MICRO tier
+  - DecompositionTree validates baby step size against model tier
+
+PHASE 4G (Autonomous Mode):
+  - Retry strategy (section 5) replaces simple retry counter
+  - Futility detection triggers BubbleUp earlier
+  - Best-of-N selection for critical baby steps
+  - Progressive escalation chain
+
+COMPLETED: 3J.BASELINE (baseline measurement harness)
+  - Implemented: run_benchmark.py + bench_config.toml
+  - Results: .elai_cc/metrics/model_baseline.toml, baseline_findings_and_actions.md
+  - Measured: Qwen2.5-Coder-3B (NF4+FA2) and 7B (NF4+FA2) on 12GB RTX 3060
+  - Key finding: FA2 is 4x ceiling improvement. Tier table fully rewritten.
+  - PROJECTED rows (8GB, 16GB, 24GB, 48GB) need measurement on real hardware.
+  - Phase 3E reads measured results at context assembly time
+
+PHASE PLACEMENT:
+  This design is NOT a separate phase. It is a set of constraints and
+  adaptations that PERMEATE existing phases. Implementation order:
+  1. Baseline measurement (3J.BASELINE) — get real numbers first
+  2. Context budget adaptation (3E enhancement) — enforce attention ceiling
+  3. Constrained decoding (3J enhancement) — structured output
+  4. Task granularity calibration (4D/4E enhancement) — adaptive decomposition
+  5. Retry economics (4G enhancement) — smart retry strategy
+  6. Template system (4D enhancement) — pattern-based generation
+
+
+========================================================================
+13. TYPES (new Rust types for token efficiency)
+========================================================================
+
+VramTier { VRAM_8GB, VRAM_12GB, VRAM_16GB, VRAM_24GB, VRAM_48GB, CLOUD }
+
+ModelCapabilityProfile {
+  vram_tier: VramTier,
+  model_name: String,                  // e.g. "Qwen2.5-Coder-7B-Instruct"
+  model_size_b: f32,                   // billions of parameters
+  model_vram_mb: usize,               // measured NF4 weight size
+  kv_bytes_per_token: usize,          // measured (1024 for 3B, 57344 for 7B)
+  in_vram_ceiling: usize,             // tokens (measured via baseline)
+  attention_ceiling: usize,            // tokens (measured via baseline)
+  effective_ceiling: usize,            // min(in_vram, attention) — the real limit
+  recommended_prompt_budget: usize,    // effective_ceiling - output_reserve
+  output_reserve: usize,              // 512 tokens (measured: outputs rarely exceed 256)
+  slot_weights: SlotWeights,
+  features: ModelFeatures,
+  pass_at_1: f32,                      // measured first-attempt code pass rate
+  optimal_retries: usize,             // measured point of diminishing returns
+  kv_quant_bits: u8,                  // 0=none, 8=KIVI-8bit, 4=KIVI-4bit
+  requires_fa2: bool,                 // true for all production configs
+  dola_viable: bool,                  // false for <32B (measured: harmful)
+  steering_viable: bool,              // false until domain-specific pairs tested
+  measured: bool,                     // false for PROJECTED rows
+}
+
+SlotWeights {
+  system_prompt: f32,                  // percentage of prompt budget
+  rules: f32,
+  telescope: f32,
+  repo_map: f32,                       // all tiers get repo map now
+  code_context: f32,
+  ssb_entries: f32,
+  grc_history: f32,
+}
+
+ModelFeatures {
+  supports_structured_output: bool,    // JSON schema mode
+  supports_grammar: bool,              // EBNF grammar mode (vLLM only)
+  supports_stop_sequences: bool,
+  chunked_prefill: bool,              // true (implemented in sidecar)
+  kv_compression: bool,              // true for 7B+ (TQ8/TQ4)
+}
+
+ConstrainedDecodingConfig {
+  mode: DecodingMode,
+  schema: Option<serde_json::Value>,
+  grammar: Option<String>,
+  regex_constraint: Option<String>,
+  stop_sequences: Vec<String>,
+  max_tokens: usize,
+}
+
+DecodingMode { JSON_SCHEMA, GRAMMAR, REGEX, NONE }
+
+RetryStrategy {
+  max_retries: usize,
+  wall_clock_budget_ms: u64,
+  temperature_schedule: Vec<f32>,      // temperature per retry
+  use_best_of_n: bool,
+  best_of_n_count: usize,
+  futility_same_error_threshold: usize,
+  futility_stagnation_threshold: f32,  // output similarity %
+}
+
+BabyStepSizeLimit {
+  max_loc: usize,
+  max_files: usize,
+  max_new_symbols: usize,
+  max_output_tokens: usize,
+}
+
+EscalationChain {
+  levels: Vec<EscalationLevel>,
+  require_user_approval_for_cloud: bool,
+}
+
+EscalationLevel {
+  model_tier: ModelTier,
+  model_name: Option<String>,          // specific model, or None for "any in tier"
+  retry_budget: RetryStrategy,
+}
+
+
+========================================================================
+OPEN QUESTIONS (for user decision)
+========================================================================
+
+1. Should the baseline measurement run automatically on first model use,
+   or require explicit /benchmark command?
+
+   RECOMMENDATION: automatic on first use, with progress bar.
+   Takes ~5-10 minutes. Results cached forever until model changes.
+   User can re-run with /benchmark --model <name>.
+
+2. For MICRO tier, should the Context Telescope skip project vision
+   (Layer 1) or include a ULTRA-compressed version (~50 tokens)?
+
+   RECOMMENDATION: ultra-compressed 50-token version.
+   Even for tiny tasks, knowing "this is a SaaS app" vs "this is a game
+   engine" prevents the model from choosing wrong patterns. 50 tokens
+   is cheap insurance.
+
+3. Should template generation be fully deterministic (from DKG + types)
+   or use a lightweight LLM pass to generate templates?
+
+   RECOMMENDATION: deterministic from DKG where possible.
+   Template STRUCTURE: deterministic (function signature, return type, error types).
+   Template BLANK DESCRIPTIONS: can use LLM if helpful, but keep optional.
+   Templates are infrastructure, not intelligence.
+
+4. What should the default best-of-N count be?
+
+   RECOMMENDATION: N=1 for TRIVIAL/SMALL baby steps, N=3 for critical.
+   N=3 is the sweet spot: 3x wall-clock for ~30% quality improvement.
+   N=5 shows diminishing returns for 5x cost (based on OpenAI best-of-N
+   research, verified via web search).
+
+5. Should the system expose retry/escalation activity to the user via TUI?
+
+   RECOMMENDATION: yes, always.
+   Show: [Attempt 2/5] [Error: MISSING_IMPORT] [Retrying with example...]
+   User builds trust by seeing the system WORK through problems, not hide them.
+   Zero token cost — this is orchestrator state, not LLM output.
+
+
+========================================================================
+STEP FILES REQUIRING UPDATES (from pipeline-modes-design.txt audit)
+========================================================================
+
+Both this document and pipeline-modes-design.txt introduce types,
+constraints, and architectural properties that existing step files
+do not yet account for. The following 8 step files need changes.
+Ordered by priority (HIGH = blocks implementation).
+
+
+1. phase-1A.txt (DKG) — HIGH
+   Add: dkg_data_flow table (source_node_id, target_node_id, variable_name,
+     flow_type: PARAMETER/RETURN/ASSIGNMENT/FIELD_ACCESS).
+   Add: optional line-level def-ref edges behind cfg(feature="line_level").
+   Why: pipeline-modes-design.txt GAP 1 (data flow tracking, arxiv 2512.08492:
+     87% vs 56% resolution rate). Surgical mode blast radius depends on data
+     flow edges. GAP 3 (line-level, arxiv 2410.14684) is lower priority.
+   Scope: new schema table, new extraction step in tree-sitter parsing,
+     new tests for data flow edge correctness.
+
+2. phase-3A.txt (FSM) — HIGH
+   Add: RESEARCHING as 10th FSM state.
+   Add: transition rules IDLE -> RESEARCHING -> IDLE.
+   Add: tool permissions for RESEARCHING (WebSearch + KnowledgeEngine only,
+     blocks file edit, bash, git, all mutation tools).
+   Why: pipeline-modes-design.txt Oracle Mode section 2. RESEARCHING has
+     distinct tool permissions and exit condition (produces answer, not plan).
+     Recommendation in open questions: full state, not sub-state of PLANNING.
+   Scope: FsmState enum, transition matrix, get_active_tools table,
+     evidence gate section, exit criteria count (9 -> 10 states).
+
+3. phase-3E.txt (Context Budget Allocator) — HIGH
+   Add: ContextTelescope type (project_vision: BoundedString<200>,
+     concept_summary: BoundedString<150>, phase_goal: BoundedString<100>,
+     step_context: BoundedString<100>).
+   Add: BoundedString<N> newtype with token-count enforcement.
+   Update: Slot 3 sizing from ~250-600 tokens to ~550-1050 tokens.
+   Add: ModelCapabilityProfile input (from this document section 2).
+   Add: per-model-tier slot weight adaptation (MICRO drops RepoMap entirely).
+   Add: attention ceiling enforcement (fill to quality limit, not VRAM limit).
+   Why: pipeline-modes-design.txt Context Telescope section 5 (Slot 3 = ~1000
+     tokens). This document section 2 (effective context budget per tier) and
+     section 9 (per-slot compression for MICRO). Without sizing update, budget
+     allocator under-allocates Slot 3 and triggers false adaptive reduction.
+   Scope: new types, revised slot sizing table, new integration test for
+     telescope content fitting within Slot 3.
+
+4. phase-3G.txt (Plan Management) — HIGH
+   Add: summary: BoundedString<N> field on PhaseEntry, ConceptNode, StepNode.
+   Add: BoundedString<N> definition (if not owned by 3E).
+   Add: ContextTelescope::from_tree(tree, baby_step_id) method that walks
+     the DecompositionTree upward collecting ancestor summaries.
+   Why: pipeline-modes-design.txt Context Telescope section 1 (struct
+     ConceptNode { summary: BoundedString<150> }). Without bounded summary
+     fields on tree nodes, the telescope cannot be assembled. Blocks 4D/4E
+     from wiring the telescope into baby step context.
+   Scope: new fields on existing types, new method, new validation test
+     (summary fits within bound), goal field stays as-is (120 chars is a
+     separate constraint from the 150-token summary).
+
+5. phase-4D.txt (Pipeline Factory L1 — Designer) — HIGH/MEDIUM
+   Add: TechStackDecision type with DecisionSource enforcement. Orchestrator
+     REJECTS decomposition nodes without TechStackDecision or with FALLBACK
+     on critical choices (crypto, auth, database, serialization).
+   Add: 4D-SURGICAL sub-phase: SurgicalDecomposer alongside ConceptDecomposer.
+     Takes AffectedSet as input, generates SurgicalPlan (max depth 2).
+   Add: 4D-ORACLE sub-phase: Oracle research pipeline (Phases A-G),
+     ResearchAnswer/VerifiedClaim/ExtractedFact types, source-tiers.toml.
+   Add: baby step sizing enforcement per ModelCapabilityProfile (from this
+     document section 3). Decomposition depth adapts to model tier.
+   Why: pipeline-modes-design.txt Grounding Enforcement section 1 (gate, not
+     suggestion), Phase Placement section (both modes as 4D extensions).
+     This document section 3 (task granularity calibration).
+   Scope: new types, new decomposer variant, new validation logic, new
+     sub-phases as deliverables (4D.7+).
+
+6. phase-4B.txt (Tools) — MEDIUM
+   Add: DKG query tools exposed via IPC: dkg_callers(symbol),
+     dkg_dependents(symbol), dkg_data_flow(variable, direction),
+     dkg_subgraph(entry_point, depth).
+   Add: integration wiring check tool (DKG reachability from entry point,
+     grep fallback, import chain check).
+   Why: pipeline-modes-design.txt GAP 2 (DKG queries as agent tools, arxiv
+     2603.24837) and Post-Edit Feedback Loop CHECK 3 (integration wiring).
+     Without DKG tool access, agents cannot query code structure directly.
+     Without wiring check, orphaned code passes baby step completion silently.
+   Scope: new ToolRequest variants, new handlers wrapping existing SQLite
+     queries, new tests for reachability and orphan detection.
+
+7. phase-4E.txt (Pipeline Factory L2 — Builder) — MEDIUM
+   Add: PipelineMode enum (Greenfield | Surgical).
+   Add: PipelineBuilder::build() accepts SurgicalPlan as alternative input.
+   Add: max depth 2 enforcement for Surgical mode in structural validation.
+   Add: baby step size validation against ModelCapabilityProfile limits.
+   Why: pipeline-modes-design.txt Integration section 3 (SurgicalPlan maps to
+     shallow DecompositionTree depth <= 2). This document section 3 (baby step
+     sizing rules per tier). Without mode parameter, surgical tasks would go
+     through 4-level fractal decomposition incorrectly.
+   Scope: new enum, mode parameter on build(), depth check in validation,
+     new test for surgical build path.
+
+8. phase-4G.txt (Autonomous Mode) — MEDIUM
+   Add: blast radius thresholds to EscalationPolicy:
+     autonomous_confirm_above_loc (default 1000),
+     autonomous_refuse_above_loc (default 5000).
+   Add: EscalationTrigger::BlastRadiusExceeded variant.
+   Add: pre-execution AffectedSet LOC check in AutoAdvanceEvaluator.
+   Add: RetryStrategy from this document section 5 (replaces simple counter).
+   Add: futility detection (same-error-class 3x, output stagnation, regression).
+   Add: best-of-N selection for critical baby steps.
+   Add: progressive escalation chain (MICRO -> SMALL -> LARGE -> CLOUD -> HUMAN).
+   Why: pipeline-modes-design.txt Open Questions section 6 (blast radius
+     thresholds per mode). This document sections 5 and 8 (retry economics,
+     progressive escalation). Without blast radius enforcement, autonomous
+     mode could silently attempt >5000 LOC changes.
+   Scope: new EscalationPolicy fields, new trigger variant, new retry logic,
+     new tests for blast radius gating and futility detection.
+
+9. phase-3E.txt (Context Budget Allocator) — LOW
+   Add: REPAIR_CONTEXT SlotWeights profile for reasoning pipeline retries.
+   Why: reasoning-architecture-design.txt Compressed Context Replay uses a
+     fixed 1400-token allocation (different from first-attempt allocation).
+     Without this profile, retry context assembly uses the wrong slot weights.
+   Scope: new SlotWeights variant, profile selection logic.
+
+10. phase-3J.txt (Sidecar) — LOW
+   Add: mean_logprob and entropy_mean fields in sidecar response JSON.
+   Why: reasoning-architecture-design.txt GG intrinsic verification requires
+     token confidence and entropy signals from the sidecar. These are computed
+     during generation at zero cost (logging existing computation).
+     Used by AB-MCTS scoring and best-of-N selection.
+   Scope: sidecar response extension (~10 LOC Python), Rust client parsing.

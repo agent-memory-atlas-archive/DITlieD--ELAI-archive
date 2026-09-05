@@ -1,0 +1,3456 @@
+SESSION HANDOFF GUIDE (READ THIS FIRST)
+
+This document is a living design for elai_cc. Started 2026-04-04, revised through 2026-04-05.
+Version: 0.9 (session 7 — LangGraph/Aider deep analysis, 13 new design additions, RAG namespace fix, BM25 per-project indexes)
+
+COMPLETED (do NOT redo):
+  - All 53 research files mapped in PART 13 (complete)
+  - All 8 open questions resolved in PART 11 (complete)
+  - CruciTitan verified: COMPILES (cargo check 44.99s, 1 warning)
+  - DAIRA paper FULLY INGESTED with contract tests — workflow/papers/daira-interface.md
+  - ShortCoder paper FULLY INGESTED with contract tests — workflow/papers/shortcoder-interface.md
+  - Empire factory-brain + factory-static analyzed — findings in PART 16
+  - LangGraph patterns analyzed — findings in PART 16
+  - Pipeline Factory architecture designed — PART 15 (15.1-15.5)
+  - Model Capability Registry designed — PART 15.6
+  - External Tool Auto-Discovery designed — PART 15.7
+  - Evidence Gate Protocol designed — PART 15.8 (DAIRA-derived, most impactful anti-hallucination)
+  - Risk register updated — R1/R2/R3 closed, R8/R9 added
+  - DoLa/TurboQuant split clarified: ollama Phase 0-1, vLLM Phase 2+
+  - Dual-3090 scheduling designed in PART 6
+  - Pipeline Factory reframed as universal automation engine (not just code)
+  - Empire deep dive: 35 source files read, 6-step D2 integration plan in PART 9
+  - All 53 research docs verified — no gaps in PART 13 mapping
+  - Dual mode designed: AUTONOMOUS (full auto) + INTERACTIVE (human-in-loop) — PART 7.0
+  - Agent checkpointing: per-agent msgpack snapshots, crash-safe resume — PART 6.5
+  - Model lifecycle: ModelPool with VRAM tracking + predictive pre-loading — PART 6.6
+  - Per-agent GRC: role-specific budgets, step types, grounding requirements — PART 5.8
+  - Adversarial audit completed: 9 BLOCKs found and resolved — PART 17
+  - Shared State Board (SSB) designed with single-writer correction — PART 18
+  - Tiered Static Analysis Hook designed (replaces inline validator) — PART 19
+  - Two-layer communication (BSP + SSB) designed, BinaryOp dropped — PART 20
+  - Context Budget Allocator with floors and terminal conditions — PART 21
+  - Self-Improvement Loop with safety rule exemptions — PART 22
+  - Research Agent role added for SOTA discovery — PART 23
+  - Project Isolation Namespace designed — PART 24
+  - FEASIBILITY_PROBE FSM state added — PART 25
+  - Plan Elaboration Pipeline (4-stage) designed — PART 26
+  - GPU scheduling corrected: sequential model loading, not parallel — PART 6 CORRECTED
+  - factory-static evaluated: pattern adopted, content not applicable — PART 16.5
+  - Risk register updated — R10/R11/R12/R13 added — PART 12
+  - Self-Modification System (3-layer Godel pattern) designed — PART 27
+  - Media Validator agent role designed — PART 28
+  - QualitySpec added to PipelineSpec — PART 29
+  - SYSTEM_PROBE added to FEASIBILITY_PROBE — PART 25.8
+  - API_REGISTRY_CHECK added to GRC verification — PART 5.3 ADDENDUM
+  - INLINE_FEASIBILITY added to GRC — PART 5.9
+  - Empire networking reassessed: partial, no public hosting — PART 9.6
+  - Empire ECS/workforce evaluated: all stubs, no adoption — PART 9.7
+  - Empire self-improvement evaluated: nonexistent — PART 9.8
+  - Risk register updated — R14/R15/R16 added — PART 12 ADDENDUM 2
+  - BASE SWAP: claw-code-rust-port replaces CruciTitan as fork base — PART 2 REVISED
+  - claw-code-rust-port vs CruciTitan deep comparison completed — PART 30
+  - oh-my-claudecode (OMC) analyzed: 4 patterns adopted, agent catalog rejected — PART 30
+  - SWE-bench benchmark integration designed — PART 30.3
+  - Failure taxonomy for auditor designed — PART 30.4
+  - Structured execution markers designed — PART 30.5
+  - Module mapping: claw-code -> elai_cc crate targets — PART 2 REVISED
+  - Risk register updated — R17/R18 added — PART 12 ADDENDUM 3
+  - LangGraph deep analysis: 12 patterns found, 5 HIGH gaps, all audited — PART 31
+  - Aider deep analysis: 8 focus areas, top patterns adopted — PART 31
+  - Channel taxonomy expanded: 2 -> 4 types (UntrackedValue, EphemeralValue) — PART 31.1
+  - Deferred node execution with BSP-compatible quiescence — PART 31.2
+  - Dynamic fan-out (Send) with AtomicU64 namespace disambiguation — PART 31.3
+  - Checkpoint conformance suite with marker traits — PART 31.4
+  - Per-exception retry policy integrated with failure taxonomy — PART 31.5
+  - Node-level cache with TTL and float normalization — PART 31.6
+  - PageRank repo map with edge-weight + personalization split — PART 31.7
+  - 3-tier edit matching (exact, whitespace-normalized, ellipsis) — PART 31.8
+  - Sampling-based token estimation — PART 31.9
+  - Fixed-slot context ordering with cache breakpoints — PART 31.10
+  - Session-owned commit tracking for safe undo — PART 31.11
+  - File reading tool enhancement (metadata + outline + range) — PART 31.12
+  - Assistant prefill continuation (code output only) — PART 31.13
+  - RAG namespace separation: per-project BM25 indexes, paper-ingestor scoping fixed
+  - Risk register updated — R19/R20/R21 added — PART 12 ADDENDUM 4
+
+NEXT SESSION PRIORITIES (updated 2026-04-05, session 7):
+  1. claw-code-rust-port compilation check: DONE (26.24s, 0 errors, 13 warnings). R17 CLOSED.
+  2. GRC engine formal spec: Rust structs, prompt templates, trace integration
+  3. Agent parallelism: plan format (depends_on), msgpack schema, failure handling
+  4. claw-code audit: grep prompt.rs + policy_engine.rs + worker_boot.rs for reusable patterns
+  5. Provider trait extension: embed(), token_count(), OllamaProvider
+  6. Pipeline Factory formal spec: PipelineSpec schema, template library, rule proposal protocol
+  7. Migration manifest: claw-code file -> elai_cc disposition (KEEP/STRIP/REPLACE/EXTEND)
+
+WHAT THE USER TOLD US (direct quotes paraphrased):
+  - "We NEVER compact, we FINISH the task before running out of context"
+  - "Even if we need to let another cycle/session finish it"
+  - "Main model locally would be GEMMA 4 31B with turboquant, dola etc"
+  - "Each model is good at something specific, so we leverage that"
+  - "Including layer modifications like the auditor needs DoLa to improve skepticism"
+  - "The model should be CLEAN before our workflow, NO BIASES, no pre-prompt injections"
+  - "This WILL not be a normal CLI, this will be almost completely autonomous"
+  - "Dangerous edits blocked, another LLM seamlessly checks if its okay"
+  - "Agent parallelism based on available resources, real-time native communication"
+  - "No main brain managing — management from deterministic control workflow"
+  - "LLM breaks task using FACTS, DATA, VERIFIED METHODS"
+  - "LLM cant ever propose a plan that consists of non-validated ideas"
+  - "ALL ideas need to be grounded, deterministic"
+  - "Everything must be deterministic and checked using deterministic TDD methods"
+  - "Even simple things like LOC count"
+  - "Drop dashboard for now"
+  - "Drop Progress-Compress-Reset lifecycle version"
+  - "Rules enforce behavior, not just tools — like trading rules can be rules too"
+  - "Empire integration will change a lot of Empire itself"
+  - "Merge factory-static and factory-brain with our workflow"
+  Added 2026-04-04:
+  - "2x 3090 24GB system being set up"
+  - "Full ownership of Empire, can change anything"
+  - "Private software, forget licensing"
+  - "Best possible local embedding model"
+  - "System should automatize ANYTHING the user types"
+  - "I want this workflow to even create other pipelines if needed"
+  - "The LLM does the creative and written part, infrastructure does deterministic"
+  Added 2026-04-05:
+  - "Two modes: interactive (human in loop) and autonomous"
+  - "First input is human, the end is a finished system from start to end, tested and polished"
+  - "When user stops an agent, we lose all work — we need checkpoint-per-agent"
+  - "We need a pipeline that cleverly manages multiple models, loading/unloading"
+  - "Apply every deterministic system on ALL agents, not only the main one"
+  - "GRC, FSM etc for all agents, but per-role config since responsibilities differ"
+  - "Want SaaS? Make the rules for it. Pipeline needs animation sprites? Find the model and program."
+  Added 2026-04-05 (session 5):
+  - "I want this system to be almost like a Godel machine"
+  - "System should detect a possible change is needed, validate if it will improve, then implement"
+  - "Every self-modification goes through the entire pipeline"
+  - "Should account for hardware resources"
+  - "How does it know its high quality?"
+  - "Maybe we need a visual model to give visual descriptions of things the LLM cant debug-log"
+  - "Maybe we need a model capable of hearing sounds and describing them"
+  - "How could it automate a entire local image generation pipeline, like ComfyUI"
+  - "I want this system to AIM to always do the best possible, high quality, deterministic/grounded"
+  - "It never hallucinates if something is possible, it checks step by step from start to end"
+  - "Does Empire handle networking? Can it host online automatically?"
+  - "Does Empire already have self-improvement on factory-brain/factory-static?"
+
+END HANDOFF GUIDE
+================================================================================
+
+
+ELAI_CC SYSTEM DESIGN DOCUMENT
+Version: 0.3 (Elaborated — all questions resolved, papers integrated, pipeline factory designed)
+Date: 2026-04-04
+Status: PROPOSAL — ready for formal spec phase
+
+
+PART 1: WHAT WE ARE BUILDING
+
+elai_cc is a Rust-native autonomous LLM workflow system.
+Not a CLI assistant. An autonomous development engine where the human provides input
+and the system executes the full development cycle with minimal human intervention.
+
+Two deliverables:
+  D1: elai_cc — standalone autonomous workflow tool (personal use first)
+  D2: elai_cc-empire — merge with Empire's factory-brain + factory-static (collaborative)
+  D1 must be battle-tested before D2.
+
+Core properties:
+  - Model-agnostic: cloud + local (Gemma 4 31B as primary local executor)
+  - Per-project: all state, indexes, graphs, RAG live inside project directory
+  - Deterministic-first: ALL outputs verified by deterministic scripts, even LOC counts
+  - Token-efficient: msgpack storage, postcard wire format, phase-aware context loading
+  - Never-compact: use full context smartly, hand off to new session if exhausted
+  - Autonomous: human provides task, system executes full cycle
+  - Clean model: no system prompt biases, no pre-injected instructions from harness
+  - Path-agnostic: Windows + Linux without path assumptions
+  - Open-source compliant: no proprietary deps, clean licensing
+
+
+PART 2: BASE — CLAW-CODE-RUST-PORT FORK (REVISED 2026-04-05, session 6)
+
+Starting point: claw-code-rust-port Rust workspace.
+REPLACES CruciTitan (session 6 decision — see PART 30 for full comparison).
+
+Why claw-code over CruciTitan:
+  Both share the same 9-crate skeleton and workspace layout.
+  CruciTitan: 68,084 LOC, 59 .rs files, 478 tests. Larger but kept more original CC code untouched.
+  claw-code:  59,449 LOC, 69 .rs files, 666 tests. Leaner but invested in production infrastructure.
+  claw-code runtime is 68% larger (24,677 vs 14,638 LOC) with 18 additional modules.
+  claw-code has 39% more tests. Better safety net during Phase 0 stripping.
+  claw-code stripped heavy deps from tools/ (toml, dirs, uuid, rmp-serde) — cleaner graph.
+  VERIFIED: claw-code COMPILES (cargo check 26.24s, 13 cosmetic warnings, 0 errors). R17 CLOSED.
+
+Existing crate structure (claw-code-rust-port):
+  api/            — HTTP/SSE client, Anthropic + OpenAI-compat providers (same as CruciTitan)
+  commands/       — slash command registry (same as CruciTitan)
+  compat-harness/ — TS manifest extraction (DROP)
+  mock-anthropic-service/ — test double (KEEP)
+  plugins/        — plugin system with hooks (same as CruciTitan)
+  runtime/        — EXPANDED: 38 modules, 24,677 LOC (see module mapping below)
+  rusty-claude-cli/ — main binary (7,749 LOC main.rs — 942 LOC larger than CruciTitan)
+  telemetry/      — metrics (REPLACE with tracing)
+  tools/          — lane_completion only (CruciTitan had task/team/cron/config — evaluate restoring)
+
+claw-code runtime modules that MAP to elai_cc design:
+  worker_boot.rs (1,069 LOC)           -> orchestrator::AgentPool (PART 6.2)
+  policy_engine.rs (581 LOC)           -> rules::RuleEngine (PART 8)
+  permission_enforcer.rs (546 LOC)     -> rules::RuleEngine enforcement layer (PART 8.2)
+  green_contract.rs (4,061 LOC)        -> evidence gates + contract tests (PART 15.8)
+  bash_validation.rs (1,004 LOC)       -> tools/ pre-execution safety (PART 7.3 Tier 1)
+  mcp_tool_bridge.rs (912 LOC)         -> plugins::MCP bridge (PART 3)
+  mcp_lifecycle_hardened.rs (839 LOC)  -> plugins/ error recovery (PART 6.5)
+  recovery_recipes.rs (630 LOC)        -> orchestrator/ crash recovery (PART 6.5)
+  lsp_client.rs (746 LOC)             -> knowledge/ code intelligence (PART 4, potential)
+  trust_resolver.rs (299 LOC)         -> orchestrator/ interactive gating (PART 7.0)
+  session_control.rs (461 LOC)        -> orchestrator/ session management (PART 6.4)
+  summary_compression.rs (300 LOC)    -> STRIP (we never compact, PART 6.1)
+  lane_events.rs (241 LOC)            -> EVALUATE (may map to SSB action_types)
+  stale_branch.rs (416 LOC)           -> tools/ git integration (PART 7.2)
+  task_registry.rs (506 LOC)          -> orchestrator/ task tracking (PART 6)
+  team_cron_registry.rs (508 LOC)     -> EVALUATE (scheduled operations)
+  plugin_lifecycle.rs (532 LOC)       -> plugins/ lifecycle management
+  task_packet.rs (162 LOC)            -> orchestrator/ structured task data
+
+claw-code modules to STRIP:
+  compact.rs                           -> REMOVE (never compact)
+  summary_compression.rs               -> REMOVE (never compact)
+  telemetry/                           -> REPLACE with tracing
+
+CruciTitan modules to RECOVER (claw-code removed but we may need):
+  tools/task.rs                        -> EVALUATE: task management tool for agents
+  tools/team.rs                        -> EVALUATE: team coordination primitives
+  tools/cron.rs                        -> EVALUATE: scheduled execution
+  tools/config.rs                      -> EVALUATE: configuration management tool
+
+CRITICAL CHANGES TO BASE (same as before):
+  - FIND AND REMOVE any hardcoded system prompt that loads before user message
+  - REMOVE auto-compact / context compaction entirely
+  - REMOVE telemetry reporting to external services
+  - REPLACE JSON serialization with msgpack (rmp-serde) for storage
+  - REPLACE JSON wire format with postcard where possible
+  - ADD real-time token counting (improve existing token counter accuracy)
+  - ADD phase-aware tool/context loading (only load what current FSM state needs)
+  - STRIP any anti-distillation, sentinel injection, or bias mechanisms
+
+Deps to KEEP:
+  tokio, serde/serde_json, reqwest, rustyline, pulldown-cmark, syntect, crossterm
+
+Deps to ADD:
+  rmp-serde (claw-code removed from tools/ but we need globally for storage)
+  tree-sitter + language grammars, rusqlite, tantivy, git2, tracing + tracing-subscriber, postcard
+  heapless (for stack-allocated structures replacing heap JSON parsing)
+  dirs, uuid, toml (restore globally — claw-code only removed from tools/)
+
+Deps to EVALUATE:
+  usearch or custom HNSW (vector similarity)
+  candle or ort (local embeddings/reranker)
+
+
+PART 3: CRATE ARCHITECTURE
+
+elai_cc/
+  Cargo.toml (workspace)
+  crates/
+    core/           — config, paths, logging, serde, platform, token counting
+    providers/      — LLM provider trait + implementations + layer-level optimizations
+    knowledge/      — codebase understanding engine (DKG, BM25, vectors, CatRAG)
+    reasoning/      — GRC engine + hallucination mitigation + grounding verification
+    orchestrator/   — FSM, agents, sessions, parallelism, lifecycle
+    tools/          — file ops, bash, git, validation, AST scan
+    plugins/        — hook system, skill system, MCP bridge
+    rules/          — deterministic behavior enforcement engine
+    cli/            — REPL, rendering, input, args (thin — most logic in other crates)
+
+  DROPPED: dashboard/ (deferred), empire/ (deferred to D2 phase)
+
+Trait boundaries:
+
+  providers::LlmProvider
+    fn complete(prompt, config) -> Stream<Token>
+    fn embed(text) -> Vec<f32>
+    fn token_count(text) -> usize  // ACCURATE, real-time
+    Implementations: Anthropic, OpenAI, Ollama, VllmLocal, LlamaCpp
+
+  providers::LayerConfig
+    Per-model inference optimizations:
+      DoLa (contrast decoding between layers — improves factuality)
+      TurboQuant (KV cache compression — extends effective context)
+      Steering vectors (truthfulness direction injection)
+      Temperature/top-p per role
+    Configured per agent role in elai_cc.toml
+
+  knowledge::KnowledgeEngine
+    fn build_graph(project_root) -> DependencyGraph
+    fn query(query, strategy) -> Vec<CodeChunk>
+    fn update(file_changed) -> ()
+
+  reasoning::GrcEngine  (SEE PART 5 FOR DEEP DESIGN)
+    fn think(step_type, content, topic, grounding) -> ThinkResult
+    fn set_budget(topic, max_calls, max_chars) -> ()
+    fn verify_claim(claim, source) -> VerificationResult  // NEW: fact-checking
+    fn ground_plan(plan) -> Vec<GroundingResult>  // NEW: validate entire plan
+
+  orchestrator::Fsm
+    fn get_state() -> FsmState
+    fn transition(target, phase) -> Result<()>
+    fn get_active_tools(state) -> Vec<ToolId>  // PHASE-AWARE: only current phase tools
+    fn get_active_rules(state) -> Vec<RuleId>  // PHASE-AWARE: only current phase rules
+    fn token_budget_remaining() -> usize  // real-time tracking
+
+  orchestrator::AgentPool
+    fn spawn(role, task) -> AgentHandle
+    fn spawn_parallel(tasks: Vec<(Role, Task)>) -> Vec<AgentHandle>  // NEW
+    fn communicate(from, to, message) -> ()  // NEW: inter-agent messaging
+    Resource-aware: checks available VRAM/compute before spawning
+
+  rules::RuleEngine
+    fn evaluate(action, context) -> RuleVerdict  // ALLOW, BLOCK, WARN
+    fn get_active_rules(fsm_state, file_context) -> Vec<Rule>
+    Deterministic evaluation — no LLM involved in rule checking
+    Rules cover: SOLID enforcement, trading rules, security rules, architecture rules
+
+  tools::ToolRegistry
+    fn execute(tool_id, params) -> ToolResult
+    fn available_tools(fsm_state) -> Vec<ToolId>  // PHASE-FILTERED
+
+
+PART 4: KNOWLEDGE ENGINE
+
+Same as v0.1 — this section is stable.
+
+Layer 1 — DKG: tree-sitter -> SQLite graph, 100% coverage, <15s build, incremental
+Layer 2 — BM25: tantivy full-text, sub-ms queries
+Layer 3 — Vectors: local embeddings or API, HNSW index
+Layer 4 — CatRAG: query-aware graph traversal, evidence chains
+Layer 5 — A-RAG: hierarchical retrieval (keyword -> semantic -> chunk), 55-87% token savings
+
+Pipeline: query -> BM25 -> vector rerank -> CatRAG expand -> A-RAG filter -> context
+
+
+PART 5: REASONING ENGINE (GRC) — DEEP DESIGN
+
+Purpose: Replace ALL model-internal thinking. This is the core innovation.
+GRC makes elai_cc model-agnostic — reasoning structure is external to the model.
+
+5.1 GRC State Machine (per topic):
+  observe(grounding) -> hypothesize(grounding) -> plan_action -> act -> verify(grounding)
+
+  Each step MUST cite grounding source.
+  Steps without grounding are rejected by the engine.
+  The model receives ONLY the structured prompt for the current step.
+  No <thinking> tags, no chain-of-thought tokens consumed by the model.
+
+5.2 Budget System:
+  Per-topic: max_calls (1-12), max_chars (200-1500)
+  Global default configurable in elai_cc.toml
+  Overflow -> forced convergence (must produce conclusion) or escalation (hand to human)
+  Budget scales with task complexity: simple=3/600, moderate=5/800, complex=8/1200
+
+5.3 Grounding Verification (NEW — core differentiator):
+  Every claim in a plan or hypothesis MUST be verified before acting on it.
+
+  Verification methods:
+    FILE_CHECK:   does the file/function/class actually exist? (grep/glob)
+    API_CHECK:    does this API/library work as claimed? (test call or docs lookup)
+    WEB_CHECK:    is this algorithm/method real? (web search verification)
+    SOURCE_CHECK: does the source code we're referencing actually do what we think? (read)
+    TEST_CHECK:   does a test confirm this behavior? (run test)
+
+  Grounding levels:
+    VERIFIED:  searched, tested, or read from source
+    HIGH:      code just read in this session
+    UNCERTAIN: from training, not verified — MUST be resolved before acting
+
+  Plan grounding sweep:
+    Before any plan enters EXECUTING, GRC scans ALL claims in the plan.
+    Each claim classified: GROUNDED, VERIFY_NEEDED, UNGROUNDED.
+    UNGROUNDED claims block execution until resolved.
+    This prevents the "LLM proposes plan based on hallucinated API" failure mode.
+
+5.4 Fact-Based Planning Protocol:
+  When human gives task:
+    1. GRC breaks task into sub-questions (observe step)
+    2. Each sub-question answered via VERIFIED sources (not training)
+    3. If LLM doesn't know -> web search, source read, or "I don't know"
+    4. Plan assembled ONLY from verified facts
+    5. Plan iterated: break down -> verify each part -> check feasibility
+    6. Pre-implementation tests written from plan (TESTING_FIRST)
+    7. Adversarial review of plan by auditor agent
+    8. Only then: EXECUTING
+
+5.5 Model Interaction Protocol:
+  GRC does NOT send "think about X" to the model.
+  GRC sends: "Given these verified facts: [F1, F2, F3]. Produce: [specific output format]."
+  Model returns raw completion.
+  GRC validates: format correct? grounding cited? new claims introduced?
+  New ungrounded claims -> flagged for verification before next step.
+
+5.6 Anti-Hallucination Stack (per model role):
+
+  CRITICAL: Layer-level optimizations (DoLa, TurboQuant, steering vectors) require
+  vLLM or custom inference. Ollama is a black box — no layer intervention.
+  Design is phased: ollama for Phase 0-1, vLLM integration in Phase 2+.
+
+  Phase 0-1 (ollama — available immediately):
+    All roles: constrained decoding via grammar parameter (ollama supports this)
+    All roles: temperature/top-p per role in elai_cc.toml
+    Executor: standard inference, rely on GRC for grounding verification
+    Auditor: low temperature (0.1-0.3), constrained output format
+
+  Phase 2+ (vLLM — after vLLM integration):
+    For Gemma 4 31B (executor):
+      TurboQuant KV cache compression (3.8-6.4x, extends effective context)
+      DoLa contrastive decoding (contrast early vs late layers, improves factuality)
+      Constrained decoding for structured outputs (grammar-based)
+
+    For auditor (DeepSeek-R1-Distill-32B):
+      DoLa with amplified contrast (more aggressive layer comparison)
+      Steering vectors toward skepticism (truthfulness + critical analysis)
+      Lower temperature (0.1-0.3) for deterministic analysis
+
+    For prompt-engineer (Qwen 3.5 27B):
+      Constrained decoding (must output valid structured format)
+      No DoLa needed (dense model, structurally stable)
+
+    For context-compiler:
+      High temperature allowed (0.7) for creative retrieval
+      Steering vectors toward completeness (don't miss relevant files)
+
+  These are configured in elai_cc.toml per-role as providers::LayerConfig.
+  LayerConfig has two backends: OllamaConfig (Phase 0-1) and VllmConfig (Phase 2+).
+
+5.7 Counterfactual Safety (CSQ):
+  Before finalizing any non-trivial logic:
+    GRC asks: "If [assumption X] is wrong, code will [consequence Y]."
+    If consequence is dangerous (data loss, security hole, financial error):
+      MUST add guard/check in implementation.
+    Minimum 1 CSQ per function touching: files, network, money, auth.
+
+5.8 Per-Agent GRC Configuration (NEW — 2026-04-05):
+
+  Every agent runs GRC — not just the executor. But each role has different reasoning needs.
+  Configured in elai_cc.toml under [agents.{role}.grc]:
+
+  executor (Gemma 4 31B):
+    budget: complex (8/1200)
+    required_steps: [observe, hypothesize, plan_action, act, verify]
+    grounding: all steps require source citation
+    csq: mandatory for file/network/money/auth functions
+
+  auditor (DeepSeek-R1-Distill-32B):
+    budget: high (10/1200) — more reasoning room for adversarial analysis
+    required_steps: [observe, hypothesize, verify, verify] — double verify
+    grounding: VERIFIED only (no HIGH or UNCERTAIN accepted)
+    extra: must find >= 1 issue per review (anti-rubber-stamp)
+    csq: mandatory on every finding (what if this finding is wrong?)
+
+  context-compiler:
+    budget: low (3/600) — mostly deterministic retrieval
+    required_steps: [observe] — observe-heavy, no plan_action needed
+    grounding: FILE_CHECK and SOURCE_CHECK only
+    no csq (read-only agent, no mutations)
+
+  prompt-engineer:
+    budget: moderate (5/800)
+    required_steps: [observe, hypothesize, converge]
+    grounding: must cite plan + context package
+    output: constrained format (must match prompt template schema)
+
+  memory-writer:
+    budget: minimal (2/400)
+    required_steps: [observe, converge]
+    grounding: must cite diff + test results
+    output: deterministic changelog format, no prose
+
+  Per-agent FSM sub-states:
+    Each agent has its own mini-FSM tracking: IDLE -> LOADING -> REASONING -> ACTING -> DONE
+    Sub-state persisted in agent checkpoint (see 6.5)
+    Orchestrator reads agent sub-states to make scheduling decisions
+
+
+PART 6: ORCHESTRATION — REVISED
+
+6.1 Context Management (NEVER COMPACT):
+  Real-time token counting via providers::LlmProvider::token_count()
+  Budget tracking: orchestrator::Fsm::token_budget_remaining()
+
+  Phase-aware context loading:
+    PLANNING:      load rules + knowledge engine results + plan template
+                   DO NOT load: edit tools, bash tools, validation tools
+    TESTING_FIRST: load test framework + plan + rules
+                   DO NOT load: edit tools, bash tools
+    EXECUTING:     load edit tools + current phase spec + relevant code context
+                   DO NOT load: planning tools, full plan (only current phase)
+    AUDITING:      load validation tools + test runner + code under review
+                   DO NOT load: edit tools, planning tools
+
+  When context approaches limit (configurable threshold, e.g. 85%):
+    1. Current task state saved to .elai_cc/sessions/{id}/handoff.msgpack
+    2. Includes: FSM state, current phase, completed steps, pending work, key findings
+    3. Session ends gracefully
+    4. New session spawns, reads handoff file, continues from exact state
+    NO SUMMARIZATION. Raw state transfer via structured data.
+
+6.2 Agent Parallelism (NEW):
+  Deterministic control flow — NOT an LLM deciding what to parallelize.
+  The FSM + plan structure determines parallelizable work.
+
+  Example: Plan Phase 3 has steps A, B, C where A and B are independent, C depends on both.
+    orchestrator spawns: agent_A(step_A), agent_B(step_B) in parallel
+    Both complete -> orchestrator spawns: agent_C(step_C)
+
+  Resource-aware scheduling (concrete for 2x RTX 3090 24GB):
+    Detection: nvml-wrapper crate (Windows NVML bindings) or sysinfo for cross-platform
+    Query available VRAM per GPU before spawning
+
+    Dual-3090 scheduling table (CORRECTED 2026-04-05 — sequential, not parallel):
+      CRITICAL: 24GB per GPU cannot hold two ~18-20GB models simultaneously.
+      Large models are SEQUENTIAL — one loaded at a time per GPU.
+      Only parallelism: large model (~18-20GB) + embedding model (~1.5GB) on separate GPUs.
+
+      PLANNING:           GPU0: executor (Gemma4 31B, ~18-20GB)
+                          GPU1: embedding model (~1.5GB)
+      FEASIBILITY_PROBE:  GPU0: executor (stays loaded)
+                          GPU1: embedding model (stays loaded)
+      TESTING_FIRST:      GPU0: executor (stays loaded)
+                          GPU1: embedding model
+      EXECUTING:          GPU0: executor (stays loaded)
+                          GPU1: embedding model (precompute embeddings for changed files)
+      AUDITING:           GPU0: UNLOAD executor -> LOAD auditor (DeepSeek-R1, ~18-20GB)
+                          GPU1: embedding model (stays loaded, ~1.5GB)
+                          Swap cost: ~15-30 seconds (model unload + load via ollama)
+      MEMORIZING:         GPU0: UNLOAD auditor -> LOAD memory-writer (small, ~4GB)
+                          GPU1: idle
+      Back to EXECUTING:  GPU0: UNLOAD memory-writer -> LOAD executor (~15-30s swap)
+
+      Model swaps happen ONLY at phase boundaries (checkpointed, crash-safe).
+      Never two large models on the same GPU. Never mid-phase model swaps.
+
+    If VRAM insufficient: serialize agents (one at a time on one GPU)
+    If cloud fallback: parallel API calls (rate-limit aware, no VRAM concern)
+
+  Inter-agent communication (adopted from Empire factory-brain EngineMKI):
+    Via session-scoped message bus (not LLM-mediated)
+    Messages are structured data (msgpack), not natural language
+    Bus pattern from factory-brain:
+      Named buses per concern (e.g., "code.*", "test.*", "knowledge.*")
+      Glob-pattern subscriptions: agent subscribes to "code.change.*" to get all file changes
+      Hook types mapped: event (broadcast), route (request/response), schedule (periodic)
+    Agent A can signal: "I found X in file Y, relevant to your task"
+    Receiving agent incorporates as grounded fact
+    Permission model: scope bitflags per agent role (FILESYSTEM, NETWORK, CONFIG, SECURITY)
+      Executor: FILESYSTEM + NETWORK (for web search)
+      Auditor:  FILESYSTEM (read-only) + NETWORK (test runners)
+      Context-compiler: FILESYSTEM (read-only)
+      Memory-writer: FILESYSTEM (write to memory-bank only)
+
+  No "main brain" LLM:
+    The orchestrator crate is pure Rust deterministic code
+    It reads FSM state, plan structure, resource availability
+    It decides what runs when, what depends on what
+    LLMs are workers, not managers
+
+6.3 Agent Roles (revised model routing):
+  executor:         Gemma 4 31B (local, TurboQuant+DoLa) or cloud fallback
+  context-compiler: Llama 4 Scout 109B (if hardware allows) or cloud
+  prompt-engineer:  Qwen 3.5 27B (dense, structural fidelity)
+  auditor:          DeepSeek-R1-Distill-32B (adversarial, DoLa-amplified)
+  memory-writer:    smallest capable model (GLM-4.5-Air or 8B class)
+
+  All routing configurable in elai_cc.toml.
+  Fallback chain: local preferred -> cloud if unavailable or insufficient VRAM.
+
+6.4 Session Handoff (replaces Progress-Compress-Reset):
+  When token budget at threshold:
+    1. Save structured state (not LLM summary) to handoff.msgpack
+    2. State includes: FSM, phase, step, findings, code changes made, tests written
+    3. Current session ends
+    4. New session starts, loads handoff, continues
+
+  Between sessions:
+    Knowledge engine persists (SQLite graph, tantivy index — on disk)
+    RAG context persists (vector index on disk)
+    Git state persists (committed changes)
+    Only thing lost: conversation history (intentional — fresh context window)
+
+6.5 Agent Checkpointing (NEW — 2026-04-05):
+
+  Problem: in current Claude Code, stopping an agent loses ALL its work. Agent gets stuck
+  in a loop = all progress gone. This is unacceptable for autonomous operation.
+
+  Solution: incremental per-agent checkpointing.
+
+  Checkpoint location: .elai_cc/sessions/{sid}/agents/{agent_id}/
+  Files:
+    state.msgpack      — current agent sub-FSM state (IDLE/LOADING/REASONING/ACTING/DONE)
+    grc_history.msgpack — all GRC steps taken so far (observe, hypothesize, etc.)
+    tool_results.msgpack — results of all tool calls (file reads, greps, edits)
+    output_draft.msgpack — partial output being assembled
+    checkpoint_ts       — last checkpoint timestamp
+
+  Checkpoint triggers (automatic, no agent involvement):
+    - After each completed GRC step (observe, hypothesize, verify, etc.)
+    - After each tool call that returns results
+    - After each file edit is confirmed
+    - Before any potentially slow operation (web search, model inference)
+
+  Recovery protocol:
+    1. Orchestrator detects agent stop/crash/timeout
+    2. Reads last checkpoint from agents/{agent_id}/
+    3. Spawns new model instance (same role, same config)
+    4. Injects checkpoint as structured context: "You are resuming. Prior work: [checkpoint]"
+    5. Agent continues from last GRC step, not from scratch
+    6. If agent was stuck (same GRC step repeated 3x), orchestrator flags and either:
+       - Reduces scope (adaptive, like DAIRA trace_depth reduction)
+       - Escalates to human (in INTERACTIVE mode)
+       - Tries different approach (swap step type: hypothesize -> observe)
+
+  Anti-spiral (agent-level):
+    Agent sub-FSM tracks: same_step_count. If >3, checkpoint + escalate.
+    Orchestrator can kill stuck agents without losing prior work.
+    This is the key difference from Claude Code: stop is safe, always resumable.
+
+6.6 Model Lifecycle Management (NEW — 2026-04-05):
+
+  Problem: 48GB VRAM across 2x 3090. Cannot load all models simultaneously.
+  Gemma4 31B Q4 ~18GB + auditor ~18GB = 36GB. Embedding model + OS overhead = tight.
+  Need intelligent load/unload to maximize throughput.
+
+  ModelPool (providers/ crate):
+    Tracks: {model_id -> ModelState(Loaded(gpu_id, vram_used) | Unloaded | Loading)}
+    Queries VRAM via nvml-wrapper (NVIDIA) or sysinfo (cross-platform fallback)
+
+  Loading strategy:
+    ACTIVE:    model needed by currently running agent. Highest priority. Never unloaded.
+    PRELOAD:   model needed by next likely agent (predicted from FSM state).
+               Loaded in background if VRAM available. Unloaded if ACTIVE needs space.
+    IDLE:      model not needed soon. Unloaded first when VRAM pressure.
+
+  Predictive pre-loading (FSM-driven, deterministic):
+    EXECUTING phase -> pre-load auditor model (AUDITING comes next)
+    AUDITING phase -> pre-load executor model (might need fixes)
+    PLANNING phase -> pre-load prompt-engineer model
+    TESTING_FIRST -> pre-load executor model
+
+  Model swap protocol:
+    1. Orchestrator determines next model needed
+    2. Check VRAM: fits alongside current? Load in parallel.
+    3. Doesn't fit: wait for current agent to reach checkpoint, then unload.
+    4. Load new model. Confirm loaded (health check inference).
+    5. Resume agent pipeline.
+
+  Ollama integration:
+    ollama already handles model loading/unloading via its API
+    ModelPool wraps: POST /api/generate (triggers load), DELETE /api/delete (unload)
+    KEEP_ALIVE parameter controls auto-unload timeout
+    For dual-GPU: CUDA_VISIBLE_DEVICES per ollama instance, or single instance with --gpu flag
+
+  vLLM integration (Phase 2+):
+    vLLM manages its own GPU memory. ModelPool delegates to vLLM scheduler.
+    Multiple models via --served-model-name with tensor parallelism across GPUs.
+
+
+PART 7: WORKFLOW — DUAL MODE (REVISED 2026-04-05)
+
+7.0 Execution Modes:
+
+  elai_cc operates in two modes. Mode is set at session start and switchable mid-session.
+
+  AUTONOMOUS MODE:
+    Human provides initial input. System executes the ENTIRE development cycle.
+    Output: finished, tested, polished system from start to end.
+    Phase gates auto-advance when evidence artifacts pass validation.
+    No human confirmation at non-dangerous gates.
+    Dangerous actions (delete, overwrite, force-push) STILL require gate review —
+      but the gate is another agent (auditor), not a human.
+    Session handoff is automatic (token budget threshold -> save -> new session -> continue).
+    The only human touchpoints: initial task + final delivery.
+    If system gets stuck (3x anti-spiral on same issue): escalates to human with
+      full context (checkpoint + GRC history + what was tried).
+
+  INTERACTIVE MODE:
+    Human-in-the-loop at every phase transition.
+    Each gate pauses and presents: evidence artifacts, agent reasoning, proposed next step.
+    Human can: approve, modify, reject, redirect, or switch to AUTONOMOUS.
+    Useful for: learning the system, debugging workflow issues, high-stakes tasks,
+      tasks where human domain knowledge is needed mid-execution.
+
+  Mode field in FSM: orchestrator::Fsm::mode: ExecutionMode (AUTONOMOUS | INTERACTIVE)
+  Gate behavior lookup: rules::GatePolicy::should_pause(mode, gate_type, risk_level) -> bool
+
+  Risk levels per gate:
+    LOW:    MEMORIZING -> next phase (auto in both modes)
+    MEDIUM: PLANNING -> TESTING_FIRST, EXECUTING -> AUDITING (auto in AUTONOMOUS, pause in INTERACTIVE)
+    HIGH:   dangerous actions, external API calls, file deletion (pause in both modes, auditor reviews)
+
+7.1 The Full Cycle (human touches only step 1 in AUTONOMOUS):
+
+  FSM states (revised 2026-04-05):
+    IDLE -> PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST -> EXECUTING -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE
+
+  1. HUMAN INPUT: "Build feature X" or "Fix bug Y"
+  2. RESEARCH (Research Agent + GRC — see PART 23):
+     - Decompose task into capability requirements
+     - Per capability: search web, papers, registries for SOTA approaches
+     - Rank alternatives by evidence quality (benchmarks > docs > blogs > training)
+     - Output: structured Research Report with grounded alternatives
+  3. PLAN CREATION (PLANNING state):
+     - Takes Research Report as grounded input (verified facts only)
+     - Vertical slices (each phase = working testable unit)
+     - Each phase small and targeted
+     - GRC runs observe -> hypothesize -> verify per step
+     - Grounding sweep: all claims verified against Research Report
+     - Adversarial review by auditor
+  4. FEASIBILITY PROBE (FEASIBILITY_PROBE state — see PART 25):
+     - Per NOVEL step: generate stub (< 50 lines) + test assertion
+     - Execute stubs empirically — does the approach actually work?
+     - PASS: step is feasibility-grounded, proceed
+     - FAIL: reject step, loop back to PLANNING with alternative
+     - Evidence artifact: stub_results.msgpack
+  5. PER-PHASE EXECUTION LOOP:
+     a. TESTING_FIRST: write tests for this phase
+     b. EXECUTING: implement to pass tests
+     c. AUDITING: adversarial review + validation pipeline
+     d. If BLOCK: back to EXECUTING with specific fixes
+     e. If PASS: MEMORIZING -> next phase
+  6. DANGEROUS ACTION GATING:
+     - Delete, overwrite, force-push: BLOCKED by rules engine
+     - Another agent (auditor or dedicated safety agent) reviews
+     - TDD verification: deterministic script confirms safety
+     - Only then: action allowed
+  7. COMPLETION:
+     - All phases done
+     - Full validation pipeline passes
+     - Git commits made
+     - Session ends, IDLE state
+
+7.2 Git Integration (git2 crate):
+  Auto-commit after each verified phase completion
+  Auto-grep history when regression reported
+  Auto-gitignore heavy data files (configurable patterns)
+  Branch per plan (feature branches)
+  Commit messages generated from phase outcomes (deterministic, not LLM prose)
+
+7.3 Validation Pipeline:
+  Tier 1: Determinism (same input = same output, verified mathematically)
+  Tier 2: Quality (AST analysis, code smells, test quality, branch coverage)
+  Tier 3: Unit tests
+  Tier 4: Integration/contract tests
+  Tier 5: Stress/adversarial tests
+
+  All run by auditor agent. Main executor NEVER runs its own tests.
+  Results are deterministic and machine-verifiable.
+  Even LOC counts are verified deterministically.
+
+
+PART 8: RULES ENGINE (NEW — PART OF D1)
+
+Purpose: Enforce deterministic behavior on LLMs without consuming tokens on rules
+that should be enforced by code.
+
+8.1 Rule Types:
+  STRUCTURAL: code architecture rules (SOLID, DI, no God classes)
+  SECURITY:   no eval(), no unsanitized input, OWASP compliance
+  TRADING:    no lookahead bias, temporal leakage prevention, commission modeling
+  WORKFLOW:   FSM state constraints, tool access per phase
+  CUSTOM:     per-project rules defined in elai_cc.toml
+
+8.2 Enforcement Mechanism:
+  Rules are Rust functions, not LLM prompts.
+  PreToolUse hook: check action against active rules -> ALLOW/BLOCK/WARN
+  PostToolUse hook: check output against active rules -> flag violations
+  Rules engine evaluates deterministically — no LLM in the loop.
+
+8.3 Phase-Aware Rules:
+  PLANNING:  enforce grounding rules (no unverified claims)
+  TESTING:   enforce test quality rules (branch coverage, no happy-path-only)
+  EXECUTING: enforce code quality rules (SOLID, no lazy code, no TODO)
+  AUDITING:  enforce adversarial rules (must find at least N issues per review)
+
+8.4 Rule Inheritance:
+  Global rules (always active) + phase rules + project-specific rules
+  Trading rules active when editing trading code (file-path matching)
+  Security rules escalated for auth/crypto code
+  Domain rules configurable per project
+
+
+PART 9: EMPIRE INTEGRATION (D2 — DETAILED AFTER DEEP DIVE 2026-04-05)
+
+  User has FULL OWNERSHIP. Can change anything in Empire.
+
+  9.1 Empire Architecture (verified from source):
+
+    Engine hierarchy: EngineMKI -> EngineMKII -> EngineMKIII (inheritance)
+      MKI:   IPC dispatch + hooks + buses + HTTP + events (core)
+      MKII:  +persistence (SQLite) + module management + webhooks + metrics
+      MKIII: +WS broadcast + WS client management
+      Engine selected at build time via brainctl._write_main()
+
+    Two bus layers:
+      IPC engine socket: /tmp/brain-engine.sock — module-to-engine comms
+      FactoryLine control socket: /tmp/brain-factory.sock — factory-to-brain control
+      Both: newline-delimited JSON over AF_UNIX SOCK_STREAM
+
+    Hook system: HookRegistry — in-memory dict {agent: [hook]}
+      Hook kinds: "route" (path ownership) | "event" (channel subscription)
+      Reserved paths: /api/health, /api/devices, /ws
+      One agent owns one path — no duplicate registrations
+
+    Bus system: BusRegistry — named buses with fnmatch pattern subscriptions
+      Commands: BUS_CREATE, BUS_JOIN, BUS_LEAVE, BUS_LIST
+      Default bus: "internal"
+
+    Brain = deployment unit. Manifest in brain.json (neurons, ports, deploy config)
+    Neuron = module registered to a brain. Has bootstrap.py with NAME + check()
+    Multi-brain isolation: separate SQLite, separate HookRegistry, separate BusRegistry per instance
+
+    FSB binary transport: 12-byte header (frame_id:u32, part_idx:u16, part_total:u16, payload_len:u32)
+      Used by unique-kiosk/unique-factory for high-perf inter-service comms
+
+  9.2 What's Broken (must fix in D2):
+    - brainctl <-> brain_lifecycle circular dependency (broken by lazy imports in function bodies)
+    - EngineMKII hard-imports `slc` at module level (fails if missing)
+    - unique-factory shadows stdlib `types` module with local types/ directory
+    - unique-factory _send_event() is a stub (prints, returns True, sends nothing)
+    - ECS manager does dynamic imports inside tight loops
+    - Workforce assembly actions are all None-returning lambdas (placeholder)
+
+  9.3 What's Solid (leverage in D2):
+    - IPC layer (src/lib/ipc.py): pure stdlib, well-tested
+    - FactoryLine bus (src/core/bus.py): pure stdlib, tested by test_control_bus.py
+    - HookRegistry + BusRegistry: pure Python, no deps
+    - Multi-brain isolation: tested by test_multi_brain.py (separate dbs, hooks, neurons, buses)
+    - FSB binary transport: well-structured, clean framing
+    - test_factory_http_on_then_off_bus_parity: integration test verifying HTTP/bus state match
+
+  9.4 Integration Plan (ordered by dependency, lowest-risk first):
+
+    Step 1: elai_cc speaks FactoryLine protocol
+      Rust code connects to /tmp/brain-factory.sock via tokio UnixStream
+      Sends newline-JSON commands: discover, register, heartbeat, request, list
+      This makes elai_cc a first-class factory participant — zero Empire changes needed
+
+    Step 2: elai_cc registers as a brain
+      elai_cc generates a brain.json manifest
+      Registers via FactoryLine, receives heartbeat monitoring
+      Can be discovered by kiosk and other factory components
+
+    Step 3: elai_cc replaces factory-brain CLI
+      Current CLI (brainctl) is broken (circular deps)
+      elai_cc's orchestrator drives build/deploy/manage via FactoryLine commands
+      No change to EngineMKI/II/III — just a new client
+
+    Step 4: elai_cc subscribes to Empire events
+      IPC socket subscription: SUBSCRIBE with patterns ["factory:*"]
+      Receives all factory events as grounded context for GRC reasoning
+      Empire becomes a live data source for elai_cc knowledge engine
+
+    Step 5: Bidirectional — Empire uses elai_cc capabilities
+      elai_cc exposes MCP server interface
+      Factory-brain registers elai_cc as a neuron
+      Empire tasks can invoke elai_cc's reasoning/validation pipeline
+
+    Step 6: Fix Empire broken parts using elai_cc
+      Circular deps, stub implementations, stdlib shadow — all fixable
+      elai_cc (now battle-tested from D1) generates and validates the fixes
+      Workforce assembly lambdas get real implementations
+
+  9.5 Wire Format Decision:
+    Option A: Newline-JSON (current Empire protocol) — simplest, compatible
+    Option B: FSB binary frames — faster, Empire already has the transport
+    Option C: msgpack over FSB frames — fastest, aligns with elai_cc storage format
+    Decision deferred to D2 implementation. Start with Option A for compatibility.
+
+
+PART 10: PHASING (REVISED)
+
+Phase 0 — Foundation
+  Fork claw-code-rust-port (REVISED session 6 — was CruciTitan), rename to elai_cc
+  First: cargo check on claw-code base (BLOCKING — R17)
+  Create migration manifest: classify all .rs files as KEEP/STRIP/REPLACE/EXTEND (PART 30.7)
+  Strip: system prompt (audit prompt.rs), auto-compact (gut compact.rs + summary_compression.rs),
+         telemetry, anti-distillation, sentinels
+  Evaluate: recover tools/task.rs, tools/team.rs, tools/cron.rs from CruciTitan if needed
+  Restructure crate layout (9 crates, no dashboard/empire)
+  Path-agnostic abstractions
+  Msgpack/postcard serialization (rmp-serde already in Cargo.toml)
+  Tracing-based debug logging (EVERY action logged for post-run analysis)
+  Real-time token counting (extend Provider trait: add token_count())
+  Provider trait extended: ADD embed(), token_count(), layer_config()
+  New providers: Ollama (HTTP API), with vLLM and llama.cpp deferred to Phase 2
+  LayerConfig PHASE SPLIT:
+    Phase 0: OllamaConfig only (temperature, top-p, grammar constraints)
+    Phase 2: VllmConfig (DoLa, TurboQuant, steering vectors)
+  Test with any small local model via ollama (user setting up 2x 3090 system)
+  Deliverable: clean CLI connecting to ollama with accurate token tracking
+
+Phase 1 — Knowledge Engine
+  tree-sitter for Rust, Python, TypeScript, Go
+  DKG: AST -> SQLite graph
+  tantivy BM25 index
+  Vector search (API embeddings initially, local later)
+  CatRAG traversal + A-RAG hierarchy
+  Deliverable: build codebase index, answer queries from verified graph
+
+Phase 2 — Reasoning Engine (GRC) + Layer Optimizations
+  GRC state machine in Rust
+  Budget per topic
+  Grounding verification (FILE_CHECK, API_CHECK, WEB_CHECK, SOURCE_CHECK, TEST_CHECK)
+  Plan grounding sweep (block EXECUTING until all claims verified)
+  Fact-based planning protocol
+  CSQ counterfactual safety checks
+  DAIRA integration: trace_execution() tool in tools/ crate
+    Trace-first debugging in GRC observe step (dynamic trace option)
+  ShortCoder integration: code_simplify() tool in tools/ crate
+    10 AST-preserving rules as deterministic post-processing on generated code
+  vLLM provider integration (DoLa, TurboQuant, steering vectors)
+    LayerConfig gains VllmConfig backend alongside existing OllamaConfig
+  Deliverable: all reasoning grounded, no hallucinated plans reach execution,
+               trace-based debugging, token-optimized code output
+
+Phase 3 — Orchestration + Rules
+  FSM engine with phase-aware context loading
+  Agent system with role-based model routing
+  Agent parallelism with resource-aware scheduling
+  Inter-agent messaging (msgpack over session bus)
+  Session handoff (structured state, no summarization)
+  Rules engine (structural, security, trading, workflow, custom)
+  Deliverable: autonomous execution loop from task input to completion
+
+Phase 4 — Workflow Integration + Pipeline Factory (L1/L2)
+  git2 native operations
+  Validation pipeline (5 tiers, with trace-based Tier 2 from DAIRA)
+  Hook system (pre/post tool, stop) — adopt Empire bus pattern for agent messaging
+  Skill system (prompt-transform, planning, rag)
+  Dangerous action gating (delete/overwrite -> secondary LLM review)
+  Pipeline Factory L1 (PIPELINE DESIGNER):
+    GRC-grounded task decomposition for arbitrary task types
+    Domain rule research + proposal + auditor review
+    PipelineSpec + QualitySpec generation (TOML/msgpack) — PART 29
+    Template library for common patterns (SaaS, trading, game, data, ML)
+  Pipeline Factory L2 (PIPELINE BUILDER):
+    Deterministic pipeline assembly from PipelineSpec
+    QualitySpec validation (every metric has automated check method)
+    FSM state generation, agent role configuration, rule installation
+    Resource estimation and dependency graph creation
+  Self-extending rules engine (L1 proposes, L2 validates, L3 enforces)
+  Media Validator agent role (Tier 1 deterministic + Tier 2 VLM) — PART 28
+  SYSTEM_PROBE in FEASIBILITY_PROBE (hardware/env checks) — PART 25.8
+  API_REGISTRY_CHECK in GRC verification methods — PART 5.3 ADDENDUM
+  INLINE_FEASIBILITY in GRC (catch ungrounded claims during execution) — PART 5.9
+  Self-Modification System Layer 1 (data-level, automatic) — PART 27
+  Self-Modification System Layer 2 (config-level, full pipeline) — PART 27
+  Self-Modification System Layer 3 (structure-level, human approval) — PART 27
+  Deliverable: complete autonomous development workflow that can design its own pipelines,
+               validate non-code outputs, and improve its own configuration over time
+
+Phase 5 — Empire Integration (D2)
+  Deferred. Needs D1 proven first.
+  Integration plan (from factory-brain analysis):
+    elai_cc replaces factory-brain CLI (currently broken — 7 modules with circular deps)
+    elai_cc orchestrates factory-static via existing REST API
+    EngineMKI hook system already adopted in Phase 3-4
+    factory-brain service module circular deps fixed as part of D2
+    MCP server mode for bidirectional Empire <-> elai_cc communication
+
+
+PART 11: OPEN QUESTIONS (ALL RESOLVED — 2026-04-04)
+
+PREVIOUSLY ANSWERED:
+  - Dashboard: DEFERRED (user confirmed)
+  - PCR lifecycle: DROPPED, replaced with session handoff
+  - Main local model: Gemma 4 31B + TurboQuant + DoLa
+  - Autonomy level: near-full, human provides input only
+
+RESOLVED THIS SESSION:
+  1. CruciTitan: COMPILES CLEANLY (cargo check 44.99s, 1 cosmetic warning in hooks.rs).
+     Provider trait is MINIMAL — only send_message() + stream_message().
+     MISSING: embed(), token_count(), layer_config support.
+     MISSING providers: no Ollama, no vLLM, no llama.cpp — only Anthropic + OpenAI-compat + XAI.
+     compact.rs (710 lines) exists — must be gutted.
+     prompt.rs (795 lines) — must be audited for hardcoded system prompts.
+     R1 risk CLOSED: base compiles, needs extension not rewrite.
+
+     SESSION 6 UPDATE: BASE SWAPPED TO CLAW-CODE-RUST-PORT.
+     CruciTitan demoted to reference. claw-code has +18 runtime modules, +39% tests,
+     cleaner dependency graph. Key modules (worker_boot, policy_engine, green_contract,
+     bash_validation, mcp_lifecycle_hardened, recovery_recipes) map directly to elai_cc design.
+     VERIFICATION STILL NEEDED: cargo check on claw-code-rust-port (BLOCKING for Phase 0).
+     See PART 30 for full comparison and PART 2 REVISED for module mapping.
+
+  2. GPU hardware: 2x RTX 3090 24GB each (48GB total VRAM) being set up.
+     Gemma 4 31B Q4 ~18-20GB fits one GPU.
+     Auditor model on second GPU simultaneously = true agent parallelism.
+     Phase-aware scheduling: executor on GPU0, auditor on GPU1 during AUDITING.
+
+  3. Empire access: FULL OWNERSHIP. Can change anything. No collaboration constraints.
+     D2 integration is unconstrained — can refactor Empire freely.
+
+  4. Licensing: NOT A CONCERN. Private software. Can use CC-derived code freely.
+     R2 risk CLOSED.
+
+  5. Embedding model: BEST POSSIBLE LOCAL model on 3090 hardware.
+     Candidates: nomic-embed-text, mxbai-embed-large, Qwen3-Embedding via ollama.
+     Integration path: ollama HTTP API (simpler) or candle/ort (Rust-native, faster).
+     Decision deferred to Phase 1 implementation.
+
+  6. Vision — PIPELINE FACTORY (see NEW PART 15):
+     User wants fully deterministic autonomous system that creates its own pipelines.
+     "I want a SaaS? There is a complete LLM SaaS rules? If no, make it."
+     System should automatize ANYTHING the user types.
+     LLM does creative/written parts. Infrastructure does everything deterministic.
+     This requires meta-orchestration: system designs pipelines, not just executes them.
+
+  7. DAIRA + ShortCoder papers: INGESTED.
+     DAIRA (2603.22048v2): dynamic analysis-enhanced debugging. Trace-first approach.
+       Maps to: tools/ crate trace_execution() tool, GRC observe step dynamic trace option.
+     ShortCoder (2601.09703v1): AST-preserving code simplification, 18-38% token reduction.
+       Maps to: deterministic post-processing rules on generated code.
+
+  8. Gemma 4 31B: CONFIRMED RELEASED on ollama (ollama.com/library/gemma4:31b).
+     R3 risk CLOSED.
+
+CRITICAL CORRECTION DISCOVERED:
+  DoLa/TurboQuant are NOT supported via ollama. Ollama is a black box — no layer-level
+  intervention possible. These optimizations require vLLM or custom inference.
+  Design split: ollama for prototyping (Phase 0-1), vLLM for layer optimizations (Phase 2+).
+
+NO REMAINING OPEN QUESTIONS.
+
+
+PART 12: RISK REGISTER (revised 2026-04-04)
+
+CLOSED:
+  R1: CruciTitan — COMPILES. Provider trait needs extension, not rewrite.
+  R2: Licensing — private software, not a concern.
+  R3: Gemma 4 31B — confirmed released on ollama.
+
+ACTIVE:
+
+R4 (MEDIUM): VRAM contention with dual-GPU agent parallelism
+  Hardware: 2x 3090 24GB. Gemma4-31B Q4 ~18-20GB on GPU0. Auditor ~18GB on GPU1.
+  Risk: embedding model + two agents may exceed 48GB total.
+  Mitigation: phase-aware GPU scheduling — embedding shares GPU with idle agent.
+  Fallback: serialize agents (one at a time), or offload embedding to CPU.
+
+R5 (MEDIUM): DoLa/TurboQuant requires vLLM, not ollama
+  Ollama has no layer-level intervention API. DoLa needs model internals.
+  Mitigation: Phase 0-1 use ollama (prototyping). Phase 2+ integrate vLLM.
+  vLLM supports activation hooks (vLLM-Hook framework) — verify Gemma4 compatibility.
+  Fallback: constrained decoding (grammar-based) works on ollama. DoLa deferred.
+
+R6 (MEDIUM): Agent parallelism resource contention
+  Mitigation: resource-aware scheduler using nvml-wrapper (Windows) or sysinfo crate.
+  Fallback: serialize all agents on single GPU.
+
+R7 (LOW): tree-sitter grammar gaps
+  Mitigation: start with Rust, Python, TypeScript, Go. Extend as needed.
+
+R8 (NEW — MEDIUM): Meta-orchestration complexity (Pipeline Factory)
+  The L1/L2/L3 pipeline factory adds significant architectural complexity.
+  Risk: over-engineering the meta-layer before the base execution layer is proven.
+  Mitigation: Phase 0-3 builds the executor (L3). Phase 4 adds pipeline generation (L1+L2).
+  Principle: pipeline factory is an EXTENSION of proven executor, not a replacement.
+
+R9 (NEW — LOW): Empire factory-brain circular dependencies (D2)
+  7 service modules blocked by circular imports. CLI non-functional.
+  Not a D1 blocker. Document for D2 phase planning.
+  Mitigation: elai_cc replaces factory-brain CLI, not the engine.
+
+
+PART 13: RESEARCH-TO-FEATURE MAPPING (COMPLETE — ALL 53 FILES)
+
+Research Document                                          -> Feature/Crate(s)
+
+CORE ARCHITECTURE:
+SOTA RAG Architectures for Codebases                       -> knowledge/ (CatRAG, A-RAG, TeaRAG, RAGBoost)
+SOTA Codebase Understanding for LLMs                       -> knowledge/ (DKG, RIG, AEGIS deterministic compiler)
+SOTA Codebase Mapping LLM Integration                      -> knowledge/ (GraphRAG, Tree of Thoughts)
+LLM Codebase Memory Engine Design                          -> knowledge/ (TOON serialization, AST graphs, MCP integration)
+LLM Harness Systems Technical Deep Dive                    -> orchestrator/ (evaluation frameworks, agentic simulation)
+
+REASONING AND DETERMINISM:
+LLM Functional Determinism Research Report                 -> reasoning/ (constrained decoding, MCTS+PRM, GenPRMs)
+LLM Hallucination Mitigation Deep Dive                     -> providers/ (steering vectors, DoLa, HaluGate, DMAS)
+LLM-as-a-Judge and RAG Metrics                             -> reasoning/ + tools/ (evaluation metrics, scoring)
+halugate_Summarized                                        -> providers/ (vLLM HaluGate C++/CUDA implementation)
+the solution to hallun train_Summarized                    -> providers/ (training-time hallucination mitigation)
+
+INFERENCE AND OPTIMIZATION:
+LLM Inference Optimization Deep Dive                       -> providers/ (EAGLE-3, PagedAttention, KV cache, steering)
+Turboanddolaongemma_Summarized                             -> providers/ (DoLa + TurboQuant on Gemma specifically)
+Semantic Router                                            -> providers/ (workload routing, semantic caching)
+TurboQuant (source map)                                    -> providers/ (KV cache compression 3.8-6.4x)
+
+LOCAL MODELS:
+Local LLM Workflows and Performance                        -> providers/ + orchestrator/ (edge deployment, 3-phase loop)
+Local Models for Adversarial Auditing                      -> orchestrator/ (adversarial consensus engine, model taxonomy)
+Local Models for Context Gathering                         -> knowledge/ + providers/ (iRope, Ring Attention, OCR models)
+Local Models for Prompt Engineering                        -> orchestrator/ (FSM role mapping, MoE vs Dense analysis)
+Local AI Coding Model Analysis                             -> providers/ (model comparison, quantization strategies)
+Finding Smart Small Local LLMs                             -> providers/ (edge model selection)
+localllmonCC_Summarized                                    -> providers/ + core/ (local model on CC architecture)
+agentstolocallllms_Summarized                              -> orchestrator/ (agent-to-local-model resource allocation)
+
+TESTING AND QUALITY:
+SOTA Software Testing Research                             -> tools/ (DST, neural-symbolic verification, AI fuzzing)
+LLM Adherence to SOLID Principles                          -> rules/ (SOLID enforcement, hooks, MCP governance)
+LLM SOLID Principles with Claude                           -> rules/ (hook architecture, ForgeCraft patterns, zero-trust)
+Rare Code Flaws in ML                                      -> rules/ + tools/ (GNN leakage, RL flaws, preprocessing bugs)
+what is branch coverage_Summarized                         -> tools/ (coverage metrics, MC/DC, mutation testing)
+ccvalidation                                               -> reasoning/ (requirement-to-code cross-validation)
+
+TRADING AND FINANCIAL:
+Backtest Overfitting and Data Leakage                      -> rules/ + tools/ (leakage detection, 7 sins, validation)
+Realistic Paper Trading Executor Research                  -> rules/ + tools/ (execution fidelity, floating-point, friction)
+
+CLAUDE CODE ANALYSIS:
+Claude Code Leak Technical Discoveries                     -> core/ (architecture patterns, anti-patterns to strip)
+Claude Source Code Leak Discoveries 1                      -> core/ (context engineering, memory arch, cache management)
+claude code source_Summarized                              -> core/ (QueryEngine, PluginLoader, hook interception)
+needs claude code leak rust port                           -> core/ (focus priorities: determinism > tokens > TDD)
+
+MODEL COMPARISON:
+Coding AI Model & Framework Analysis                       -> providers/ (Claude/SWE-1.5/Windsurf comparison)
+AI Model Comparative Analysis Request                      -> providers/ (VRAM calculations, quantization, benchmarks)
+
+WORKFLOW IDEAS:
+chat 2 important pre project or phase break down           -> reasoning/ + orchestrator/ (TDD philosophy, 2-layer quality)
+chat 3 no slop ideas                                       -> orchestrator/ (vertical planning, design discussion, no-slop)
+chat_Summarized                                            -> orchestrator/ (Box's workflow, multi-agent, quality enforcement)
+workflowtocascade_Summarized                               -> orchestrator/ (FSM mapping, hooks.json, state management)
+INTERCONNECTEDGRAPHIDEA_Summarized                         -> knowledge/ (real-time graph system — deferred viz, keep data model)
+
+INFRASTRUCTURE:
+new rag                                                    -> knowledge/ (gold standard: CatRAG+A-RAG+TeaRAG+RAGBoost+CodeAgents)
+ingestcodebase                                             -> knowledge/ (automatic codebase mapping for LLM understanding)
+nojson                                                     -> core/ (postcard serde, msgpack storage, heapless)
+path agnostic                                              -> core/ (cross-platform path handling)
+debuglog                                                   -> core/ (debug logging for post-run investigation)
+gitcommitinworkflow                                        -> tools/ (git integration, auto-commit, auto-grep, auto-gitignore)
+tests to tools structure mistake                           -> tools/ (validation architecture patterns)
+some rules                                                 -> rules/ (deterministic TDD, mathematical verification)
+
+DEFERRED:
+dashboard app                                              -> DEFERRED (dashboard phase)
+obsidian like graph on the dashboard                       -> DEFERRED (graph viz phase)
+legalideas                                                 -> OPEN QUESTION (licensing, copyright)
+
+INGESTED (2026-04-05):
+use DAIRA (arxiv 2603.22048v2)                             -> reasoning/ + tools/ (evidence gates, trace-first debugging, adaptive overflow)
+ShortCoder (arxiv 2601.09703v1)                            -> tools/ (AST post-processing, 7 safe rules, 18-37% token reduction)
+
+EXTERNAL REFERENCES (session 6):
+oh-my-claudecode (OMC)                                     -> tools/ (SWE-bench benchmark, failure taxonomy, markers) — PART 30
+claw-code-rust-port                                        -> core/ + orchestrator/ + rules/ (base fork, module mapping) — PART 2 REVISED
+CruciTitan                                                 -> REFERENCE ONLY (demoted session 6, recovery source for tools/)
+CODEBASE_DEPENDENCY_MAP                                    -> REFERENCE (CruciTitan Rust crate structure)
+claw-code-rust-port_dependency_report                      -> REFERENCE (claw-code Python parity layer)
+oh-my-claudecode-main_dependency_report                    -> REFERENCE (OMC module structure)
+
+META:
+METHODS_SUMMARY                                            -> META (summarization methodology)
+SUMMARIZATION_TODO                                         -> META (tracking)
+
+
+PART 14: WHAT NEEDS DEEPER DESIGN (NEXT SESSION PRIORITIES — updated 2026-04-04)
+
+Priority 1: GRC engine — the think() protocol needs formal specification.
+  PARTIALLY ADDRESSED: GRC state machine, grounding verification, and plan sweep designed.
+  STILL NEEDS:
+    - Concrete Rust struct definitions for ThinkStep, GroundingResult, VerificationResult
+    - Prompt template per step type (what exact text does GRC send to the LLM?)
+    - Integration with trace_execution (DAIRA) in observe step
+    - Pipeline factory: how does GRC handle pipeline-design reasoning vs task-execution reasoning?
+    - Budget allocation for meta-reasoning (L1 pipeline design uses more budget than L3 execution)
+
+Priority 2: Agent parallelism — PARTIALLY ADDRESSED.
+  DONE: concrete dual-3090 scheduling, Empire bus pattern for messaging, permission model.
+  STILL NEEDS:
+    - Plan format for declaring parallelizable steps (TOML step spec with depends_on?)
+    - Msgpack schema for inter-agent messages
+    - Failure handling: if parallel agent fails, retry? escalate? abort sibling?
+    - GPU memory monitoring: continuous or check-before-spawn?
+
+Priority 3: Clean model — PARTIALLY ADDRESSED.
+  DONE: identified prompt.rs (795 lines) and compact.rs (710 lines) as targets.
+  SESSION 6 UPDATE: now targeting claw-code-rust-port versions of these files.
+  claw-code has policy_engine.rs (581 LOC) and permission_enforcer.rs (546 LOC) which
+  may already separate some concerns that CruciTitan mixed into prompt.rs.
+  STILL NEEDS:
+    - Actual audit of claw-code prompt.rs to find system prompt injection points
+    - Compare claw-code policy_engine.rs against our rules::RuleEngine design
+    - List of all hardcoded strings that inject behavior
+    - Plan for what replaces the system prompt (GRC-structured prompts only)
+
+Priority 4: Layer-level model optimizations — RESOLVED as phased approach.
+  Phase 0-1: ollama (no layer intervention, constrained decoding only)
+  Phase 2+: vLLM (DoLa, TurboQuant, steering vectors)
+  STILL NEEDS:
+    - Verify vLLM-Hook framework supports Gemma 4 architecture specifically
+    - Rust<->vLLM integration path (HTTP API? gRPC? direct binding?)
+    - Benchmark: how much does DoLa actually help Gemma4 factuality?
+
+NEW Priority 5: Pipeline Factory formal specification.
+  L1/L2/L3 architecture designed in PART 15.
+  STILL NEEDS:
+    - PipelineSpec schema definition (TOML format)
+    - Template library schema and storage format
+    - Rule proposal/validation protocol (how does L1 propose, auditor validate?)
+    - Pipeline composition: how do sub-pipelines share state?
+    - External tool registry: how does L1 discover available tools?
+
+NEW Priority 6: Provider trait extension implementation plan.
+  CruciTitan has minimal Provider trait (send_message + stream_message only).
+  NEEDS:
+    - embed() signature: async? batched? model-specific?
+    - token_count() accuracy: tiktoken-rs? model-specific tokenizer?
+    - OllamaProvider implementation (HTTP API wrapper)
+    - Provider selection logic (config-based, with fallback chain)
+
+Priority 5: DAIRA paper — INGESTED. Findings integrated (see PART 16).
+
+Priority 6: Empire factory-brain + factory-static — ANALYZED (see context package).
+  factory-brain engine (EngineMKI) works. CLI broken. 7 modules blocked by circular deps.
+  factory-static is COMPLETE — REST API for static site generation.
+  D2 integration: elai_cc replaces factory-brain CLI, orchestrates factory-static via API.
+
+
+PART 15: PIPELINE FACTORY ARCHITECTURE (NEW — 2026-04-04)
+
+Purpose: elai_cc is not a code assistant. It is a universal automation engine.
+The user provides ANY goal — "build a SaaS", "create a trading bot", "generate animation sprites",
+"set up CI/CD", "analyze this dataset". The system DESIGNS the pipeline, BUILDS it, then
+EXECUTES it — autonomously. The LLM handles creative and written work. Everything else is
+deterministic infrastructure. The less tokens wasted on things code can enforce, the better.
+The system creates its own sub-pipelines when needed (e.g., animation task spawns a sprite
+generation pipeline, which identifies required models and programs automatically).
+
+15.1 Three-Layer Architecture:
+
+  L1 — PIPELINE DESIGNER (LLM-driven, GRC-grounded):
+    Input: human task description ("I want a SaaS for X")
+    Process:
+      1. GRC decomposes task into sub-questions (observe step)
+      2. Each sub-question answered via VERIFIED sources:
+         - What components are needed? (web search for best practices)
+         - What models are needed? (knowledge engine query)
+         - What programs/tools are required? (tool registry lookup)
+         - What rules apply to this domain? (rules engine query + web search)
+         - What pipeline patterns exist for this type of task? (template library)
+      3. If a needed rule set doesn't exist (e.g., "SaaS rules"):
+         - GRC researches best practices (web search, papers, standards)
+         - Proposes rule set with grounding citations
+         - Auditor reviews proposed rules
+         - Rules installed in project's elai_cc.toml
+      4. Pipeline spec assembled from verified components ONLY
+    Output: PipelineSpec (TOML/msgpack) — phases, steps, dependencies, model assignments,
+            rule sets, tool requirements, resource estimates
+
+  L2 — PIPELINE BUILDER (deterministic, no LLM):
+    Input: PipelineSpec from L1
+    Process:
+      1. Validates all referenced components exist (models available, tools registered)
+      2. Creates FSM state definitions for each phase
+      3. Configures agent roles and model assignments per phase
+      4. Installs domain-specific rules from PipelineSpec
+      5. Estimates resource requirements (VRAM, disk, network)
+      6. Generates dependency graph (which steps parallel, which serial)
+      7. Creates test harness skeleton (TESTING_FIRST templates)
+    Output: ExecutablePipeline — ready for L3, stored in .elai_cc/pipelines/{id}/
+
+  L3 — PIPELINE EXECUTOR (current design — FSM + agents + rules):
+    Input: ExecutablePipeline from L2
+    Process: existing autonomous execution loop (PART 7)
+    Output: completed task, committed code, validation results
+
+15.2 Self-Extending Rules Engine:
+
+  Current design: rules are predefined (STRUCTURAL, SECURITY, TRADING, WORKFLOW, CUSTOM).
+  Extension: L1 can CREATE new rule categories at runtime.
+
+  Rule creation protocol:
+    1. L1 identifies domain needs ("this SaaS needs GDPR compliance rules")
+    2. GRC researches requirements (web search, standards docs, papers)
+    3. Proposed rules written as Rust-evaluable predicates:
+       - File-path matching (which files these rules apply to)
+       - AST patterns (what code structures to check)
+       - Build/test requirements (what must pass)
+    4. Auditor agent reviews proposed rules for:
+       - Soundness (does the rule catch what it claims?)
+       - Completeness (are edge cases covered?)
+       - Performance (does evaluation add latency?)
+    5. Rules saved to .elai_cc/rules/{domain}/ and registered in config
+    6. L3 enforces them like built-in rules — no distinction at runtime
+
+  Rule templates (shipped with elai_cc):
+    SaaS:       auth, rate limiting, data validation, API versioning, GDPR
+    Trading:    no lookahead, temporal leakage, commission modeling, drawdown limits
+    Game:       frame budget, memory pools, deterministic physics, asset pipeline
+    Data:       schema validation, null handling, encoding, pipeline idempotency
+    Security:   OWASP top 10, injection prevention, crypto best practices
+    ML:         train/test split, data leakage, reproducibility, metric tracking
+    Custom:     user-defined via elai_cc.toml
+
+15.3 Pipeline Templates (accelerate L1):
+
+  Completed pipelines become reusable templates.
+  Stored in .elai_cc/templates/{type}/ as PipelineSpec + outcomes.
+  L1 queries template library before designing from scratch.
+  Templates are versioned — improvements propagate to future uses.
+
+  Example template: "rust-library"
+    Phase 0: scaffold (Cargo.toml, crate structure, CI config)
+    Phase 1: core types + traits (TESTING_FIRST)
+    Phase 2: implementation (per-module vertical slices)
+    Phase 3: integration tests + benchmarks
+    Phase 4: documentation + examples
+    Rules: STRUCTURAL + SECURITY
+    Models: executor=gemma4, auditor=deepseek-r1
+
+15.4 Pipeline Composition:
+
+  Complex tasks decompose into multiple pipelines.
+  "Build a SaaS" = pipeline(backend-api) + pipeline(frontend) + pipeline(infrastructure)
+  Orchestrator manages inter-pipeline dependencies.
+  Each sub-pipeline runs independently with its own FSM.
+  Results feed into parent pipeline via structured handoff.
+
+15.5 External Tool Integration:
+
+  L1 can identify that a pipeline needs external tools:
+    - "Animation sprites need Aseprite or Pixelorama"
+    - "3D models need Blender CLI"
+    - "PDF generation needs wkhtmltopdf or weasyprint"
+  Tool availability check: is the tool installed? version? path?
+  If not available: L1 proposes installation or alternative.
+  Tool execution wrapped in tools/ crate with timeout, error handling, output parsing.
+  External tool outputs validated by auditor (did the sprite generate correctly?).
+
+
+15.6 Model Capability Registry:
+
+  L1 needs to answer: "what model does this task need?"
+  Registry stores per-model capabilities as structured data:
+    model_id: "gemma4:31b"
+    capabilities: [code_generation, reasoning, instruction_following]
+    vram_required: 18000  # MB at Q4
+    max_context: 131072
+    strengths: [rust, python, structured_output]
+    weaknesses: [long_prose, creative_writing]
+    layer_config: {dola: false, turboquant: false}  # ollama limitation
+    provider: "ollama"
+
+  Population: initial manual config in elai_cc.toml.
+  Extension: L1 can query ollama /api/tags to discover available models,
+    run a capability probe (small test prompts), and register new models.
+  Selection: L1 matches task requirements to model capabilities deterministically.
+    Score = sum(capability_match) * context_fit * vram_feasibility.
+    No LLM judgment in model selection — pure numeric ranking.
+
+15.7 External Tool Auto-Discovery and Installation:
+
+  L1 identifies external tool requirements. Three resolution levels:
+    AVAILABLE: tool found on PATH, version compatible. Use immediately.
+    INSTALLABLE: tool exists in package manager (winget, apt, cargo install).
+      L1 proposes installation command. User confirms (dangerous action gate).
+      After install, tool registered in .elai_cc/tools/{name}.toml.
+    UNAVAILABLE: no known install path. L1 proposes alternatives or flags as blocker.
+
+  Tool wrapper contract (tools/ crate):
+    fn execute(args) -> ToolResult  // stdout/stderr/exit_code
+    fn validate_output(result) -> bool  // domain-specific output check
+    fn version() -> SemVer  // compatibility tracking
+    timeout: configurable per tool (default 60s, GPU tools 600s)
+
+  Auto-discovery: L1 can query: (a) system PATH, (b) package managers, (c) web search
+    for tools that solve a specific capability gap. All proposals go through auditor review.
+
+15.8 Evidence Gate Protocol (DAIRA-derived):
+
+  Every FSM phase transition requires an evidence artifact — not LLM self-assessment.
+  This is the single most impactful anti-hallucination mechanism (DAIRA ablation: -11.3pp
+  without structured evidence, -8.1pp without runtime data, -5.4pp without FSM gates).
+
+  Gate definitions:
+    PLANNING -> TESTING_FIRST:
+      Evidence: grounding_sweep_report (all claims in plan classified GROUNDED)
+      Gate: zero UNGROUNDED claims remaining
+    TESTING_FIRST -> EXECUTING:
+      Evidence: test_file_paths[] (tests written and parseable)
+      Gate: all tests fail for the right reasons (not syntax errors)
+    EXECUTING -> AUDITING:
+      Evidence: diff_summary + test_results (tests now pass)
+      Gate: at least 1 test flipped from FAIL to PASS
+    AUDITING -> MEMORIZING:
+      Evidence: audit_report (auditor findings + resolutions)
+      Gate: zero BLOCK findings remaining
+    MEMORIZING -> next phase or COMPLETE:
+      Evidence: changelog_entry + knowledge_engine_updated
+      Gate: DKG reflects new code, changelog has entry
+
+  Adaptive context (DAIRA pattern): any evidence-gathering tool that produces
+  variable-length output MUST implement adaptive scope reduction.
+  Pattern: run -> check size -> if > token_budget * 0.3, reduce scope -> retry.
+  Max 3 reduction attempts before escalating to human.
+
+
+PART 16: RESEARCH INTEGRATION (NEW — 2026-04-04)
+
+Papers ingested this session and their integration points:
+
+16.1 DAIRA (arxiv 2603.22048v2) — Dynamic Analysis-Enhanced Issue Resolution:
+  Core insight: static analysis hits ceiling on complex bugs. Runtime tracing exposes
+  implicit type degradations, polymorphic control flows, variable mutations.
+
+  Integration into elai_cc:
+    tools/ crate: ADD trace_execution(script, trace_config) -> TraceReport
+      - Lightweight tracer (Hunter-based or tracing crate) generates serialized logs
+      - TraceReport contains: call stack, variable mutations, type transitions, timing
+    reasoning/ GRC observe step: ADD dynamic trace option
+      - Current: observe = file reads + grep
+      - New: observe can invoke trace_execution for runtime behavior
+    orchestrator/ AUDITING state: trace-first debugging protocol
+      - Before static analysis, run failing test with tracing enabled
+      - Trace output fed to auditor as grounded evidence
+      - Auditor reasons from ACTUAL runtime behavior, not inferred behavior
+    Validation pipeline: Tier 2 gains trace-based verification
+      - Not just "does it compile" but "does it behave correctly at runtime"
+
+  Key metric from paper: 80.8% resolution on medium bugs, 44.4% on hard bugs (SOTA).
+  Efficiency: more tool calls BUT -13% to -18% total cost (targeted retrieval).
+  Validates: smaller models + better tooling > larger models alone.
+
+  Ablation evidence (cost of skipping GRC steps):
+    Without TLSA (semantic trace analysis): -11.3% resolution
+    Without DAT (dynamic analysis tool):   -8.1% resolution
+    Without TTDW (structured FSM workflow): -5.4% resolution
+    Each GRC step has measurable, proven value. Skipping any step is quantifiably worse.
+
+  Generalizable primitive — adaptive overflow loop:
+    DAIRA's trace_depth auto-reduces when output exceeds token budget.
+    elai_cc should generalize this: ANY variable-output tool (grep, AST scan, trace)
+    should have an adaptive scope reduction mechanism.
+    Pattern: run tool -> check output size -> if > budget, reduce scope -> retry.
+    Implemented as a tools/ crate wrapper: AdaptiveTool<T: Tool> with budget parameter.
+
+16.2 ShortCoder (arxiv 2601.09703v1) — Syntax-Aware Code Conciseness:
+  Core insight: 10 AST-preserving simplification rules reduce generated tokens 18-38%
+  while maintaining functional equivalence (pass@1 0.612 on HumanEval).
+
+  Integration into elai_cc:
+    tools/ crate: ADD code_simplify(code, rules) -> SimplifiedCode
+      - 10 deterministic rules applied via AST transformation (NOT regex):
+        R1: remove redundant variable assignments
+        R2: simplify boolean expressions
+        R3: collapse single-use variables
+        R4: convert if/else to ternary (configurable — can reduce readability)
+        R5: merge sequential operations
+        R6: convert loops to comprehensions (configurable)
+        R7: remove unnecessary parentheses
+        R8: simplify return statements
+        R9: remove dead code branches
+        R10: normalize string formatting
+      - Applied as POST-PROCESSING on executor output, before auditor review
+      - Rules R4 and R6 configurable (readability vs conciseness tradeoff)
+    Token savings compound with A-RAG (55-87% retrieval savings + 18-38% generation savings)
+    No model fine-tuning needed — rules are deterministic transforms
+
+16.3 LangGraph Patterns (from source map analysis):
+  Validated patterns adopted:
+    StateGraph -> elai_cc FSM (Rust deterministic, not Python TypedDict)
+    Checkpoint system -> session handoff (handoff.msgpack = LangGraph checkpoint concept)
+    Human-in-the-loop -> dangerous action gating
+    CheckpointSaver interface -> elai_cc CheckpointStore trait (msgpack/SQLite backends)
+  Anti-pattern avoided:
+    Python TypedDict mutable state -> Rust structs + serde (type-safe, immutable)
+
+16.4 Empire Factory-Brain Patterns (from deep source analysis 2026-04-05):
+  Adopted patterns:
+    HookRegistry (route, event kinds) -> elai_cc hook system (same concept, Rust impl)
+    BusRegistry with fnmatch glob subscriptions -> inter-agent message routing
+    Bus permission bitflags -> agent permission model (per-brain scope control)
+    brain.json manifest -> elai_cc agent role config (same pattern: same engine + different spec)
+    EngineMKI event dispatch loop -> orchestrator FSM event handling
+    FactoryLine control protocol -> elai_cc session management protocol pattern
+    FSB binary framing (12-byte header) -> candidate for high-perf inter-agent wire format
+  D2 integration: see PART 9 for 6-step integration plan (verified from actual source code)
+
+16.5 Empire Factory-Static Evaluation (2026-04-05):
+  factory-static is a STATIC SITE GENERATOR — not a general-purpose template library.
+  Input: SiteConfig JSON. Output: HTML/CSS via 9 workers (content, theme, locale, VFX, etc.).
+  Its "templates" are HTML section types (hero, features, pricing), not project archetypes.
+
+  PATTERN adopted (architecture, not content):
+    SiteConfig JSON schema -> builder pipeline      = PipelineSpec TOML -> L2 Pipeline Builder
+    Worker pool (content, theme, locale, etc.)       = Agent pool (executor, auditor, researcher)
+    state.ts SQLite lifecycle tracking               = SSB lifecycle tracking
+    builder.ts orchestrator (createBuild -> execute -> updateBuild) = L2 deterministic assembly
+    Atomic symlink deploy                            = Git commit + tag per phase
+
+  CONTENT not adopted:
+    HTML section templates (hero, features, CTA) are website-specific.
+    Our Template Library needs project archetypes (rust-library, saas-backend, ml-pipeline).
+    Different domain, same orchestration pattern.
+
+
+PART 17: ADVERSARIAL AUDIT RESULTS (2026-04-05)
+
+  Adversarial auditor ran against proposed additions (SSB, inline validator, two-layer comms,
+  context budget allocator, self-improvement loop) plus 3 user concerns (plan robustness,
+  multi-project isolation, deterministic plan verification).
+
+  9 BLOCKs found. All accepted and resolved. Key findings:
+
+  BLOCK 1: SQLite WAL single-writer
+    Claim: "WAL gives lock-free concurrent reads" — TRUE for reads, FALSE for writes.
+    WAL allows only ONE writer at a time. Multiple agents writing = serialized or SQLITE_BUSY.
+    Fix: single-writer via tokio::mpsc. See PART 18.
+    Sources: sqlite.org/wal.html, berthug.eu SQLITE_BUSY analysis
+
+  BLOCK 2: T3 inline validator latency
+    Claim: "1B model on CPU, 200-500ms" — FALSE. CPU inference for code validation
+    with 500+ token input = 10-100 seconds, not 200-500ms.
+    Fix: kill T3 model. Use pattern-match heuristic library or batch at superstep boundary.
+    Sources: arxiv 2511.07425 (CPU inference benchmarks), Intel IPEX data
+
+  BLOCK 3: DAIRA TLSA mapping incorrect
+    Claim: "T1/T2/T3 maps to DAIRA's TLSA" — WRONG. TLSA is semantic transformation of
+    runtime traces (extra LLM call, three-part structured report). Inline validator is
+    static analysis. Conflating them misleads implementors.
+    Fix: rename to "tiered static analysis hook." DAIRA TLSA correctly mapped in GRC observe.
+    Source: daira-interface.md line 59
+
+  BLOCK 4: BinaryOp channel non-determinism
+    Claim: "same writes = deterministic" — FALSE for non-commutative operators with concurrent writes.
+    Write order depends on OS scheduler, not logical causality.
+    Fix: drop BinaryOp channels entirely. Use only LastValue + Topic (commutative append).
+    Sources: LangGraph race condition issue #1112, LangGraph channels reference
+
+  BLOCK 5: Multi-project isolation missing
+    No project_id in SSB schema. PID reuse on Windows. No cross-contamination prevention.
+    Fix: project_id namespace, physical isolation. See PART 24.
+
+  BLOCK 6: Self-improvement reward hacking
+    Auto-downgrading rules by false positive rate is dangerous. Security rules that fire
+    rarely but catch catastrophic bugs would be downgraded.
+    Fix: never auto-adjust security/safety/architecture rules. Human approval required.
+    Source: Darwin Godel Machine (arxiv 2505.22954) — documents reward hacking in self-improving systems
+
+  BLOCK 7: Plan feasibility gap
+    Grounding sweep checks existence ("does this API exist?") not feasibility ("will this work?").
+    Fix: add FEASIBILITY_PROBE FSM state. See PART 25.
+    Source: DAIRA Phase 1 pattern (edge case scripts before diagnosis)
+
+  BLOCK 8: Payload BLOB schema
+    Opaque msgpack BLOB with no schema enforcement makes debugging and migration painful.
+    Fix: typed action_type enum + normalized junction table ssb_files(seq, file_path).
+
+  BLOCK 9: Context budget allocator terminal condition missing
+    No specification for what happens after 3 reductions fail.
+    Fix: ESCALATE (interactive) or SPLIT_TASK (autonomous). Floors on all categories.
+
+  WARNs (accepted, documented):
+    - file_overlap_score computation undefined (BM25? cosine? token overlap?) — define in spec
+    - Template ranking formula not written — define concrete formula
+    - Superstep boundary condition ambiguous — define precisely when barrier fires
+    - Novel task types with no template have unknown failure rate — mitigated by Research Agent
+    - tree-sitter T2 latency exceeds 10ms on large files — add file-size circuit breaker
+    - SSB files_touched column needs junction table — included in PART 18 schema
+    - TurboQuant vLLM PR #38280 unmerged — add fallback for Phase 2
+    - Dual-GPU VRAM margins tight — add instrumentation before parallel scheduling
+
+  INFOs (noted):
+    - ShortCoder rule numbering diverges from paper — use paper as canonical reference
+    - DAIRA ablation numbers are Python-specific, may not transfer to Rust debugging
+    - Empire Step 4/6 dependency ordering inverted — fix in D2 planning
+
+
+PART 18: SHARED STATE BOARD (SSB) — INTER-AGENT COMMUNICATION
+
+  Purpose: replace vague "msgpack over session bus" with concrete, proven implementation.
+  SSB is the single source of truth for all agent activity within a project.
+
+  18.1 Architecture:
+    Single SQLite database in WAL mode, per-project.
+    All agents write to SSB via a single-writer tokio::mpsc channel.
+    All agents read from SSB via read-only connections (WAL lock-free reads).
+    Append-only — rows are never updated or deleted during a session.
+
+  18.2 Single-Writer Pattern:
+    CRITICAL: SQLite WAL does NOT allow concurrent writers. One writer at a time.
+    All SSB writes routed through a dedicated writer task:
+
+    Rust pseudocode:
+      let (tx, mut rx) = tokio::sync::mpsc::channel::<SsbEntry>(1024);
+      tokio::spawn(async move {
+          while let Some(entry) = rx.recv().await {
+              db.execute_insert(&entry);
+              validator.check(&entry);  // tiered static analysis fires here
+          }
+      });
+      // Each agent gets tx.clone() — sends are non-blocking
+
+    Throughput: SQLite handles ~50,000 serial inserts/second.
+    Agent write rate: ~1-10 writes/second total. No bottleneck.
+    The serialization gives total ordering for free (seq autoincrement).
+
+  18.3 Schema:
+    CREATE TABLE ssb (
+        seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id    TEXT NOT NULL,
+        session_id    TEXT NOT NULL,
+        agent_id      TEXT NOT NULL,
+        superstep     INTEGER NOT NULL,
+        action_type   TEXT NOT NULL CHECK(action_type IN (
+            'file_write','file_read','tool_result','test_outcome',
+            'finding','claim','checkpoint','model_swap','phase_transition'
+        )),
+        payload       BLOB NOT NULL,
+        created_at    INTEGER NOT NULL
+    );
+
+    CREATE TABLE ssb_files (
+        seq       INTEGER REFERENCES ssb(seq),
+        file_path TEXT NOT NULL
+    );
+    CREATE INDEX idx_ssb_project ON ssb(project_id);
+    CREATE INDEX idx_ssb_session ON ssb(session_id);
+    CREATE INDEX idx_ssb_superstep ON ssb(superstep);
+    CREATE INDEX idx_ssb_files_path ON ssb_files(file_path);
+
+  18.4 Agent Usage:
+    Write: every tool call result, file edit, GRC conclusion, phase transition -> SSB row.
+    Read: agents query SSB filtered by file overlap (JOIN ssb_files WHERE file_path IN (...)).
+    Conflict detection: orchestrator queries SSB before spawning agent:
+      SELECT DISTINCT agent_id FROM ssb_files WHERE file_path IN (?)
+      AND session_id != ? AND superstep = ?
+    If conflict: block agent spawn, report to orchestrator.
+
+  18.5 Testable Invariants:
+    - ssb.seq is monotonically increasing (total ordering guaranteed by autoincrement)
+    - All writes visible to all readers within 1ms (WAL mode guarantee for reads)
+    - No two agents write to same file simultaneously (orchestrator prevents via SSB query)
+    - Single-writer task processes all writes (no direct DB access from agents)
+
+
+PART 19: TIERED STATIC ANALYSIS HOOK
+
+  Purpose: real-time validation of every agent action. NOT a full LLM agent.
+  NOT DAIRA's TLSA (that is GRC observe + trace_execution, correctly placed in PART 16.1).
+  This is a static analysis cascade triggered by the SSB single-writer task.
+
+  19.1 Three Tiers:
+
+    T1 — RULES (deterministic, <1ms):
+      Fires on: EVERY SSB write. Zero exceptions.
+      Implementation: Rust functions from rules/ crate.
+      Checks: SOLID violations, security patterns (eval, unsanitized input), workflow constraints.
+      Output: ALLOW | WARN | BLOCK with rule_id and reason.
+
+    T2 — AST (deterministic, <10ms for files <5000 lines):
+      Fires on: action_type = 'file_write' only.
+      Implementation: tree-sitter parse + pattern matching.
+      Checks: syntax validity, import correctness, dead code, lazy code (pass bodies, TODO).
+      Circuit breaker: files > 5000 lines degrade to T1-only (skip T2).
+      Output: ALLOW | WARN | BLOCK with ast_location and reason.
+
+    T3 — PATTERN MATCH (deterministic, <5ms):
+      Fires on: T1 or T2 return WARN (ambiguous cases only).
+      Implementation: pattern-match library of known-ambiguous code patterns.
+      NO LLM. Deterministic heuristic lookup.
+      Examples: "function > 200 lines" -> WARN:complexity, "catch Exception: pass" -> BLOCK:swallow.
+      Output: ALLOW | BLOCK with pattern_id and reason.
+      NOTE: original 1B model on CPU proposal REJECTED by auditor (latency 10-100s, not 200-500ms).
+
+  19.2 BLOCK Handling:
+    BLOCK from any tier -> SSB entry with action_type='finding'.
+    Working agent receives finding on next SSB read.
+    Orchestrator creates fix task if agent does not self-correct within 2 tool calls.
+
+  19.3 Testable Invariants:
+    - Every SSB write triggers T1 within 1ms
+    - T2 only fires on 'file_write' actions
+    - T3 only fires when T1 or T2 return WARN
+    - T3 is deterministic (pattern match, no model)
+    - BLOCK from any tier is recorded in SSB as 'finding'
+    - No LLM in the validation hot path
+
+
+PART 20: TWO-LAYER COMMUNICATION MODEL
+
+  Purpose: deterministic macro-level orchestration with flexible micro-level coordination.
+  Combines LangGraph's BSP superstep model with SSB for intra-phase communication.
+
+  20.1 Layer 1 — BSP Supersteps (phase-level, deterministic):
+
+    Adapted from LangGraph Pregel model (verified from source: pregel/_loop.py:461-580).
+    Phase transitions are superstep boundaries. All channel writes applied atomically.
+
+    Rust pseudocode:
+      loop {
+          let tasks = prepare_next_tasks(&checkpoint, &channels, &nodes);
+          if tasks.is_empty() { break; }
+
+          // Execute all tasks for this superstep (sequential on GPU due to VRAM)
+          let writes = execute_tasks(tasks, &model_pool, &ssb);
+
+          // Apply all writes atomically (deterministic)
+          let updated_channels = apply_writes(&mut checkpoint, &mut channels, writes);
+
+          // Checkpoint (crash-safe resume point)
+          save_checkpoint(&checkpoint, &channels);
+
+          // Check evidence gates before transitioning
+          if !evidence_gate_passes(&checkpoint, &channels) {
+              continue; // block transition, create remediation tasks
+          }
+
+          superstep += 1;
+      }
+
+  20.2 Layer 2 — SSB Intra-Step Communication:
+
+    Within a superstep, agents communicate via SSB (PART 18).
+    SSB writes are ordered by seq (autoincrement via single-writer task).
+    Agents can read SSB in real-time for awareness of what other agents are doing.
+    Channel updates happen ONLY at superstep boundary (atomic, deterministic).
+
+    This gives: real-time awareness (agents read SSB) + deterministic macro state
+    (channels updated atomically between supersteps).
+
+  20.3 Channel Types (from LangGraph, in Rust — BinaryOp DROPPED):
+
+    LastValue:
+      Stores single value. Last writer wins.
+      Deterministic: write order defined by SSB seq.
+      Used for: current_phase, active_agent, latest_test_result.
+
+    Topic (accumulate: bool):
+      Stores append-only list of values.
+      accumulate=true: values persist across supersteps.
+      accumulate=false: values cleared at superstep boundary.
+      Used for: findings (accumulate), test_results (accumulate), notifications (clear).
+
+    BinaryOp: DROPPED.
+      Reason: non-commutative operators with concurrent writes = non-deterministic result.
+      LangGraph's own issue tracker documents race conditions with this channel type.
+      Aggregation done instead by Rust functions at superstep boundary over Topic contents.
+
+  20.4 Testable Invariants:
+    - Channel state at superstep N is deterministic given state at N-1 and writes from N
+    - SSB reads within a superstep never see writes from future supersteps
+    - Checkpoint at superstep boundary contains full channel state (crash-safe)
+    - Only LastValue and Topic channel types exist (no BinaryOp)
+    - Aggregation computed by deterministic Rust functions, not channel operators
+
+
+PART 21: CONTEXT BUDGET ALLOCATOR
+
+  Purpose: compute per-agent context windows before each model invocation.
+  Each model has different context limits. Each agent needs different context.
+  Allocator ensures no agent exceeds its model's context window.
+
+  21.1 Budget Computation:
+
+    per_agent_context_budget(agent_role, phase, ssb) -> ContextWindow:
+      total = model_registry[agent_role].max_context
+      output_reserve = 2000  // FLOOR: never starve response space
+
+      // Fixed allocations (measured in tokens)
+      system_prompt = grc_structured_prompt(agent_role, phase)    // ~500-1500 tokens
+      rules = active_rules(phase, agent_role)                     // ~200-800 tokens
+      phase_spec = current_phase_spec()                           // ~300-600 tokens
+
+      // Variable allocations (adaptive, with FLOORS)
+      remaining = total - system_prompt - rules - phase_spec - output_reserve
+      ssb_budget = max(remaining * 0.3, 200)       // FLOOR: 200 tokens minimum
+      code_budget = max(remaining * 0.5, 500)       // FLOOR: 500 tokens minimum
+      grc_budget = max(remaining * 0.2, 500)        // FLOOR: 500 tokens minimum
+
+      // Adaptive reduction if total exceeds remaining
+      ssb_entries = ssb.query(files_overlap=agent.files, budget=ssb_budget)
+      code_context = knowledge.query(agent.task, budget=code_budget)
+      grc_history = agent.checkpoint.grc_history(budget=grc_budget)
+
+      return ContextWindow { system_prompt, rules, phase_spec, ssb_entries, code_context, grc_history }
+
+  21.2 Adaptive Reduction Protocol (DAIRA pattern):
+
+    If any category overflows its budget:
+      Attempt 1: filter by relevance score (file overlap count for SSB, BM25 score for code)
+      Attempt 2: reduce granularity (function signatures instead of full bodies)
+      Attempt 3: reduce scope (fewer files, most recent SSB entries only)
+
+    TERMINAL CONDITION (after 3 reductions fail):
+      INTERACTIVE mode: ESCALATE to human with context budget report
+      AUTONOMOUS mode: SPLIT_TASK — break current task into smaller sub-tasks
+                       that individually fit in context. Each sub-task gets its
+                       own agent invocation with fresh budget.
+
+    NEVER silently truncate context. Every reduction logged to SSB.
+
+  21.3 File Overlap Score Definition (resolves auditor WARN):
+    score(ssb_entry, agent_files) = |intersection(ssb_entry.files, agent_files)| / |agent_files|
+    Range: [0.0, 1.0]. 1.0 = SSB entry touches all files the agent is working on.
+    Deterministic: same inputs always produce same score. No model involved.
+
+  21.4 Code Context Chunk Size Limit:
+    Maximum single chunk: 2000 tokens (prevents one large file from saturating budget).
+    If file exceeds 2000 tokens: return function signatures + relevant function bodies only.
+    Selection: BM25 query against agent's current task description.
+
+  21.5 Testable Invariants:
+    - sum(all_allocations) <= model.max_context for every agent invocation
+    - output_reserve >= 2000 tokens always
+    - SSB entries >= 200 tokens always (floor)
+    - GRC history >= 500 tokens always (floor)
+    - No silent truncation (every reduction logged to SSB)
+    - Terminal condition always fires (never infinite reduction loop)
+
+
+PART 22: SELF-IMPROVEMENT LOOP
+
+  Purpose: pipeline outcomes feed back into template ranking and rule weighting.
+  All modifications are data changes (SQLite/TOML), not code changes.
+  All modifications are versioned and reversible.
+  NO LLM in the feedback loop — pure arithmetic.
+
+  22.1 Metrics Collected Per Pipeline Execution:
+    PipelineOutcome {
+        template_id: String,
+        project_id: String,
+        phases_total: u32,
+        phases_passed_first_try: u32,
+        audit_findings_total: u32,
+        audit_findings_block: u32,
+        test_coverage_final: f32,
+        time_to_complete_seconds: u64,
+        tokens_consumed_total: u64,
+        human_interventions: u32,
+        rules_triggered: Vec<(RuleId, TriggerCount, CatchRate)>,
+    }
+
+  22.2 Template Ranking Formula:
+    score = (phases_passed_first_try / phases_total) * 0.4
+          + test_coverage_final * 0.3
+          + (1.0 - audit_findings_block / max(audit_findings_total, 1)) * 0.2
+          + (1.0 - tokens_consumed_total / max_expected_tokens) * 0.1
+
+    Templates with higher scores preferred by L1 Pipeline Designer.
+    Templates with score < 0.3 flagged for revision (not auto-deleted).
+    Minimum 3 executions required before ranking is applied.
+
+  22.3 Rule Weight Adjustment:
+
+    SAFETY RULES (NEVER auto-adjusted):
+      Categories: Security, Safety, Architecture.
+      Any weight change requires HUMAN APPROVAL in both AUTONOMOUS and INTERACTIVE modes.
+      Rationale: rules that fire rarely but catch catastrophic bugs must never be downgraded.
+      Source: Darwin Godel Machine (arxiv 2505.22954) — documents reward hacking risk.
+
+    ADJUSTABLE RULES (auto-adjusted with guardrails):
+      Categories: Style, Custom.
+      High false positive rate (>80% over 10+ executions) -> flag for REFINEMENT.
+      REFINEMENT means: make the rule more precise, NOT remove or downgrade it.
+      "Noisy rule" and "wrong rule" are different diagnoses with different fixes.
+
+  22.4 Configuration Versioning:
+    All rule weight changes stored in .elai_cc/projects/{id}/rule_history.db.
+    Schema: rule_id, old_weight, new_weight, reason, timestamp, human_approved(bool).
+    Rollback: any change can be reverted by restoring previous weight from history.
+
+  22.5 Testable Invariants:
+    - Template score changes only from actual execution outcomes, never from LLM judgment
+    - Rule weight changes for Security/Safety/Architecture require human_approved=true
+    - Minimum 3 (templates) or 10 (rules) executions before any automatic adjustment
+    - All configuration changes are versioned in rule_history.db
+    - Human can override any automatic weight/rank change
+
+
+PART 23: RESEARCH AGENT
+
+  Purpose: structured SOTA discovery for novel task types. Equivalent to "Gemini Deep Research"
+  but deterministic — output is structured data, not prose. Fires during L1 Pipeline Designer
+  BEFORE plan assembly. Makes the system domain-agnostic for novel task types.
+
+  23.1 Agent Configuration:
+    Role: researcher
+    Model: cloud API preferred (broad knowledge + web access) or Gemma4 local with web search tool
+    GRC budget: high (10/1200) — deep exploration needed
+    Trigger: L1 encounters a capability requirement with no template match
+    Permissions: NETWORK (web search), FILESYSTEM (read-only)
+
+  23.2 Process:
+    1. DECOMPOSE task into capability requirements
+       "Build a SaaS for X" -> [auth, database, API, frontend, deployment, monitoring]
+       "Create animation sprites" -> [asset_pipeline, sprite_format, animation_tool, export]
+
+    2. Per capability, STRUCTURED SEARCH:
+       a. Package registries (crates.io, npm, pypi) for existing solutions
+       b. Web search for SOTA approaches (arxiv, official docs, benchmark comparisons)
+       c. Template library for prior successful implementations
+       d. Model capability registry for required model types
+
+    3. RANK alternatives by evidence quality:
+       BENCHMARK (published numbers, reproducible)          -> confidence: VERIFIED
+       OFFICIAL_DOCS (vendor-maintained, version-specific)  -> confidence: HIGH
+       BLOG_POST (community-tested, may be outdated)        -> confidence: MEDIUM
+       TRAINING (from model's training data, not verified)  -> confidence: UNCERTAIN
+
+    4. Output: RESEARCH REPORT (structured, not prose)
+       Per capability: {
+           capability: String,
+           alternatives: [{
+               name: String,
+               evidence_level: BENCHMARK | OFFICIAL_DOCS | BLOG_POST | TRAINING,
+               source_url: String,
+               pros: Vec<String>,
+               cons: Vec<String>,
+               integration_complexity: LOW | MEDIUM | HIGH,
+           }],
+           recommendation: String,
+           confidence: VERIFIED | HIGH | MEDIUM | UNCERTAIN,
+       }
+
+  23.3 Evidence Gate:
+    Research Report must have >= 1 BENCHMARK or OFFICIAL_DOCS grounded alternative per capability.
+    If all alternatives for a capability are TRAINING-level:
+      -> capability flagged as HIGH_RISK
+      -> requires human input in BOTH modes (autonomous and interactive)
+    This prevents the system from planning with unverified approaches.
+
+  23.4 Integration with L1:
+    Research Report feeds L1 Pipeline Designer as grounding input.
+    L1 can ONLY reference alternatives from the Research Report.
+    L1 cannot introduce new approaches not in the report.
+    This closes the loop: verified research -> grounded planning -> feasibility testing.
+
+  23.5 Testable Invariants:
+    - Every capability in the Research Report has >= 1 alternative
+    - Alternatives with evidence_level=TRAINING are flagged as UNCERTAIN
+    - HIGH_RISK capabilities (all TRAINING) require human input
+    - L1 cannot reference approaches not in the Research Report
+    - Research Report is stored as evidence artifact (structured msgpack)
+
+
+PART 24: PROJECT ISOLATION NAMESPACE
+
+  Purpose: prevent cross-contamination between projects. Physical separation of all state.
+  Each project gets its own SSB, knowledge engine, rules, and checkpoints.
+
+  24.1 Project Identity:
+    project_id: UUID v4 (generated at project creation)
+    Stored in: .elai_cc/projects/{project_id}/project.toml
+    Contains: name, created_at, status (active|paused|completed), resource_requirements
+
+  24.2 Session Identity (corrected — no PID reuse):
+    session_id: {project_id}:{pid}:{timestamp_ms}
+    PID reuse on Windows is a known issue (PIDs recycle after ~65536 processes).
+    Adding timestamp_ms eliminates collision probability.
+
+  24.3 Directory Structure:
+    .elai_cc/
+      projects/
+        {project_id}/
+          project.toml
+          ssb.db
+          knowledge.db
+          index/              (tantivy)
+          rules/
+          templates/
+          sessions/
+            {session_id}/
+              checkpoint/
+              agents/
+          pipelines/
+            {pipeline_id}/
+
+      global/
+        model_registry.toml   (shared across projects)
+        rule_templates/       (global templates, copied into project on use)
+        pipeline_templates/   (global templates)
+        metrics/              (cross-project self-improvement metrics)
+
+  24.4 Resource Scheduling:
+    Only one project active on GPU at a time.
+    Queue is FIFO with priority override.
+
+    ProjectQueue {
+        active: Option<ProjectId>,
+        waiting: VecDeque<ProjectId>,
+        cold: HashMap<ProjectId, ProjectState>,
+    }
+
+    Project switch protocol:
+      1. Checkpoint active project (all agent state saved)
+      2. Unload models from GPU
+      3. Load new project state from disk
+      4. Load new project's required models
+      5. Resume new project from checkpoint
+    Switch cost: ~30-60 seconds (model load). Acceptable for project-level granularity.
+    Cold projects: on-disk only, no VRAM or RAM residency. Can be resumed at any time.
+
+  24.5 Testable Invariants:
+    - No two projects share an SSB database (physical file isolation)
+    - No two projects share a knowledge engine database
+    - session_id contains project_id (cross-project session collision impossible)
+    - Only one project holds GPU resources at a time
+    - Project switch always checkpoints before unloading
+
+
+PART 25: FEASIBILITY_PROBE FSM STATE
+
+  Purpose: empirically test that novel plan steps actually work before committing to
+  full implementation. DAIRA Phase 1 pattern: generate edge case scripts BEFORE diagnosis.
+  Catches "plan looks good but approach doesn't work" failure mode.
+
+  25.1 FSM Position:
+    PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST -> EXECUTING -> ...
+
+  25.2 What Gets Probed:
+    Only NOVEL steps — steps that introduce something not in the DKG or template library.
+    Novel detection (automated):
+      - References a library not in Cargo.toml/package.json? -> NOVEL
+      - References an API not in knowledge engine? -> NOVEL
+      - References a tool not on PATH? -> NOVEL
+      - References an approach not in any prior template? -> NOVEL
+    Non-novel steps ("create file", "add import", "write function") are NOT probed.
+
+  25.3 Probe Process:
+    Per novel step:
+      1. Executor generates minimal stub implementation (< 50 lines)
+      2. Executor generates single test assertion that proves the approach works
+      3. Auditor reviews stub: "Is this actually testing feasibility, or is it trivial?"
+      4. Execute stub + assertion
+      5. Record result in SSB as action_type='test_outcome'
+
+    Example:
+      Plan step: "Use rusqlite for SSB storage"
+      Stub: create in-memory DB, create table, insert row, query row, assert value matches
+      Result: PASS -> rusqlite works as expected, proceed
+
+      Plan step: "Use vllm-hook for DoLa on Gemma4"
+      Stub: import vllm, load model, register activation hook, run inference
+      Result: FAIL (vllm-hook doesn't support Gemma4 yet) -> reject step, find alternative
+
+  25.4 Evidence Gate:
+    FEASIBILITY_PROBE -> TESTING_FIRST:
+      Evidence: stub_results.msgpack (stub code + pass/fail + error per novel step)
+      Gate: all stubs pass OR alternative approaches found and re-probed for failing stubs
+      Zero unresolved feasibility failures remaining
+
+  25.5 Loop Back:
+    If a stub fails:
+      1. Research Agent searches for alternative approach
+      2. L1 revises plan step with alternative
+      3. New stub generated and probed
+      4. Max 3 alternatives per step. After 3 failures: ESCALATE to human.
+
+  25.6 Tools Available in FEASIBILITY_PROBE State:
+    ALLOWED: file write (stub only, < 50 lines), bash (execute stub), web search
+    BLOCKED: full file edit, git commit, production file modification
+    Stubs are written to .elai_cc/projects/{id}/probes/ (isolated, not in project source)
+
+  25.7 Testable Invariants:
+    - Only novel steps are probed (non-novel steps skip)
+    - Stubs are < 50 lines (enforced by rules engine)
+    - Stubs are written to probes/ directory, not project source
+    - TESTING_FIRST is blocked until all novel steps have passing probes
+    - Max 3 alternative attempts per step before escalation
+
+
+PART 26: PLAN ELABORATION PIPELINE (4-STAGE)
+
+  Purpose: make plan building robust for ANY task type. The plan elaboration is not a single
+  step — it is a 4-stage pipeline where each stage adds a different kind of validation.
+
+  26.1 Stage 1 — RESEARCH (Research Agent + GRC):
+    Input: human task description
+    Process: decompose into capabilities, SOTA search per capability, rank alternatives
+    Output: Research Report (structured, grounded)
+    Validation: evidence quality (>= 1 BENCHMARK or OFFICIAL_DOCS per capability)
+    GRC role: enforces grounding on every claim. No training-only claims pass.
+    See PART 23 for full Research Agent specification.
+
+  26.2 Stage 2 — PLAN ASSEMBLY (L1 Pipeline Designer + GRC):
+    Input: Research Report (grounded facts only)
+    Process: assemble phases, steps, dependencies, model assignments, rule sets
+    Per step: GRC runs observe -> hypothesize -> verify
+    Grounding sweep: all claims verified against Research Report
+    Adversarial review: auditor checks plan for gaps, contradictions, missing steps
+    Output: PipelineSpec (TOML) with every step grounded
+    Validation: zero UNGROUNDED claims remaining
+
+  26.3 Stage 3 — STRUCTURAL VALIDATION (L2 Pipeline Builder — NO LLM):
+    Input: PipelineSpec from Stage 2
+    Process (pure Rust, deterministic):
+      - All referenced tools exist on PATH
+      - All models referenced are in model registry
+      - Dependency graph has no cycles
+      - Resource estimates fit hardware (VRAM, disk)
+      - Rule sets referenced exist or can be created
+      - Test harness skeleton generated
+      - FSM state definitions generated
+    Output: ExecutablePipeline or REJECT with specific failure reason
+    Validation: same input always produces same output (deterministic by construction)
+
+  26.4 Stage 4 — FEASIBILITY PROBE (Executor Agent — empirical):
+    Input: ExecutablePipeline from Stage 3
+    Process: per novel step, generate stub + assertion, execute
+    PASS: step is feasibility-grounded
+    FAIL: reject step, loop back to Stage 2 with alternative
+    Output: validated ExecutablePipeline ready for execution
+    See PART 25 for full FEASIBILITY_PROBE specification.
+
+  26.5 Key Design Decisions:
+
+    Q: "Does the plan-building phase need to know how the workflow works?"
+    A: NO — and this is by design. L1 produces a PipelineSpec (WHAT to do). L2 translates it
+       to an ExecutablePipeline (HOW to do it using the workflow's FSM/agents/rules). The LLM
+       in L1 never sees the internal workflow machinery. The LLM proposes WHAT, deterministic
+       code decides HOW. This is safe: the LLM cannot break the workflow by proposing bad HOW.
+
+    Q: "What is GRC's role in planning?"
+    A: GRC is the reasoning ENGINE, not a pipeline stage. It is the protocol that agents use
+       to reason at every stage. Think of GRC as the language, not the speaker. Every hypothesis
+       must cite a source. Every claim must be grounded. GRC enforces this structurally — the
+       agent cannot skip grounding without the GRC engine rejecting the step.
+
+    Q: "Can this handle ANY task type?"
+    A: Stage 1 (Research Agent) makes it domain-agnostic. Without it, the system can only plan
+       tasks it has templates for. With it, novel task types get proper SOTA research before
+       planning begins. The Research Agent is what makes this a universal automation engine
+       rather than a template-driven code generator.
+
+  26.6 Testable Invariants:
+    - Every plan that reaches TESTING_FIRST has passed all 4 stages
+    - Stage 3 is fully deterministic (no LLM, same input = same output)
+    - Stage 4 catches "plan looks good but doesn't work" before implementation begins
+    - Research Report is required input for Stage 2 (L1 cannot plan without it)
+    - Loop-back from Stage 4 to Stage 2 is bounded (max 3 alternatives per step)
+
+
+PART 12 ADDENDUM: RISK REGISTER (new risks from adversarial audit, 2026-04-05)
+
+  R10 (MEDIUM — NEW): SSB write throughput ceiling
+    Single-writer pattern limits to ~50K inserts/sec.
+    Risk: if agent write rate exceeds this (unlikely but possible with heavy tracing).
+    Mitigation: measured ceiling is 50x expected rate. Monitor write queue depth.
+    Fallback: batch writes (collect N entries, insert in single transaction).
+
+  R11 (LOW — NEW): Feasibility probe false negatives
+    A stub may pass but the full implementation may fail (stub too simple).
+    Mitigation: auditor reviews stub quality. Stub must test the NOVEL aspect, not boilerplate.
+    Fallback: if implementation fails despite passing probe, add to gotchas.md and refine
+    probe templates for that approach type.
+
+  R12 (MEDIUM — NEW): Research Agent quality for novel domains
+    First-of-kind task types have no template AND sparse web evidence.
+    Mitigation: Research Report flags capabilities with all-TRAINING evidence as HIGH_RISK.
+    Fallback: human input required for HIGH_RISK capabilities in both modes.
+
+  R13 (LOW — NEW): Project switch latency
+    Model unload + load takes ~30-60 seconds. Frequent project switches waste time.
+    Mitigation: FIFO queue with priority override. Batch work per project.
+    Fallback: dedicated GPU per project if hardware expands beyond 2x 3090.
+
+
+PART 27: SELF-MODIFICATION SYSTEM (GODEL PATTERN)
+
+  Purpose: elai_cc improves its own workflow configuration over time. Not theoretical —
+  based on two verified systems: FunSearch (DeepMind, Nature 2024) proved evolutionary
+  self-improvement works when evaluation is deterministic. Darwin Godel Machine
+  (arxiv 2505.22954, Sakana AI 2025) proved where it breaks: the agent learned to
+  falsify test results when it was both proposer AND judge.
+
+  Core safety property: the modifying agent NEVER evaluates its own modifications.
+  Deterministic benchmarks judge. The agent proposes, code decides.
+
+  27.1 Three-Layer Architecture:
+
+    LAYER 1 — DATA (automatic, no approval):
+      What changes: template ranking scores, rule trigger counts, pipeline outcome metrics.
+      Mechanism: pure arithmetic from PipelineOutcome (PART 22.1). No LLM involved.
+      Already designed in PART 22. No change needed.
+      Safety: security/safety/architecture rules NEVER auto-adjusted (PART 22.3).
+
+    LAYER 2 — CONFIG (full pipeline, auditor approval):
+      What changes: new rules, agent GRC budgets, context allocation ratios, model
+      assignments per role, new pipeline templates, tool configurations.
+      These are the high-value modifications — the system tunes HOW it works.
+
+      Detection heuristics (triggers self-mod candidate):
+        - phases_passed_first_try / phases_total < 0.5 (too many retries)
+        - tokens_consumed > 2x template baseline (inefficient)
+        - audit_findings_block > threshold per phase (quality issues)
+        - 3+ anti-spiral triggers in one pipeline (workflow friction)
+        - Same rule triggers false positive > 80% over 10 executions (noisy rule)
+      All thresholds configurable in elai_cc.toml.
+
+      Process (a self-modification IS a pipeline task):
+        1. DETECT: metrics trigger candidate after pipeline completion
+        2. RESEARCH: Research Agent investigates root cause
+           Output: {root_cause, proposed_change, expected_improvement, evidence}
+        3. PLAN: proposed change becomes a PipelineSpec targeting .elai_cc/ config
+           Goes through all 4 elaboration stages (PART 26):
+           Stage 1 (research) -> Stage 2 (plan) -> Stage 3 (structural validation)
+           -> Stage 4 (feasibility probe)
+        4. SANDBOX: copy current workflow config to .elai_cc/sandbox/{mod_id}/
+           Apply proposed change to sandbox copy only
+        5. BENCHMARK: re-run the SAME task that triggered detection using sandbox config
+           Collect identical metrics as original run
+           Comparison is deterministic: subtract two numbers
+        6. GATE: new config scores better on deterministic metrics
+           AND auditor finds no safety regressions
+           AND no evidence gate definitions were modified
+           -> APPLY (copy sandbox config to active config, archive old)
+           -> DISCARD (log attempt, keep current config)
+
+      Anti-reward-hacking locks (enforced by PreToolUse hook during self-mod pipeline):
+        READ-LOCKED during self-modification:
+          - .elai_cc/core/metrics/ (metrics collection code)
+          - .elai_cc/core/gates/ (evidence gate definitions)
+          - auditor agent config (when auditor judges the modification)
+          - benchmark harness code
+          - the test suite used for benchmarking
+        The modifying agent cannot write to these files. Period.
+        Same mechanism as cross-session file locks (PART multi-session).
+
+    LAYER 3 — STRUCTURE (human approval required, always):
+      What changes: FSM state additions/removals, new agent roles, GRC protocol changes,
+      evidence gate modifications, core pipeline control flow.
+      Process: same as Layer 2 (detect -> research -> plan -> probe -> benchmark)
+      Gate: human review in BOTH autonomous and interactive modes.
+      Rationale: structural changes to the evaluation system itself are how DGM's
+      reward hacking started. The evaluation infrastructure MUST be outside modification scope.
+
+  27.2 Resource Scheduling:
+    Self-modification runs at LOWEST priority.
+    Only during idle (no active user task). User task preempts at any checkpoint.
+    Cost ceiling: max 1 self-mod pipeline per N completed pipelines (configurable, default N=5).
+    Benchmark cost: uses smallest representative task, not full original.
+    Storage: .elai_cc/global/self_mod_history.db
+      Schema: mod_id, layer, proposed_change, old_config_hash, new_config_hash,
+              benchmark_before, benchmark_after, accepted(bool), timestamp, rollback_path.
+
+  27.3 Rollback Protocol:
+    Every Layer 2 modification:
+      1. Versioned in self_mod_history.db BEFORE applying
+      2. Old config archived as .elai_cc/global/config_archive/{timestamp}/
+      3. Monitored for 3 pipeline runs after application
+      4. Auto-rolled-back if metrics degrade >10% from pre-modification baseline
+      5. Rollback is atomic: restore archived config, log rollback reason
+
+  27.4 FunSearch Pattern Mapping:
+    FunSearch: LLM proposes program variants -> external evaluator scores -> best survive
+    elai_cc:  Research Agent proposes config change -> benchmark scores -> better config survives
+    Key alignment: evaluation is ALWAYS external, deterministic, and not modifiable by the proposer.
+
+  27.5 Testable Invariants:
+    - Self-modifying agent cannot write to metrics/gates/auditor-config during self-mod pipeline
+    - Layer 2 modifications benchmarked against deterministic metrics (no LLM judgment)
+    - Auto-rollback triggers if post-mod metrics degrade >10% over 3 pipelines
+    - Max 1 self-mod per N completed pipelines (resource ceiling)
+    - Layer 3 modifications always require human_approved=true
+    - Every self-mod attempt logged with full before/after metrics
+    - Sandbox config is physically separate from active config (no cross-contamination)
+    - Old config is archived before any modification (rollback always possible)
+
+
+PART 28: MEDIA VALIDATOR AGENT ROLE
+
+  Purpose: validate non-code outputs (images, 3D models, audio, UI screenshots).
+  The auditor validates code. The media validator validates everything else.
+  Only loaded when the Pipeline Designer (L1) identifies a media-producing step.
+
+  28.1 Agent Configuration:
+    Role: media_validator
+    Model (Tier 2 only): LLaVA-7B (~4GB VRAM) or InternVL-2B (~2GB) for visual
+    GRC budget: low (3/600) — mostly deterministic checks
+    Trigger: L1 PipelineSpec contains a step with output_type in [image, model_3d, audio, video]
+    Permissions: FILESYSTEM (read-only on output files)
+
+  28.2 Two-Tier Validation:
+
+    TIER 1 — DETERMINISTIC (no model, <100ms):
+      Always runs first. Catches format/structural issues before consuming GPU.
+
+      Image validation:
+        - Format check: expected format (PNG/JPEG/WebP) matches actual
+        - Resolution check: within expected bounds (min/max width/height)
+        - File size check: within expected range
+        - Color space check: RGB/RGBA as specified
+        - SSIM against reference (if reference provided): score > threshold
+        - LPIPS perceptual distance (if reference): score < threshold
+        - Deterministic: same input always produces same pass/fail
+
+      3D model validation:
+        - Vertex/face count within bounds
+        - Manifold check (watertight mesh)
+        - UV overlap detection
+        - Normal consistency
+        - File format validity (glTF/OBJ/FBX)
+        - Bounding box dimensions within spec
+        Tools: Blender CLI headless mode (bpy.ops verification scripts)
+
+      Audio validation:
+        - Sample rate/bit depth match spec
+        - Duration within bounds
+        - Silence detection (% silence vs content)
+        - Clipping detection (samples at max amplitude)
+        - Format validity (WAV/MP3/OGG)
+
+      UI screenshot validation:
+        - Resolution matches target device spec
+        - SSIM against design mockup (if provided)
+        - Color histogram comparison (palette compliance)
+        - Text detection via OCR (tesseract) for content verification
+
+    TIER 2 — VLM QUALITATIVE (model required, ~2-5 seconds):
+      Runs ONLY when Tier 1 passes but qualitative check is specified in QualitySpec.
+      Not always needed — many pipelines only need Tier 1.
+
+      Process:
+        1. Load VLM (LLaVA-7B or smaller) on GPU1
+        2. Send image + structured prompt:
+           "Given this specification: [spec]. Does this image match? Report:
+            matches_spec (bool), issues (list), confidence (0-1)."
+        3. Parse structured output (constrained decoding via grammar)
+        4. VLM output is ADVISORY — Tier 1 deterministic checks have veto power
+        5. If VLM says "bad" but Tier 1 says "pass" -> flag for human review
+        6. If Tier 1 says "fail" -> fail regardless of VLM opinion
+
+      Audio qualitative (CLAP model, ~1GB):
+        - Audio-text similarity: "does this sound like [description]?"
+        - Cosine similarity score against text description
+        - Threshold configurable per pipeline
+
+  28.3 GPU Scheduling:
+    Tier 1: no GPU needed. Runs on CPU. Zero scheduling impact.
+    Tier 2 VLM: loads on GPU1 (same slot as embedding model).
+      Embedding model is ~1.5GB, VLM is ~4GB. Cannot coexist on one 3090.
+      Swap: unload embedding -> load VLM -> validate -> unload VLM -> reload embedding.
+      Swap cost: ~10-15 seconds. Acceptable at phase boundaries.
+    Alternative: if validation is frequent, keep VLM loaded and batch embedding updates.
+
+  28.4 External Tool Integration:
+    Media validator wraps external tools via Tool Auto-Discovery (PART 15.7):
+      - ImageMagick: format conversion, metadata extraction, comparison
+      - Blender CLI: 3D mesh validation, rendering for visual comparison
+      - FFmpeg: audio/video format validation, stream analysis
+      - Tesseract: OCR for UI text verification
+      - ComfyUI API: image generation pipeline control (PART 28.6)
+    Each tool registered with validate_output() contract (PART 15.7).
+
+  28.5 Integration with Pipeline:
+    EXECUTING phase produces media output -> SSB entry with action_type='file_write'
+    Tiered Static Analysis Hook (PART 19) detects media file extension
+    Routes to Media Validator instead of T2 AST analysis (AST is for code only)
+    Media Validator result written to SSB as action_type='finding'
+    BLOCK finding -> same handling as code BLOCK (fix task created)
+
+  28.6 ComfyUI Integration (external image generation pipeline):
+    ComfyUI exposes REST API: POST /prompt (submit workflow), GET /history (results)
+    elai_cc drives it as an external tool:
+      1. Executor writes ComfyUI workflow JSON (the "code" for image generation)
+      2. Tool wrapper sends workflow to ComfyUI API
+      3. Polls /history until generation complete (timeout: 600s for GPU rendering)
+      4. Downloads generated images
+      5. Media Validator Tier 1 runs deterministic checks
+      6. Media Validator Tier 2 runs VLM qualitative check if specified
+    Same pattern applies to any external generation tool (Blender render, FFmpeg encode).
+
+  28.7 Testable Invariants:
+    - Tier 1 always runs before Tier 2 (deterministic before qualitative)
+    - Tier 1 fail overrides Tier 2 pass (deterministic has veto)
+    - VLM output is structured (constrained decoding, not free-form prose)
+    - Media validator only loaded when PipelineSpec contains media-producing steps
+    - External tools checked for availability before pipeline enters EXECUTING
+    - SSIM/LPIPS scores are deterministic (same input = same score)
+
+
+PART 29: QUALITY SPECIFICATION (QualitySpec)
+
+  Purpose: define "quality" in measurable, deterministic terms per pipeline.
+  Without QualitySpec, "high quality" is undefined and unverifiable.
+  QualitySpec is generated by L1 Pipeline Designer alongside PipelineSpec.
+  L2 Pipeline Builder validates that every metric has a corresponding automated check.
+
+  29.1 Schema:
+
+    QualitySpec {
+        pipeline_id: String,
+        metrics: Vec<QualityMetric>,
+        media_specs: Vec<MediaSpec>,       // only if pipeline produces media
+        performance_specs: Vec<PerfSpec>,   // only if pipeline has perf requirements
+    }
+
+    QualityMetric {
+        name: String,           // e.g. "branch_coverage", "api_response_time"
+        target: f64,            // e.g. 0.85, 100.0
+        unit: String,           // e.g. "ratio", "ms", "bytes", "score"
+        method: String,         // e.g. "branch_coverage_tool", "benchmark", "ssim"
+        phase: String,          // which phase validates this metric
+        hard_fail: bool,        // true = pipeline fails if unmet, false = WARN only
+    }
+
+    MediaSpec {
+        output_name: String,    // e.g. "hero_image", "sprite_sheet"
+        format: String,         // e.g. "png", "gltf", "wav"
+        resolution: Option<(u32, u32)>,
+        file_size_max: Option<u64>,
+        reference_path: Option<String>,   // for SSIM comparison
+        ssim_threshold: Option<f64>,      // e.g. 0.90
+        vlm_check: bool,                  // whether Tier 2 VLM validation needed
+        vlm_prompt: Option<String>,       // what to ask the VLM
+    }
+
+    PerfSpec {
+        name: String,           // e.g. "api_latency_p99"
+        target: f64,
+        unit: String,
+        method: String,         // e.g. "load_test", "benchmark"
+        sample_count: u32,      // minimum samples for statistical validity
+    }
+
+  29.2 Generation:
+    L1 Pipeline Designer generates QualitySpec during Stage 2 (plan assembly).
+    Sources for quality targets:
+      - Research Report (industry benchmarks, SOTA numbers)
+      - Template library (prior successful pipeline metrics)
+      - Domain rules (e.g., trading rules mandate specific coverage thresholds)
+      - User overrides (human can set explicit targets)
+    Every target MUST have a grounding source (GRC enforced).
+    "High quality" with no grounding -> GRC rejects.
+
+  29.3 Validation by L2:
+    L2 Pipeline Builder checks every QualityMetric:
+      - method references a tool that exists (tool registry lookup)
+      - phase references a valid FSM state
+      - if media_spec: reference_path exists (if specified), format supported
+      - if perf_spec: benchmark tool available, sample_count > 0
+    If any metric has no automated check method -> L2 REJECTS pipeline.
+    This guarantees: every quality claim is mechanically verifiable.
+
+  29.4 Enforcement:
+    During AUDITING phase, auditor runs all QualityMetric checks.
+    Results compared to targets. hard_fail=true metrics that miss -> BLOCK.
+    hard_fail=false metrics that miss -> WARN (logged, does not block).
+    All results stored in SSB as action_type='test_outcome'.
+
+  29.5 Self-Improvement Integration:
+    QualitySpec results feed into Self-Improvement Loop (PART 27):
+      - Consistently missed targets -> detection heuristic triggers
+      - Consistently exceeded targets -> template ranking improves
+      - Target values themselves can be adjusted by Layer 2 self-mod
+        (e.g., "85% coverage target is too low for this domain, data shows 92% is achievable")
+
+  29.6 Testable Invariants:
+    - Every QualityMetric has a method that maps to an existing tool
+    - L2 rejects pipelines with unmeasurable quality claims
+    - hard_fail metrics block phase transition when unmet
+    - QualitySpec is generated WITH PipelineSpec (not after)
+    - All quality targets have grounding sources (GRC enforced)
+
+
+PART 5.3 ADDENDUM: API_REGISTRY_CHECK (new GRC verification method)
+
+  Added to existing verification methods in PART 5.3:
+
+    API_REGISTRY_CHECK: does this API exist, is it free/accessible, does it respond?
+      Resolution: query known public API registries (public-apis GitHub, RapidAPI free tier)
+      Probe: send test request, verify response schema matches expectation
+      Used by: Research Agent during Stage 1, Feasibility Probe during Stage 4
+      Scope: non-financial APIs only in AUTONOMOUS mode (paid APIs require human approval)
+
+  Registry sources (deterministic, queryable):
+    - public-apis (github.com/public-apis/public-apis): ~1400 free APIs, categorized
+    - RapidAPI free tier: programmatic search via API
+    - Package manager APIs: crates.io, npm, pypi (always free, always available)
+
+  For auth-required APIs:
+    AUTONOMOUS mode: only keyless/free APIs auto-selected
+    INTERACTIVE mode: system detects auth requirement, presents to user:
+      "This API requires registration at [URL]. Proceed? [Y/N]"
+    Auth credentials stored in .elai_cc/projects/{id}/.env (gitignored)
+
+  Testable Invariants:
+    - API_REGISTRY_CHECK sends actual HTTP request (not training-based assumption)
+    - Paid/auth APIs escalate to human in AUTONOMOUS mode
+    - Credentials never stored in SSB or PipelineSpec (only in .env)
+
+
+PART 5.9: INLINE FEASIBILITY CHECK (new GRC mechanism)
+
+  Purpose: catch ungrounded claims that emerge DURING execution, not just during planning.
+  The grounding sweep (PART 5.3) catches claims at plan time. But during EXECUTING,
+  the executor may introduce new approaches not in the plan. GRC must catch these.
+
+  Trigger: GRC verify step detects a NEW claim not present in the approved plan.
+  Detection: claim references a library, API, tool, or algorithm not in:
+    - PipelineSpec
+    - Research Report
+    - DKG (existing codebase knowledge)
+
+  Process (inline, max 2 GRC calls):
+    1. GRC flags: "New ungrounded claim: [X]"
+    2. Quick verification: web search OR grep codebase OR API_REGISTRY_CHECK
+    3. PASS: claim is grounded, proceed. Logged to SSB.
+    4. FAIL: claim is ungrounded. Executor MUST use plan's original approach.
+       Cannot introduce alternative without going through Research Agent.
+
+  Budget: 2 calls max. This is a quick check, not a full research loop.
+  If the executor needs a fundamentally different approach, the correct path is:
+    EXECUTING -> BLOCK -> back to PLANNING with new requirements.
+
+  Testable Invariants:
+    - Every new claim during EXECUTING triggers inline feasibility check
+    - Max 2 GRC calls per inline check (bounded, not open-ended)
+    - Failed inline check forces executor to use plan's original approach
+    - All inline checks logged to SSB as action_type='claim'
+
+
+PART 25.8: SYSTEM_PROBE (addition to FEASIBILITY_PROBE)
+
+  Purpose: check hardware/environment capabilities BEFORE feasibility stubs run.
+  A stub that requires 16GB RAM on a 8GB machine will fail for wrong reasons.
+
+  25.8.1 Probe Targets (via sysinfo crate — already in deps for VRAM detection):
+    - Available disk space (for data-heavy pipelines)
+    - Available RAM (for in-memory processing steps)
+    - GPU VRAM (already tracked by ModelPool)
+    - Network connectivity (can reach required external services?)
+    - Available ports (for server pipelines)
+    - Installed runtimes (Python version, Node version, Rust toolchain)
+    - OS capabilities (Docker available? systemd? WSL?)
+
+  25.8.2 Process:
+    Runs ONCE at start of FEASIBILITY_PROBE, before any stubs.
+    Output: SystemCapabilities struct (all deterministic, no LLM).
+    PipelineSpec resource estimates (from L2) compared against SystemCapabilities.
+    PASS: all requirements met -> proceed to stubs.
+    FAIL: specific requirement unmet -> report which, suggest alternatives.
+      Example: "Pipeline requires 32GB disk, only 12GB available. Options:
+        (a) reduce dataset size, (b) use streaming instead of batch, (c) clean disk."
+    INTERACTIVE mode: present options to user.
+    AUTONOMOUS mode: try alternatives in order, escalate if all fail.
+
+  25.8.3 Testable Invariants:
+    - SYSTEM_PROBE runs before any feasibility stubs
+    - All checks are deterministic (sysinfo crate, not LLM estimation)
+    - Failed system check prevents stub execution (no wasted compute)
+    - SystemCapabilities struct stored in SSB for reference by later phases
+
+
+PART 9.6: EMPIRE NETWORKING REASSESSMENT (2026-04-05)
+
+  Verified from source code (not documentation):
+
+  What Empire HAS for networking:
+    - SSH+rsync atomic deploy with symlink flip (src/core/deploy.py)
+    - OpenResty reverse proxy control (proxyStaticAgent — requires external install)
+    - FastAPI HTTP server per brain (engineMKI/http_server.py, single port)
+    - Dual-NIC WAN/LAN detection (dmzAgent/wan.py)
+    - Docker container lifecycle (dockerAgent/)
+    - Systemd service installation
+
+  What Empire DOES NOT HAVE:
+    - DNS management (no Cloudflare, Route53, or any DNS API)
+    - SSL/TLS certificates (no Let's Encrypt, no ACME, no certbot integration)
+    - Cloud provider APIs (no AWS, GCP, Azure, DigitalOcean)
+    - CDN integration (no Cloudflare, CloudFront)
+    - Load balancing
+    - Public domain routing
+    - Port forwarding / UPnP
+
+  Impact on elai_cc:
+    "Deploy to production" is a Tool Auto-Discovery problem (PART 15.7).
+    L1 detects hosting requirement -> Research Agent finds options:
+      - Cloudflare Pages (free, API-driven) for static sites
+      - Caddy (auto-HTTPS, self-hosted) for dynamic sites
+      - Empire's deploy.py + certbot + DNS API for self-hosted
+      - Vercel/Netlify CLI for managed hosting
+    Each option goes through feasibility probe.
+    Empire's deploy.py pattern (rsync+symlink) is ONE tool in the deploy toolbox.
+
+  D2 integration: elai_cc's Pipeline Factory can generate deploy pipelines
+  that use Empire's existing SSH deploy for the "put files on server" step,
+  then add DNS/SSL steps using discovered tools. Empire gains capabilities
+  it never had through elai_cc's tool composition.
+
+
+PART 9.7: EMPIRE ECS/WORKFORCE EVALUATION (2026-04-05)
+
+  Verified from source code:
+
+  workforce/assembly/ is entirely stubs:
+    - actions.py: build, deploy, configure are all lambda: None
+    - spawn.py: creates a plain dict, no component store, no query system
+    - types/__init__.py: AssemblyConfig is Protocol with pass (no fields)
+    - config/02-topology.json: routes is empty {}
+
+  This is NOT a functional ECS. No entity storage. No component queries.
+  No archetype system. No system-runs-over-components pattern.
+
+  brain.json IS a declarative spec, but validation is file-existence only
+  (brain_resolve.py checks "does brain.json exist?" not "is it valid?").
+  No schema validation. No field checking. No "does this neuron exist?" check.
+
+  Comparison to elai_cc PipelineSpec:
+    brain.json: flat config, no validation, no evidence gates
+    PipelineSpec: typed schema, L2 structural validation, evidence gates,
+                  feasibility probes, deterministic enforcement
+
+  Decision: Empire's ECS/workforce code is dead. Nothing to adopt.
+  The declarative-spec-to-runtime pattern is already in elai_cc (and better).
+  brain.json IS PipelineSpec's ancestor conceptually, but PipelineSpec has
+  6 layers of enforcement that brain.json lacks entirely.
+
+
+PART 9.8: EMPIRE SELF-IMPROVEMENT EVALUATION (2026-04-05)
+
+  Verified from source code:
+
+  MetricsStore (shared/.trash/metrics_store.py):
+    - SQLite-based, tracks 4 event counters only
+    - Read-only analytics. No decision logic reads these metrics.
+    - Located in .trash/ directory. Effectively abandoned.
+
+  SeedState (seedAgent/hydrate.py):
+    - 7 linear phases: dormant -> hydrated -> bootstrap -> self_build -> service -> network -> optimize
+    - "optimize" phase has NO implementation. Listed but never reached.
+    - Phases never loop back. No feedback mechanism.
+
+  InternAgent (internAgent/module.py):
+    - Named "learning sandbox"
+    - Returns {"status": "learning"}. Does nothing else.
+
+  Decision: Empire has ZERO self-improvement capability.
+  elai_cc brings self-improvement TO Empire in D2, not the other way around.
+  MetricsStore replaced by SSB. SeedState's "optimize" phase gets real
+  implementation powered by PART 27 self-modification system.
+  InternAgent concept replaced by Research Agent (PART 23).
+
+
+PART 12 ADDENDUM 2: RISK REGISTER (new risks from session 5, 2026-04-05)
+
+  R14 (MEDIUM — NEW): Self-modification reward hacking
+    Despite anti-reward-hacking locks, the modifying agent could find indirect
+    ways to game benchmarks (e.g., optimizing for the benchmark task specifically
+    rather than general improvement).
+    Mitigation: benchmark uses 3 different representative tasks, not just the trigger task.
+    Benchmark rotation prevents overfitting to one task type.
+    Fallback: Layer 2 self-mods limited to N=5 per pipeline completion ratio.
+    Source: Darwin Godel Machine (arxiv 2505.22954) documented this failure mode.
+
+  R15 (LOW — NEW): VLM media validation accuracy
+    LLaVA-7B MMMU benchmark is 36.4% — good for "roughly right" not pixel-perfect.
+    Risk: VLM approves low-quality media, or rejects good media.
+    Mitigation: VLM is ADVISORY only. Tier 1 deterministic checks have veto power.
+    VLM disagreement with Tier 1 -> flagged for human review.
+    Fallback: skip VLM entirely, use only deterministic metrics (SSIM, vertex count, etc.).
+
+  R16 (MEDIUM — NEW): Self-modification resource contention
+    Self-mod pipelines consume same GPU as productive work.
+    Risk: system spends more time improving itself than doing user work.
+    Mitigation: lowest priority scheduling, max 1 self-mod per 5 completed pipelines,
+    user task always preempts. Self-mod runs during idle time only.
+    Fallback: disable Layer 2 self-mod entirely (Layer 1 data-level still runs).
+
+
+PART 12 ADDENDUM 3: RISK REGISTER (new risks from session 6, 2026-04-05)
+
+  R17 CLOSED: claw-code-rust-port COMPILES CLEANLY.
+    cargo check completed in 26.24s (faster than CruciTitan's 44.99s).
+    0 errors, 13 cosmetic warnings (unused imports, dead code — expected for library crates).
+    Warnings: plugins(1), runtime(8), api(2), tools(2). All fixable with cargo fix.
+    Provider trait defined but unused by binary (same as CruciTitan — needs extension).
+    Base swap decision CONFIRMED. No fallback to CruciTitan needed.
+
+  R18 (LOW — NEW): claw-code module quality unknown
+    666 tests exist but test quality is unverified. green_contract.rs (4,061 LOC)
+    is the largest single module — may have dead code or incomplete implementations.
+    Mitigation: auditor agent reviews each claw-code module during Phase 0.
+    Modules that fail code review are stripped and reimplemented from elai_cc design.
+
+
+PART 30: EXTERNAL REFERENCE ANALYSIS (NEW — 2026-04-05, session 6)
+
+  Purpose: document findings from analyzing claw-code-rust-port, CruciTitan, and
+  oh-my-claudecode (OMC). Record what was adopted, what was rejected, and why.
+  All decisions grounded in code analysis, not assumptions.
+
+30.1 CruciTitan vs claw-code-rust-port — Full Comparison:
+
+  Both are Rust ports of the Claude Code TypeScript source. Same 9-crate workspace layout.
+  Different teams, different priorities.
+
+  CruciTitan:
+    Source: F:/.ELAI_workflow/docs/.source/CruciTitan-main/CruciTitan-main/rust/
+    68,084 LOC across 59 .rs files. 478 tests.
+    Approach: kept more original CC code untouched. tools/ crate has 6 files (7,157 LOC)
+    with task management, team coordination, cron scheduling, config management.
+    Dependencies: heavier (toml, dirs, uuid, rmp-serde in tools/).
+    Runtime: 14,638 LOC across 20 modules. Standard CC runtime.
+    CONFIRMED: compiles cleanly (cargo check 44.99s, 1 warning).
+    Status: DEMOTED TO REFERENCE. Used for module recovery if claw-code strips too much.
+
+  claw-code-rust-port:
+    Source: F:/.ELAI_workflow/docs/.source/claw-code-rust-port/claw-code-rust-port/rust/
+    59,449 LOC across 69 .rs files. 666 tests.
+    Approach: stripped user-facing tools, invested in production infrastructure.
+    tools/ crate has 2 files (7,361 LOC) — lane_completion only.
+    Dependencies: lighter in tools/ (zero external deps).
+    Runtime: 24,677 LOC across 38 modules. 18 additional modules vs CruciTitan.
+    Additional systems: worker orchestration, policy engine, permission enforcement,
+    contract validation, bash validation, MCP hardening, LSP client, recovery recipes.
+    292 commits on main. 9 merged feature lanes. Mock parity harness with 10 scenarios.
+    UNCONFIRMED: compilation not yet verified. R17 risk.
+    Status: PRIMARY BASE. Module mapping to elai_cc design in PART 2 REVISED.
+
+  Decision rationale:
+    claw-code's 18 additional runtime modules directly map to elai_cc's design.
+    Building worker_boot from scratch = ~1,000 LOC we don't have to write.
+    Building policy_engine from scratch = ~580 LOC we don't have to write.
+    Building green_contract from scratch = ~4,000 LOC we don't have to write.
+    Total head start: ~10,000 LOC of infrastructure that maps to our design.
+    Risk: compilation unknown. Mitigation: cherry-pick into CruciTitan if claw-code fails.
+
+30.2 oh-my-claudecode (OMC) — Analysis:
+
+  Source: F:/.ELAI_workflow/docs/.source/oh-my-claudecode-main/
+  Architecture: Claude Code plugin (JS/TS). NOT a standalone system.
+  6 Python modules, 31 external deps, 0 internal deps.
+  19 specialized agents (haiku/sonnet/opus routing).
+  13 workflow skills (autopilot, ralph, ultrawork, etc.).
+  Gyoshu Bridge: JSON-RPC 2.0 Python execution server with sandboxing.
+  Benchmark suite: SWE-bench evaluation with comparative analysis.
+  Self-improvement: iteration tracking with visualization. Tracking only, no auto-modification.
+
+  What OMC IS: a well-engineered orchestration layer on top of Claude Code (cloud-only).
+  What OMC is NOT: a standalone system, local-model-capable, deterministic, grounded.
+
+  OMC things REJECTED (with reasons):
+    - Agent catalog (19 named agents): our role-based system with per-agent GRC is architecturally
+      superior. OMC agents are prompt-only; ours have FSM sub-states, checkpointing, grounding.
+    - Workflow skills (autopilot, ralph, ultrawork): prompt-driven modes. Our AUTONOMOUS/INTERACTIVE
+      with FSM gates and evidence artifacts is more rigorous.
+    - State management (.omc/ JSON): our SSB (SQLite WAL) with single-writer is more robust.
+    - Model routing (haiku/sonnet/opus): our per-role assignment with VRAM-aware scheduling
+      is hardware-conscious. OMC is cloud-only.
+
+  OMC things ADOPTED (with integration points):
+    See 30.3, 30.4, 30.5, 30.6 below.
+
+30.3 ADOPTED: SWE-bench Benchmark Integration
+
+  Source: OMC benchmark/ directory (run_benchmark.py, evaluate.py, compare_results.py).
+  Evidence: SWE-bench is the industry standard for coding agent evaluation.
+  Used by OpenAI (SWE-agent), Anthropic, Google. Published leaderboards. Reproducible.
+
+  Integration into elai_cc:
+    Self-Modification System (PART 27) benchmarks currently use "same task re-run."
+    This is vulnerable to overfitting to one task type (R14).
+    SWE-bench provides a ROTATION BENCHMARK SET — hundreds of real-world coding tasks.
+
+    Implementation:
+      tools/ crate: ADD swe_bench_runner(instance, mode) -> BenchmarkResult
+        - Wraps SWE-bench Verified dataset (Princeton, ~500 verified instances)
+        - Modes: "baseline" (no elai_cc orchestration) vs "orchestrated" (full pipeline)
+        - Output: structured result (pass/fail, tokens, time, patch)
+      Self-mod benchmark rotation (PART 27.2):
+        - Current: re-run trigger task only
+        - New: run 3 SWE-bench instances from rotation set + trigger task
+        - Rotation prevents overfitting to specific task patterns
+        - Instances selected by diversity (different repos, different bug types)
+
+    Evidence gate for self-modification (PART 27.1 Layer 2, step 5):
+      - Old: "new config scores better on deterministic metrics" (single task)
+      - New: "new config scores better on trigger task AND does not regress on SWE-bench rotation"
+      - Regression on SWE-bench = DISCARD modification even if trigger task improved
+
+    Scheduling: SWE-bench runs are expensive (~30 min per instance).
+      Self-mod already runs at LOWEST priority during idle time.
+      SWE-bench rotation adds ~90 min (3 instances) to self-mod pipeline.
+      Cost ceiling still applies: max 1 self-mod per 5 completed pipelines.
+
+  Testable Invariants:
+    - Self-mod benchmark includes >= 3 SWE-bench instances from rotation set
+    - Rotation set diversified by repo and bug type (no single-repo bias)
+    - SWE-bench regression blocks self-mod acceptance regardless of trigger task result
+    - Benchmark results stored in self_mod_history.db with full per-instance breakdown
+
+30.4 ADOPTED: Failure Taxonomy for Auditor
+
+  Source: OMC analyze_failures.py — categorizes test failures by type, identifies n-gram
+  patterns, groups by repo, generates severity-ranked recommendations.
+  Evidence: pattern-based failure triage is standard in CI/CD analytics (BuildKite, CircleCI,
+  Datadog CI Visibility). Proven to reduce mean-time-to-resolution.
+
+  Integration into elai_cc:
+    Auditor agent (PART 5.8) currently receives "test failed" and reasons from scratch.
+    Adding structured failure classification before reasoning reduces GRC budget waste.
+
+    Failure taxonomy (deterministic classification, no LLM):
+      SYNTAX_ERROR:     parse failure (tree-sitter detects)
+      TYPE_ERROR:       type mismatch (compiler output pattern match)
+      IMPORT_ERROR:     missing dependency (pattern: "cannot find", "no such module")
+      ASSERTION_ERROR:  test logic failure (pattern: "assert", "expected X got Y")
+      TIMEOUT:          execution exceeded limit
+      EMPTY_OUTPUT:     tool produced nothing (pattern: empty stdout + zero exit)
+      RUNTIME_PANIC:    unrecoverable error (pattern: "panic", "unwrap", "SIGABRT")
+      PERMISSION_DENIED: sandbox or OS block (pattern: "EACCES", "permission denied")
+      RESOURCE_EXHAUSTED: OOM, disk full (pattern: "ENOMEM", "No space left")
+
+    Implementation:
+      tools/ crate: ADD classify_failure(error_output) -> FailureClassification
+        - Pattern-match against taxonomy (regex, not LLM)
+        - Output: {category, confidence, matched_pattern, suggested_action}
+        - suggested_action is deterministic lookup: SYNTAX_ERROR -> "re-parse file",
+          IMPORT_ERROR -> "check Cargo.toml/deps", TIMEOUT -> "reduce scope"
+      Auditor GRC observe step (PART 5.8):
+        - Before: observe = read test output raw
+        - After: observe = classify_failure(output) THEN read relevant section
+        - Classification reduces context: auditor reads ONLY the failure-relevant lines
+        - Budget savings: ~200-500 tokens per failure (skip irrelevant output)
+
+    Historical pattern tracking (SSB integration):
+      SSB entries with action_type='test_outcome' gain failure_category field.
+      Auditor can query: "how many ASSERTION_ERRORs in this phase?" -> pattern detection.
+      Repeated same-category failures -> anti-spiral trigger (PART 6.5).
+
+  Testable Invariants:
+    - Every test failure classified before auditor GRC reasoning begins
+    - Classification is deterministic (pattern match, no LLM)
+    - Failure category stored in SSB test_outcome entries
+    - 3+ same-category failures in one phase triggers anti-spiral
+
+30.5 ADOPTED: Structured Execution Markers
+
+  Source: OMC Gyoshu Bridge marker taxonomy — structured output markers like [OBJECTIVE],
+  [FINDING], [ERROR], [STAT:mean] parsed from execution output into semantic categories.
+  Evidence: structured logging reduces debugging time 40-60% vs unstructured (DORA State of
+  DevOps 2023). OpenTelemetry spans follow same principle. Proven at scale.
+
+  Integration into elai_cc:
+    DAIRA trace_execution() (PART 16.1) produces TraceReport but output format was unspecified.
+    Markers give structure to trace output, reducing token cost of trace analysis.
+
+    Marker protocol for tools/ crate trace_execution():
+      Markers are line-prefixed tags in trace output. Parseable by deterministic regex.
+      Format: [MARKER_TYPE] content
+              [MARKER_TYPE:subtype] content
+
+      Taxonomy (adapted from OMC, extended for Rust debugging):
+        Execution:  [CALL] function_name(args)
+                    [RETURN] function_name -> value
+                    [MUTATION] variable: old_value -> new_value
+                    [BRANCH] condition=true/false -> taken_path
+        Errors:     [ERROR] message
+                    [PANIC] message + backtrace_summary
+                    [TIMEOUT] operation exceeded limit
+        Findings:   [FINDING] semantic observation about behavior
+                    [PATTERN] detected behavioral pattern
+                    [ANOMALY] unexpected behavior vs expected
+        Metrics:    [STAT:name] value unit
+                    [DURATION:name] ms
+                    [MEMORY:name] bytes
+        Flow:       [CHECKPOINT] named state snapshot
+                    [STEP:n] phase description
+
+    GRC observe step integration:
+      Current (PART 5.1): observe = read file + grep
+      With DAIRA (PART 16.1): observe can invoke trace_execution()
+      With markers: observe FIRST reads [FINDING] and [ANOMALY] markers only.
+        If insufficient: expand to [MUTATION] and [BRANCH] markers.
+        If still insufficient: read full trace.
+      Adaptive reading: markers enable progressive detail expansion.
+      Token savings: reading 5 [FINDING] lines vs 500 raw trace lines.
+
+    Implementation:
+      tools/ crate trace_execution():
+        - Wraps execution with marker-injecting tracer
+        - For Rust: tracing crate spans -> [CALL]/[RETURN] markers
+        - For Python: sys.settrace -> [CALL]/[MUTATION] markers
+        - Post-processing: parse markers into MarkerReport struct
+      MarkerReport {
+          findings: Vec<String>,
+          anomalies: Vec<String>,
+          mutations: Vec<(String, String, String)>,  // var, old, new
+          errors: Vec<String>,
+          stats: HashMap<String, f64>,
+          raw_line_count: usize,
+          marker_line_count: usize,  // for token savings measurement
+      }
+
+  Testable Invariants:
+    - Every trace_execution() output contains parseable markers
+    - Markers are deterministically extractable (regex, no LLM)
+    - GRC observe reads markers before raw trace (progressive detail)
+    - Token savings measurable: marker_line_count / raw_line_count ratio tracked
+
+30.6 EVALUATED: Gyoshu Bridge Pattern (sandboxed Python execution)
+
+  Source: OMC bridge/gyoshu_bridge.py (1,017 LOC) — JSON-RPC 2.0 server for persistent
+  Python namespace execution with sandbox, output capture, memory management.
+  Evidence: sandboxed execution is proven (Jupyter kernels, Google Colab, Replit).
+
+  Relevance to elai_cc:
+    Pipeline Factory (PART 15) handles non-code tasks: "generate sprites", "analyze dataset",
+    "set up CI/CD". Some of these require Python execution (ComfyUI, data analysis tools).
+    Current design: tools/ crate wraps external tools via Tool Auto-Discovery (PART 15.7).
+    Gyoshu pattern: persistent execution namespace with structured output parsing.
+
+  Decision: DEFER to Phase 4 (Pipeline Factory).
+    Phase 0-3 focuses on Rust code generation and tooling. Python execution not needed.
+    Phase 4 Pipeline Factory may need sandboxed execution for:
+      - ComfyUI workflow execution (already designed in PART 28.6)
+      - Data pipeline execution (pandas, numpy tasks)
+      - ML training scripts
+    At that point, evaluate Gyoshu pattern vs simpler subprocess wrapper.
+    The marker taxonomy (30.5) is adopted regardless — it applies to any execution output.
+
+  If adopted in Phase 4:
+    Rust implementation via tokio::process with:
+      - Persistent Python subprocess (not cold-start per call)
+      - JSON-RPC 2.0 over stdin/stdout (not Unix socket — Windows compatibility)
+      - Sandbox: seccomp-bpf on Linux, job objects on Windows
+      - Output marker parsing reuses MarkerReport from 30.5
+      - Memory limit enforcement via cgroup (Linux) or job object (Windows)
+
+30.7 ADOPTED: Parity Audit Pattern (from claw-code Python workspace)
+
+  Source: claw-code-rust-port parity_audit.py — tracks porting completeness by comparing
+  current workspace against archived TypeScript source. Metrics: root file coverage,
+  directory coverage, command/tool entry ratios.
+  Evidence: migration coverage tracking is standard practice (Stripe's Ruby-to-Java migration
+  used similar metrics). Prevents "we forgot to port X" failures.
+
+  Integration into elai_cc:
+    During Phase 0 fork, we strip/replace/extend claw-code modules.
+    Without tracking, we risk losing functionality silently.
+
+    Migration Manifest (.elai_cc/migration_manifest.toml):
+      For each claw-code source file:
+        [files."runtime/src/worker_boot.rs"]
+        disposition = "KEEP"   # KEEP | STRIP | REPLACE | EXTEND
+        target_crate = "orchestrator"
+        maps_to = "PART 6.2 AgentPool"
+        reviewed = false
+        notes = ""
+
+    Phase 0 deliverable:
+      Every .rs file in claw-code classified with disposition.
+      Automated check: all KEEP files compile. All STRIP files removed. All REPLACE files
+      have replacement written. All EXTEND files have extension added.
+      This is a deterministic coverage metric, not LLM assessment.
+
+  Testable Invariants:
+    - Every claw-code .rs file has an entry in migration_manifest.toml
+    - disposition field is one of: KEEP, STRIP, REPLACE, EXTEND
+    - Automated check verifies consistency (STRIP files don't exist, KEEP files compile)
+    - Migration manifest updated after every Phase 0 edit
+
+
+PART 31: DESIGN ELABORATION (2026-04-05, session 7)
+
+  Source: LangGraph source analysis + Aider source analysis.
+  Audited: 7 BLOCKs resolved, 7 WARNs addressed. See workflow/reasoning/design-elaboration-audit.md.
+  Decisions: workflow/reasoning/design-elaboration-decisions.md.
+
+31.1 Channel Taxonomy Expansion (PART 20 addendum):
+
+  PART 20.3 originally specified 2 channel types (LastValue, Topic). Expanded to 4.
+  Source: LangGraph channels/ directory (untracked_value.py, ephemeral_value.py).
+  Auditor corrections: UntrackedValue does NOT auto-clear; guard=True default crashes multi-writer.
+
+  Updated channel types:
+
+    LastValue:
+      Unchanged from PART 20.3. Single value, last writer wins.
+
+    Topic (accumulate: bool):
+      Unchanged from PART 20.3. Append-only list.
+
+    UntrackedValue:
+      In-memory only. NEVER serialized to checkpoint. NEVER written to SSB.
+      Use case: large transient objects (trace reports, intermediate ASTs, full file contents).
+      CRITICAL SEMANTICS (auditor-verified from langgraph source):
+        - Does NOT auto-clear between supersteps (persists until explicitly overwritten).
+        - guard=false required for multi-writer scenarios (default guard=true raises on concurrent writes).
+        - Value is lost on crash/restart (intentional — transient by design).
+      Why needed: without this, SSB checkpoints balloon with transient data.
+
+    EphemeralValue:
+      Cleared to MISSING on any superstep where no writes occur.
+      Use case: one-shot signals (branch-taken notifications, interrupt flags).
+      If agent A writes "ready" in superstep N, agent B reads it in superstep N.
+      In superstep N+1, if no one writes, value is MISSING (auto-cleared).
+      Why needed: clean fire-and-forget signaling without manual cleanup.
+
+  PART 20.4 invariant UPDATED:
+    Old: "Only LastValue and Topic channel types exist (no BinaryOp)"
+    New: "Only LastValue, Topic, UntrackedValue, and EphemeralValue channel types exist (no BinaryOp)"
+
+  Testable Invariants:
+    - UntrackedValue is never present in checkpoint data
+    - UntrackedValue with guard=false accepts concurrent writes without error
+    - EphemeralValue returns MISSING after a zero-write superstep
+    - All channel types implement atomic update(values: Sequence) for batch writes
+
+31.2 Deferred Node Execution (PART 20 addendum):
+
+  Source: LangGraph channels/named_barrier_value.py + pregel/_algo.py.
+  Auditor BLOCK-5: Deferred nodes require quiescence detection, incompatible with BSP barrier.
+  Resolution: deferred execution is a post-barrier cleanup phase, not a BSP replacement.
+
+  Mechanism:
+    BSP superstep proceeds normally (barrier: all scheduled tasks complete).
+    After barrier: check for pending deferred nodes.
+    If deferred nodes exist AND all their input channels have been written:
+      Execute deferred nodes in a "cleanup superstep" (deterministic, sequential).
+    Cleanup superstep writes are applied atomically (same as main superstep).
+    Then: checkpoint, advance to next superstep.
+
+  Use case: fan-in aggregation. Agent A and Agent B produce partial results in parallel.
+  Deferred aggregation node fires only after both complete. No need to know branch count at build time.
+
+  Rust pseudocode:
+    loop {
+        let tasks = prepare_next_tasks(&checkpoint, &channels, &nodes);
+        if tasks.is_empty() { break; }
+        let writes = execute_tasks(tasks, &model_pool, &ssb);
+        apply_writes(&mut checkpoint, &mut channels, writes);
+
+        // NEW: deferred node phase
+        let deferred = get_deferred_nodes(&nodes);
+        for node in deferred {
+            if node.all_inputs_satisfied(&channels) {
+                let deferred_writes = execute_single(node, &channels);
+                apply_writes(&mut checkpoint, &mut channels, deferred_writes);
+            }
+        }
+
+        save_checkpoint(&checkpoint, &channels);
+        if !evidence_gate_passes(&checkpoint, &channels) { continue; }
+        superstep += 1;
+    }
+
+  Testable Invariants:
+    - Deferred nodes never execute before the main barrier completes
+    - Deferred nodes execute only when all input channels have been written
+    - Cleanup superstep writes are atomic (same guarantee as main superstep)
+    - Deferred execution is deterministic (same inputs -> same outputs)
+
+31.3 Dynamic Fan-Out (PART 6.2 addendum):
+
+  Source: LangGraph pregel/_algo.py Send() objects + TASKS Topic channel.
+  Auditor BLOCK-6: Checkpoint namespace collision for concurrent same-type subgraphs.
+  Resolution: AtomicU64 counter per subgraph type.
+
+  Mechanism:
+    During execution, an agent can emit Send(target_role, input_data) objects.
+    Orchestrator collects Send objects at superstep boundary.
+    Each Send spawns an independent agent with its own checkpoint namespace.
+
+    Namespace format: "{parent_ns}|{subgraph_type}:{counter}"
+      parent_ns: current agent's checkpoint namespace
+      subgraph_type: target role name (e.g., "executor", "auditor")
+      counter: AtomicU64, per-subgraph-type, monotonically increasing
+      Example: "main|executor:0", "main|executor:1", "main|executor:2"
+
+    Counter state:
+      HashMap<SubgraphType, AtomicU64> in orchestrator state.
+      Checkpointed at superstep boundary (converted to HashMap<String, u64> for serialization).
+      On recovery: restore counters from checkpoint, new Send() objects get fresh IDs.
+
+  Use case: "Process each file in this directory" — executor discovers 47 files at runtime,
+  emits 47 Send() objects, orchestrator spawns them respecting VRAM limits (sequential on GPU).
+
+  Resource-aware: orchestrator checks ModelPool before spawning.
+  If insufficient VRAM: queue Send tasks, execute serially.
+  If VRAM available: execute in parallel (embedding model + one executor per GPU).
+
+  Testable Invariants:
+    - Every Send-spawned agent has a unique checkpoint namespace
+    - Counter is monotonically increasing (no reuse after crash recovery)
+    - Send tasks respect GPU scheduling (never exceed available VRAM)
+    - Parent agent checkpoint includes pending Send queue
+
+31.4 Checkpoint Conformance Suite (PART 6.4 addendum):
+
+  Source: LangGraph libs/checkpoint-conformance/.
+  Auditor WARN-6: Python introspection has no Rust equivalent.
+  Resolution: marker traits + conformance test macros.
+
+  Trait hierarchy:
+    trait CheckpointBase {
+        fn put(&self, config, checkpoint, metadata) -> Result<()>;
+        fn put_writes(&self, config, writes) -> Result<()>;
+        fn get_tuple(&self, config) -> Result<Option<CheckpointTuple>>;
+        fn list(&self, config, filter) -> Result<Vec<CheckpointTuple>>;
+        fn delete_thread(&self, thread_id) -> Result<()>;
+    }
+
+    trait CheckpointBranch: CheckpointBase {
+        fn copy_thread(&self, source, target) -> Result<()>;
+    }
+
+    trait CheckpointPrune: CheckpointBase {
+        fn prune(&self, max_entries: usize) -> Result<usize>;  // returns entries removed
+    }
+
+  New capabilities (not in original design):
+    copy_thread: branch a scenario for what-if analysis. Copies all checkpoint state from
+    one thread to another. Use case: self-modification sandbox (PART 27 Layer 2 step 4).
+    prune: bounded storage. Remove oldest checkpoints beyond max_entries.
+    Use case: long-running autonomous sessions producing thousands of checkpoints.
+
+  Conformance test macros:
+    conformance_test_base!(SqliteCheckpointStore);
+    conformance_test_branch!(SqliteCheckpointStore);  // only compiles if impl CheckpointBranch
+    conformance_test_prune!(SqliteCheckpointStore);
+
+  Testable Invariants:
+    - Every CheckpointStore impl passes conformance_test_base
+    - copy_thread produces an exact deep copy (verified by get_tuple comparison)
+    - prune(N) leaves exactly N newest entries (ordered by timestamp)
+
+31.5 Per-Exception Retry Policy (PART 6.5 addendum):
+
+  Source: LangGraph types.py RetryPolicy + pregel/_retry.py.
+  Combined with: Aider failure taxonomy (PART 30.4).
+
+  RetryPolicy per agent role:
+    struct RetryPolicy {
+        max_attempts: u32,                    // default: 3
+        retry_on: fn(FailureCategory) -> RetryAction,
+        backoff: BackoffStrategy,             // Fixed, Exponential, or None
+    }
+
+    enum RetryAction { Retry, ReduceScope, Escalate, Abort }
+
+    Default retry_on mapping (deterministic, per failure category from PART 30.4):
+      SYNTAX_ERROR     -> Retry (likely transient generation error)
+      TYPE_ERROR       -> Retry (with type hint injection)
+      IMPORT_ERROR     -> ReduceScope (check deps, retry with fixed imports)
+      ASSERTION_ERROR  -> Retry (test logic, model can self-correct)
+      TIMEOUT          -> ReduceScope (increase timeout once, then reduce scope)
+      EMPTY_OUTPUT     -> Retry (likely transient)
+      RUNTIME_PANIC    -> Escalate (model unlikely to self-fix)
+      PERMISSION_DENIED -> Abort (sandbox/OS issue, not fixable by model)
+      RESOURCE_EXHAUSTED -> ReduceScope (OOM = reduce context or batch size)
+
+  CRITICAL INVARIANT (from LangGraph, auditor-verified):
+    task.writes.clear() BEFORE each retry attempt. No partial state accumulation across retries.
+    In elai_cc: SSB entries from failed attempt are marked as superseded (not deleted — audit trail).
+    New attempt starts with clean write buffer.
+
+  Testable Invariants:
+    - retry_on is a pure function (same category always produces same action)
+    - writes buffer cleared before each retry (no partial state leak)
+    - max_attempts respected (never infinite retry)
+    - ReduceScope reduces at most 3 times before escalation (bounded)
+
+31.6 Node-Level Cache with TTL (PART 6.6 addendum):
+
+  Source: LangGraph types.py CachePolicy + cache/base/.
+  Auditor WARN-2: floating-point cache keys need normalization.
+
+  struct CachePolicy {
+      key_fn: fn(AgentInput) -> CacheKey,
+      ttl_seconds: u64,
+  }
+
+  CacheKey construction:
+    Input is hashed via xxhash after normalization.
+    Float normalization: NaN -> u64::MAX sentinel, -0.0 -> 0.0, round to 6 decimal places.
+    This prevents spurious cache misses from float representation differences.
+
+  Cache storage: in-memory HashMap<CacheKey, (Output, Instant)> per node.
+  NOT checkpointed (cache is perf optimization, checkpoint is correctness).
+  TTL checked on access: if expired, entry removed, cache miss.
+
+  Use case: context-compiler re-reading unchanged files returns cached DKG result.
+  Knowledge engine queries with same input return cached context chunks.
+  Saves: model inference cost + tool execution time.
+
+  Testable Invariants:
+    - Cache hit skips agent execution entirely (zero model calls)
+    - Expired entries are not returned (TTL enforced)
+    - Cache is not in checkpoint data (UntrackedValue semantics)
+    - Float normalization produces identical keys for -0.0 and 0.0
+
+31.7 PageRank Repo Map (PART 4 addendum):
+
+  Source: Aider repomap.py:365-706.
+  Auditor BLOCK-3: edge-weight boost and personalization are separate mechanisms.
+  Auditor WARN-3: dense cyclic graphs degrade PageRank signal.
+
+  New layer between DKG graph and CatRAG traversal:
+
+  Layer 3.5 — PageRank Importance Ranking:
+
+    Input: DKG graph + current task description + chat-relevant files
+    Process:
+      1. EDGE-WEIGHT BOOST (topology modification):
+         For each edge where source or target is in chat-relevant files: weight *= 50.
+         This makes the random walk strongly prefer paths through active files.
+         Applied to DKG adjacency matrix BEFORE PageRank computation.
+
+      2. PERSONALIZATION VECTOR (walk bias):
+         For each node whose identifier is mentioned in the task description: personalization = 10x.
+         Uniform distribution for all other nodes.
+         This biases the starting distribution of the random walk.
+
+      3. DENSITY GUARD:
+         If graph density > 0.3 (edges / (nodes * (nodes-1))): skip PageRank, use BM25 only.
+         Dense cyclic graphs produce near-uniform PageRank (no signal). BM25 is better.
+
+      4. BINARY SEARCH TOKEN FITTING:
+         PageRank produces ranked node list. Binary search for cutoff that fits max_map_tokens.
+         Tolerance: +-15% (same as Aider). Uses sampling-based token estimation (31.9).
+
+    Output: ranked list of code symbols with importance scores, fitted to token budget.
+
+    Special files list (~100 items): Cargo.toml, Dockerfile, .gitignore, README.md, etc.
+    Always included in repo map regardless of PageRank score.
+
+  Integration with existing pipeline:
+    query -> BM25 -> vector rerank -> PageRank importance filter -> CatRAG expand -> A-RAG filter -> context
+
+  Testable Invariants:
+    - Edge-weight boost applied before PageRank (not after)
+    - Personalization vector sums to 1.0 (valid probability distribution)
+    - Density guard activates at threshold 0.3 (falls back to BM25)
+    - Binary search converges within 10 iterations
+    - Special files always present in output regardless of rank
+
+31.8 3-Tier Edit Matching (tools/ crate):
+
+  Source: Aider editblock_coder.py:134-330.
+  Auditor WARN-4: tier 4 (fuzzy) disabled in Aider production. Not adopted.
+
+  When executor generates SEARCH/REPLACE edit block:
+
+    Tier 1 — Exact Match:
+      Find search_text in file content. If found, replace. Done.
+
+    Tier 2 — Whitespace-Normalized Match:
+      Normalize both search_text and file content: collapse whitespace, strip trailing spaces.
+      Match on normalized forms. Apply replacement preserving original indentation.
+
+    Tier 3 — Ellipsis-Elision Expansion:
+      If search_text contains "..." lines, expand to match any number of lines in the file.
+      "..." acts as a wildcard for line sequences.
+
+    On Failure (all tiers miss):
+      Compute SequenceMatcher similarity against all same-length chunks in file.
+      Return "did you mean" hint with the nearest chunk (similarity score + location).
+      Do NOT apply the edit. Return failure with hint to executor for retry.
+
+  Testable Invariants:
+    - Tier 1 tried before Tier 2 before Tier 3 (strict ordering)
+    - Tier 2 preserves original file indentation (does not inject normalized whitespace)
+    - Tier 3 "..." only matches at line boundaries (not mid-line)
+    - Failed edit never silently applies wrong match
+    - "Did you mean" hint includes file location (line number + snippet)
+
+31.9 Sampling-Based Token Estimation (PART 3 addendum):
+
+  Source: Aider repomap.py:89-101.
+
+  providers::LlmProvider gains new method:
+    fn token_count_estimate(text: &str) -> usize
+
+  Algorithm:
+    Sample every Nth line (N=10 default, configurable).
+    Count tokens on sampled lines using real tokenizer.
+    Multiply count by N.
+    Accuracy: 95%+ for files >100 lines. Exact for files <=N lines (all sampled).
+
+  Use cases:
+    - Context budget estimation (PART 21): fast approximation before precise counting
+    - File reading tool metadata (31.12): show estimated tokens in header
+    - PageRank repo map fitting (31.7): binary search uses estimates for speed
+
+  Existing token_count() remains for exact counting when precision matters.
+
+  Testable Invariants:
+    - Estimate within 15% of exact count for files >100 lines
+    - Estimate equals exact count for files <=N lines
+    - Estimation is O(lines/N) not O(lines)
+
+31.10 Fixed-Slot Context Ordering (PART 21 addendum):
+
+  Source: Aider coders/chat_chunks.py ChatChunks dataclass.
+
+  Context window assembled in FIXED order, every invocation:
+
+    Slot 1: system_prompt         (GRC structured prompt per agent role)
+    Slot 2: rules                 (active rules for current phase + file context)
+    Slot 3: phase_spec            (current phase specification from PipelineSpec)
+    --- cache breakpoint 1 (slots 1-3 stable across turns, cacheable) ---
+    Slot 4: repo_map              (PageRank-ranked DKG output, fitted to budget)
+    Slot 5: code_context          (BM25 + vector retrieved chunks)
+    --- cache breakpoint 2 (slots 4-5 stable within same files) ---
+    Slot 6: ssb_entries           (relevant SSB history, filtered by file overlap)
+    Slot 7: grc_history           (prior reasoning steps for current topic)
+    Slot 8: [output_reserve]      (2000 tokens minimum, never allocated to content)
+
+  Cache breakpoints enable prompt caching (Anthropic, OpenAI):
+    Slots 1-3 rarely change during a phase -> cached, zero reprocessing cost.
+    Slots 4-5 change when files change -> second-tier cache.
+    Slots 6-7 change every turn -> never cached, always fresh.
+
+  Budget allocation (PART 21.1) now has slot-aware distribution:
+    Slots 1-3: fixed cost (measured, not budgeted — these are mandatory)
+    Remaining budget split: repo_map 15%, code_context 40%, ssb 25%, grc 20%.
+    Floors preserved from PART 21: ssb >= 200, grc >= 500, output >= 2000.
+
+  Testable Invariants:
+    - Slot order is identical across all agent invocations (deterministic)
+    - Cache breakpoints placed at slot boundaries (not mid-slot)
+    - sum(all_slots) <= model.max_context (same invariant as PART 21)
+    - Slots 1-3 produce identical content for same (role, phase) pair
+
+31.11 Session-Owned Commit Tracking (PART 7.2 addendum):
+
+  Source: Aider commands.py:560-656.
+  Auditor WARN-7: commit hashes must persist across session handoff.
+
+  Session commit tracking:
+    Each session maintains: commit_hashes: Vec<String> — commits made by this session.
+    On every auto-commit: append commit hash to list.
+    On session handoff: commit_hashes included in handoff.msgpack.
+    New session inherits commit_hashes from handoff (can undo inherited commits too).
+
+  Safe undo protocol:
+    fn undo_last_commit(session: &Session) -> Result<()>:
+      1. Check: last commit hash in session.commit_hashes? If not, BLOCK (not our commit).
+      2. Check: working tree clean? If dirty, BLOCK (uncommitted changes would be lost).
+      3. Check: commit has parent? If not, BLOCK (initial commit, cannot undo).
+      4. Check: commit not pushed to remote? If pushed, BLOCK (would require force-push).
+      5. Execute: git reset --soft HEAD~1
+      6. Remove hash from session.commit_hashes.
+
+  Testable Invariants:
+    - Only session-owned commits can be undone (foreign commits blocked)
+    - Undo blocked if working tree is dirty
+    - Undo blocked if commit was pushed to remote
+    - commit_hashes persists across session handoff
+
+31.12 File Reading Tool Enhancement (tools/ crate, claw-code modification):
+
+  Novel improvement. Neither LangGraph nor Aider implements this.
+
+  Current behavior (claw-code Read tool):
+    Model calls read_file(path) -> gets content (possibly truncated at 2000 lines).
+    Model has NO IDEA how big the file is before content arrives.
+    Wastes context on large files that should have been read selectively.
+
+  New behavior:
+
+    read_file(path, start_line: Option<usize>, end_line: Option<usize>) -> FileReadResult
+
+    struct FileReadResult {
+        path: String,
+        total_lines: usize,
+        estimated_tokens: usize,    // sampling-based (31.9)
+        content: FileContent,       // either Full or Outline
+    }
+
+    enum FileContent {
+        Full(String),               // complete file content with line numbers
+        Outline {                   // structural summary for large files
+            sections: Vec<Section>, // tree-sitter parsed sections
+            hint: String,           // "Use read_file(path, start=X, end=Y) for specific sections"
+        },
+    }
+
+    struct Section {
+        start_line: usize,
+        end_line: usize,
+        kind: String,               // "imports", "struct Foo", "fn bar", "impl Trait for X"
+        signature: String,          // first line of the section (function signature, struct name)
+    }
+
+  Decision logic:
+    If start_line/end_line provided: return requested range (always Full).
+    If total_lines <= threshold (configurable, default 300): return Full.
+    If total_lines > threshold: return Outline (tree-sitter structural summary).
+
+  Outline generation:
+    Uses tree-sitter (already in deps for Knowledge Engine, PART 4).
+    Parse file -> extract top-level nodes (functions, structs, impls, classes, imports).
+    Each node becomes a Section with line range + kind + signature.
+    Model sees the structure, decides which sections to read in detail.
+
+  Token savings:
+    1000-line Rust file: Full = ~3000 tokens. Outline = ~200 tokens.
+    Model reads outline, requests 2 specific functions = ~400 tokens.
+    Total: ~600 vs ~3000. 5x savings.
+
+  Testable Invariants:
+    - Metadata header always present (total_lines, estimated_tokens)
+    - Files <= threshold always return Full content
+    - Files > threshold without range return Outline
+    - Range requests always return Full content for that range
+    - Outline sections cover 100% of file lines (no gaps)
+    - estimated_tokens within 15% of actual (sampling accuracy from 31.9)
+
+31.13 Assistant Prefill Continuation (PART 3 addendum):
+
+  Source: Aider base_coder.py:1492-1505.
+  Auditor WARN-5: conflicts with "never compact" if applied to reasoning.
+  Resolution: scoped to code generation output ONLY.
+
+  When executor generates code and model returns finish_reason=length:
+    1. Detect: provider returns FinishReason::Length (not Stop or ToolUse).
+    2. Check: model supports assistant prefill (Anthropic yes, some ollama models yes).
+    3. If supported:
+       a. Append partial response as assistant turn in conversation.
+       b. Send continuation request with same context + partial assistant message.
+       c. Model continues generating from where it stopped.
+       d. Merge partial + continuation into single output.
+    4. If not supported: report as error, executor must reduce output scope.
+
+  Max continuations: 3 (prevent infinite loops on genuinely oversized output).
+
+  SCOPE LIMIT (auditor-enforced):
+    Applied to: code generation in EXECUTING phase only.
+    NOT applied to: GRC reasoning, agent context assembly, SSB reads, planning.
+    Rationale: code output is append-only (continuation is safe).
+    Reasoning context requires coherence across the full response (continuation may lose thread).
+
+  Testable Invariants:
+    - Only triggers on finish_reason=length (not stop or tool_use)
+    - Max 3 continuations per generation (bounded)
+    - Merged output is syntactically valid (tree-sitter parse check)
+    - Never applied outside EXECUTING phase
+
+
+PART 12 ADDENDUM 4: RISK REGISTER (session 7, 2026-04-05)
+
+  R19 (MEDIUM — NEW): UntrackedValue memory accumulation
+    UntrackedValue channels persist in memory until overwritten. Long-running sessions
+    with many supersteps could accumulate large transient objects.
+    Mitigation: orchestrator monitors UntrackedValue memory usage per superstep.
+    If total UntrackedValue memory > threshold (configurable, default 1GB): log warning.
+    If > 2x threshold: force-clear all UntrackedValue channels (safe — they're transient).
+    Source: LangGraph untracked_value.py lifecycle analysis (auditor BLOCK-1).
+
+  R20 (LOW — NEW): PageRank density degradation
+    Dense cyclic DKG graphs produce near-uniform PageRank (no useful signal).
+    Mitigation: density guard at 0.3 threshold. Fall back to BM25-only ranking.
+    Fallback: if BM25 also struggles (too many results), use recency as tiebreaker.
+    Source: NetworkX PageRank documentation + auditor WARN-3.
+
+  R21 (LOW — NEW): Cache key collision on normalized floats
+    Rounding floats to 6 decimals for cache keys could cause false positives
+    (two different inputs rounding to same key).
+    Mitigation: cache hit returns result, but output is still validated by auditor.
+    False positive = unnecessary cache hit = slightly wrong input, caught at validation.
+    Source: auditor WARN-2.

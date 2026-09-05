@@ -1,0 +1,9 @@
+The Architecture of Antithesis
+
+    The Deterministic Hypervisor: The core of the platform is a custom hypervisor named "The Determinator," which is built on a fork of FreeBSD. It simulates one or more computers by running a collection of containers within a single virtual machine. Everything inside this virtual machine operates within a strictly controlled "bubble of determinism".
+
+    Taming Non-Determinism: To guarantee that a test can be perfectly reproduced, the hypervisor must control any input that could alter the execution path. For example, the hypervisor hides all real-world timing information from the guest software. If your code attempts to access a hardware time source—like the Time Stamp Counter (TSC) or High Precision Event Timer (HPET)—the hypervisor intercepts the call and returns a deterministic virtual time value instead. It extends this control to thread scheduling, disk I/O, and system-provided randomness.
+
+    State-Space Exploration (Fuzzing): Antithesis does not just passively run your code; it acts as an intelligent bug finder. It artificially injects chaos into the system, such as thread hangs, network retries, and simulated node restarts. When the platform detects interesting behavior—such as rare log messages or new code coverage paths—it clones the system state and explores thousands of possible futures branching off from that specific moment.
+
+    Time-Travel Debugging: Because the system is entirely deterministic, any bug found is perfectly reproducible. Developers can take an Antithesis bug report and essentially "rewind time" from the moment the incident occurred. You can step backward through the execution history, examine the exact state of the system at any given moment, and even add new logging to the code to see what was happening, all without altering the sequence of events.

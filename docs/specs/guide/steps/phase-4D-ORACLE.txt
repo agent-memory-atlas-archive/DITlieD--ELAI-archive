@@ -1,0 +1,137 @@
+phase-4D-ORACLE — Oracle Mode /research Cache
+=============================================
+
+Status: SHIPPED in C-30 (SCHEMA_VERSION 61 -> 62). This file is the spec
+record. Cross-reference workflow/reasoning/C-30-decisions.md (DECISION-8,
+DECISION-9, DECISION-13, NOTE-A) and the implementation in
+.elai_cc/crates/orchestrator/src/oracle_cache.rs.
+
+Goal: cache /research answers in-process per (query × project) so repeated
+questions within the answer's freshness window return the cached row instead
+of re-running the full ConceptDecomposition + WebResearch pipeline.
+
+Spec references:
+  - .elai_cc/crates/orchestrator/src/oracle_cache.rs (OracleAnswerCache,
+    CacheKey, CachedAnswer, source_tier_for_confidence)
+  - .elai_cc/crates/core/src/source_tier.rs (SourceTier enum +
+    source_tier_str)
+  - .elai_cc/crates/cli/src/live_cli.rs:2578 (run_research_pipeline call
+    site) and L2666 (the /research handler block)
+  - .elai_cc/crates/orchestrator/src/ssb.rs (SsbActionType::OracleCacheHit,
+    OracleCacheMiss; SCHEMA 62)
+  - workflow/reasoning/C-30-decisions.md (DECISION-8/9/13, NOTE-A).
+
+Reads (mandatory):
+  - .claude/tools/elai.map for symbols: OracleAnswerCache, CacheKey,
+    CachedAnswer, SourceTier, source_tier_for_confidence,
+    ttl_for_tier.
+
+Types
+-----
+
+CacheKey
+  query_hash:   [u8; 32]   // blake3(query)
+  project_hash: [u8; 32]   // blake3(project_root_canonical_path)
+
+CachedAnswer
+  answer:      String
+  cached_at:   SystemTime
+  source_tier: SourceTier   // T1Authoritative | T2Strong | T3Weak | T4Rejected
+
+OracleAnswerCache
+  in-memory LRU. `max_entries` configurable via elai_cc.toml.
+
+TTL by SourceTier
+-----------------
+
+T1Authoritative -> 2_592_000 s (30 days)
+T2Strong        ->   604_800 s ( 7 days)
+T3Weak          ->    86_400 s ( 1 day)
+T4Rejected      ->         0 s (never cached — insert early-returns false)
+
+Confidence → tier mapping (source_tier_for_confidence):
+  AnswerConfidence::High    -> SourceTier::T1Authoritative
+  AnswerConfidence::Medium  -> SourceTier::T2Strong
+  AnswerConfidence::Low     -> SourceTier::T3Weak
+  AnswerConfidence::Unknown -> SourceTier::T4Rejected  (no cache)
+
+NOTE: the field on `ResearchAnswer` is `confidence` (NOT
+`answer_confidence`) — verified in C-30 DECISION-8.
+
+Behaviour
+---------
+
+Cache miss path:
+  1. Compute CacheKey via blake3 of normalised query + project canonical
+     path.
+  2. Call `run_research_pipeline` (live_cli.rs:2578).
+  3. Determine tier from `answer.confidence`.
+  4. If tier ≠ T4Rejected → insert into cache.
+  5. Emit SSB row `oracle_cache_miss { query_hash_short, source_tier }`.
+
+Cache hit path:
+  1. Lookup by CacheKey.
+  2. Verify `cached_at + ttl_for_tier(tier) > now`. If expired → treat as
+     miss (LRU evicts on next insert).
+  3. Return cached answer.
+  4. Emit SSB row `oracle_cache_hit { cached_age_secs, source_tier }`.
+
+LRU eviction:
+  - When `cache.len() > max_entries`, evict the least-recently-used
+    entry. `max_entries` is read from elai_cc.toml [research.oracle]
+    `max_cached_answers` (default 128).
+
+LiveCli wiring (NOTE-A):
+  - `oracle_cache: Option<Arc<OracleAnswerCache>>` field on LiveCli.
+  - Default `None`. Lazily initialised on first /research call.
+  - All three LiveCli construction sites default to `None`.
+
+SSB action types
+----------------
+
+oracle_cache_hit  { cached_age_secs: u64, source_tier: String }
+oracle_cache_miss { source_tier: String }
+
+Both shipped at SCHEMA 62 via the canonical 9-tuple atomic bump.
+
+WIRING_CONTRACT
+---------------
+
+produces_symbols:
+  - OracleAnswerCache, CacheKey, CachedAnswer, source_tier_for_confidence,
+    ttl_for_tier
+  - SSB action types: oracle_cache_hit, oracle_cache_miss
+consumes_symbols:
+  - run_research_pipeline (live_cli.rs:2578)
+  - AnswerConfidence (research/src/answer.rs)
+  - SourceTier (core/src/source_tier.rs)
+reachable_from:
+  - /research and /ask slash commands (commands.rs Research / Ask variants)
+stub_ban:
+  - T4Rejected MUST early-return on insert (never cache).
+  - Hashes MUST use blake3 (CLAUDE.md anti-stale-training rule;
+    no blake2/sha2 here).
+observable_effect:
+  trigger: `elai /research "what does B-37 ship?"` twice within 60 s
+  expect_ssb: oracle_cache_miss row on first call;
+              oracle_cache_hit row on second call (cached_age_secs > 0).
+
+DETERMINISTIC_CHECK
+-------------------
+
+```bash
+# 1. Cache module present
+rg "OracleAnswerCache" .elai_cc/crates/orchestrator/src
+# 2. TTL constants match spec (30d / 7d / 1d / 0)
+rg "2_592_000|604_800|86_400" \
+   .elai_cc/crates/orchestrator/src/oracle_cache.rs
+# 3. SSB variants present
+rg "OracleCacheHit|OracleCacheMiss" \
+   .elai_cc/crates/orchestrator/src/ssb.rs
+# 4. blake3 used (anti-stale-training)
+rg "blake3::hash|Hasher::new\(\)" \
+   .elai_cc/crates/orchestrator/src/oracle_cache.rs
+# 5. C-30 contract test passes
+cd .elai_cc && cargo test --package elai-contracts \
+   c30_surgical_oracle_contract 2>&1 | grep "test result"
+```

@@ -1,0 +1,580 @@
+PHASE 2B: GROUNDING VERIFICATION
+Prerequisites: Phase 2A complete (all 9+ GRC tests pass, cargo test -p reasoning 0 failures)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Implement verification methods that check claims against real sources before execution.
+Phase 2A validates grounding format (string parsing). Phase 2B resolves grounding claims
+by actually checking files, source code, tests, web, and APIs. Ungrounded claims in a
+plan block the PLANNING -> EXECUTING FSM transition.
+
+Six verification methods: FILE_CHECK, SOURCE_CHECK, TEST_CHECK, WEB_CHECK, API_CHECK,
+API_REGISTRY_CHECK. Each returns a binary pass/fail with evidence string. No confidence
+scores — these checks are deterministic (file exists or it does not).
+
+Plan grounding sweep: before EXECUTING, GRC scans all claims in a plan, classifies each
+as GROUNDED / VERIFY_NEEDED / UNGROUNDED, runs verification on VERIFY_NEEDED, and blocks
+execution if any remain UNGROUNDED after resolution.
+
+Phase 2B also resolves UNCERTAIN grounding levels from phase 2A. Steps with
+GroundingLevel::Uncertain that can be resolved via FILE_CHECK or SOURCE_CHECK are
+auto-promoted to Verified or High. Those that cannot be resolved remain UNCERTAIN
+and are flagged (but not auto-rejected — that policy is per-agent config in 2C).
+
+Forward dependency: Phase 4A changes verification execution model — agents proxy
+verification via IPC GroundingRequest messages through the orchestrator. Phase 2B
+implements verification as direct function calls; 4A wraps them behind IPC.
+
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/reasoning.txt             Section 4 (grounding verification methods, 6 methods)
+  docs/specs/crates/reasoning.txt             Section 5 (fact-based planning protocol)
+  docs/specs/crates/reasoning.txt             Section 8 (inline feasibility check — phase 2D, but context)
+  docs/specs/crates/reasoning.txt             Section 9 (process isolation — forward dep on 4A)
+  docs/specs/crates/reasoning.txt             Section 10 (KEY TYPES: GroundingResult, VerificationResult)
+  docs/specs/crates/reasoning.txt             Section 11 (TESTABLE INVARIANTS: item tagged [2B])
+  docs/specs/architecture-overview.txt        Section 4 (GrcEngine trait: verify_claim [2B stub], ground_plan [2B stub])
+  docs/specs/guide/steps/phase-2A.txt         Step 2A.1 (stub definitions this phase replaces)
+  docs/specs/crates/tools.txt                 (FILE_CHECK and SOURCE_CHECK use tools/ crate for file ops)
+
+
+DESIGN DECISIONS (grounded)
+
+  D1. Binary verification, not scalar confidence.
+      All 6 methods return VerificationResult { passes: bool, evidence: String }.
+      FILE_CHECK is inherently binary (file exists or not). SOURCE_CHECK is binary
+      (function signature matches or not). TEST_CHECK is binary (test passes or not).
+      WEB_CHECK and API_CHECK could theoretically return confidence scores, but we keep
+      binary for uniformity — the evidence string carries the detail.
+      Grounding: MiniCheck (Tang et al., EMNLP 2024, arxiv:2404.10774) shows claim-level
+      fact-checking works well with binary labels. Google Vertex AI grounding API also
+      uses binary grounded/ungrounded classification for its fast mode.
+      Deterministic benefit: binary results compose cleanly — a plan is GROUNDED iff
+      ALL claims pass. No threshold tuning needed.
+
+  D2. Claim decomposition for plan sweep only.
+      Individual verify_claim() calls check one claim at a time. Plan sweep (ground_plan)
+      must decompose a plan text into individual claims before verifying each.
+      Our decomposition is structural (extract file paths, function names, API references),
+      not semantic (no NLI model needed). This is simpler and deterministic.
+      Grounding: RARR (arxiv:2210.08726) and SAFE (Wei et al., 2024) use LLM-based
+      decomposition for semantic claims. Our claims are structural references
+      (file:src/main.rs, api:ollama/generate) — regex extraction suffices.
+      Phase 2A already validates grounding format as "type:reference" pairs (2A.4 I2),
+      so plan sweep reuses that parsed structure.
+
+  D3. VerificationMethod enum for dispatch.
+      New enum: VerificationMethod { FileCheck, SourceCheck, TestCheck, WebCheck,
+      ApiCheck, ApiRegistryCheck }. verify_claim() takes method + claim + context,
+      dispatches to the correct checker. This allows per-method availability filtering
+      (Phase 4A restricts which methods agents can use via IPC proxy).
+      Grounding: reasoning.txt section 9 (L140-147) defines per-method availability
+      by agent role. An enum enables this routing at the type level.
+
+  D4. verified_at via entropy-quarantined timestamp.
+      GroundingResult includes verified_at: Timestamp. All time access goes through
+      core::entropy::TimeSource trait (Phase 0 entropy quarantine). This ensures
+      deterministic testing — test fixtures inject fixed timestamps.
+      Grounding: implementation-guide.txt L46 ("all time/randomness via injectable traits").
+      reasoning.txt L184: GroundingResult { claim, method, level, source, verified_at }.
+
+  D5. tools/ crate dependency for FILE_CHECK and SOURCE_CHECK.
+      Phase 2B adds tools/ as a dependency of reasoning/. FILE_CHECK uses tools::read_file
+      to check file existence. SOURCE_CHECK uses tools::read_file + parsing to verify
+      function/struct presence. This is the first reasoning/ -> tools/ coupling.
+      Grounding: crate map (implementation-guide.txt L64) lists reasoning/ deps as
+      (core, providers, tools). The tools/ dep was always planned.
+      Risk: tools/ depends on knowledge/ (implementation-guide.txt L65). Circular dep
+      risk: reasoning -> tools -> knowledge -> (no reasoning dep, safe).
+      Verification: knowledge/ does NOT depend on reasoning/ — confirmed by crate map.
+      Note: tools/ also transitively pulls knowledge/ -> providers/. reasoning/ will
+      eventually depend on providers/ directly (crate map L64). Not circular, but
+      providers/ changes can break reasoning/ through two paths. Acceptable — both
+      deps are planned and the crate map reflects this.
+
+  D6. GrcEngine trait signature update (breaking change from 2A stubs).
+      Phase 2A defines: fn ground_plan(&self, plan: &str) -> Vec<GroundingResult>
+      Phase 2B changes to: fn ground_plan(&self, plan: &str) -> PlanGroundingResult
+      This is a breaking change to the trait. PlanGroundingResult wraps Vec<GroundingResult>
+      with additional metadata (all_grounded, ungrounded, verify_needed).
+      Rationale: Vec<GroundingResult> loses the sweep summary — callers must recompute
+      all_grounded by iterating. PlanGroundingResult provides the answer directly.
+      Impact: 2A stubs return unimplemented!() so no existing code constructs Vec<GroundingResult>
+      from ground_plan. The type change is safe at this point.
+      Architecture-overview.txt and reasoning.txt must be updated to reflect new return type.
+      PRE_CHECK: grep phase-2A tests for "ground_plan" — if any test calls ground_plan
+      and checks the return type, that test must be updated.
+
+  D7. verify_claim gets a context parameter.
+      Phase 2A defines: fn verify_claim(&self, claim: &str, source: &str) -> Result<...>
+      Phase 2B changes to: fn verify_claim(&self, claim: &str, source: &str, context: &str) -> Result<...>
+      The context parameter is needed for SOURCE_CHECK (claim="symbol_name", context="file_path")
+      and TEST_CHECK (claim="test_name", context="crate_name"). FILE_CHECK uses claim as
+      the file path and ignores context. WEB_CHECK/API_CHECK may use context for search scope.
+      This is a breaking change to the trait but the 2A stub is unimplemented!(), so no
+      existing code calls verify_claim with 2 args. Safe at this point.
+      Architecture-overview.txt must be updated.
+
+  D8. TestRunner trait abstraction for TEST_CHECK.
+      TEST_CHECK must run a specific test by name. In production, this calls
+      BashSandbox::execute("cargo test --exact {name} -p {crate}", sandbox_config).
+      In unit tests, this must be mocked — spawning cargo in every test is too slow
+      and non-deterministic.
+      Solution: trait TestRunner: Send + Sync { fn run_test(&self, name: &str, crate_name: &str) -> TestRunResult; }
+      LocalVerifier takes Box<dyn TestRunner> at construction (dependency injection).
+      Production: CargoTestRunner (calls BashSandbox::execute with 30s timeout).
+      Test: MockTestRunner (returns configured pass/fail per test name).
+      Grounding: tools.txt section 9 (L184-186) defines BashSandbox::execute(command, sandbox_config) -> BashResult.
+      This is the correct API — not "bash_exec" or Command::new("cargo").
+
+
+RISKS TO WATCH
+  R-2B-1: tools/ dependency introduces coupling earlier than other phases may expect.
+    Mitigation: reasoning/ uses only tools::read_file (leaf function, no graph/index).
+    Verify: check tools/Cargo.toml does not depend on reasoning/.
+  R-2B-2: WEB_CHECK and API_CHECK require network access. Phase 2B tests must not
+    require network. Mitigation: all tests use mock/stub implementations of the checker
+    trait. Real network checks only in integration tests (gated by #[cfg(feature="network")]).
+  R-2B-3: Plan sweep must handle plans with zero claims (empty plan). Must not panic
+    or return UNGROUNDED for an empty plan — empty plan = trivially GROUNDED.
+  R-2B-4: Phase 4A will wrap verification behind IPC. Phase 2B's direct-call interface
+    must be structured so 4A can wrap it without changing the trait signature.
+    Mitigation: verify_claim takes &self (not &mut self), is stateless per call.
+
+
+STEPS
+
+  2B.1 SKELETON: verification types + trait extension
+    PRE_GATE:
+      - Phase 2A tests all pass
+        Command: cd .elai_cc && cargo test -p reasoning 2>&1 | grep "test result:" | grep -q "0 failed"
+      - verify_claim and ground_plan stubs exist in engine.rs (placed by 2A.1)
+        Command: grep -q "fn verify_claim" .elai_cc/crates/reasoning/src/engine.rs && grep -q "fn ground_plan" .elai_cc/crates/reasoning/src/engine.rs
+      - VerificationResult and GroundingResult stub types exist (placed by 2A.1)
+        Command: grep -q "VerificationResult" .elai_cc/crates/reasoning/src/types.rs && grep -q "GroundingResult" .elai_cc/crates/reasoning/src/types.rs
+    TASK:
+      - Add VerificationMethod enum to reasoning/src/types.rs:
+          VerificationMethod { FileCheck, SourceCheck, TestCheck, WebCheck, ApiCheck, ApiRegistryCheck }
+          #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+          with fn requires_network(&self) -> bool (WebCheck, ApiCheck, ApiRegistryCheck = true)
+          with fn requires_tools(&self) -> bool (FileCheck, SourceCheck, TestCheck = true)
+      - PRE-CHECK: grep phase 2A tests for GroundingResult construction.
+          Command: grep -r "GroundingResult {" .elai_cc/crates/reasoning/tests/
+          If any test constructs GroundingResult with method: String, it must be updated
+          to use VerificationMethod enum. 2A tests that only use ThinkStep/GrcBudget/GrcError
+          are unaffected (those types are unchanged).
+      - Update GroundingResult to include verified_at field:
+          GroundingResult { claim: String, method: VerificationMethod, level: GroundingLevel,
+                           source: String, verified_at: u64 }
+          Note: verified_at is u64 unix timestamp from core::entropy::TimeSource.
+          Update method field from String to VerificationMethod (type-safe dispatch).
+      - Update VerificationResult:
+          VerificationResult { claim: String, passes: bool, evidence: String,
+                               method_used: VerificationMethod }
+          Update method_used from String to VerificationMethod.
+      - Add PlanGroundingResult type:
+          PlanGroundingResult { claims: Vec<GroundingResult>,
+                                all_grounded: bool,
+                                ungrounded: Vec<String>,
+                                verify_needed: Vec<String> }
+          Semantics of verify_needed at return time:
+            - Contains claims that were type "training:" and COULD NOT be auto-resolved.
+            - Claims that were "training:" and successfully auto-resolved are in claims
+              with level=Verified, NOT in verify_needed.
+            - verify_needed items are a SUBSET of ungrounded (all verify_needed are also ungrounded).
+            - all_grounded = ungrounded.is_empty() (verify_needed does not affect this).
+      - Add VerificationError to GrcError enum:
+          VerificationError { method: VerificationMethod, claim: String, reason: String }
+      - Add Verifier trait to reasoning/src/verification.rs:
+          trait Verifier: Send + Sync {
+            fn verify(&self, method: VerificationMethod, claim: &str, context: &str)
+              -> Result<VerificationResult, GrcError>;
+            fn supported_methods(&self) -> &[VerificationMethod];
+          }
+      - Add TestRunner trait to reasoning/src/verification.rs:
+          trait TestRunner: Send + Sync {
+            fn run_test(&self, name: &str, crate_name: &str) -> TestRunResult;
+          }
+          TestRunResult { passed: bool, output: String, duration_ms: u64 }
+          Implementations (stubs for now):
+            CargoTestRunner { sandbox: Box<dyn BashSandbox>, timeout_ms: u64 }
+            MockTestRunner { results: HashMap<String, TestRunResult> }
+      - Update GrcEngine trait stubs (BREAKING CHANGES from 2A — see D6, D7):
+          fn verify_claim(&self, claim: &str, source: &str, context: &str) -> Result<VerificationResult, GrcError>
+            (added context parameter — 2A stub had 2 args, now 3)
+          fn ground_plan(&self, plan: &str) -> PlanGroundingResult
+            (changed return type — 2A stub returned Vec<GroundingResult>)
+          Update BasicGrcEngine stub impls to match new signatures (still unimplemented!()).
+      - Add tools/ dependency to reasoning/Cargo.toml (for FILE_CHECK, SOURCE_CHECK)
+      - Stub implementations: LocalVerifier (FILE_CHECK, SOURCE_CHECK, TEST_CHECK),
+        NetworkVerifier (WEB_CHECK, API_CHECK, API_REGISTRY_CHECK) — both return todo!()
+        LocalVerifier::new(verifier: Box<dyn TestRunner>) — takes TestRunner for TEST_CHECK
+      - Re-export new types from reasoning/src/lib.rs
+    DETERMINISTIC_CHECK:
+      - cargo check on workspace succeeds
+        Command: cd .elai_cc && cargo check 2>&1 | grep -c "error\[" | grep -q "^0$"
+      - New types exist:
+        Command: grep -c "pub enum VerificationMethod" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub struct PlanGroundingResult" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub trait Verifier" .elai_cc/crates/reasoning/src/verification.rs | grep -q "1"
+      - VerificationMethod has exactly 6 variants:
+        Command: grep -A7 "pub enum VerificationMethod" .elai_cc/crates/reasoning/src/types.rs | grep -c "Check" | grep -q "6"
+      - GroundingResult has verified_at field:
+        Command: grep -A6 "pub struct GroundingResult" .elai_cc/crates/reasoning/src/types.rs | grep -q "verified_at"
+      - tools/ is in reasoning/Cargo.toml deps:
+        Command: grep -q "tools" .elai_cc/crates/reasoning/Cargo.toml
+      - Phase 2A tests still pass (no regression):
+        Command: cd .elai_cc && cargo test -p reasoning 2>&1 | grep "test result:" | grep -q "0 failed"
+    ADVERSARIAL:
+      - If GroundingResult.method is String instead of VerificationMethod, dispatch requires
+        string matching (fragile, typo-prone). Test: grep for "method: String" in GroundingResult — must be 0.
+      - If Verifier trait is not object-safe (uses generics or Self by value), cannot use
+        dyn Verifier for runtime dispatch. Test: add a compile test: let _: Box<dyn Verifier>;
+      - If tools/ dep creates a circular dependency chain, workspace won't compile.
+        Test: cargo check succeeds (caught by DETERMINISTIC_CHECK).
+    ACCEPTANCE:
+      - cargo check succeeds (0 errors)
+      - VerificationMethod enum has 6 variants
+      - Verifier trait is object-safe (Box<dyn Verifier> compiles)
+      - Phase 2A tests still pass (0 regressions)
+    GROUNDING:
+      - "6 verification methods" -> GROUNDED: reasoning.txt section 4 (L46-55)
+      - "verified_at in GroundingResult" -> GROUNDED: reasoning.txt L184
+      - "tools/ dependency for reasoning/" -> GROUNDED: implementation-guide.txt L64 crate map
+      - "Verifier trait with Send + Sync" -> VERIFIED (inference): phase 4A proxies
+        verification via IPC (reasoning.txt section 9, L134: "agents are isolated processes").
+        IPC implies cross-thread message passing, which requires Send+Sync on the verifier.
+        reasoning.txt L137 defines GroundingRequest message type but does not explicitly
+        state Send+Sync bounds. The bound is inferred from the process isolation architecture.
+
+  2B.2 VERIFY: compilation + regression check
+    PRE_GATE:
+      - Step 2B.1 complete (new types and trait exist, workspace compiles)
+        Command: test -f .elai_cc/crates/reasoning/src/verification.rs && echo PASS
+    TASK:
+      - Run cargo check on full workspace. Fix any compile errors.
+      - Verify reasoning/ depends only on core/, tools/, thiserror, serde (no providers/ yet,
+        no knowledge/). providers/ dependency comes in 2C (per-agent config may need model info)
+        or stays out entirely if not needed.
+      - Verify no circular dependency: tools/ must NOT depend on reasoning/.
+    DETERMINISTIC_CHECK:
+      - cargo check returns 0 errors
+        Command: cd .elai_cc && cargo check 2>&1 | grep "error\[" | wc -l | grep -q "^0$"
+      - No circular dep:
+        Command: grep -q "reasoning" .elai_cc/crates/tools/Cargo.toml && echo "FAIL: circular dep" || echo "PASS"
+      - reasoning/ deps are only core, tools, thiserror, serde:
+        Command: grep "^\[dependencies" .elai_cc/crates/reasoning/Cargo.toml -A 30 | grep -v "core\|tools\|thiserror\|serde\|^\[\|^$\|^#" | grep -v "^$" | wc -l
+        (should be 0)
+    ADVERSARIAL:
+      - If reasoning/ accidentally pulls in knowledge/ via tools/ transitive dep,
+        compile times increase and coupling spreads. Test: cargo tree -p reasoning | grep knowledge
+        must return empty.
+    ACCEPTANCE:
+      - cargo check exit code 0
+      - reasoning/ depends only on core/, tools/, thiserror, serde
+      - No circular dependency (tools/ does not depend on reasoning/)
+
+  2B.3 TEST: write failing tests (TDD)
+    PRE_GATE:
+      - Step 2B.2 passes (workspace compiles clean)
+      - Verifier trait exists in verification.rs
+        Command: grep -q "pub trait Verifier" .elai_cc/crates/reasoning/src/verification.rs
+    TASK:
+      Write tests in reasoning/tests/verification_tests.rs (all must FAIL against stubs):
+
+      T1. file_check_existing_file:
+          Create a temp file. Call verify(FileCheck, "path/to/temp", "").
+          Assert passes == true, evidence contains file path.
+          Invariant: reasoning.txt L46 "does file/function/class exist?"
+
+      T2. file_check_nonexistent_file:
+          Call verify(FileCheck, "nonexistent_file_xyz.rs", "").
+          Assert passes == false.
+
+      T3. source_check_function_exists:
+          Create temp file containing "fn hello_world()". Call verify(SourceCheck, "hello_world", path).
+          Assert passes == true, evidence contains "hello_world".
+
+      T4. source_check_function_missing:
+          Create temp file with no matching function. Call verify(SourceCheck, "nonexistent_fn", path).
+          Assert passes == false.
+
+      T5. test_check_passing_test:
+          Call verify(TestCheck, "test_name", "test_module_path").
+          Assert passes reflects actual test result.
+          Note: requires mock test runner or pre-existing passing test.
+
+      T6. web_check_stub_returns_error:
+          Call verify(WebCheck, "some algorithm", "").
+          In unit test context (no network), assert returns GrcError::VerificationError
+          or a stub result indicating network unavailable.
+          Invariant: phase 2B tests must not require network (R-2B-2).
+
+      T7. api_check_stub_returns_error:
+          Same as T6 but for ApiCheck.
+
+      T8. api_registry_check_stub_returns_error:
+          Same as T6 but for ApiRegistryCheck.
+
+      T9. plan_grounding_sweep_blocks_ungrounded:
+          Construct a plan with claims: ["file:src/main.rs" (exists), "file:nonexistent.rs" (missing)].
+          Call ground_plan(plan). Assert all_grounded == false.
+          Assert ungrounded contains "file:nonexistent.rs".
+          Invariant: reasoning.txt L199 "[2B] Plan grounding sweep blocks EXECUTING if any UNGROUNDED"
+
+      T10. plan_grounding_sweep_passes_all_grounded:
+          Construct a plan with only valid file claims. Call ground_plan(plan).
+          Assert all_grounded == true, ungrounded is empty.
+
+      T11. plan_grounding_sweep_empty_plan:
+          Call ground_plan(""). Assert all_grounded == true (trivially grounded).
+          Invariant: R-2B-3 — empty plan must not panic or return UNGROUNDED.
+
+      T12. uncertain_claim_auto_resolution:
+          Create a ThinkStep with grounding "training:some_claim" (UNCERTAIN level).
+          The claim references a file that exists. After verification, level should be
+          promoted to Verified (FILE_CHECK confirms existence).
+
+      T13. verification_method_requires_network:
+          Assert VerificationMethod::WebCheck.requires_network() == true.
+          Assert VerificationMethod::FileCheck.requires_network() == false.
+          (Compile-time correctness, but good regression check.)
+
+      T14. verifier_trait_object_safety:
+          let _: Box<dyn Verifier> = Box::new(LocalVerifier::new(...));
+          Must compile. If it does not, trait is not object-safe.
+          Note: LocalVerifier::new takes Box<dyn TestRunner> — pass MockTestRunner.
+
+      T15. plan_sweep_adversarial_regex:
+          Construct a plan with embedded code containing "file:fake_path" inside a comment
+          or string literal, plus a real claim "file:src/main.rs".
+          Example plan text: "// see file:fake_path for details\nGrounding: file:src/main.rs"
+          Assert ground_plan extracts only the real claim (file:src/main.rs), not the
+          embedded "file:fake_path" from the comment.
+          Invariant: regex must match grounding format context, not arbitrary occurrences.
+
+      T16. verify_claim_strips_prefix:
+          Call verify_claim("file:src/main.rs", "", "") via GrcEngine.
+          Assert the Verifier receives "src/main.rs" (no "file:" prefix), not "file:src/main.rs".
+          Validates BLOCK fix: prefix stripping in I3.
+
+    DETERMINISTIC_CHECK:
+      - All 16 tests exist
+        Command: grep -c "#\[test\]" .elai_cc/crates/reasoning/tests/verification_tests.rs
+        (should be >= 16)
+      - Tests compile (types exist, stubs are syntactically valid):
+        Command: cd .elai_cc && cargo test -p reasoning --test verification_tests --no-run 2>&1; [ $? -eq 0 ] && echo "COMPILE OK"
+      - Tests fail at RUNTIME (TDD: stubs panic via todo!()):
+        Command: cd .elai_cc && cargo test -p reasoning --test verification_tests 2>&1 | grep -q "FAILED"
+        Note: this grep matches only "FAILED" (runtime failure), not "error" (compile error).
+        If stubs use todo!(), tests panic at runtime producing "FAILED" in output.
+      - No network calls in tests:
+        Command: grep -c "reqwest\|hyper\|TcpStream\|connect\|http://" .elai_cc/crates/reasoning/tests/verification_tests.rs | grep -q "^0$"
+      - No timing-dependent tests:
+        Command: grep -c "sleep\|Duration\|Instant\|SystemTime" .elai_cc/crates/reasoning/tests/verification_tests.rs | grep -q "^0$"
+    ADVERSARIAL:
+      - If T9 passes against stubs, ground_plan stub is too permissive (returning empty vec).
+        Test: stub must use todo!() or unimplemented!(), not return placeholder.
+      - If T12 (auto-resolution) uses real file system without temp dir cleanup, tests leak files.
+        Test: all temp files created via tempfile crate or std::env::temp_dir, cleaned in drop.
+      - If T5 (test_check) runs actual cargo test in a subprocess, test runtime explodes.
+        Test: T5 must use a mock test runner, not spawn cargo.
+    ACCEPTANCE:
+      - >= 16 test functions exist
+      - All tests fail against stubs (TDD contract)
+      - Zero network calls in test code
+      - Zero timing-dependent code in tests
+      - All temp files use tempfile crate (no manual path construction)
+
+  2B.4 IMPLEMENT: verification methods + plan sweep
+    PRE_GATE:
+      - Step 2B.3 complete (tests written, all currently fail)
+      - No other session owns reasoning/ files
+        (checked by mcp_session_claim at EXECUTING entry)
+    TASK:
+      Implement verification methods and plan grounding sweep:
+
+      I1. LocalVerifier implementation (FILE_CHECK, SOURCE_CHECK, TEST_CHECK):
+          LocalVerifier takes Box<dyn TestRunner> at construction (dependency injection for D8).
+
+          FILE_CHECK: use tools::read_file(path, None, None) to check file existence.
+            Claim format: file path (the "file:" prefix is stripped before passing to read_file).
+            If FileReadResult returned: passes=true, evidence="File exists: {path}, {total_lines} lines".
+            If tools returns Error::NotFound: passes=false, evidence="File not found: {path}".
+            Grounding: tools.txt section 2 (L23) defines read_file(path, start_line?, end_line?) -> FileReadResult.
+
+          SOURCE_CHECK: use tools::read_file(path, None, None) + string search.
+            Claim = symbol_name (from grounding string). Context = file_path (from verify_claim context param, see D7).
+            Read file via read_file, search content for symbol patterns:
+              regex: r"(fn|struct|enum|trait|impl|const|static|type|mod)\s+{symbol_name}\b"
+            If found: passes=true, evidence="Found {kind} {name} at {file}:{line}".
+            If not: passes=false, evidence="Symbol {name} not found in {file}".
+
+          TEST_CHECK: delegate to injected TestRunner (see D8).
+            Claim = test_name. Context = crate_name.
+            Production TestRunner: CargoTestRunner calls BashSandbox::execute(
+              "cargo test --exact {name} -p {crate}", sandbox_config) with 30s timeout.
+            Grounding: tools.txt section 9 (L184-186) defines BashSandbox::execute(command, sandbox_config) -> BashResult.
+            If BashResult.exit_code == 0: passes=true, evidence="Test {name} passed".
+            If non-zero: passes=false, evidence="Test {name} failed: {stderr}".
+            If timeout: passes=false, evidence="Test {name} timed out after 30s".
+
+      I2. NetworkVerifier stubs (WEB_CHECK, API_CHECK, API_REGISTRY_CHECK):
+          Phase 2B implements the trait and dispatch but NOT real network calls.
+          WEB_CHECK: returns VerificationError("network verification not implemented in phase 2B").
+          API_CHECK: same stub behavior.
+          API_REGISTRY_CHECK: same stub behavior.
+          Rationale: real network verification requires provider integration and is deferred
+          to when providers/ is connected to reasoning/ (or when 4A provides IPC proxy).
+          The Verifier trait and dispatch are complete; only the network backends are stubbed.
+
+      I3. verify_claim implementation on BasicGrcEngine:
+          Replace unimplemented!() stub from phase 2A.
+          Signature change (D7): fn verify_claim(&self, claim: &str, source: &str, context: &str)
+            -> Result<VerificationResult, GrcError>
+          Parse claim to determine VerificationMethod (from grounding format "type:reference"):
+            "file:..." -> FileCheck (strip "file:" prefix, pass remainder as claim path),
+            "grep:..." -> FileCheck (grep is file-based, strip "grep:" prefix),
+            "test:..." -> TestCheck (strip "test:" prefix, use context as crate name),
+            "search:..." -> WebCheck (strip "search:" prefix),
+            "tool:..." -> SourceCheck (strip "tool:" prefix, use context as file path),
+            "training:..." -> no verification (flag as UNCERTAIN, return VerificationResult with passes=false).
+          Dispatch to appropriate Verifier via self.verifier.verify(method, stripped_claim, context).
+          BasicGrcEngine holds a Box<dyn Verifier> (injected at construction for testability).
+          NOTE: the "type:" prefix is ALWAYS stripped before passing to the Verifier.
+          The Verifier receives the raw reference, not the grounding format string.
+
+      I4. ground_plan implementation on BasicGrcEngine:
+          Replace unimplemented!() stub from phase 2A.
+          Signature change (D6): fn ground_plan(&self, plan: &str) -> PlanGroundingResult
+            (was Vec<GroundingResult> in 2A stub — see D6 for rationale)
+          Algorithm:
+            1. Parse plan text into claims using grounding format regex
+               (pattern: "type:reference" where type in {file,grep,test,search,tool,training}).
+            2. For each claim, call verify_claim().
+            3. Classify result: passes=true -> GROUNDED, passes=false -> UNGROUNDED.
+               Claims with type "training" -> VERIFY_NEEDED (attempt FILE_CHECK/SOURCE_CHECK
+               auto-resolution; if that fails, UNGROUNDED).
+            4. Construct PlanGroundingResult { claims, all_grounded, ungrounded, verify_needed }.
+            5. Empty plan (0 claims) -> PlanGroundingResult { all_grounded: true, ... }.
+          verified_at: obtained from injected TimeSource (core::entropy).
+
+      I5. UNCERTAIN claim auto-resolution:
+          When GRC encounters a step with GroundingLevel::Uncertain:
+            - Extract the claim reference from the grounding string.
+            - Attempt FILE_CHECK (if claim looks like a path) or SOURCE_CHECK (if claim
+              looks like a symbol name).
+            - If verification passes: promote to GroundingLevel::Verified.
+            - If verification fails or claim is not file/source-resolvable: keep Uncertain.
+          This is called during think() for steps with Uncertain grounding (enhance phase 2A logic).
+
+    DETERMINISTIC_CHECK:
+      - All 16 tests from step 2B.3 pass
+        Command: cd .elai_cc && cargo test -p reasoning -- --nocapture 2>&1 | grep "test result:" | grep -q "0 failed"
+      - Phase 2A tests still pass (regression check)
+        Command: cd .elai_cc && cargo test -p reasoning 2>&1 | grep "test result:" | grep -q "0 failed"
+      - No todo!() or unimplemented!() in verification.rs or engine.rs verify_claim/ground_plan
+        Command: grep -c "todo!\|unimplemented!" .elai_cc/crates/reasoning/src/verification.rs | grep -q "^0$"
+        Command: grep -A30 "fn verify_claim" .elai_cc/crates/reasoning/src/engine.rs | grep -c "todo!\|unimplemented!" | grep -q "^0$"
+        Command: grep -A30 "fn ground_plan" .elai_cc/crates/reasoning/src/engine.rs | grep -c "todo!\|unimplemented!" | grep -q "^0$"
+      - No unwrap() in verification.rs
+        Command: grep -c "\.unwrap()" .elai_cc/crates/reasoning/src/verification.rs | grep -q "^0$"
+      - Network stubs return VerificationError (not panic):
+        Command: grep -c "todo!\|unimplemented!\|panic!" .elai_cc/crates/reasoning/src/verification.rs | grep -q "^0$"
+    ADVERSARIAL:
+      - If verify_claim parses "file:src/main.rs" but passes "file:src/main.rs" (including prefix)
+        as the path to FILE_CHECK, it will look for a file literally named "file:src/main.rs".
+        Test: T1/T2 use actual file paths without the "file:" prefix in the FILE_CHECK call.
+      - If ground_plan regex is too greedy, it may match "file:" inside code snippets or comments
+        in the plan text. Test: add an adversarial test with a plan containing "the word file:fake
+        in a comment" — should not be extracted as a claim.
+      - If TEST_CHECK spawns cargo with no timeout, a hanging test blocks verification indefinitely.
+        Test: T5 mock must verify that timeout is set (check Command args or mock interface).
+      - If Box<dyn Verifier> is not injected, BasicGrcEngine cannot be tested with mocks.
+        Test: constructor takes verifier parameter, tests pass mock verifier.
+    ACCEPTANCE:
+      - All 16+ tests pass, 0 failures
+      - All phase 2A tests still pass (0 regressions)
+      - No todo!/unimplemented!/unwrap()/panic! in verification.rs
+      - verify_claim and ground_plan are no longer stubs
+      - Network stubs return typed errors (not panics)
+
+  2B.5 MEASURE: verification performance
+    PRE_GATE:
+      - Step 2B.4 complete (all tests pass)
+    TASK:
+      - Measure FILE_CHECK latency (target: <2ms for local file existence check)
+      - Measure SOURCE_CHECK latency (target: <10ms for reading + searching a 1000-line file)
+      - Measure ground_plan latency for a plan with 20 claims (target: <100ms total)
+      - Record: test count, LOC, compile time delta from Phase 2A baseline
+      - Record: number of verification methods implemented vs stubbed (should be 3/6)
+      - Write metrics to .elai_cc/metrics/phase_2B.toml
+    DETERMINISTIC_CHECK:
+      - Metrics file exists with required fields
+        Command: test -f .elai_cc/metrics/phase_2B.toml && grep -q "file_check_latency_us" .elai_cc/metrics/phase_2B.toml
+        Command: grep -q "source_check_latency_us" .elai_cc/metrics/phase_2B.toml
+        Command: grep -q "plan_sweep_latency_us" .elai_cc/metrics/phase_2B.toml
+        Command: grep -q "methods_implemented" .elai_cc/metrics/phase_2B.toml
+      - FILE_CHECK < 2ms (2000us)
+        Command: val=$(grep "file_check_latency_us" .elai_cc/metrics/phase_2B.toml | grep -oP '\d+'); [ "$val" -lt 2000 ] && echo PASS || echo "FAIL: $val >= 2000"
+      - SOURCE_CHECK < 10ms (10000us)
+        Command: val=$(grep "source_check_latency_us" .elai_cc/metrics/phase_2B.toml | grep -oP '\d+'); [ "$val" -lt 10000 ] && echo PASS || echo "FAIL: $val >= 10000"
+      - plan_sweep < 100ms (100000us)
+        Command: val=$(grep "plan_sweep_latency_us" .elai_cc/metrics/phase_2B.toml | grep -oP '\d+'); [ "$val" -lt 100000 ] && echo PASS || echo "FAIL: $val >= 100000"
+    ADVERSARIAL:
+      - If SOURCE_CHECK benchmark uses a 10-line file, latency looks great but doesn't reflect
+        real usage (1000+ line files). Test: benchmark must use a file of >= 1000 lines.
+      - If plan_sweep benchmark uses 1 claim, it doesn't test scaling. Test: benchmark uses 20 claims.
+    ACCEPTANCE:
+      - .elai_cc/metrics/phase_2B.toml exists with all required fields
+      - FILE_CHECK latency < 2000us
+      - SOURCE_CHECK latency < 10000us (for 1000-line file)
+      - plan_sweep latency < 100000us (for 20-claim plan)
+      - cargo test -p reasoning: 0 failures
+
+
+EXIT CRITERIA
+  All 6 verification methods have type-level representation (VerificationMethod enum).
+  3 methods fully implemented (FILE_CHECK, SOURCE_CHECK, TEST_CHECK).
+  3 methods stubbed with typed errors (WEB_CHECK, API_CHECK, API_REGISTRY_CHECK).
+  verify_claim dispatches to correct verifier based on grounding format.
+  ground_plan decomposes plan into claims, verifies each, returns PlanGroundingResult.
+  Ungrounded claims detected and reported (all_grounded == false when any claim fails).
+  UNCERTAIN grounding auto-resolved via FILE_CHECK/SOURCE_CHECK where possible.
+  Empty plan handled (trivially grounded, no panic).
+  All 16+ tests pass. All phase 2A tests still pass.
+  Zero todo!/unimplemented!/unwrap()/panic! in verification code.
+  No network calls in any test.
+
+
+GROUNDING SUMMARY
+  "6 verification methods: FILE_CHECK, SOURCE_CHECK, TEST_CHECK, WEB_CHECK, API_CHECK, API_REGISTRY_CHECK"
+    -> GROUNDED: reasoning.txt section 4 (L46-55)
+  "Binary pass/fail verification"
+    -> GROUNDED: MiniCheck (EMNLP 2024, arxiv:2404.10774) validates binary claim-level fact-checking.
+       Google Vertex AI grounding uses binary grounded/ungrounded in fast mode.
+       Our methods are deterministic checks (file exists or not), inherently binary.
+  "Structural claim decomposition (regex, not NLI)"
+    -> GROUNDED: RARR (arxiv:2210.08726) uses LLM-based decomposition for semantic claims.
+       Our claims are typed structural references ("type:reference" format from phase 2A).
+       Regex extraction of this known format is deterministic and sufficient.
+  "Plan grounding sweep blocks EXECUTING"
+    -> GROUNDED: reasoning.txt section 4 L64-65, section 11 L199
+  "GroundingResult includes verified_at"
+    -> GROUNDED: reasoning.txt L184
+  "tools/ as reasoning/ dependency"
+    -> GROUNDED: implementation-guide.txt L64 crate map
+  "No circular dep (tools -> knowledge, knowledge !-> reasoning)"
+    -> VERIFIED: implementation-guide.txt L65 (tools depends on core, knowledge),
+       L64 (reasoning depends on core, providers, tools). knowledge does not depend on reasoning.
+  "Verifier trait must be Send + Sync"
+    -> VERIFIED (inference): phase 4A uses process isolation with IPC (reasoning.txt section 9, L134).
+       IPC implies cross-thread boundaries. L137 defines GroundingRequest message but does not
+       explicitly state Send+Sync. Inferred from architecture, not directly cited.
+  "FILE_CHECK <2ms, SOURCE_CHECK <10ms targets"
+    -> UNGROUNDED: assumed reasonable for local file I/O + string search. Will verify empirically in 2B.5.
+  "3/6 methods implemented in 2B, 3 network-dependent stubbed"
+    -> GROUNDED: reasoning.txt section 9 (L134) states agents have no network access (except researcher).
+       Network methods need orchestrator proxy (phase 4A). Implementing them before 4A would create
+       dead code or require temporary network access that gets removed later.

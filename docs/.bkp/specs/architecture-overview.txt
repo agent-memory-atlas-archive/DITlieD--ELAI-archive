@@ -1,0 +1,359 @@
+ELAI_CC ARCHITECTURE OVERVIEW
+Version: 1.0 (split from design_document.txt v0.9)
+Date: 2026-04-05
+Status: PROPOSAL — ready for walking skeleton implementation
+
+Reference: full design detail in per-crate specs (docs/specs/crates/),
+integration specs (docs/specs/integration/), decisions (docs/specs/decisions/).
+Original monolith preserved at docs/elai_cc_design_document.txt.
+
+
+1. WHAT WE ARE BUILDING
+
+elai_cc is a Rust-native LLM workflow system.
+Not a CLI assistant. A development engine where the human provides input
+and the system executes the full development cycle.
+
+Implementation order: INTERACTIVE (HITL) first, AUTONOMOUS second.
+The entire pipeline — knowledge engine, reasoning, tools, RAG, orchestration —
+must be validated end-to-end in INTERACTIVE mode before autonomous auto-advance
+is enabled. INTERACTIVE is the foundation; AUTONOMOUS is built on top of it.
+
+Two deliverables:
+  D1: elai_cc — standalone workflow tool (personal use first)
+  D2: elai_cc-empire — merge with Empire's factory-brain + factory-static (collaborative)
+  D1 must be battle-tested before D2.
+
+Core properties:
+  - Model-agnostic: cloud + local (Gemma 4 31B as primary local executor)
+  - Per-project: all state, indexes, graphs, RAG live inside project directory
+  - Deterministic-first: ALL outputs verified by deterministic scripts, even LOC counts
+  - Entropy-quarantined: all time/randomness through injectable traits (ClockProvider,
+    EntropySource). Zero raw std::time or rand access. Enables deterministic simulation
+    testing where same seed = same output, guaranteed. See core.txt section 4.
+  - Token-efficient: msgpack storage, postcard wire format, phase-aware context loading
+  - Never-compact: use full context smartly, hand off to new session if exhausted
+  - INTERACTIVE-first: HITL validated end-to-end before autonomous auto-advance
+  - Clean model: no system prompt biases, no pre-injected instructions from harness
+  - Code-driven orchestration: models receive ~330 tokens of meta-instructions per turn,
+    not 1600-2600. Workflow logic is Rust code, not prompts. See integration/prompt-architecture.txt
+  - Simulation-testable: FSM + SSB + BSP is a pure state machine F(State, Event) -> State.
+    Tested via deterministic simulation (madsim) + stateful property-based testing (proptest).
+    Reference model (digital sibling) serves as infallible oracle. See Phase 3I.
+  - Path-agnostic: Windows + Linux without path assumptions
+  - Open-source compliant: no proprietary deps, clean licensing
+
+
+2. BASE — CLAW-CODE-RUST-PORT FORK
+
+Starting point: claw-code-rust-port Rust workspace.
+Replaces CruciTitan (session 6 decision — see decisions/base-fork-comparison.txt).
+VERIFIED: compiles cleanly (cargo check 26.24s, 0 errors, 13 cosmetic warnings).
+
+Key stats (verified 2026-04-06 from local copy at .elai_cc/rust/):
+  61,317 LOC, 69 .rs files, 684 tests.
+  Runtime: 25,035 LOC across 38 modules (18 more than CruciTitan).
+  ~10,000 LOC of infrastructure maps directly to elai_cc design.
+  NOTE: older measurements (59,449 LOC, 666 tests) appear in base-fork-comparison.txt — stale.
+
+Full module mapping: crates/orchestrator.txt and crates/core.txt.
+Critical changes to base: crates/core.txt section "STRIP/REPLACE".
+
+
+3. CRATE ARCHITECTURE
+
+elai_cc/
+  Cargo.toml (workspace)
+  crates/
+    core/           — config, paths, logging, serde, platform, token counting
+    providers/      — LLM provider trait + implementations + layer-level optimizations
+    knowledge/      — codebase understanding engine (DKG, BM25, vectors, CatRAG)
+    reasoning/      — GRC engine + hallucination mitigation + grounding verification
+    orchestrator/   — FSM, agents, sessions, parallelism, lifecycle
+    tools/          — file ops, bash, git, validation, AST scan
+    plugins/        — hook system, skill system, MCP bridge
+    rules/          — deterministic behavior enforcement engine
+    cli/            — REPL, slash-command routing, rendering, input, args (thin)
+
+Full spec per crate: docs/specs/crates/{name}.txt
+
+
+4. TRAIT BOUNDARIES (the contracts between crates)
+
+providers::LlmProvider
+  fn complete(prompt, config) -> Stream<Token>
+  fn embed(text) -> Vec<f32>
+  fn token_count(text) -> usize
+  fn token_count_estimate(text) -> usize   (sampling-based, 31.9)
+  Implementations: Anthropic, OpenAI, Ollama, VllmLocal, LlamaCpp
+
+providers::LayerConfig
+  Per-model inference optimizations (DoLa, TurboQuant, steering vectors).
+  Phase split: OllamaConfig (Phase 0-1), VllmConfig (Phase 2+).
+  Detail: crates/providers.txt
+
+knowledge::KnowledgeEngine
+  fn build_graph(project_root) -> DependencyGraph
+  fn query(query, strategy) -> Vec<CodeChunk>
+  fn rerank(query, candidates) -> Vec<CodeChunk>
+  fn update(file_changed) -> ()
+  fn readiness_check() -> ReadinessStatus (READY | DEGRADED | UNAVAILABLE)
+  7 layers: DKG, BM25, Vectors (dual-model), SPLADE (optional), PageRank, CatRAG, A-RAG.
+  Cross-encoder reranker (ms-marco-MiniLM, CPU) after A-RAG, before token-budget fitting.
+  Resilience: per-model circuit breaker (transient/permanent classification, exponential
+    backoff+jitter, fresh session on probe, success threshold=2 in HALF_OPEN), graceful
+    degradation (HYBRID->SPARSE->BM25_ONLY), startup readiness gate (canary embedding
+    drift check), query validation, cross-encoder concurrency control.
+  Detail: crates/knowledge.txt
+
+reasoning::GrcEngine  [full trait defined in 2A, methods implemented per phase]
+  fn think(&mut self, step: ThinkStep) -> Result<ThinkResult, GrcError>  [2A]
+  fn set_budget(&mut self, topic: &str, max_calls: u32, max_chars: u32)  [2A]
+  fn get_budget(&self, topic: &str) -> Option<&GrcBudget>                [2A]
+  fn reset_topic(&mut self, topic: &str)                                 [2A]
+  fn verify_claim(&self, claim: &str, source: &str, context: &str) -> Result<VerificationResult, GrcError>  [2B]
+  fn ground_plan(&self, plan: &str) -> PlanGroundingResult               [2B]
+  fn generate_csq(&self, function_id: &str, sensitive_ops: &[String]) -> Result<CsqResult, GrcError>  [2D]
+  fn check_inline_feasibility(&mut self, claim: &str, sources: &[String]) -> Result<InlineFeasibilityResult, GrcError>  [2D]
+    Note (2B): verify_claim dispatches to Verifier trait by VerificationMethod.
+    context param: used by SOURCE_CHECK (file path) and TEST_CHECK (crate name).
+    ground_plan returns PlanGroundingResult (decompose plan -> verify each claim).
+    3/6 methods implemented (FILE/SOURCE/TEST), 3 stubbed (WEB/API/API_REGISTRY).
+    Note (2D): generate_csq produces CsqCheck per sensitive_op (Critical/Warning severity).
+    check_inline_feasibility: max 2 calls via InlineFeasibilityState counter.
+    FeasibilityOutcome: Pass (proceed), Fail (use plan), Blocked (CONTRADICTS_PLAN: -> replan).
+  Protocol: observe(grounding) -> hypothesize(grounding) -> plan_action -> act -> verify(grounding)
+  State validation: GrcState::allowed_next() enforces valid transitions.
+  Budget: per-topic, forced convergence at remaining_calls<=1.
+  Errors: GrcError { UngroundedStep, BudgetExhausted, InvalidTransition, MalformedGrounding }
+  Detail: crates/reasoning.txt
+
+orchestrator::Fsm
+  fn get_state() -> FsmState
+  fn transition(target, phase) -> Result<()>
+  fn get_active_tools(state) -> Vec<ToolId>
+  fn get_active_rules(state) -> Vec<RuleId>
+  fn token_budget_remaining() -> usize
+  States (linear): IDLE -> PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST -> EXECUTING -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE
+  Additional transitions:
+    PLANNING -> TESTING_FIRST (skip FEASIBILITY_PROBE, common path)
+    EXECUTING -> PLANNING (ReplanRequest, see orchestrator.txt §13)
+    AUDITING -> EXECUTING (fix BLOCKs, re-audit cycle)
+    AUDITING -> PLANNING (dead-end declaration, abandon current approach)
+
+orchestrator::AgentPool
+  fn spawn(role, task) -> AgentHandle
+  fn spawn_parallel(tasks) -> Vec<AgentHandle>
+  fn communicate(from, to, message) -> ()
+  Resource-aware: checks VRAM before spawning.
+  Detail: crates/orchestrator.txt
+
+rules::RuleEngine
+  fn evaluate(action, context) -> RuleVerdict (ALLOW, BLOCK, WARN)
+  fn get_active_rules(fsm_state, file_context) -> Vec<Rule>
+  Deterministic evaluation — no LLM in rule checking.
+  Detail: crates/rules.txt
+
+tools::ToolRegistry
+  fn execute(tool_id, params) -> ToolResult
+  fn available_tools(fsm_state) -> Vec<ToolId>
+  Phase-filtered tool access.
+  Detail: crates/tools.txt
+
+
+5. DATA FLOW (end to end for a single task)
+
+  Human input
+    |
+  [PLANNING] — Research Agent (tree-structured, FlashResearch) + GRC grounding sweep
+    |           Output: ResearchTree + PipelineSpec (TOML) + QualitySpec
+    v
+  [FEASIBILITY_PROBE] — system probe + novel step stubs
+    |                    Hardware: nvml-wrapper (GPU VRAM), sysinfo (RAM/disk)
+    |                    Stubs: <50 lines, Tier C sandbox, 30s hard timeout
+    |                    Branch-and-explore: max 3 alternatives per novel step (SSB branching)
+    |                    Skip: when novel_steps empty AND resource margin >= 20%
+    |                    Escalation: 3 failures -> human (INTERACTIVE) or replan (AUTONOMOUS)
+    |                    Output: stub_results.msgpack (FeasibilityReport)
+    v
+  [TESTING_FIRST] — write tests for current phase
+    |                Output: test files (all failing for right reasons)
+    v
+  [EXECUTING] — implement to pass tests
+    |            GRC inline feasibility on new claims
+    |            ShortCoder post-processing on generated code
+    v
+  [AUDITING] — adversarial review + 5-tier validation pipeline
+    |           Failure taxonomy classification before reasoning
+    |           Output: audit_report
+    v
+  [MEMORIZING] — update knowledge engine + changelog
+    |             Output: changelog_entry + DKG updated
+    v
+  Next phase or [COMPLETE] -> [IDLE]
+
+  Cross-cutting:
+    SSB (Shared State Board): all agent writes go through single-writer SQLite WAL.
+    BSP supersteps: channel state updated atomically between phases.
+    SessionDag (CMV-derived): DAG-based state versioning with lossless trimming.
+    Evidence gates: every transition requires artifact, not self-assessment.
+    Agent checkpointing: per-agent msgpack snapshots, crash-safe resume.
+    Context budget allocator: fixed-slot ordering with cache breakpoints.
+    phase_complete SSB record: atomic durability marker at phase boundary.
+      Written BEFORE model unload. fsync to WAL before unload proceeds.
+      Crash before record -> phase re-executed. Crash after -> phase skipped.
+
+
+6. EXECUTION MODES
+
+Implementation order: INTERACTIVE is built and validated first. AUTONOMOUS is
+enabled only after the full pipeline passes end-to-end in INTERACTIVE mode.
+All phases (0-3) target INTERACTIVE. AUTONOMOUS auto-advance added in Phase 4.
+
+INTERACTIVE (primary, implemented first): human-in-the-loop at every phase transition.
+  Each gate pauses with evidence + reasoning + proposed next step.
+  Human can approve, modify, reject, redirect.
+  This is the mode used to validate the entire pipeline — knowledge engine, GRC,
+  FSM, tools, RAG, rules, agents — before any autonomous behavior is enabled.
+  Human can switch to AUTONOMOUS after INTERACTIVE is proven (Phase 4+).
+
+AUTONOMOUS (secondary, built on validated INTERACTIVE): human provides task,
+  system runs full cycle to completion.
+  Phase gates auto-advance on evidence artifact pass.
+  Dangerous actions reviewed by auditor agent, not human.
+  Escalates to human only after 3x anti-spiral on same issue.
+  Prerequisite: full INTERACTIVE pipeline validated end-to-end (Phase 3 exit gate).
+
+Risk levels per gate:
+  LOW:    MEMORIZING -> next phase (auto in both modes)
+  MEDIUM: PLANNING -> TESTING_FIRST (auto in AUTONOMOUS, pause in INTERACTIVE)
+  HIGH:   dangerous actions, file deletion (pause in both modes)
+
+
+7. HARDWARE TARGET
+
+PHASE 0 (initial testing): 1x RTX 3060 12GB.
+  Single local model only: Gemma 4 E2B (~7.2GB Q4_K_M via ollama, 2.3B effective params).
+  Purpose: validate workflow mechanics, FSM loop, tool integration.
+  Not for quality benchmarks — just proving the pipeline works end-to-end.
+  Leaves ~5GB headroom for embedding model (~1.5GB) + OS overhead.
+  All agent roles use the same model. No swapping needed.
+  Model storage: D:\Ollama (OLLAMA_MODELS env var).
+
+PRODUCTION TARGET: 2x RTX 3090 24GB (48GB total VRAM).
+  Sequential model loading (24GB cannot hold two ~18-20GB models simultaneously).
+  Only parallelism: large model (~18-20GB) + embedding model (~1.5GB) on separate GPUs.
+
+  GPU scheduling table:
+    PLANNING/EXECUTING:  GPU0: executor (Gemma4 31B ~18-20GB), GPU1: embedding (~1.5GB)
+    AUDITING:            GPU0: auditor (DeepSeek-R1 ~18-20GB), GPU1: embedding
+    MEMORIZING:          GPU0: memory-writer (~4GB), GPU1: idle
+    Swap cost: ~15-30 seconds at phase boundaries (measure on actual hardware).
+    Detail: crates/orchestrator.txt section "Model Lifecycle"
+
+
+8. END-TO-END LATENCY BUDGET
+
+  Measured from user input to first visible agent action.
+  Phase 0 target hardware: 1x RTX 3060 12GB, Gemma 4 E2B (2.3B effective).
+  Production target hardware: 2x RTX 3090 24GB, Gemma 4 31B.
+
+  Component                    Phase 0 target    Production target
+  CLI input parsing            <5ms              <5ms
+  FSM transition + evidence    <10ms             <10ms
+  Knowledge engine query       <500ms            <200ms (GPU embedding)
+  Context budget assembly      <50ms             <50ms
+  Prompt construction          <10ms             <10ms
+  Model first-token latency    ~2-5s (7B)        ~3-8s (31B)
+  IPC overhead (Tier C)        N/A (in-process)  <5ms per message (e2e incl. tool exec)
+    Note: raw IPC ~0.1ms (orchestrator.txt L554), dispatch overhead <2ms (phase-4B target)
+  Model swap (phase boundary)  N/A (single model) 15-30s (measure)
+
+  End-to-end budget (same-model turn): <6s (Phase 0), <10s (production).
+  End-to-end budget (model swap turn): N/A (Phase 0), <40s (production).
+  Measure on actual hardware. These are targets, not commitments.
+  Stored in: .elai_cc/metrics/latency_budget.toml
+
+
+9. AGENT ROLES
+
+executor:         Gemma 4 31B (local) or cloud fallback
+designer:         Gemma 4 31B (reuses executor model). Produces PipelineSpec from
+                    Research Report + user task. Distinct role from executor
+                    (different role_prompt, GRC steps, output format).
+context-compiler: Llama 4 Scout 109B (if hardware allows) or cloud
+prompt-engineer:  Qwen 3.5 27B (dense, structural fidelity)
+auditor:          DeepSeek-R1-Distill-32B (adversarial, DoLa-amplified in Phase 2+)
+memory-writer:    smallest capable model (GLM-4.5-Air or 8B class)
+researcher:       cloud API preferred or Gemma4 local with web search
+media_validator:  Tier 2 only, loaded on demand. Two modes:
+                    Mode A (single image): Qwen3.5-VL-30B-A3B MoE Q4_K_M (~17GB VRAM) via ollama
+                    Mode B (image sequence): InternVL3.5-38B 8-bit (~38GB) via SGLang only
+                    Phase 0 (12GB): mock VLM only. Production (2x 3090): Mode A on 1 GPU, Mode B on both.
+                    Audio Tier 2: CLAP (~200M params, ~0.4GB FP16) via ONNX Runtime CPU EP
+
+All routing configurable in elai_cc.toml.
+Per-agent GRC budgets and FSM sub-states: crates/reasoning.txt, crates/orchestrator.txt.
+
+
+10. DEPENDENCIES
+
+KEEP from claw-code:
+  tokio, serde/serde_json, reqwest, rustyline, pulldown-cmark, syntect, crossterm
+
+ADD:
+  rmp-serde (msgpack), tree-sitter + grammars, rusqlite, tantivy, git2,
+  tracing + tracing-subscriber, postcard, heapless, dirs, uuid, toml,
+  rand (behind EntropySource trait only — direct use banned by clippy lint)
+
+ADD:
+  ort (ONNX Runtime — GraphCodeBERT, Granite, cross-encoder, optionally SPLADE)
+  tokenizers (BERT WordPiece tokenization — required by cross-encoder and SPLADE. ort does NOT include tokenization.)
+
+NOTE (decided during Phase 1H improvement, 2026-04-06):
+  SPLADE model candidates: prithivida/Splade_PP_en_v1 (532MB ONNX, 436MB int8 quantized) and naver/splade-v3 (arxiv 2403.06789, requires ONNX export via sentence-transformers optimum — exported graph outputs raw MLM logits, pooling must be applied in Rust).
+  SPLADE vocab risk: BERT WordPiece (30522 tokens, trained on Wikipedia/BookCorpus) may poorly tokenize code identifiers. Phase 1H includes vocabulary coverage pre-check before recall evaluation.
+
+ADD (dev/test only):
+  proptest (property-based contract tests for rules crate Predicate DSL)
+  madsim (deterministic simulation runtime — replaces tokio in DST tests)
+
+ADD (decided during Phase 1C improvement, 2026-04-06):
+  usearch (HNSW vector similarity — v2.24.0 confirmed on crates.io, Rust bindings)
+  blake2 (content hashing for vector cache — Blake2s256, 80M+ downloads)
+
+EVALUATE:
+  fastembed (Rust ONNX embedding wrapper — wraps ort internally, version conflict risk if used alongside raw ort. Crate slug is "fastembed" not "fastembed-rs")
+  nvml-wrapper (GPU VRAM detection)
+  turmoil (tokio-native network simulation — lighter alternative to madsim for IPC tests)
+  SPLADE (sparse learned embeddings — deferred to Phase 1G measurement cycle per phase-1C scope decision. ~500MB model. Drop if <5% recall gain over BM25)
+
+
+11. FILE MAP (where to find what)
+
+docs/specs/
+  architecture-overview.txt          THIS FILE (the map)
+  implementation-plan.txt            Walking skeleton phases + implementation cycle
+  crates/
+    core.txt                         Config, paths, serde, token counting, strip/replace list
+    providers.txt                    LLM providers, LayerConfig, model lifecycle
+    knowledge.txt                    DKG, BM25, vectors, CatRAG, A-RAG, PageRank repo map
+    reasoning.txt                    GRC engine, grounding verification, CSQ, per-agent config
+    orchestrator.txt                 FSM, agents, sessions, parallelism, SSB, BSP, checkpointing
+    tools.txt                        File ops, bash, git, DAIRA trace, ShortCoder, edit matching
+    plugins.txt                      Hook system, skill system, MCP bridge
+    rules.txt                        Rule engine, rule types, phase-aware enforcement
+    cli.txt                          REPL, rendering, input handling
+  integration/
+    empire.txt                       D2 integration plan, wire format, networking, ECS evaluation
+    pipeline-factory.txt             L1/L2/L3, templates, composition, tool discovery, QualitySpec
+    self-modification.txt            Godel pattern, 3 layers, rollback, FunSearch mapping
+    media-validator.txt              Two-tier validation, VLM, ComfyUI, external tools
+  decisions/
+    base-fork-comparison.txt         CruciTitan vs claw-code analysis
+    external-analysis.txt            OMC, LangGraph, Aider adopted/rejected patterns
+    audit-results.txt                All adversarial audit findings and resolutions
+    risk-register.txt                R1-R60 consolidated
+    technical-analysis-v3.txt        5 concerns: local, context, proactive, breakdown, dispatch
+
+docs/elai_cc_design_document.txt     ARCHIVE — original monolith, do not edit

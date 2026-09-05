@@ -1,0 +1,463 @@
+PHASE 3G: HIERARCHICAL PLAN MANAGEMENT
+Prerequisites: Phase 3D complete (BSP supersteps + channels operational),
+  Phase 3E complete (context budget allocator, needed for Slot 3 sizing in step 3G.4)
+Depends on: orchestrator::SSB (action_type='plan_update'), orchestrator::ContextBudget (Slot 3),
+  providers::token_count, providers::token_count_estimate
+NOTE: implementation-guide.txt dependency graph shows 3E and 3G as parallel siblings from 3D.
+  This is incorrect — 3G.4 requires 3E's Slot 3 allocator. Graph should show 3D -> 3E -> 3G.
+  Alternatively, steps 3G.1-3G.3 and 3G.5-3G.6 can proceed without 3E; only 3G.4 blocks on it.
+  Recommended: keep parallel start but gate 3G.4 on 3E completion (partial parallelism).
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Two-artifact plan representation: skeleton (fits 2-4k tokens, always in Slot 3) + per-phase
+elaboration (loaded on demand). Contract extraction propagates interface changes to dependent
+phases. Coherence enforcement prevents elaboration drift from skeleton intent.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          Section 9 (hierarchical plan management)
+  docs/specs/integration/pipeline-factory.txt Section 2 (PipelineSpec structure, L2 builder)
+  docs/specs/crates/orchestrator.txt          Section 6 (Slot 3 PhaseSpec budget)
+  docs/specs/crates/providers.txt             Section 1 (token_count vs token_count_estimate)
+
+RISKS TO WATCH
+  R23: Plan skeleton may exceed 4k on very large plans. One-liner per phase enforcement.
+  R24: Contract extraction may miss implicit dependencies (e.g. shared constraints not in
+    inputs/outputs). Mitigation: explicit constraints field per phase entry.
+  R25: Coherence check false positives if auditor interprets contracts too strictly.
+    Mitigation: auditor checks structural contract match, not semantic equivalence.
+  R26: Version counter monotonicity lost on concurrent skeleton edits from parallel sessions.
+    Mitigation: SSB single-writer guarantees sequential writes; version read-modify-write
+    is atomic within a session (single-writer tokio::mpsc, orchestrator.txt Section 3).
+
+
+TYPES (from orchestrator.txt section 9, design PART 26)
+
+  struct PlanSkeleton {
+      pipeline_id: PipelineId,
+      phases: IndexMap<PhaseId, PhaseEntry>,  // ordered, preserves insertion order
+      global_constraints: Vec<String>,        // cross-cutting invariants — grounded: orchestrator.txt L237 "Shared constraints"
+      version: u32,                           // skeleton-level version — grounded: orchestrator.txt L245 "Version number in skeleton incremented"
+      created_at: u64,                        // via ClockProvider — UNGROUNDED (standard practice, not in spec)
+      updated_at: u64,                        // via ClockProvider — UNGROUNDED (standard practice, not in spec)
+  }
+
+  struct PhaseEntry {
+      phase_id: PhaseId,
+      goal: String,                           // one-liner, max 120 chars
+      inputs: Vec<ContractRef>,               // what this phase receives from dependencies
+      outputs: Vec<ContractRef>,              // what dependents expect from this phase
+      constraints: Vec<String>,               // phase-specific invariants
+      depends_on: Vec<PhaseId>,
+      depended_by: Vec<PhaseId>,
+      version: u32,                           // per-phase version, independent of skeleton version
+      output_type: Option<OutputType>,        // media output type (None for non-visual phases)
+      visual_check: bool,                     // trigger render-capture-evaluate loop (default false)
+  }
+  // output_type + visual_check: see media-validator.txt section 7 (Render-Capture-Evaluate).
+  // When visual_check=true, L2 validates that a MediaRenderAdapter exists for output_type.
+  // When output_type=None, visual_check must be false (enforced at validation time).
+
+  struct ContractRef {
+      name: String,                           // e.g. "AgentPool::write(action)"
+      type_signature: String,                 // e.g. "fn(SsbAction) -> Result<SsbSeq>"
+      invariants: Vec<String>,                // e.g. ["append-only within session"]
+  }
+
+  struct PhaseDetail {
+      phase_id: PhaseId,
+      skeleton_version: u32,                  // skeleton version at time of elaboration — UNGROUNDED (implied by orchestrator.txt L245, not explicit)
+      contracts: ExtractedContracts,          // prepended to detail (see contract extraction)
+      implemented_contracts: Vec<ContractRef>,// contracts this phase actually implements (structured, for coherence check 1)
+      declared_interfaces: Vec<ContractRef>,  // all pub interfaces this phase introduces (structured, for coherence check 2)
+      content: String,                        // full elaboration text
+      token_count: usize,                     // exact count via providers::token_count
+  }
+
+  struct ExtractedContracts {
+      input_contracts: Vec<ContractRef>,      // from dependency phases' outputs
+      output_contracts: Vec<ContractRef>,     // from dependent phases' inputs
+      shared_constraints: Vec<String>,        // cross-cutting invariants from skeleton
+  }
+
+  Storage (dual-path, TOML authoritative):
+    Skeleton:     .elai_cc/pipelines/{id}/skeleton.toml (authoritative, TOML file on disk)
+    Phase detail: .elai_cc/pipelines/{id}/phases/{phase_id}.toml (authoritative, TOML file on disk)
+    SSB audit:    action_type='plan_update' (every write also recorded in SSB for audit trail)
+    NOTE: orchestrator.txt L250 references SQL query "SELECT * FROM plan_phases WHERE ...".
+    This is conceptual shorthand — there is no plan_phases table in SSB schema (which only has
+    ssb + ssb_files). Implementation: query SSB with action_type='plan_update' filter +
+    JSON payload extraction for phase_id/dependency lookups. Or: introduce a plan_phases
+    view/table as a spec amendment (requires user confirmation per CLAUDE.md).
+
+
+SKELETON TOML FORMAT (from orchestrator.txt L219-226)
+
+  [phase.3B]
+  goal = "SSB single-writer SQLite WAL"
+  inputs = ["AgentPool::write(action)", "FSM::phase_transition()"]
+  outputs = ["ssb::query(filter) -> Vec<SsbRow>"]
+  constraints = ["append-only within session", "conflict detection on file_path"]
+  depends_on = ["3A"]
+  depended_by = ["3C", "3D"]
+  version = 3
+
+
+TOKEN COUNTING STRATEGY (from providers.txt, same as Phase 3E)
+
+  Skeleton token budget: use token_count_estimate for allocation checks during editing,
+  token_count (exact) for final validation on write. If exact count exceeds 4096 tokens,
+  reject the write with SkeletonBudgetExceeded error. The 4096 limit is a hard cap;
+  well-formed skeletons with one-liner goals should fit in ~1-2k tokens for 20-phase plans.
+  Phase detail token count: measured on write, stored in PhaseDetail.token_count.
+  Slot 3 loading: skeleton_tokens + active_phase_detail_tokens must fit within
+  SlotAllocation for ContextSlot::PhaseSpec (see Phase 3E context budget allocator).
+
+
+CONTRACT EXTRACTION ALGORITHM (from orchestrator.txt L234-239)
+
+  Before elaborating Phase X, extract contracts in 3 steps:
+  1. Input contracts: for each dep in X.depends_on, collect dep.outputs.
+     These are what Phase X receives — the elaboration must consume them.
+  2. Output contracts: for each dep in X.depended_by, collect dep.inputs.
+     These are what Phase X must produce — the elaboration must provide them.
+  3. Shared constraints: collect skeleton.global_constraints + X.constraints.
+     These are invariants the elaboration must respect.
+  Result: ExtractedContracts struct prepended to phase detail before elaboration.
+  The model elaborates AGAINST contracts, not against full plan text.
+
+
+COHERENCE ENFORCEMENT (from orchestrator.txt L241-246)
+
+  After elaboration, auditor checks 3 things:
+  1. Phase detail satisfies all input/output contracts from skeleton.
+     Check: every ContractRef in ExtractedContracts has a corresponding
+     implementation reference in the elaboration text.
+  2. No new interfaces introduced that skeleton does not declare.
+     Check: parse elaboration for function signatures / type definitions
+     not present in skeleton's inputs/outputs/constraints.
+  3. Version number in skeleton incremented if contracts changed.
+     Check: if elaboration modifies any ContractRef, skeleton.phases[X].version
+     must be > previous value, AND skeleton.version must be > previous value.
+  Violation -> auditor emits BLOCK finding. Elaboration rejected until fixed.
+
+
+STUB REFERENCES (from orchestrator.txt L62, action_type='stub_reference')
+
+  When a skeleton references a phase that has not yet been elaborated, it holds a stub:
+  the PhaseEntry exists in the skeleton (with goal, contracts, dependencies) but the
+  corresponding PhaseDetail file does not exist yet. On skeleton write, for each phase
+  without a PhaseDetail file, emit SSB action_type='stub_reference' with payload
+  { phase_id, skeleton_version }. This allows the orchestrator to track which phases
+  need elaboration and prioritize them. When a PhaseDetail is written for a stub phase,
+  the stub_reference is superseded (no deletion needed — SSB is append-only).
+
+
+DEPENDENCY PROPAGATION (topological traversal)
+
+  When a phase's contracts change (detected by version increment):
+  1. Build directed graph from depends_on / depended_by edges.
+  2. Starting from changed phase, BFS/topological traversal of depended_by edges.
+  3. For each reached phase: set needs_review = true in SSB (action_type='plan_update',
+     payload includes { phase_id, reason: "dependency_contract_changed", source_phase }).
+  4. Phases flagged needs_review must be re-elaborated before execution.
+  Cycle detection: DAG property enforced on skeleton write (reject if cycle detected).
+  Algorithm: Kahn's algorithm for topological sort — O(V+E), standard for DAGs.
+  Rationale: Kahn's detects cycles as a side effect (remaining nodes after sort = cycle members).
+
+
+STEPS
+
+  3G.1 TYPES AND SKELETON SCHEMA
+    PRE_GATE:
+      - Phase 3D tests pass: cargo test -p orchestrator --lib bsp -- --exact
+      - SSB operational: action_type='plan_update' writable (Phase 3B)
+      - ContextBudget types exist (Phase 3E): ContextSlot::PhaseSpec accessible
+      - providers::token_count callable
+    TASK:
+      - Define PlanSkeleton, PhaseEntry, ContractRef, PhaseDetail, ExtractedContracts
+      - Implement serde Serialize/Deserialize for TOML format
+      - PlanSkeleton::new(pipeline_id) initializes with empty phases, version=0
+      - PhaseEntry::new(phase_id, goal) with validation: goal.len() <= 120 chars
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib plan_skeleton -- --exact (compiles, types correct)
+      - PlanSkeleton::new(id).version == 0
+      - PlanSkeleton::new(id).phases.is_empty() == true
+      - PhaseEntry::new(id, "x".repeat(121)) returns Err (goal too long)
+      - Round-trip: skeleton -> TOML string -> parse -> skeleton (field equality)
+    ADVERSARIAL:
+      - If PhaseEntry.depends_on contains self-reference, cycle detection (3G.6) must catch it.
+        Test: PhaseEntry { phase_id: "3G", depends_on: ["3G"] } -> reject on skeleton write.
+      - If ContractRef.type_signature is empty, coherence check (3G.5) cannot verify implementation.
+        Test: ContractRef with empty type_signature -> validation warning (not error, some contracts are textual).
+    ACCEPTANCE:
+      - All types compile with serde derives, TOML round-trip works
+      - Goal length validation enforced
+    GROUNDING:
+      - "skeleton.toml format" -> GROUNDED: orchestrator.txt L219-226 (exact TOML example)
+      - "PhaseEntry fields" -> GROUNDED: orchestrator.txt L219-226 (goal, inputs, outputs, constraints, depends_on, depended_by, version)
+      - "IndexMap for ordered phases" -> VERIFIED: indexmap crate preserves insertion order (crates.io docs)
+
+  3G.2 SKELETON SERIALIZATION AND TOKEN ENFORCEMENT
+    PRE_GATE:
+      - 3G.1 types exist and compile
+      - providers::token_count and token_count_estimate available
+    TASK:
+      - Implement PlanSkeleton::write_to_file(path) with token budget enforcement
+      - Serialize to TOML, measure with token_count_estimate first (fast check)
+      - If estimate > 3600 (safety margin for 4096 hard cap): measure with exact token_count
+      - If exact > 4096: return Err(SkeletonBudgetExceeded { actual, limit: 4096 })
+      - Write to .elai_cc/pipelines/{id}/skeleton.toml
+      - Record in SSB as action_type='plan_update'
+      - For each phase without a PhaseDetail file: emit action_type='stub_reference'
+      - Version enforcement: if any contract field changed since last write,
+        phase.version and skeleton.version must be incremented (reject otherwise)
+      - Implement PlanSkeleton::read_from_file(path)
+    DETERMINISTIC_CHECK:
+      - Skeleton with 20 phases, one-liner goals (~80 chars each): token count < 2000
+      - Skeleton with 50 phases, max-length goals (120 chars each): token count < 4096
+      - Skeleton with 50 phases + verbose constraints: token count > 4096 -> Err returned
+      - Read after write: identical struct (round-trip)
+      - SSB contains plan_update entry after write
+    ADVERSARIAL:
+      - If token_count_estimate underestimates by >15% (rare tail per providers.txt section 10),
+        skeleton could pass estimate but fail exact. Test: the 3600 safety margin catches this —
+        verify by injecting an estimate of 3500 with true count of 4100 -> exact check triggers, rejects.
+      - If TOML serialization adds unexpected whitespace/comments, token count is inflated.
+        Test: serialize -> count -> deserialize -> reserialize -> count: both counts equal.
+    ACCEPTANCE:
+      - Skeletons with <=50 one-liner phases fit within 4096 tokens
+      - SkeletonBudgetExceeded returned when exceeded, never silently truncated
+      - SSB plan_update recorded on every write
+    GROUNDING:
+      - "2-4k token budget" -> GROUNDED: orchestrator.txt L215 ("~2-4k tokens, always loaded in Slot 3")
+      - "4096 hard cap" -> GROUNDED: orchestrator.txt L608 testable invariant ("Plan skeleton fits within 4k tokens")
+      - "SSB plan_update" -> GROUNDED: orchestrator.txt L248 ("action_type='plan_update'")
+      - "token_count_estimate then exact" -> GROUNDED: phase-3E.txt TOKEN COUNTING STRATEGY
+
+  3G.3 CONTRACT EXTRACTION
+    PRE_GATE:
+      - 3G.1 types exist (PlanSkeleton, ExtractedContracts)
+      - 3G.2 skeleton read works (can load skeleton from file)
+    TASK:
+      - Implement PlanSkeleton::extract_contracts(phase_id) -> Result<ExtractedContracts>
+      - Step 1: input_contracts = union of dep.outputs for dep in phase.depends_on
+      - Step 2: output_contracts = union of dep.inputs for dep in phase.depended_by
+      - Step 3: shared_constraints = skeleton.global_constraints + phase.constraints
+      - Return Err if phase_id not found in skeleton
+    DETERMINISTIC_CHECK:
+      - Skeleton: A(outputs=[x]) -> B(depends_on=[A], depended_by=[C]) -> C(inputs=[y])
+        extract_contracts("B") -> input_contracts=[x], output_contracts=[y],
+        shared_constraints=[skeleton.global + B.constraints]
+      - Phase with no dependencies: input_contracts = [], output_contracts = []
+      - Phase with circular depends_on (impossible if 3G.6 cycle detection works): Err
+      - extract_contracts("nonexistent") -> Err(PhaseNotFound)
+    ADVERSARIAL:
+      - If a dependency phase was removed from skeleton but still referenced in depends_on,
+        extraction fails silently with missing contracts. Test: extract_contracts returns Err
+        if any depends_on/depended_by phase_id is not in skeleton.phases.
+      - If two dependency phases export the same contract name with different type_signatures,
+        conflict. Test: detect duplicate contract names with differing signatures, return
+        Err(ContractConflict { name, phase_a, phase_b }).
+    ACCEPTANCE:
+      - Contract extraction matches orchestrator.txt L234-239 algorithm exactly
+      - Missing dependency phases detected and reported
+      - Contract name conflicts detected
+    GROUNDING:
+      - "3-step extraction" -> GROUNDED: orchestrator.txt L234-239
+      - "contracts prepended to phase detail" -> GROUNDED: orchestrator.txt L238-239
+
+  3G.4 PHASE ELABORATION LOADING
+    PRE_GATE:
+      - 3G.2 skeleton read works
+      - 3G.3 contract extraction works
+      - Phase 3E context budget allocator operational (Slot 3 sizing)
+    TASK:
+      - Implement load_phase_context(skeleton, phase_id) -> PhaseContext
+      - Load skeleton (always) + active phase detail + extracted contracts
+      - Verify combined token count fits within Slot 3 allocation from ContextBudget
+      - If combined exceeds Slot 3 budget: trigger adaptive reduction per Phase 3E
+        (ReducedGranularity: load skeleton + contracts only, defer full phase detail)
+      - PhaseDetail stores skeleton_version at elaboration time for staleness detection
+      - Adjacent phase contracts loaded for cross-reference (one hop in dependency graph)
+    DETERMINISTIC_CHECK:
+      - load_phase_context with Slot 3 budget = 2000, skeleton = 800, phase_detail = 1000,
+        contracts = 150: total 1950 < 2000, fits.
+      - Same with phase_detail = 1500: total 2450 > 2000 -> reduction attempted
+      - PhaseDetail.skeleton_version < skeleton.version: staleness warning emitted
+      - Adjacent contracts (one hop) included: if B depends on A and C depends on B,
+        loading B includes A.outputs and C.inputs
+    ADVERSARIAL:
+      - If skeleton grows (new phases added) while phase detail was elaborated against
+        older skeleton, contracts may be stale. Test: skeleton_version mismatch detection
+        forces re-extraction before loading.
+      - If Slot 3 budget is very small (e.g. 500 tokens on tiny model), even skeleton alone
+        may not fit. Test: if skeleton_tokens > slot3_budget, return Err(SlotBudgetExceeded)
+        — system cannot operate without skeleton.
+    ACCEPTANCE:
+      - Combined skeleton + detail + contracts fits within Slot 3 allocation
+      - Staleness detection works (skeleton_version mismatch)
+      - Reduction attempted before failure
+    GROUNDING:
+      - "skeleton in Slot 3" -> GROUNDED: orchestrator.txt L215 ("always loaded in Slot 3")
+      - "skeleton + active phase detail" -> GROUNDED: orchestrator.txt L231
+      - "adjacent contracts" -> GROUNDED: orchestrator.txt L249-250 (SQL: dependencies_of, dependents_of)
+
+  3G.5 COHERENCE ENFORCEMENT
+    PRE_GATE:
+      - 3G.3 contract extraction works
+      - 3G.4 phase elaboration loading works
+      - Auditor agent operational (Phase 3C)
+    TASK:
+      - Implement coherence_check module in orchestrator crate (library functions,
+        invoked BY auditor agent via IPC ToolRequest, not a standalone component).
+        The auditor agent calls these checks; orchestrator provides the logic.
+        3 checks (orchestrator.txt L241-246):
+        Check 1: phase detail satisfies all input/output contracts from skeleton
+        Check 2: no new interfaces introduced that skeleton does not declare
+        Check 3: version incremented if contracts changed
+      - Check 1: compare PhaseDetail.implemented_contracts against ExtractedContracts.
+        Every ContractRef in extracted must have a matching entry in implemented.
+        Match by name + type_signature. Missing -> BLOCK finding.
+      - Check 2: compare PhaseDetail.declared_interfaces against skeleton's declared
+        interfaces (union of phase inputs/outputs). Undeclared -> BLOCK finding.
+        This is a structured set comparison, NOT free-text parsing.
+      - Check 3: if PhaseDetail modifies any ContractRef fields, assert phase.version
+        and skeleton.version both incremented. If not -> BLOCK finding.
+      - Emit findings to SSB as auditor findings (action_type='finding')
+    DETERMINISTIC_CHECK:
+      - PhaseDetail.implemented_contracts is superset of ExtractedContracts: 0 BLOCK findings
+      - implemented_contracts missing one ContractRef from extracted: 1 BLOCK for check 1
+      - declared_interfaces contains ContractRef not in skeleton interfaces: 1 BLOCK for check 2
+      - PhaseDetail modifies contract without version increment: 1 BLOCK for check 3
+      - All three violations simultaneously: 3 BLOCK findings
+      - All checks are deterministic set operations (no text parsing, no heuristics)
+    ADVERSARIAL:
+      - If PhaseDetail.declared_interfaces is not populated by the elaboration pipeline,
+        check 2 always passes (empty set has no undeclared items). Test: coherence_check
+        returns Err if declared_interfaces is empty (elaboration must self-declare).
+      - If version check (check 3) compares against stale cached version, changes are missed.
+        Test: always read current skeleton.version from file/SSB, never from in-memory cache.
+    ACCEPTANCE:
+      - All 3 coherence checks implemented per orchestrator.txt L241-246
+      - BLOCK findings emitted for each violation type
+      - Zero false positives on valid elaborations in test suite
+    GROUNDING:
+      - "3 coherence checks" -> GROUNDED: orchestrator.txt L241-246 (exact spec)
+      - "BLOCK finding" -> GROUNDED: orchestrator.txt L246 ("flag for re-review")
+      - "structured set comparison" -> GROUNDED: deterministic by construction (no text parsing)
+
+  3G.6 DEPENDENCY PROPAGATION AND VERSION TRACKING
+    PRE_GATE:
+      - 3G.1 types exist (depends_on/depended_by fields)
+      - 3G.5 coherence enforcement detects version changes
+      - SSB operational for needs_review flagging
+    TASK:
+      - Implement PlanSkeleton::propagate_changes(changed_phase_id)
+      - Build directed graph from depended_by edges
+      - BFS from changed_phase_id through depended_by: flag each reached phase needs_review=true
+      - Record each flagged phase in SSB: action_type='plan_update',
+        payload { phase_id, reason: "dependency_contract_changed", source_phase }
+      - Cycle detection on skeleton write using Kahn's algorithm
+      - Version tracking: phase.version += 1 on any contract field change,
+        skeleton.version += 1 on any phase version change
+      - Skeleton split operation: PlanSkeleton::split_phase(phase_id, split_points) must
+        carry a preserve_contracts: bool flag (default true). When true, the split operation:
+        (a) copies input contracts to the first sub-phase, (b) copies output contracts to the
+        last sub-phase, (c) creates internal contracts between adjacent sub-phases.
+        This ensures L2 Phase Sizing (pipeline-factory.txt Stage 3.5) can split large phases
+        without breaking contract propagation. Max split depth: 2 (matches Phase 4G SPLIT_TASK).
+        Source: technical-analysis-v3.txt Concern 4 (Layer 2 Phase Sizing), orchestrator.txt §9.
+    DETERMINISTIC_CHECK:
+      - Chain A -> B -> C -> D: change A's contracts -> B, C, D all flagged needs_review
+      - Diamond A -> B, A -> C, B -> D, C -> D: change A -> B, C, D flagged (D flagged once)
+      - Isolated phase E (no depended_by): change E -> no propagation
+      - Cycle detection: A -> B -> C -> A in depends_on -> Err(CycleDetected { phases: [A,B,C] })
+      - Version: change A.outputs -> A.version += 1 -> skeleton.version += 1
+      - Split with preserve_contracts=true: phase B (inputs from A, outputs to C) split into
+        B1, B2 -> B1 gets A's inputs, B2 gets C's outputs, B1->B2 has internal contract
+      - Split with preserve_contracts=false: sub-phases get empty contracts (caller responsible)
+    ADVERSARIAL:
+      - If BFS visits already-flagged phases redundantly (diamond case), SSB gets duplicate entries.
+        Test: visited set prevents re-flagging. SSB entries for same phase_id + source_phase deduplicated.
+      - If version increment overflows u32 on extremely long-lived plans (2^32 edits), UB.
+        Test: version uses checked_add, returns Err on overflow. Practically unreachable
+        but defensive coding.
+    ACCEPTANCE:
+      - Transitive propagation works for chains, diamonds, and forests
+      - Cycle detection rejects invalid dependency graphs
+      - Version tracking is monotonic and correct
+      - SSB records all propagation events
+    GROUNDING:
+      - "flag for re-review" -> GROUNDED: orchestrator.txt L246
+      - "Kahn's algorithm" -> VERIFIED: standard topological sort, O(V+E), detects cycles as side effect
+      - "single-writer sequential" -> GROUNDED: orchestrator.txt L48-49 (SSB single-writer channel)
+      - "DAG property" -> GROUNDED: implementation-guide.txt DEPENDENCY GRAPH (acyclic by construction)
+
+  3G.7 INTEGRATION TEST: FULL PLAN LIFECYCLE
+    PRE_GATE:
+      - All prior steps (3G.1-3G.6) pass individually
+      - SSB operational, context budget allocator operational
+    TASK:
+      - Integration test: full plan lifecycle
+        1. Create skeleton with 5 phases (A -> B -> C, A -> D, D -> E)
+        2. Write skeleton, verify token count < 4096, SSB recorded
+        3. Extract contracts for phase B, verify inputs from A and outputs to C
+        4. Load phase context for B, verify fits within Slot 3 allocation
+        5. Simulate elaboration, run coherence check, verify 0 BLOCK findings
+        6. Modify phase A contracts, propagate changes, verify B and C flagged
+        7. Verify version increments correct throughout
+      - Test with realistic phase content (not minimal stubs)
+    DETERMINISTIC_CHECK:
+      - Full lifecycle completes without error
+      - Skeleton token count measured and within budget
+      - Contract extraction returns correct inputs/outputs for each phase
+      - Coherence check passes for valid elaboration, fails for invalid
+      - Propagation flags correct phases after contract change
+      - SSB contains complete audit trail (plan_update entries for every mutation)
+      - Run 100x: identical results (determinism proof, entropy quarantined)
+      - stub_reference entries emitted for phases without PhaseDetail files
+    ADVERSARIAL:
+      - If integration test uses hardcoded token counts instead of real providers::token_count,
+        count mismatch in production. Test: use real tokenizer (or mock that tracks call count),
+        never hardcode expected token values.
+      - If SSB entries from other tests leak into integration test, assertions fail on counts.
+        Test: each integration test uses unique pipeline_id (UUID via EntropyProvider).
+      - If ClockProvider is not injected, created_at/updated_at fields are non-deterministic
+        and the 100-run determinism test will fail. Test: inject mock ClockProvider with fixed
+        timestamps. Grep for Instant::now or SystemTime::now in plan_skeleton module: assert 0.
+    ACCEPTANCE:
+      - Full lifecycle end-to-end passes
+      - All SSB entries verifiable
+      - Deterministic across 100 runs
+      - Token budget enforcement verified with real tokenizer
+    GROUNDING:
+      - "plan_update in SSB" -> GROUNDED: orchestrator.txt L248
+      - "SQL queries for plan phases" -> GROUNDED: orchestrator.txt L250
+      - "not RAG/vector search" -> GROUNDED: orchestrator.txt L249 ("NOT in RAG/vector search")
+
+
+MEASURE
+  - Skeleton token count (target: <2000 for 20-phase plans, <4096 hard cap)
+  - Contract extraction time (target: <10ms for 50-phase skeleton)
+  - Coherence check time per elaboration
+  - Propagation time for worst-case diamond graph (50 phases)
+  - SSB plan_update entry count per lifecycle
+  - Compile time delta (before/after phase 3G additions)
+  - Test count (new tests added)
+  - LOC added/modified
+  - Coverage of plan_skeleton, contract_extraction, coherence_check modules
+
+EXIT CRITERIA
+  - Plans fit token budget (skeleton <4096, skeleton + detail fits Slot 3 allocation)
+  - Contract extraction matches orchestrator.txt L234-239 algorithm
+  - Contract changes propagate to all transitive dependents (needs_review flag)
+  - Coherence enforcement catches all 3 violation types
+  - Auditor BLOCK findings emitted for violations
+  - Cycle detection rejects invalid dependency graphs
+  - Version tracking is monotonic (phase-level and skeleton-level)
+  - All mutations recorded in SSB as action_type='plan_update'
+  - stub_reference emitted for un-elaborated phases on skeleton write
+  - Deterministic: same inputs -> same skeleton, contracts, propagation (ClockProvider injected)
+  - Contract tests exist in tests/contracts/ for PlanSkeleton, PhaseDetail, CoherenceChecker

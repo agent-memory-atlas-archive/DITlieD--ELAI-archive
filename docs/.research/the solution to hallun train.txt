@@ -1,0 +1,39 @@
+the solution to this is actually something you already solved in your chat log: your "pre/pos quality control" workflow. You do not blindly feed the big model's output into your training dataset. You build a strict curation pipeline between the big model and your small model's training phase. Here is how you ensure the training data is pristine:
+1. Rejection Sampling (The "Best of N" approach)
+
+Instead of asking the big model for one idea per data point, you ask it for five. Then, you write a deterministic script (using Python or TS) to score those five ideas.
+
+    Does the idea contain banned generic phrases (e.g., "Uber for", "Tinder but")?
+
+    Does the proposed architecture actually map to the available static components?
+    You programmatically reject the bad ones and only keep the highest-scoring idea for your training dataset.
+
+2. Strict Prompt Engineering (The SCAMPER implementation)
+
+You mentioned using the SCAMPER method. You must enforce this heavily in the teacher model's prompt. You don't just ask for an idea; you force the model to show its work in a structured format (like JSON).
+
+    Substitute: [Model must reference specific proxy data here]
+
+    Combine: [Model must list exact GitHub repos it is merging]
+
+    Output Idea: [Final SaaS concept]
+
+If the JSON output doesn't explicitly link back to the provided Hacker News or App Store data, your script throws the data point away. It never reaches the small model.
+3. Grounding via Deterministic Verification
+
+A limitation to account for is that LLMs cannot do math or logic reliably. But code can. If the LLM suggests a SaaS idea based on a "massive spike in GitHub stars," your quality control script should double-check the raw data input to ensure that spike actually existed before approving the training pair.
+The Final Pipeline
+
+Your workflow looks like this:
+
+    Scrape: Gather raw proxy data.
+
+    Generate: Big model generates highly constrained ideas.
+
+    Filter (Crucial Step): Your deterministic scripts filter out hallucinations, generic ideas, and malformed JSON.
+
+    Train: You fine-tune your custom small model only on the heavily filtered, verified "golden" dataset.
+
+By the time the data reaches your small model, all the hallucinations have been mathematically and programmatically stripped out. Your small model only learns the pure, grounded logic.
+
+When you are writing the "pre/post quality control" scripts to filter out those hallucinations, what specific metrics or red flags are you planning to track to instantly reject a bad idea?

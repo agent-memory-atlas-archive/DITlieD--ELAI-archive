@@ -47,7 +47,7 @@ MODEL: Qwen2.5-Coder-3B-Instruct (3.09B params, 36 layers)
 PYTHON ENV: elai-fa2 (Python 3.12, PyTorch 2.6+cu124, flash-attn 2.7.4)
   Created because FA2 has no prebuilt wheel for Python 3.13 on Windows.
   Wheel from: huggingface.co/lldacing/flash-attention-windows-wheel
-  Path: C:/Users/LieD/miniconda3/envs/elai-fa2/python.exe
+  Path: C:/Users/user/miniconda3/envs/elai-fa2/python.exe
 
 SIDECAR CHANGES:
   1. Auto-detect FA2: tries import flash_attn, falls back to SDPA
@@ -389,7 +389,7 @@ SIDECAR SERVER:
     - torch_dtype -> dtype (transformers 5.5 deprecation)
 
 FA2 PYTHON ENV:
-  C:\maintainer\miniconda3\envs\elai-fa2\python.exe (Python 3.12)
+  C:\Users\user\miniconda3\envs\elai-fa2\python.exe (Python 3.12)
   flash-attn 2.7.4 prebuilt wheel for cu124+torch2.6+cp312+win_amd64
 
 MODELS:
@@ -406,14 +406,14 @@ BENCHMARK:
 START COMMANDS:
   Sidecar (Qwen 3B NF4 + FA2):
     cd F:\.ELAI_workflow\.elai_cc\python
-    C:\maintainer\miniconda3\envs\elai-fa2\python.exe -m elai_inference.server \
+    C:\Users\user\miniconda3\envs\elai-fa2\python.exe -m elai_inference.server \
       --model F:/.ELAI_workflow/.elai_cc/models/Qwen2.5-Coder-3B-Instruct \
       --port 8100 --no-dola --turboquant-bits 0 --no-steering \
       --max-tokens 512 --log-level INFO
 
   Benchmark:
     cd F:\.ELAI_workflow\.elai_cc\benches\model_capability
-    C:\maintainer\miniconda3\envs\elai-fa2\python.exe -u run_benchmark.py \
+    C:\Users\user\miniconda3\envs\elai-fa2\python.exe -u run_benchmark.py \
       --config bench_config.toml --endpoint http://127.0.0.1:8100
 
 
@@ -421,13 +421,13 @@ START COMMANDS:
 ENVIRONMENT
 ========================================================================
 
-Python env: elai-fa2 (C:\maintainer\miniconda3\envs\elai-fa2\)
+Python env: elai-fa2 (C:\Users\user\miniconda3\envs\elai-fa2\)
   Python 3.12, PyTorch 2.6.0+cu124, CUDA 12.4
   transformers 5.5.4, bitsandbytes 0.49.2, flash-attn 2.7.4
   optimum-quanto 0.2.7, hqq 0.2.8, turboquant 0.1.0 (editable)
   structlog, fastapi, uvicorn, orjson, httpx
 
-Legacy env: C:\maintainer\miniconda3\ (Python 3.13)
+Legacy env: C:\Users\user\miniconda3\ (Python 3.13)
   No FA2 (no prebuilt wheel for cp313 Windows)
   Still works for SDPA-only inference
 

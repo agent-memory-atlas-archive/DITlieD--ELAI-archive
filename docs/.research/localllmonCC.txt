@@ -1,0 +1,53 @@
+install ollama
+
+install the model
+ollama pull qwen3.5:4b
+
+
+install rust https://rustup.rs/
+cargo build --release
+
+go to the path where you cloned the claw
+access the rust folder 
+setup a home 
+
+set HOME=%USERPROFILE%
+.\target\release\claw.exe
+
+setup environment variables
+
+set ANTHROPIC_API_KEY=0
+set ANTHROPIC_BASE_URL=http://localhost:4000
+
+
+litellm
+pip install litellm
+
+
+make the config.yml
+
+model_list:
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: openai/qwen3.5:4b
+      api_base: http://localhost:11434/v1
+server:
+  host: 0.0.0.0
+  port: 4000
+  aliases:
+    /v1/api/generate: /v1/message
+
+
+go to where you created the config file
+
+and run 
+
+litellm --config config.yml
+
+
+
+
+
+
+set ANTHROPIC_API_KEY=0
+set ANTHROPIC_BASE_URL=http://localhost:4000/

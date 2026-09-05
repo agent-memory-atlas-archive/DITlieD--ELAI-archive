@@ -1,0 +1,7 @@
+Use a more research-focused backend like vLLM or Hugging Face Transformers.
+
+Load the raw gemma4:31b weights.
+
+Apply a custom TurboQuant wrapper for the KV cache (likely requiring some custom Python/CUDA implementation depending on the framework's current support).
+
+Implement or load a DoLa decoding script for the generation loop.

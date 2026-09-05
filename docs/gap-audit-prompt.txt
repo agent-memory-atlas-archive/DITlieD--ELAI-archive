@@ -1,0 +1,175 @@
+GAP AUDIT AND FIX PROMPT
+Copy-paste this into a fresh session.
+
+========================================================================
+
+You are auditing and fixing the implementation order for a project.
+All steps A-1 through A-31, 3K.1-3K.5, and B-1 through B-3 are DONE
+(implemented or have prompts written). But a cross-reference audit found
+that many steps are oversimplified and several features from the design
+documents have no step at all.
+
+Your job:
+1. Read every file listed below
+2. Cross-reference: for EVERY feature, type, table, formula, config field,
+   SQL schema, and integration point in the 6 design documents, verify it
+   is covered by an existing step in update-implementation-order.txt
+3. For items with NO step: add new A-steps (A-32+) to the implementation
+   order file AND add corresponding prompts to step-prompts.txt
+4. For items covered but OVERSIMPLIFIED: expand the existing step in
+   update-implementation-order.txt with the missing details, and update
+   the corresponding prompt in step-prompts.txt to include the missing
+   READ sections and task details
+5. Update dependency graph and parallelism sections after all changes
+
+IMPORTANT RULES:
+- Design additions that integrate INTO Phase 4 (4B/4C/4D/4E/4F/4G/4H/4I)
+  are NOT A-steps. They are listed as "DESIGN ADDITIONS TO 4X" checklists
+  in update-implementation-order.txt. Only add A-steps for features that
+  modify COMPLETED phases (pre-0 through 3J) or are standalone features.
+- The design files are the source of truth, not the step summaries.
+- Do NOT create steps for features that are correctly deferred to Phase 4.
+- Each new prompt in step-prompts.txt must follow the same format as
+  existing prompts (READ blocks, task, wire-it-in, prerequisite, then
+  [APPEND COMMON FOOTER]).
+
+========================================================================
+FILES TO READ (in this order):
+========================================================================
+
+PHASE SUMMARIES (understand what's already built):
+  F:\.ELAI_workflow\docs\specs\guide\steps\phase-index-pre0-2D.txt
+  F:\.ELAI_workflow\docs\specs\guide\steps\phase-index-3A-4J.txt
+
+THE 6 DESIGN DOCUMENTS (source of truth, read FULLY):
+  F:\.ELAI_workflow\docs\specs\guide\project-intelligence-design.txt
+  F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  F:\.ELAI_workflow\docs\specs\guide\code-completeness-enforcement-design.txt
+  F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+
+THE PHASE MAP (which phases each design modifies):
+  F:\.ELAI_workflow\docs\specs\guide\update-phase-map.txt
+
+THE CURRENT IMPLEMENTATION ORDER (what you're fixing):
+  F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+
+THE CURRENT PROMPTS FILE (what you're fixing):
+  F:\.ELAI_workflow\docs\specs\guide\step-prompts.txt
+
+========================================================================
+KNOWN GAPS FROM PRIOR AUDIT (verify these and fix all of them):
+========================================================================
+
+NEW STEPS NEEDED (no existing step covers these):
+
+1. Oracle Mode research pipeline [PM] — A-22 only adds the RESEARCHING
+   FSM state but the actual 7-phase research pipeline is missing: query
+   formulation, source tier classification (lookup table with 4 tiers),
+   fact extraction (ExtractedFact type, exact_quote), cross-verification,
+   synthesis constraint, post-verification, /research CLI command,
+   fallback classifier. Types: SourceTier, SourceClassification,
+   ExtractedFact, VerifiedClaim, ResearchAnswer, AnswerConfidence.
+   ~800-1200 LOC. Touches orchestrator/ and cli/.
+
+2. Project indexing wiring [PM] — DKG engine exists (Phase 1A) but is
+   NOT wired into the orchestrator. DkgEngine::new + build_graph are
+   never called outside examples/measure.rs. Orchestrator doesn't depend
+   on knowledge crate. Need IndexingService, orchestrator dependency,
+   first /task trigger. Documented gap in PM design section 1B.
+   ~150-250 LOC. Blocks both surgical and oracle modes.
+
+3. MICRO tier per-slot optimizations [TE] — per-slot token targets not
+   in A-10: SystemPrompt=200 (strip explanations), Rules=150 (top 5 by
+   priority), SSB=200 (last 2 entries compressed), GRC=100 (conclusion
+   only), OutputReserve=750 (hard limit). Plus telescope layer skipping
+   for MICRO (skip Layers 1-2).
+
+4. Token reclamation techniques [TE] — formatting removal (24.5% token
+   savings, research-grounded), path abbreviation, import collapsing,
+   whitespace stripping. Language-specific: Python preserves indentation.
+
+5. RA self-discovery extension for Phase 3F — when auditor finds
+   recurring error pattern 3+ times, auto-propose new FailureTaxonomy
+   category + fix template. Not in A-19 or A-6. Touches rules/ crate.
+
+EXISTING STEPS THAT NEED EXPANSION:
+
+6. A-21 missing: cyclomatic complexity enforcement (max 10/function,
+   BLOCK), coupling score (max 15/file, BLOCK), error nodes detection
+   (T2 Check 1, tree-sitter ERROR nodes), magic number detection (T2
+   Check 5, moved from T1 per audit B-2), test file detection patterns
+   per language (Rust tests/ + _test.rs + #[cfg(test)], Python test_
+   prefix, etc.), 11-language file size table with 3 columns, exempt
+   extensions/paths config, GREP_PATTERN two optional fields detail.
+
+7. A-10 missing: full 8-slot allocation details per tier, tier-specific
+   OutputReserve (MICRO=750 vs LARGE=4000), telescope layer skipping
+   for MICRO tier.
+
+8. A-18 missing: 8-slot REPAIR_CONTEXT allocation (total 1400 tokens:
+   System 50 + BabyStep 200 + MistakeBook 150 + CodeContext 500 +
+   Example 300 + Fix 100 + Reserve 100), GenerationProfile type with
+   7 profiles (FIRST_ATTEMPT, MICRO_REFLECTION, INTERROGATION,
+   REPAIR_RETRY, TREE_BRANCH_A/B/C) and temperature/top-p per profile
+   (repair retries use T=1.0 top-p=1.0 per FixAudit research).
+
+9. A-20 missing: max 5 entries per baby step limit, oldest-evicted
+   overflow policy, CTIM-Rover guardrail (no variable names in
+   constraints, only structural patterns), forbidden_diffs as separate
+   constraint list concept.
+
+10. A-8 missing: DISABLED by default status. Steering measured NEUTRAL
+    on Qwen2.5-Coder-7B. Ship disabled, enable after domain-specific
+    pair testing.
+
+11. A-9 missing: DISABLED by default (threshold = f64::INFINITY until
+    calibration), ETC/DoLa incompatibility (must NOT stack on models
+    <32B, DoLa HARMFUL on 7B per measurement), target model for
+    calibration is Qwen2.5-Coder-7B not Gemma.
+
+12. A-4 missing: project-profile-overrides.toml (separate file, never
+    auto-generated, merged on load, survives regeneration), build system
+    priority ordering (language-native > package manager > task runner >
+    generic), command validation two-tier (TIER A static + TIER B
+    execution opt-in with consent), framework detection scale (~200
+    entries), test runner location patterns (same-file, adjacent,
+    separate dir, mixed) + coverage tool detection.
+
+13. A-5 missing: CRITICAL path-stripping for Windows (DKG stores
+    absolute paths, must strip_prefix(project_root) before clustering),
+    naming convention thresholds (>80%=STRONG auto-seed, 60-80%=MODERATE
+    WARN, <60%=MIXED), per-language error handling specifics (Rust
+    Result/?/error crate, Python try/except, Go if err != nil, TS
+    try/catch), DependencyProfile.classification_depth field (enum
+    declaration_only | usage_based), Tier B Rust-only limitation, rule
+    auto-promotion (SHADOW->ACTIVE after 5 successes) and retirement
+    (3+ false positives).
+
+14. A-11 missing: language-specific fix templates (Rust use crate::{},
+    Python from X import Y, Go import "pkg", TS import {} from ''),
+    baby step prompt injection ("{test_cmd} -p {affected_crate}"),
+    few-shot example selection algorithm (DKG similarity search),
+    decomposer receives ProjectProfile in context.
+
+15. A-12 missing: 4 auditor checks detail (FILE_SIZE_CENSUS on all
+    modified files, LAZY_CODE_SCAN full pattern set, COMPLETENESS vs
+    DECOMPOSITION_TREE, MODULE_COHERENCE per-language bridge/orphan),
+    per-language build command registry (7 languages from ProjectProfile),
+    5-step checking order.
+
+16. A-19 missing: actual question templates and choice labels for seed
+    trees (load-bearing content), traversal protocol (3-7 questions x
+    310 tokens), how terminal nodes map to FixTemplate (Layer 1 link).
+
+========================================================================
+AFTER ALL CHANGES:
+========================================================================
+
+- Verify the dependency graph is correct (no circular deps, all prereqs listed)
+- Verify parallelism sets are updated with new steps
+- Verify estimated total scope is updated
+- Verify step-prompts.txt has prompts for ALL new steps
+- Verify step-prompts.txt prompts for expanded steps include the new READ sections
+- Count total steps and report: "X steps total, Y new, Z expanded"

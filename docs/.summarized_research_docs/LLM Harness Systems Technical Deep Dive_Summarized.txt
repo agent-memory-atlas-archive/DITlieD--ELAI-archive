@@ -1,0 +1,67 @@
+LLM Harness Systems Technical Deep Dive
+
+2026 Architecture Shift: From static zero-shot scoring to stateful, multi-turn, agentic simulation environments with distributed infrastructure.
+
+Core Evaluation Frameworks:
+
+EleutherAI lm-evaluation-harness (v0.4+):
+- YAML configuration system replacing CLI-heavy approach
+- Three core commands: run, ls, validate
+- Jinja2 prompt templating with syntax validation
+- 60+ academic benchmarks support
+- generate_until_agentic for closed-loop tool calling
+
+lmms-eval (v0.7):
+- VLM evaluation with video decoding optimization
+- LMMS_VIDEO_DECODE_BACKEND selection (pyav, torchcodec, dali)
+- torchcodec threads=8 yields 3.58x throughput speedup
+- Lance-backed storage for gigabyte-scale video datasets
+- take_blobs API for memory-mapped file handles
+
+OpenCompass:
+- Distributed multi-GPU evaluation infrastructure
+- Tensor-parallel inference routing
+- Dynamic batching across heterogeneous hardware
+- Centralized configuration management
+- Support for 200+ model families
+
+DeepEval:
+- DAG-based evaluation with deterministic execution
+- Exact reproducibility guarantees
+- Mathematically verifiable assessment pipelines
+- Caching layers for computational efficiency
+- Support for complex multi-step reasoning tasks
+
+Inspect AI:
+- Containerized sandboxing for security
+- Browser automation integration
+- Multi-modal evaluation capabilities
+- State isolation between test runs
+- Extensive tool ecosystem support
+
+Subjective vs Objective Evaluation:
+
+LLM-as-a-Judge Systems:
+- Reference-free evaluation using frontier models
+- Claude 3.7/4.6 Opus: 91.3-95.4% on GPQA Diamond
+- Gemini 3.1 Pro: 94.3% on scientific reasoning
+- GPT-5.2/5.4: 92.0-92.4% accuracy
+- OpenAI o3-mini: 97.3% MATH 500 at 214 tokens/sec
+
+Objective Metrics:
+- Exact match, n-gram overlap, unit test resolution
+- Programmatic deterministic grading
+- Mathematical verification and formal proof systems
+
+2026 Performance Benchmarks:
+- Frontier models exceed human expert baselines
+- Agentic coding: SWE-bench Verified (Qwen 3.5: 76.4%, GLM-5: 77.8%)
+- Mini-SWE-agent: 74% resolution rate
+- DeepSeek models excel via Dynamic Sparse Attention architecture
+
+Critical Infrastructure Requirements:
+- Distributed GPU scaling for model parallelism
+- Advanced caching mechanisms (Redis, Memcached)
+- Container orchestration (Kubernetes, Docker)
+- Telemetry and tracing systems
+- Real-time monitoring and alerting

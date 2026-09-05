@@ -1,0 +1,320 @@
+[
+  {
+    "path": ".elai_cc/crates/cli/src/user_memory_capture.rs",
+    "kind": "provider-token",
+    "value_sha256": "21957e8d74df79eebd664931687444c288e1ff1fb26c84d7012d389e20bd8e8b",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/cli/tests/fixtures/security_token_mutant.json",
+    "kind": "provider-token",
+    "value_sha256": "685333b9dfc5893b4265896a55272f0df3fc126a75d69e3cb9314def198d36f9",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/cli/tests/l11_build_quality_gate_cli_smoke.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/contracts/tests/e20_privacy_block_on_path.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/contracts/tests/h31_user_memory_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "21957e8d74df79eebd664931687444c288e1ff1fb26c84d7012d389e20bd8e8b",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/contracts/tests/i44_zero_retention_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "24f50d31b3f0e36481076d59f481d54284803216edc477a074e72cf6f8a18670",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/contracts/tests/i44_zero_retention_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "ad8a3ae999ee721b84d6667d3efe2ac0de75793a680bc2e494ee3f5e3709ebe5",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/contracts/tests/i50_auth_broker_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "6bcc2ce1fd1af548ddee40108240d4904caace22fd53eeaee78d4c91333638e8",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/contracts/tests/j54_free_pool_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "83062f6d7d26880183181fa39ea926888b63ad0a4daef8c3f02ece71903f0dd1",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/contracts/tests/vibegate_per_tool_contract.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/memory/src/defense.rs",
+    "kind": "provider-token",
+    "value_sha256": "21957e8d74df79eebd664931687444c288e1ff1fb26c84d7012d389e20bd8e8b",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/memory/src/defense.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/output_filter.rs",
+    "kind": "aws-key",
+    "value_sha256": "743554670c6065b3f7f13ac4f07e392f977b3556ceb7457411633c454bcbece8",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/output_filter.rs",
+    "kind": "provider-token",
+    "value_sha256": "1e99528527992b20aeebe779487db851ec764c7191cd0801b88b859d4792daa0",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/secret_scan.rs",
+    "kind": "aws-key",
+    "value_sha256": "743554670c6065b3f7f13ac4f07e392f977b3556ceb7457411633c454bcbece8",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/secret_scan.rs",
+    "kind": "aws-key",
+    "value_sha256": "139fd7ab6af008b62a9fcd443638455759d4692573b16f21980a4a978713c2dd",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/secret_scan.rs",
+    "kind": "provider-token",
+    "value_sha256": "1e99528527992b20aeebe779487db851ec764c7191cd0801b88b859d4792daa0",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/secret_scan.rs",
+    "kind": "provider-token",
+    "value_sha256": "1b221e2feb87b9e99713e9f278899bde4ff963eb6e9bb3c181ae69248ac9bf41",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/secret_scan.rs",
+    "kind": "provider-token",
+    "value_sha256": "c54fc9095df91f60f66a1be18185db98bafefef26cf46c0dad0878782b342027",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/secret_scan.rs",
+    "kind": "provider-token",
+    "value_sha256": "f276f276085e32de5a102505d2635d1a0cde8c5221d7da5bee82cb0a42111968",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/secret_scan.rs",
+    "kind": "private-key",
+    "value_sha256": "8bcac7908eb950419537b91e19adc83ce2c9cbfdacf4f81157fdadfec11f7017",
+    "reason": "Private-key header detector or synthetic header-only test; no private key material."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy/secret_scan.rs",
+    "kind": "aws-key",
+    "value_sha256": "f27e29473204c1ba8dc6ea5ca36382a1abbde2695028a5fe3ad0c316fa76f655",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/privacy_redactor.rs",
+    "kind": "provider-token",
+    "value_sha256": "c54fc9095df91f60f66a1be18185db98bafefef26cf46c0dad0878782b342027",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/quarantine.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/redaction.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/vibegate.rs",
+    "kind": "private-key",
+    "value_sha256": "8bcac7908eb950419537b91e19adc83ce2c9cbfdacf4f81157fdadfec11f7017",
+    "reason": "Private-key header detector or synthetic header-only test; no private key material."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/vibegate_secrets.rs",
+    "kind": "private-key",
+    "value_sha256": "3021d90eb9437b2d8f30e8363695c4418b5e5f1870801b5c317e9398ee0f572d",
+    "reason": "Private-key header detector or synthetic header-only test; no private key material."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/vibegate_secrets.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/src/vibegate_secrets.rs",
+    "kind": "private-key",
+    "value_sha256": "8bcac7908eb950419537b91e19adc83ce2c9cbfdacf4f81157fdadfec11f7017",
+    "reason": "Private-key header detector or synthetic header-only test; no private key material."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/fixtures/redaction/secrets.txt",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/fixtures/redaction/secrets.txt",
+    "kind": "provider-token",
+    "value_sha256": "922000e9bdfb3a96f37a9b20e358b805ae2b0696e86147058e0ed3586feeea4d",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/fixtures/redaction/secrets.txt",
+    "kind": "provider-token",
+    "value_sha256": "f419886e26c74511ac3a28b1f9f8a7dff3ad6196518b8445d5b441c565b917e2",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/fixtures/redaction/secrets.txt",
+    "kind": "provider-token",
+    "value_sha256": "c54fc9095df91f60f66a1be18185db98bafefef26cf46c0dad0878782b342027",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/fixtures/redaction/secrets.txt",
+    "kind": "private-key",
+    "value_sha256": "8bcac7908eb950419537b91e19adc83ce2c9cbfdacf4f81157fdadfec11f7017",
+    "reason": "Private-key header detector or synthetic header-only test; no private key material."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/fixtures/redaction/secrets.txt",
+    "kind": "private-key",
+    "value_sha256": "3021d90eb9437b2d8f30e8363695c4418b5e5f1870801b5c317e9398ee0f572d",
+    "reason": "Private-key header detector or synthetic header-only test; no private key material."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/g7_confidence_quarantine_contract.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/g9_redaction_ttl_contract.rs",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/output_filter_contract.rs",
+    "kind": "aws-key",
+    "value_sha256": "743554670c6065b3f7f13ac4f07e392f977b3556ceb7457411633c454bcbece8",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/output_filter_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "1e99528527992b20aeebe779487db851ec764c7191cd0801b88b859d4792daa0",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/privacy_block_contract.rs",
+    "kind": "aws-key",
+    "value_sha256": "743554670c6065b3f7f13ac4f07e392f977b3556ceb7457411633c454bcbece8",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/privacy_block_contract.rs",
+    "kind": "aws-key",
+    "value_sha256": "139fd7ab6af008b62a9fcd443638455759d4692573b16f21980a4a978713c2dd",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/privacy_block_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "1e99528527992b20aeebe779487db851ec764c7191cd0801b88b859d4792daa0",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/privacy_block_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "c54fc9095df91f60f66a1be18185db98bafefef26cf46c0dad0878782b342027",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/privacy_block_contract.rs",
+    "kind": "provider-token",
+    "value_sha256": "f276f276085e32de5a102505d2635d1a0cde8c5221d7da5bee82cb0a42111968",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/privacy_block_contract.rs",
+    "kind": "private-key",
+    "value_sha256": "03d104c669e3c7b6be7f989db8b12c8b910d3be8c1e2a73c9369d3cc0ba803b5",
+    "reason": "Private-key header detector or synthetic header-only test; no private key material."
+  },
+  {
+    "path": ".elai_cc/crates/orchestrator/tests/privacy_block_contract.rs",
+    "kind": "aws-key",
+    "value_sha256": "f27e29473204c1ba8dc6ea5ca36382a1abbde2695028a5fe3ad0c316fa76f655",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/providers/src/runtime/free_pool/quota.rs",
+    "kind": "provider-token",
+    "value_sha256": "83062f6d7d26880183181fa39ea926888b63ad0a4daef8c3f02ece71903f0dd1",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": ".elai_cc/crates/rules/src/contract_tests.rs",
+    "kind": "provider-token",
+    "value_sha256": "4b91e3246835c62d812fbe7d31827508c91fe83b48257ff5ef6e30fea943728c",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": "docs/thefinalglance/ELAI-EXHAUSTIVE-SUPER-FEATURE-LIST.md",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": "docs/thefinalglance/F-plan/F-1_vibegate_unified_write_gate.md",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": "docs/thefinalglance/feature-discovery/aggregates/F-AGGREGATE.md",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": "docs/thefinalglance/feature-discovery/aggregates/compile/SECTION-F-G.md",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  },
+  {
+    "path": "docs/thefinalglance/feature-discovery/deep/DEEP-F-002.discovery.md",
+    "kind": "aws-key",
+    "value_sha256": "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
+    "reason": "Deliberately synthetic secret detector input in test/fixture or its historical test specification."
+  }
+]

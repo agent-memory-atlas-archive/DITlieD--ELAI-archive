@@ -1,0 +1,386 @@
+INTEGRATION: PROMPT ARCHITECTURE
+Purpose: how elai_cc eliminates prompt-driven orchestration.
+References: orchestrator.txt, rules.txt, knowledge.txt, providers.txt.
+
+
+1. THE PROBLEM WITH PROMPT-DRIVEN WORKFLOWS
+
+  Current workflow (Claude Code + markdown):
+    - 4 rule files (~60 lines) auto-loaded every turn into system prompt
+    - 3 skill files (~140 lines) loaded on trigger into system prompt
+    - CLAUDE.md (~120 lines) loaded every turn
+    - Agent .md files (~30-50 lines each) loaded per spawn
+    - Domain rule files (~100-160 lines each) loaded conditionally
+    Total: 500-800 tokens of orchestration instructions per turn, BEFORE task context.
+
+  Problems:
+    - Context waste: 500-800 tokens of "how to be a workflow" on every turn.
+      Local models have 8-32k context. That's 2-10% burned on meta-instructions.
+    - Probabilistic compliance: the model MAY follow instructions. Or may not.
+      Under context pressure, rules get dropped silently.
+    - No enforcement: if the model ignores a rule, nothing happens.
+      The hook system patches this partially, but hooks are also prompt-configured.
+    - Fragile routing: conditional-routing.md says "if editing trading code, read
+      tradingRules.md." The model must (a) notice it's editing trading code,
+      (b) read the routing file, (c) read the rules file, (d) follow the rules.
+      Four points of failure, all probabilistic.
+    - Scaling: every new domain rule file adds ~100 lines to potential context.
+      5 domains * 100 lines = 500 lines the model might need to load.
+
+
+2. THE ELAI_CC SOLUTION: CODE IS THE ORCHESTRATOR
+
+  In elai_cc, the Rust binary controls the workflow. The model is a worker.
+  It receives a structured prompt, produces output, and the code validates it.
+
+  The model NEVER:
+    - Decides which FSM state to transition to (orchestrator does this)
+    - Spawns agents (orchestrator does this based on FSM state)
+    - Loads rule files (rules engine queries rules.db, injects relevant rules)
+    - Manages sessions or file locks (SSB does this)
+    - Decides what context to load (knowledge engine does this)
+    - Calls RAG tools (knowledge engine is internal, not tool-invoked)
+    - Calls the LLM provider directly (orchestrator proxies via IPC)
+    - Executes tools directly (all tool calls proxied via IPC)
+    - Accesses the network (except researcher role for web search)
+    - Sees enforcement logic, rules database, or harness internals
+    - Sees internal tool parameters (_rule_context, _enforcement_tier, etc.)
+      Tool schemas sanitized before model sees them (swarm-derived pattern).
+
+  The model ONLY:
+    - Receives a structured prompt with exactly the context it needs
+    - Produces output in a constrained format
+    - Gets its output validated by deterministic code
+    - Runs in an isolated OS process with no visibility beyond its task
+
+
+3. AGENT PROMPT CONSTRUCTION
+
+  The orchestrator assembles prompts from 4 sources. No markdown files involved.
+
+  SOURCE 1 — ROLE PROMPT (from elai_cc.toml, ~50-100 tokens):
+    Short, role-specific identity. Stored in config, not a file.
+
+    [agents.executor]
+    role_prompt = """You write code to pass failing tests.
+    Output: one code block per file, prefixed with file path.
+    Do not explain. Do not add features beyond what tests require."""
+
+    [agents.auditor]
+    role_prompt = """You are an adversarial code reviewer.
+    Every finding must cite line number and evidence.
+    You must find at least one issue per review."""
+
+    [agents.prompt_engineer]
+    role_prompt = """Transform the raw task into a structured prompt.
+    Output: XML with instructions, context, task, output_format blocks."""
+
+    [agents.context_compiler]
+    role_prompt = """Gather relevant code context for the given task.
+    Output: structured context package with blast radius and interfaces."""
+
+    [agents.memory_writer]
+    role_prompt = """Record changes from this phase into the knowledge base.
+    Output: structured change manifest."""
+
+    These are TINY. 50-100 tokens. Not 500-800.
+
+  SOURCE 2 — ACTIVE TIER 3 RULES (from rules.db, ~100-300 tokens):
+    Only Tier 3 rules need to be in the prompt (Tier 1/2 are enforced by code).
+    Only rules matching current domain + phase are loaded.
+
+    Query:
+      SELECT description FROM rules
+      WHERE status = 'ACTIVE' AND tier = 3
+        AND domain IN (current_domains)
+        AND (phase_mask & current_phase_bit) != 0
+      ORDER BY severity DESC
+      LIMIT 10
+
+    Injected as a numbered list in the prompt:
+      "Domain constraints (mandatory):
+       1. Report ALL configurations tested, not only the best. [trading.22]
+       2. Span at least one full market cycle including bear regime. [trading.24]
+       3. ..."
+
+    Typical: 5-10 rules, ~100-300 tokens. Not the full 160-line tradingRules.md.
+    Tier 1 and Tier 2 rules are INVISIBLE to the model — enforced by code.
+
+  SOURCE 3 — CODE CONTEXT (from knowledge engine, budget-fitted):
+    PageRank repo map + BM25/vector retrieved chunks + cross-encoder reranked.
+    Fitted to context budget by the context budget allocator (orchestrator.txt section 6).
+    The model sees code, not instructions about how to find code.
+
+  SOURCE 4 — TASK SPEC (from plan skeleton + phase detail):
+    The specific task for this agent in this phase.
+    Structured, not prose.
+
+  ASSEMBLED PROMPT:
+    [role_prompt]                    ~50-100 tokens
+    [tier_3_rules]                   ~100-300 tokens
+    [code_context]                   ~2000-8000 tokens (budget-fitted)
+    [task_spec]                      ~200-500 tokens
+    [output_format + constraints]    ~50-100 tokens
+    TOTAL INSTRUCTIONS: ~200-500 tokens (vs 500-800 in current workflow)
+    TOTAL PROMPT: ~2500-9000 tokens, mostly useful code context
+
+
+4. WHAT REPLACES EACH CURRENT .MD FILE
+
+  4.1 session-protocol.md -> orchestrator::session_init()
+    Current: tells model to spawn context-compiler, then prompt-engineer, sequentially.
+    Replacement: Rust function. On session start:
+      1. Query SSB for active sessions
+      2. Load FSM state from .elai_cc/sessions/{id}/.fsm-state.json
+      3. If plan resume: load plan skeleton, determine current phase
+      4. Spawn context-compiler (Rust code, not model decision)
+      5. Wait for completion, then spawn prompt-engineer
+      6. Present transformed prompt, gate on user approval
+    The model is NEVER told to "spawn" anything. The orchestrator spawns.
+
+  4.2 multi-session.md -> orchestrator::SSB + session locks
+    Current: tells model to call mcp_session_claim(), mcp_session_release().
+    Replacement: automatic.
+      - File claim: orchestrator calls SSB.claim() when entering EXECUTING
+      - Conflict detection: SSB.check_conflicts() before any write
+      - Error attribution: auditor calls SSB.attribute_errors() automatically
+      - Release: orchestrator calls SSB.release() on phase completion
+    The model never knows about file locks. Writes that violate locks are
+    BLOCKED by the PostToolUse hook in the rules engine. Zero token cost.
+
+  4.3 conditional-routing.md -> rules::domain_detection()
+    Current: tells model "if editing trading code, read tradingRules.md."
+    Replacement: Rust function in rules/ crate.
+      fn detect_domains(file_paths: &[&str]) -> Vec<Domain> {
+          // deterministic file-path-to-domain mapping
+          // configured in elai_cc.toml [rules.domain_mapping]
+      }
+    Called automatically by the orchestrator when assembling the prompt.
+    Only Tier 3 rules for detected domains are injected into prompt.
+    Tier 1/2 rules for detected domains are loaded into the evaluation engine.
+    The model never routes itself. Code routes it.
+
+  4.4 output-formatting.md -> split
+    Current: two concerns mixed in one file.
+    (a) "Zero filler, no emojis, deterministic output":
+      -> Part of role_prompt in elai_cc.toml. 1 sentence.
+    (b) "Update memory-bank after build/test":
+      -> orchestrator::memorize() in MEMORIZING phase.
+      Automatically triggered. The model doesn't decide to update memory.
+      The memory-writer agent receives a structured change manifest
+      and writes to the knowledge engine. The orchestrator triggers this.
+
+  4.5 planning-workflow SKILL.md -> orchestrator::fsm_engine()
+    Current: 100-line prompt describing the ENTIRE workflow (FSM states,
+    evidence gates, agent spawning, audit protocol, memorizing, handoff).
+    Replacement: THIS IS THE ORCHESTRATOR CRATE.
+      - FSM states and transitions: Rust enum + state machine
+      - Evidence gates: Rust functions checking artifacts exist
+      - Agent spawning: orchestrator::AgentPool
+      - Audit protocol: orchestrator spawns auditor, reads findings,
+        decides BLOCK/PASS based on evidence gate
+      - Memorizing: orchestrator spawns memory-writer
+      - Handoff: orchestrator saves handoff.msgpack
+    The model sees NONE of this. It just does its job in the current phase.
+
+  4.6 prompt-transform SKILL.md -> orchestrator::prompt_transform()
+    Current: 15-line skill telling model to spawn prompt-engineer agent.
+    Replacement: 3-line Rust function:
+      fn prompt_transform(task: &str, session: &Session) -> TransformedPrompt {
+          let context = self.context_compiler.compile(task, session);
+          self.prompt_engineer.transform(task, &context)
+      }
+    Called automatically by orchestrator before EXECUTING.
+
+  4.7 rag-tools SKILL.md -> knowledge::KnowledgeEngine
+    Current: 25-line skill telling model how to call mcp_* tools correctly.
+    Replacement: GONE. The knowledge engine is internal to elai_cc.
+    The model doesn't call RAG tools. The orchestrator queries the knowledge
+    engine and injects results as code_context in the prompt.
+    No mcp_search_context, no mcp_memorize, no mcp_ingest_file.
+    The orchestrator calls KnowledgeEngine::query() directly.
+
+  4.8 CLAUDE.md -> elai_cc.toml + hardcoded Rust logic
+    Current: 120-line instruction file loaded every turn.
+    Replacement: most rules become code.
+      - "FSM gate check": orchestrator FSM, not a prompt rule
+      - "Anti-Slopsquatting": rules.db Tier 1 GREP rule
+      - "Zero Lazy Code": rules.db Tier 1 AST rule
+      - "Anti-Spiral": orchestrator::anti_spiral() Rust function
+      - "GRC tools": reasoning::GrcEngine, not model-invoked tools
+      - "Context delegation": orchestrator prompt assembly (model never sees raw context)
+      - "Output formatting": role_prompt in elai_cc.toml
+    What remains as config (in elai_cc.toml):
+      - Agent model assignments
+      - GRC budget defaults
+      - Domain mapping overrides
+      - Hardware config
+
+  4.9 Agent .md files (auditor.md, context-compiler.md, etc.)
+    Current: 30-50 line prompt files loaded when spawning agents.
+    Replacement: role_prompt in elai_cc.toml (50-100 tokens each).
+    The orchestrator constructs the full prompt from role_prompt + rules + context + task.
+    No separate .md file needed.
+
+
+5. ENFORCEMENT COMPARISON
+
+  Current workflow enforcement path (4 points of failure):
+    1. Model reads conditional-routing.md             (may skip)
+    2. Model detects it's editing trading code          (may misjudge)
+    3. Model reads tradingRules.md                      (may skip under pressure)
+    4. Model follows the rules                          (may ignore)
+    Probability of compliance: p1 * p2 * p3 * p4 < 1.0
+
+  elai_cc enforcement path (0 points of failure for Tier 1/2):
+    1. Orchestrator detects domain from file paths     (deterministic)
+    2. Rules engine loads active Tier 1 predicates      (SQLite query)
+    3. Model produces output                            (unconstrained)
+    4. PostToolUse hook evaluates predicates on output   (Rust code, <1ms)
+    5. BLOCK verdict -> output rejected, model re-prompted
+    Probability of enforcement: 1.0 (deterministic code, not probabilistic prompt)
+
+  For Tier 3 (semantic rules):
+    1. Orchestrator injects 5-10 relevant Tier 3 rules into prompt  (~100 tokens)
+    2. Model produces output
+    3. Auditor agent reviews output against Tier 3 rules
+    4. BLOCK findings -> output rejected
+    Probability of compliance: higher than current (fewer rules to track, auditor backup)
+    Self-discovery: repeated Tier 3 violations -> proposed Tier 1/2 rule (rules.txt section 6)
+
+
+6. CONTEXT BUDGET IMPACT
+
+  Current workflow per-turn context cost:
+    CLAUDE.md:                 ~800 tokens (every turn)
+    4 rule files:              ~400 tokens (every turn)
+    Skill file (when active):  ~600 tokens (on trigger)
+    Domain rules (conditional): ~500 tokens (when detected)
+    Agent .md (when spawning):  ~300 tokens
+    TOTAL META-INSTRUCTIONS:    ~1600-2600 tokens per turn
+
+  elai_cc per-turn context cost:
+    role_prompt:               ~80 tokens (from elai_cc.toml)
+    Tier 3 rules:              ~200 tokens (5-10 rules from rules.db)
+    Output format:             ~50 tokens (from constrained decoding schema)
+    TOTAL META-INSTRUCTIONS:    ~330 tokens per turn
+
+  Savings: 1300-2300 tokens per turn freed for actual code context.
+  On a 32k context model: 4-7% more context for code.
+  On an 8k context model: 16-29% more context for code. Critical.
+
+  Additional savings from Tier C process isolation (cognitive isolation):
+    Agent reasoning chains (GRC steps, tool calls, grounding checks) execute inside
+    separate processes and NEVER enter the orchestrator's context window. The orchestrator
+    only receives the final AgentResponse (structured output).
+    Measured as: context_savings_from_isolation = sum(agent_grc_tokens) / model.max_context
+    On 8k local model: if agents generate 12k tokens of internal reasoning, isolation
+      saves 150% of context window — makes the task POSSIBLE where in-process execution
+      would overflow the context and fail.
+    On 32k cloud model: savings are ~30-40%, still meaningful for complex tasks.
+    This is NOT just a security benefit. Process isolation IS a context efficiency mechanism.
+    See orchestrator.txt section 7A for the cognitive isolation metric.
+
+
+7. WHAT THE MODEL ACTUALLY SEES (per role)
+
+  EXECUTOR:
+    "You write code to pass failing tests.
+     Output: one code block per file, prefixed with file path.
+     Do not explain. Do not add features beyond what tests require.
+
+     Domain constraints:
+     1. Report ALL configs tested, not only the best. [trading.22]
+     2. Every backtest must span a full market cycle. [trading.24]
+
+     [code context: 6000 tokens of relevant source code]
+
+     Task: make these tests pass:
+     [test file content]"
+
+  AUDITOR:
+    "You are an adversarial code reviewer.
+     Every finding must cite line number and evidence.
+     You must find at least one issue per review.
+
+     Domain checks:
+     1. Verify FDR procedure matches correlation structure. [trading.20]
+     2. Check OOS holdout not contaminated. [trading.23]
+
+     [code under review: diff + test results]
+
+     Audit this change. Output JSON: { findings: [{severity, description, evidence, rule_id}] }"
+
+  That's it. No FSM instructions. No session management. No "call mcp_fsm_transition".
+  No "spawn context-compiler agent". No "read tradingRules.md". Just the job.
+
+
+8. REMAINING NATURAL-LANGUAGE CONFIGURATION
+
+  Not everything becomes code. These stay as text in elai_cc.toml:
+
+  ROLE PROMPTS: 50-100 tokens per agent role. Define identity and output format.
+    Stored in [agents.{role}.role_prompt]. Editable. Self-modification Layer 2 target.
+
+  TIER 3 RULE DESCRIPTIONS: stored in rules.db as description TEXT.
+    Human-readable sentences injected into prompts when deterministic check not possible.
+    Self-discovery target: repeated violations -> proposed Tier 1/2 replacement.
+
+  PLAN SKELETON: stored in .elai_cc/pipelines/{id}/skeleton.toml.
+    Phase descriptions needed by prompt-engineer to construct task specs.
+
+  Everything else is code, config, or SQLite data. No .md spaghetti.
+
+
+9. MIGRATION PATH (from current workflow to elai_cc)
+
+  Phase 3F (rules engine) compiles all .md rule files into rules_seed.db.
+  Phase 4 (workflow integration) replaces:
+    - planning-workflow SKILL -> orchestrator FSM engine
+    - prompt-transform SKILL -> orchestrator::prompt_transform()
+    - rag-tools SKILL -> knowledge::KnowledgeEngine (internal)
+    - session-protocol rule -> orchestrator::session_init()
+    - multi-session rule -> SSB + session locks
+    - conditional-routing rule -> rules::domain_detection()
+    - output-formatting rule -> role_prompt + MEMORIZING phase code
+    - CLAUDE.md -> elai_cc.toml + Rust code
+
+  After Phase 4: zero .md files in the orchestration path.
+  All workflow behavior is deterministic Rust code + SQLite data.
+
+
+10. DETERMINISTIC DISPATCH PROTOCOL
+
+  Full specification: orchestrator.txt section 14.
+
+  End-to-end flow:
+    1. User types task in CLI (/task, /config, /fix, etc.)
+    2. CLI strips prefix, sets initial_route in TaskPacket.
+    3. Orchestrator reads FSM state. Selects dispatch table:
+       - PLANNING/CONFIGURING: MetaDispatchTable (static, hardcoded).
+       - All others: PlanDispatchTable (dynamic, from PipelineSpec).
+    4. Dispatch table returns DispatchStage or DispatchPipeline (multi-stage).
+    5. For each stage: skip_condition check -> prompt assembly -> agent spawn -> gate.
+    6. Prompt assembly from 4 sources: role_prompt + tier_3_rules + code_context + task_spec.
+       Total meta-instructions: ~330 tokens. No orchestration instructions in prompt.
+    7. Agent works via IPC. Returns AgentResponse.
+    8. Evidence gate -> FSM transition -> phase_complete SSB record -> model swap if needed.
+
+  Key types (defined in orchestrator.txt S14):
+    MetaDispatchTable, PlanDispatchTable, DispatchPipeline, DispatchStage,
+    AgentDispatchConfig, ToolFilter, ArtifactType, GateCondition, SkipCondition.
+
+  Designer role (NEW): produces PipelineSpec from Research Report. Distinct from Executor.
+    Runs in Stage 2 of PLANNING DispatchPipeline. GRC 8/1200.
+    See orchestrator.txt S14 for full definition.
+
+
+11. TESTABLE INVARIANTS
+
+  - Model prompt contains zero orchestration instructions (no FSM, no spawn, no routing)
+  - Total meta-instruction tokens < 500 per turn (role + Tier 3 + format)
+  - Tier 1/2 rules never appear in model prompt (enforced by code, invisible to model)
+  - Only Tier 3 rules for current domain + phase injected into prompt
+  - Domain detection is deterministic (same file paths -> same domains)
+  - role_prompt round-trips through elai_cc.toml (serialize -> deserialize -> identical)
+  - Prompt assembly completes in <5ms (no file I/O, all from memory/SQLite)

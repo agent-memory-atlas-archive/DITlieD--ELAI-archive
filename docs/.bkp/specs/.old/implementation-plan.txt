@@ -1,0 +1,941 @@
+ELAI_CC IMPLEMENTATION PLAN — WALKING SKELETON
+Version: 1.0
+Date: 2026-04-05
+Status: READY TO START
+
+Principle: build the thinnest end-to-end slice first. Measure everything.
+Elaborate only what the data says needs elaboration.
+
+Every phase follows the same cycle:
+  1. SKELETON  — minimal structure, stubs, types
+  2. VERIFY    — does it compile? does existing test suite still pass?
+  3. TEST      — write contract/integration tests for this phase (they fail)
+  4. IMPLEMENT — make tests pass
+  5. MEASURE   — collect metrics (compile time, test count, LOC, coverage)
+  6. DECIDE    — fix issues found then proceed
+
+No phase starts until the previous phase's tests pass.
+Specs referenced below are in docs/specs/crates/ and docs/specs/integration/.
+
+
+================================================================================
+PHASE 0: FORK AND STRIP (the walking skeleton)
+================================================================================
+
+Goal: claw-code-rust-port compiles as elai_cc with all unnecessary code removed.
+One model (ollama), one FSM loop (IDLE->EXECUTING->IDLE), one tool (file read).
+No new features. Just a clean, compiling, tested base.
+
+Spec: crates/core.txt section 3 (STRIP/REPLACE)
+
+  0.1 SKELETON
+    - Fork claw-code-rust-port into .elai_cc/ project directory
+    - Rename workspace to elai_cc (Cargo.toml, crate names)
+    - Restructure into 9-crate layout (core, providers, knowledge, reasoning,
+      orchestrator, tools, plugins, rules, cli)
+    - Create migration_manifest.toml: classify every .rs file as KEEP/STRIP/REPLACE/EXTEND
+
+  0.2 VERIFY
+    - cargo check (must pass — baseline: 26.24s, 0 errors)
+    - cargo test (run existing 666 tests — record how many pass as-is)
+    - Record baseline metrics: compile time, test pass count, total LOC
+
+  0.3 STRIP
+    - Remove: compact.rs, summary_compression.rs (never compact)
+    - Remove: telemetry reporting to external services
+    - Remove: anti-distillation, sentinel injection, bias mechanisms
+    - Audit prompt.rs: find and remove hardcoded system prompts
+    - Audit policy_engine.rs: compare against rules::RuleEngine design
+    - cargo check after each removal (never break compilation)
+
+  0.4 VERIFY STRIP
+    - cargo check (still passes)
+    - cargo test (record which tests broke from stripping — expected, document)
+    - Update migration_manifest.toml: mark stripped files
+
+  0.5 TEST (contract tests for skeleton)
+    - tests/contracts/provider_trait.rs:
+      LlmProvider trait exists, has complete/embed/token_count methods
+    - tests/contracts/fsm_basic.rs:
+      FSM can transition IDLE -> EXECUTING -> IDLE
+    - tests/contracts/tool_basic.rs:
+      ToolRegistry can register and execute a file_read tool
+    - tests/contracts/config_basic.rs:
+      elai_cc.toml parses correctly, round-trips via msgpack
+    - tests/contracts/visibility_filter.rs:
+      hidden path returns NotFound identical to missing path
+      glob on hidden path returns empty
+      .elai_cc/** covered by default hidden_paths
+    - All these tests FAIL (we haven't implemented yet — that's the point)
+
+  0.6 IMPLEMENT
+    - Extend Provider trait: add embed(), token_count()
+    - Add OllamaProvider (HTTP API wrapper, minimal: complete + token_count)
+    - Minimal FSM: IDLE and EXECUTING states only, transition logic
+    - Minimal tool: file_read with metadata header (total_lines, estimated_tokens)
+    - elai_cc.toml config schema (minimal: provider config + project settings)
+    - Replace JSON storage with msgpack for session state
+    - Add tracing-based logging (replace telemetry)
+    - Slash-command routing: /task, /config, /continue, /explore, /status
+      Fallback classifier for bare messages (defaults to /task)
+    - Visibility filter: per-agent allowed_paths + hidden_paths with "not found" response
+    - Error message sanitization: strip rule IDs, predicate types, hook names from output
+    - Tool schema sanitization: strip internal parameters from model-visible tool schemas
+
+  0.7 VERIFY IMPLEMENT
+    - All contract tests pass
+    - cargo check clean
+    - Manual smoke test: connect to ollama, send prompt, get response
+    - Record metrics: compile time, test count (old + new), LOC delta
+
+  0.8 ENTROPY QUARANTINE (deterministic simulation prerequisite)
+    - Define ClockProvider and EntropySource traits in core/
+    - Production impls: OsClock (std::time::Instant), OsRng (rand::thread_rng())
+    - Test impls: SeededClock (logical, advances only when all tasks idle),
+      SeededRng (deterministic PRNG from u64 seed)
+    - Replace ALL std::time::Instant::now() in claw-code base with ClockProvider
+    - Replace ALL rand usages with EntropySource
+    - Add custom clippy lints: #![deny(elai_cc::raw_time, elai_cc::raw_rng)]
+    - Audit all transitive dependencies for raw libc time/entropy syscalls
+    - cargo check (must still pass)
+    - Rationale: DST (Phase 3I) requires zero raw entropy. Retrofitting into an
+      existing codebase is 10x harder than injecting at fork time. This is the
+      cheapest possible time to do it (FoundationDB, TigerBeetle, RisingWave all
+      did this from day one). Total cost: ~200 LOC of trait defs + find/replace.
+
+  0.9 VERIFY ENTROPY QUARANTINE
+    - grep for std::time::Instant::now, rand::thread_rng, getrandom in all .rs files
+    - zero hits (clippy lint catches new violations in CI)
+    - Run existing test suite with SeededClock + SeededRng: all tests still pass
+    - Run same test suite twice with same seed: identical SSB output (determinism proof)
+
+  DELIVERABLE: clean CLI connecting to ollama with accurate token tracking.
+  EXIT CRITERIA: all contract tests pass, ollama round-trip works, no stripped code remains,
+    zero raw time/entropy access in codebase (entropy quarantine verified).
+
+  MEASUREMENTS TO COLLECT:
+    - Compile time (target: <30s)
+    - Test count and pass rate
+    - LOC total and delta from claw-code base
+    - Ollama round-trip latency (baseline for future comparison)
+    - Raw entropy access count: 0 (grep verified)
+
+
+================================================================================
+PHASE 1: KNOWLEDGE ENGINE (one layer at a time)
+================================================================================
+
+Goal: build codebase index, answer queries from verified graph.
+Add ONE knowledge layer per sub-phase. Verify each before adding next.
+
+Spec: crates/knowledge.txt
+
+  1A: DKG (tree-sitter -> SQLite graph)
+    SKELETON: knowledge/ crate with KnowledgeEngine trait, DKG module stub
+    VERIFY:   compiles, Phase 0 tests still pass
+    TEST:     parse a Rust file -> extract functions/structs/imports -> store in SQLite
+              query by function name -> get correct file + line number
+    IMPLEMENT: tree-sitter Rust grammar, SQLite schema, incremental update
+    MEASURE:  index build time on elai_cc's own codebase, query latency
+
+  1B: BM25 (tantivy full-text)
+    SKELETON: BM25 module stub in knowledge/
+    VERIFY:   compiles
+    TEST:     index elai_cc source -> query "fn complete" -> returns provider files
+    IMPLEMENT: tantivy index, per-project isolation
+    MEASURE:  query latency (target: <10ms)
+
+  1C: Vector search (dual-model)
+    SKELETON: vector module stub, ort ONNX integration stub, vector cache SQLite table
+    VERIFY:   compiles
+    TEST:     embed 100 code chunks with GraphCodeBERT (CODE) + Granite (TEXT)
+              query by semantic similarity -> relevant results from both models
+              vector cache hit on re-embed of unchanged chunk
+              ONNX models loaded from canonical path .elai_cc/models/onnx/
+              missing ONNX model -> DEGRADED mode (BM25_ONLY), not crash
+    IMPLEMENT: ort ONNX loading for GraphCodeBERT + Granite from .elai_cc/models/onnx/,
+      dual-vector HNSW index, SQLite vector cache keyed by content blake2s hash
+    MEASURE:  embedding throughput per model, dual-vector accuracy vs BM25,
+      cache hit rate on incremental re-index
+
+  1D: PageRank repo map (design 31.7)
+    SKELETON: pagerank module stub
+    VERIFY:   compiles
+    TEST:     DKG graph + task description -> ranked symbol list fitted to token budget
+              density guard activates at 0.3
+    IMPLEMENT: edge-weight boost, personalization, density guard, binary search fitting
+    MEASURE:  ranking quality (does it surface relevant symbols?), token budget accuracy
+
+  1E: CatRAG + A-RAG (query pipeline assembly)
+    SKELETON: catrag/arag module stubs
+    VERIFY:   compiles
+    TEST:     full pipeline: query -> BM25 -> vector -> PageRank -> CatRAG -> A-RAG -> context
+              token savings measured vs raw retrieval
+    IMPLEMENT: graph traversal, hierarchical filtering
+    MEASURE:  end-to-end query latency, token savings ratio
+
+  1F: Speculative decoding evaluation
+    SKELETON: speculative decoding config in providers/ (draft model, num_draft_tokens)
+    VERIFY:   compiles, Phase 0 tests still pass
+    TEST:     ollama with draft model produces identical output to without (correctness)
+              throughput measured: tokens/sec with and without speculative decoding
+              VRAM measured: draft model fits alongside main model on RTX 3060
+    IMPLEMENT: OllamaConfig speculative_decoding flag, draft model selection,
+      throughput benchmarking harness
+    MEASURE:  throughput ratio (target: >1.3x to adopt). VRAM overhead.
+      EAGLE-3 pattern benchmarks show 1.8-2.3x. Adopt if >1.3x on our hardware.
+      If <1.3x: disable, reclaim VRAM for embedding models.
+    DECISION: adopt or drop speculative decoding based on measured throughput.
+
+  1G: Cross-encoder reranker
+    SKELETON: reranker module stub, ort integration for ms-marco-MiniLM
+    VERIFY:   compiles
+    TEST:     rerank 50 candidates from A-RAG output -> precision improvement measured
+              CPU-only execution, <50ms latency
+              skip reranking when candidate set <= 10
+    IMPLEMENT: ort ONNX loading for cross-encoder/ms-marco-MiniLM-L-12-v2,
+      (query, chunk) pair scoring, re-sort before token-budget fitting
+    MEASURE:  reranker latency, precision@5 improvement vs without reranker
+
+  1H: SPLADE keyword expansion (EVALUATE — conditional)
+    SKELETON: splade module stub (feature-gated behind cfg(feature="splade"))
+    VERIFY:   compiles with and without feature flag
+    TEST:     query "error handling" matches code containing try/catch but not "error"
+              RRF fusion with BM25 produces measurably better recall
+    IMPLEMENT: SPLADE_PP_en_v1 via ort, sparse vector storage, weighted RRF with BM25
+    MEASURE:  recall improvement vs BM25-only. DROP if <5% improvement.
+
+  1I: Resilience layer (circuit breaker, degradation, startup, tracing)
+    SKELETON: circuit breaker per ONNX model, SearchMode enum, QueryTrace struct,
+      startup readiness check, query validator, cross-encoder semaphore
+    VERIFY:   compiles
+    TEST:     circuit breaker opens after 3 failures within 60s
+              graceful degradation: kill embedding -> search still returns BM25 results
+              startup canary query passes within 5s on healthy system
+              query validation rejects empty/oversized/control-char input
+              cross-encoder semaphore serializes concurrent rerank calls
+              unparseable file still appears in BM25 results (tree-sitter fallback)
+              QueryTrace emitted for every search call
+    IMPLEMENT: EmbeddingCircuitBreaker, SearchMode cascade, QueryValidator,
+      startup readiness gate, cross-encoder Semaphore(1), tree-sitter parse fallback,
+      QueryTrace emission via tracing crate, index_version.toml schema
+    MEASURE:  degradation latency (time from failure to fallback mode),
+      canary query latency, circuit breaker recovery time
+
+  EXIT CRITERIA: full knowledge pipeline works on elai_cc's own codebase.
+    Pipeline survives individual ONNX model failure without total outage.
+  MEASUREMENTS: index build time, query latency per layer, token savings,
+    dual-vector vs single-vector accuracy, reranker precision gain, SPLADE recall delta,
+    degradation cascade correctness, startup readiness latency.
+
+
+================================================================================
+PHASE 2: REASONING ENGINE (GRC)
+================================================================================
+
+Goal: all reasoning grounded, no hallucinated plans reach execution.
+
+Spec: crates/reasoning.txt
+
+  2A: GRC state machine (basic)
+    SKELETON: reasoning/ crate, GrcEngine trait, ThinkStep/Budget types
+    VERIFY:   compiles
+    TEST:     observe step requires grounding (rejects without)
+              budget overflow forces convergence
+              per-topic budget independence
+              ThinkStep.scope present when require_scope_enumeration=true
+              every scope item addressed in plan_action (WARN if not)
+    IMPLEMENT: state machine, budget tracking, grounding validation,
+      scope enumeration (ThinkStep.scope field, AgentGrcConfig.require_scope_enumeration)
+    MEASURE:  overhead per GRC step (target: <5ms for validation logic)
+
+  2B: Grounding verification
+    SKELETON: verification module stubs (FILE_CHECK, SOURCE_CHECK)
+    VERIFY:   compiles
+    TEST:     FILE_CHECK("src/main.rs") -> VERIFIED
+              FILE_CHECK("nonexistent.rs") -> FAIL
+              plan with UNGROUNDED claim -> blocks EXECUTING
+    IMPLEMENT: FILE_CHECK, SOURCE_CHECK, WEB_CHECK, API_CHECK, TEST_CHECK
+    MEASURE:  verification latency per method
+
+  2C: Per-agent GRC configuration
+    SKELETON: agent config types
+    VERIFY:   compiles
+    TEST:     auditor gets double-verify, context-compiler gets observe-only
+              executor budget=8/1200, memory-writer budget=2/400
+    IMPLEMENT: config loading from elai_cc.toml, per-role routing
+    MEASURE:  config overhead
+
+  2D: CSQ and inline feasibility
+    SKELETON: csq and inline check stubs
+    VERIFY:   compiles
+    TEST:     function touching files -> CSQ generated
+              new claim during EXECUTING -> inline check triggers (max 2 calls)
+    IMPLEMENT: CSQ generation, inline feasibility detection
+    MEASURE:  false positive rate on inline checks
+
+  EXIT CRITERIA: GRC rejects ungrounded claims, budget system works, per-agent configs route correctly.
+
+
+================================================================================
+PHASE 3: ORCHESTRATION + RULES (INTERACTIVE-first)
+================================================================================
+
+Goal: INTERACTIVE (HITL) execution loop from task input to completion.
+The entire pipeline — knowledge, reasoning, FSM, tools, rules — validated
+end-to-end with human-in-the-loop at every phase gate before any autonomous
+behavior is enabled. AUTONOMOUS auto-advance is deferred to Phase 4.
+
+Spec: crates/orchestrator.txt, crates/rules.txt
+
+  3A: Full FSM (INTERACTIVE mode)
+    SKELETON: all FSM states, transition logic, phase-aware tool loading,
+      INTERACTIVE gate (pause + present evidence + wait for human approval)
+    VERIFY:   compiles, Phase 0-2 tests pass
+    TEST:     full state traversal: IDLE->PLANNING->...->COMPLETE->IDLE
+              phase-aware tool filtering (PLANNING blocks edit tools)
+              evidence gates block transition without artifacts
+              INTERACTIVE gate: every transition pauses with evidence summary
+              INTERACTIVE gate: human can approve, modify, reject, redirect
+              INTERACTIVE gate: reject returns to previous state cleanly
+              INTERACTIVE gate: modify updates plan/context before proceeding
+              risk-level gating: LOW auto-advances, MEDIUM pauses, HIGH always pauses
+    IMPLEMENT: FSM engine, evidence gate protocol, tool/rule filtering,
+      INTERACTIVE gate at every phase transition (approve/modify/reject/redirect)
+    MEASURE:  state transition overhead, gate response latency
+
+  3B: SSB (Shared State Board)
+    SKELETON: SSB schema, single-writer channel stub
+    VERIFY:   compiles
+    TEST:     insert 10K rows via single-writer -> all visible to readers
+              conflict detection blocks concurrent file access
+              append-only: no updates/deletes within session
+    IMPLEMENT: SQLite WAL, tokio::mpsc single-writer, ssb_files junction
+    MEASURE:  write throughput (target: >10K inserts/sec on actual hardware)
+
+  3C: Agent system
+    SKELETON: AgentPool, agent spawn/checkpoint stubs, AgentRole enum (8 roles
+      including Designer)
+    VERIFY:   compiles
+    TEST:     spawn agent -> checkpoint after GRC step -> crash -> recover from checkpoint
+              anti-spiral: 3x same step -> escalate
+              Designer role spawns with distinct config from Executor
+              Designer role uses GRC 8/1200 with [observe, hypothesize, plan_action, verify, converge]
+              checkpoint referencing UntrackedValue channel -> rejected by serializer
+    IMPLEMENT: agent lifecycle, checkpointing (msgpack), recovery protocol,
+      checkpoint validation (no UntrackedValue refs), AgentRole enum with Designer
+    MEASURE:  checkpoint size, recovery time
+
+  3D: BSP supersteps + channels
+    SKELETON: superstep loop, channel types
+    VERIFY:   compiles
+    TEST:     LastValue: last writer wins (SSB seq order)
+              Topic(accumulate=true): values persist across supersteps
+              EphemeralValue: cleared after zero-write superstep
+              UntrackedValue: not in checkpoint
+              deferred nodes fire after barrier
+    IMPLEMENT: BSP loop, all 4 channel types, deferred execution
+    MEASURE:  superstep overhead, channel state size
+
+  3E: Context budget allocator
+    SKELETON: fixed-slot types, budget computation
+    VERIFY:   compiles
+    TEST:     sum(all slots) <= model.max_context
+              floors respected (output >= 2000, ssb >= 200, grc >= 500)
+              adaptive reduction: 3 attempts then terminal condition
+    IMPLEMENT: slot-aware distribution, adaptive reduction, cache breakpoints
+    MEASURE:  context utilization efficiency
+
+  3F: Rules engine (self-improving, three-tier enforcement)
+    SKELETON: RuleEngine trait, Predicate DSL types (AST_PATTERN, GREP_PATTERN,
+      SCHEMA_REQUIRED, METRIC_GATE, COMPOSITE), SQLite schema (rules, rule_metrics,
+      contract_tests, violation_patterns), rule lifecycle states
+    VERIFY:   compiles
+    TEST:     SQLite schema creates and migrates correctly
+              Predicate DSL evaluator: AST_PATTERN detects df[].mean() without shift
+              Predicate DSL evaluator: GREP_PATTERN detects bare except:pass
+              Predicate DSL evaluator: SCHEMA_REQUIRED rejects missing fields
+              Predicate DSL evaluator: METRIC_GATE blocks LOC > threshold
+              Predicate DSL evaluator: COMPOSITE AND/OR/NOT combines correctly
+              phase-aware: phase_mask filters rules per FSM state
+              domain-aware: file context triggers correct domain rules
+              deterministic: same code + same predicate = same verdict
+              lifecycle: PROPOSED -> CANDIDATE requires >= 3 contract tests
+              lifecycle: SHADOW -> ACTIVE requires false_positive_rate < 5%
+              lifecycle: mutable=0 rules reject auto-retirement
+              self-discovery: violation_patterns >= 3 auto-proposes rule
+              seed loading: global seeds merge into project rules.db
+              contract tests: min 3 per Tier 1 (block + allow + edge)
+              contract tests: min 2 per Tier 2 (valid + invalid schema)
+              contract tests: READ-LOCKED during self-modification
+    IMPLEMENT:
+      Predicate DSL interpreter (Rust, 5 types)
+      SQLite storage (rules.db per project, rules_seed.db global)
+      Rule evaluation engine (<1ms target per rule)
+      Phase-aware + domain-aware activation (phase_mask + domain detection)
+      Rule lifecycle state machine (PROPOSED->CANDIDATE->SHADOW->ACTIVE->RETIRED)
+      Self-discovery: auditor violation patterns -> proposed rules
+      Auto-contract-test generation from violation examples
+      Seed data: compile all 104 rules from 5 domain files + engineering + security
+      Contract test suite: 254+ static tests minimum for seed rules
+      Property-based contract tests: proptest state-machine tests per Tier 1 rule
+        (~200 lines per domain, 7 domains = ~1400 lines, proptest crate)
+        Covers: regex anchoring bugs, Unicode edge cases, nested scope mutations,
+        COMPOSITE De Morgan invariant, whitespace-normalized predicate matching.
+        Shrunk counter-examples auto-inserted into contract_tests (source=GENERATED).
+      Tier 2 integration: SCHEMA_REQUIRED predicates -> provider constrained decoding
+    MEASURE:  rule evaluation latency (target: <1ms per rule),
+      contract test pass rate (static + proptest), seed rule count,
+      proptest counter-examples found (target: converges to 0 after predicate fixes),
+      lifecycle transition count
+
+    NOTE: 254+ contract tests is a large deliverable. Consider shipping Phase 3F with
+      the ~30 highest-value seed rules first (engineering + security + top trading rules),
+      deferring remaining domain rules to organic self-discovery. The rule lifecycle was
+      designed for exactly this — start small, grow from evidence. Data from initial
+      rule enforcement informs which remaining seeds are worth the contract test investment.
+
+  3G: Hierarchical plan management
+    SKELETON: skeleton.toml + phase detail types, contract extraction stubs
+    VERIFY:   compiles
+    TEST:     plan skeleton fits within 4k tokens (reject oversized)
+              phase elaboration loads skeleton + active phase + adjacent contracts
+              contract change propagates dependency flags to dependent phases
+              auditor detects elaboration that violates skeleton contract
+    IMPLEMENT: skeleton.toml schema, phase detail TOML, contract extraction,
+      coherence check (auditor), version tracking, dependency propagation
+    MEASURE:  skeleton token count, contract extraction accuracy
+
+  3H: Session handoff (CMV-derived DAG state management, arxiv 2602.22402)
+    SKELETON: SessionDag type (SQLite schema: snapshots + snapshot_context),
+      structurally lossless trimming (3-pass streaming), branch/explore types.
+    VERIFY:   compiles
+    TEST:
+      - save snapshot -> load in new session -> resume from exact position
+      - commit_hashes persist in snapshot
+      - session DAG is acyclic (parent chain has no cycles)
+      - trimming preserves ALL user and assistant messages
+      - trimming stubs tool results > stub_threshold (default 500 tokens)
+      - every stub references valid SSB seq (recoverable)
+      - branch creation: max 3 active branches enforced
+      - branch + explore: try approach A, revert to snapshot, try approach B
+      - trimmed context fits within model context window
+      - prompt cache prefix (Slots 1-3) preserved across trimming
+    IMPLEMENT: SessionDag SQLite schema, snapshot save/load,
+      structurally lossless 3-pass trimming, branch/merge operations,
+      session-owned commit tracking, stub recovery from SSB.
+    MEASURE:  snapshot size, trimming token reduction ratio, branch utilization,
+      resume accuracy, stub recovery success rate
+
+  3I: Deterministic Simulation Testing framework
+    Depends on: Phase 0.8 (entropy quarantine), Phase 3A-3D (FSM, SSB, agents, BSP)
+
+    SKELETON: SimulatorRuntime trait (wraps ClockProvider + EntropySource + network mock),
+      FsmReferenceModel (simplified in-memory FSM that tracks expected state),
+      madsim integration stubs for IPC layer testing, StatefulFuzzHarness type
+    VERIFY:   compiles, Phase 0-3H tests still pass
+
+    TEST (reference model — digital sibling):
+      - Generate 10,000 random operation sequences via proptest:
+        (phase transitions, agent spawns, tool calls, crash injections, file writes)
+      - Apply each sequence to both the actual FSM+SSB and the FsmReferenceModel
+      - Assert terminal states match exactly (the infallible oracle)
+      - Same seed produces identical SSB output on repeated runs (determinism proof)
+
+    TEST (BSP determinism):
+      - BSP superstep with same seed + same channel state + same writes
+        -> identical checkpoint state on every run
+      - UntrackedValue cleared correctly under simulated concurrent access
+      - EphemeralValue behavior under simulated zero-write superstep
+
+    TEST (madsim IPC simulation — preparation for Phase 4A):
+      - Simulated agent process sends messages over madsim network mock
+      - Inject: 30% packet loss, 500ms jitter, asymmetric disconnects
+      - Verify: orchestrator IPC gateway recovers correctly under each scenario
+      - Inject: agent SIGKILL during mid-message -> orchestrator detects, cleans up
+      - This validates the IPC design BEFORE building real process isolation
+
+    TEST (adversarial state space exploration):
+      - Anti-spiral: generate 3x same GRC step sequences -> verify escalation triggers
+      - Evidence gate: generate phase transitions without artifacts -> verify BLOCK
+      - Context budget: generate oversized context -> verify adaptive reduction fires
+      - SSB conflict: generate concurrent file writes -> verify conflict detection
+
+    IMPLEMENT:
+      SimulatorRuntime: wraps SeededClock + SeededRng + madsim network mock.
+        Provides sim.advance_time(), sim.inject_fault(), sim.snapshot_state().
+      FsmReferenceModel: pure function F(State, Event) -> State.
+        Models: FSM states, SSB row counts, agent lifecycle, channel state.
+        Deliberately simplified (no ONNX, no real files) — the oracle must be
+        simple enough to trust. If the reference model is as complex as the real
+        system, it has the same bugs.
+      StatefulFuzzHarness: proptest strategy generating Vec<FsmEvent>.
+        Event types: PhaseTransition, AgentSpawn, AgentCrash, ToolCall(ToolId),
+          FileWrite(path), GrcStep(topic), SSBWrite(action_type), ConfigChange.
+        Shrinking: proptest auto-shrinks to minimal failing sequence.
+        Shrunk sequences added to regression test suite permanently.
+      madsim integration: madsim::test replaces tokio::test for IPC tests.
+        Network router configured with fault profiles (partition, delay, drop).
+
+    MEASURE:
+      - State space coverage: % of FSM state pairs exercised by fuzzer
+      - Bugs found: count of invariant violations caught by reference model
+      - Determinism: 100% of test runs with same seed produce identical output
+      - Shrunk regression count: number of minimal failing sequences discovered
+      - Simulation speed: operations/second (target: >100K ops/sec in reference model)
+
+    NOTE: this sub-phase is NOT optional. The FSM + SSB + BSP architecture IS a
+    deterministic state machine. Testing it with non-deterministic tools (standard
+    tokio::test with wall-clock time) is like verifying a database with printf.
+    FoundationDB, TigerBeetle, and RisingWave all proved that DST catches bugs
+    that years of integration testing miss. The entropy quarantine in Phase 0.8
+    exists specifically to make this phase possible.
+
+  EXIT CRITERIA: full INTERACTIVE (HITL) loop works end-to-end on a simple task.
+  Human walks through IDLE -> PLANNING -> ... -> COMPLETE with approval at each gate.
+  Knowledge engine, GRC, tools, rules, RAG all validated through that HITL loop.
+  INTERACTIVE gates: approve, modify, reject, redirect all tested.
+  This is the WALKING SKELETON proving the core loop in INTERACTIVE mode.
+  DST reference model matches actual FSM for 10,000+ random operation sequences.
+  AUTONOMOUS auto-advance is NOT yet enabled — that is Phase 4's responsibility.
+
+
+================================================================================
+PHASE 4: WORKFLOW INTEGRATION + AGENT PROCESS ISOLATION + AUTONOMOUS MODE
+================================================================================
+
+Goal: complete development workflow with pipeline design capability.
+  Enable AUTONOMOUS auto-advance on top of the validated INTERACTIVE pipeline.
+  Agents run as isolated OS processes. Orchestrator communicates via IPC.
+  No agent has visibility into enforcement logic, other agents, or harness internals.
+
+Spec: crates/tools.txt, crates/plugins.txt, integration/pipeline-factory.txt,
+  orchestrator.txt section 12 (agent isolation model).
+
+Ordering rationale: 4A (process isolation) is foundational. All subsequent sub-phases
+  run agents through the isolation boundary. This proves isolation under real workload,
+  not as a bolt-on after the fact.
+
+
+  4A: Agent process isolation (Tier C)
+    SKELETON:
+      - AgentProcess struct: wraps std::process::Command for agent binary
+      - IPC channel: unix domain socket (Linux) / named pipe (Windows)
+      - Wire protocol: 1-byte version + 4-byte length prefix + postcard payload
+      - Message types: full enum (AgentRequest, AgentResponse, InferRequest,
+          InferResponse, ToolRequest, ToolResult, BashRequest, BashResult,
+          GroundingRequest, GroundingResult, ThinkStep, CheckpointSync,
+          AgentHeartbeat, AgentKill, ReplanRequest)
+      - AgentBinary: separate Rust binary (elai_cc_agent) compiled from agent/ crate.
+          Contains: GRC reasoning loop, IPC client, structured output parser.
+          Does NOT contain: LLM client, reqwest, network code, tool implementations,
+            FSM, SSB, rules engine, knowledge engine.
+          LLM calls: agent emits InferRequest over IPC. Orchestrator calls
+            providers::LlmProvider::complete() and returns InferResponse.
+            Agent never touches network for LLM inference.
+      - ProcessConfig per role: allowed_paths, seccomp_profile, resource_limits
+      - IPC socket directory: 0700 permissions, created before agent spawn
+    VERIFY:   compiles as workspace with two binaries (elai_cc, elai_cc_agent)
+    TEST:
+      Functional isolation:
+      - spawn agent process -> send AgentRequest -> receive AgentResponse -> kill
+      - agent process cannot read .elai_cc/ (returns ENOENT from OS, not filtered)
+      - agent process cannot see other agent processes (PID namespace)
+      - agent process cannot access network (socket(AF_INET) returns EPERM via seccomp)
+      - agent process CAN use IPC socket (socket(AF_UNIX) allowed in seccomp)
+      - researcher agent CAN access allowlisted HTTPS endpoints via veth
+      - orchestrator kills agent on timeout (SIGKILL, no negotiation)
+      - agent crash does not crash orchestrator (process boundary)
+      - agent cannot write outside its scratch directory
+      - two agents running concurrently cannot see each other's scratch dirs
+      - auditor agent can read executor's output files (orchestrator copies to auditor view)
+      - executor agent cannot read auditor findings (separate filesystem view)
+      - agent environment sanitized: no API keys, no HOME, no ELAI_CC_* vars
+      - SO_PEERCRED verification: orchestrator rejects connection from wrong PID
+
+      LLM proxy:
+      - agent emits InferRequest -> orchestrator calls LLM -> InferResponse returned
+      - agent binary has no reqwest dependency (cargo tree check)
+      - agent cannot reach localhost:11434 (ollama) from its network namespace
+
+      GRC budget (orchestrator-enforced):
+      - orchestrator counts ThinkStep messages per topic externally
+      - after max_calls ThinkSteps for a topic, orchestrator injects convergence
+      - agent binary budget count is advisory only (verified by sending extra ThinkSteps)
+
+      Adversarial IPC:
+      - oversized frame (>10MB) -> orchestrator rejects, does not allocate
+      - malformed postcard payload -> orchestrator returns IPC error, does not crash
+      - agent sends AgentResponse without receiving AgentRequest -> rejected
+      - agent sends ToolResult for a ToolId it never requested -> rejected
+      - agent sends 10,000 ThinkStep messages in burst -> budget enforced, excess dropped
+      - second process connects to same agent socket -> rejected (SO_PEERCRED mismatch)
+      - agent socket survives agent SIGKILL: orchestrator closes fd, unlinks, respawns
+      - agent sends message with mismatched agent_id -> rejected
+      - protocol version mismatch at handshake -> agent killed
+
+      ReplanRequest:
+      - executor sends ReplanRequest(MINOR) with evidence -> auditor reviews -> fast-track replan
+      - executor sends ReplanRequest(MAJOR) -> requires human approval
+      - executor sends 2 ReplanRequests in same phase -> second rejected (max 1 per phase)
+      - ReplanRequest without evidence string -> rejected
+      - ReplanRequest logged to SSB as action_type='replan_request'
+
+      Self-modification locks:
+      - self-mod agent WriteFile to locked path -> rejected (generic error)
+      - self-mod agent WriteFile("./metrics/../metrics.rs") -> rejected (canonical path)
+      - self-mod agent BashRequest writing locked file -> blocked (read-only mount)
+      - self-mod agent GitCommit touching locked file -> rejected (diff path filter)
+
+    IMPLEMENT:
+      Agent binary (elai_cc_agent):
+        - Minimal binary. No network code. No tool code. No LLM client.
+        - Receives AgentRequest via IPC. Runs GRC reasoning loop.
+        - Emits InferRequest for LLM calls. Orchestrator proxies to providers crate.
+        - Emits ToolRequest/BashRequest/GroundingRequest for all external actions.
+        - Returns AgentResponse with structured output.
+
+      Orchestrator IPC gateway:
+        - Creates 0700 directory /tmp/elai_cc_{session}/ before any agent spawn.
+        - Creates per-agent socket: /tmp/elai_cc_{session}/{agent_uuid}.sock
+        - Verifies socket path does not pre-exist before bind() (symlink attack prevention).
+        - On accept(): SO_PEERCRED check (Linux), named pipe impersonation check (Windows).
+        - Reads frames with MAX_FRAME_SIZE=10MB hard cap.
+        - Validates postcard deserialization before processing.
+        - Routes: InferRequest -> providers, ToolRequest -> tools (through visibility
+          filter + rules engine), BashRequest -> sandbox, GroundingRequest -> knowledge
+          engine or web search (orchestrator has network access).
+        - GRC budget: counts ThinkStep per topic per agent. Enforces cap externally.
+        - SSB write synchronous with IPC ToolResult dispatch (crash safety).
+        - Heartbeat: 5s interval. 15s timeout -> SIGKILL + unlink socket + respawn.
+        - On agent death: close fd, unlink socket file, checkpoint to SSB.
+
+      Linux process setup (in spawn order):
+        1. Create 0700 socket directory if not exists.
+        2. Create + bind socket. Listen.
+        3. clone(CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET).
+        4. In child: prctl(PR_SET_NO_NEW_PRIVS, 1). Drop ALL capabilities.
+        5. Setup mount namespace: bind-mount project (RO), scratch (RW).
+           Self-mod agent: additionally mount locked dirs as RO.
+        6. Setup PID namespace (child is PID 1).
+        7. Setup network namespace: lo only. Researcher: add veth + iptables.
+        8. Install seccomp-bpf (IPC_BASELINE or IPC_BASELINE + NETWORK_EXTRA).
+        9. Sanitize environment (keep only LANG, TERM, PATH, TMPDIR).
+        10. exec(elai_cc_agent, socket_path).
+
+      Windows process setup:
+        1. CreateAppContainerProfile() for agent.
+        2. Grant AppContainer access to: project source (read), scratch dir (read-write).
+        3. Create named pipe.
+        4. CreateProcessAsUser with AppContainer token.
+        5. Assign to Job object (process limit=1, memory limit=512MB).
+        6. Researcher: add network capability to AppContainer profile.
+        7. Fallback (no AppContainer): restricted token + ACL deny on .elai_cc/.
+           Documented as weaker. Linux recommended for production security.
+
+    MEASURE:
+      - IPC round-trip latency (target: <1ms p99 for messages <64KB)
+      - Agent process spawn time (target: <100ms including namespace setup)
+      - Memory overhead per agent process (target: <30MB baseline)
+      - End-to-end agent turn time compared to in-process baseline (overhead budget: <5%)
+      - Isolation escape test: agent instructed to find .elai_cc/ (must fail)
+      - Adversarial IPC test battery: all scenarios pass without crash or state corruption
+
+  4B: Tools (git, validation, trace, edit matching, incremental compilation)
+    SKELETON: git2 wrappers, validation pipeline stubs, DAIRA trace, edit matching,
+      ShortCoder AST transforms, failure taxonomy classifier, file read enhancement,
+      incremental compilation check per language.
+      All tools execute in orchestrator process. Agent accesses via IPC ToolRequest.
+    VERIFY:   compiles
+    TEST:
+      - git2 auto-commit after verified phase completion
+      - 5-tier validation pipeline runs in correct order
+      - DAIRA trace produces parseable structured markers
+      - 3-tier edit matching: exact -> whitespace-normalized -> ellipsis
+      - ShortCoder output AST-equivalent to input (tree-sitter verify)
+      - failure taxonomy classification is deterministic
+      - file_read returns outline for files >300 lines
+      - agent receives tool results via IPC with sanitized errors
+      - incremental compilation: Rust file with syntax error -> executor gets COMPILATION_ERROR
+      - incremental compilation: executor retry fixes error -> file accepted
+      - incremental compilation: 3 failed retries -> file marked NEEDS_AUDIT
+      - incremental compilation: NOT triggered during TESTING_FIRST phase
+    IMPLEMENT: git2 native operations, 5-tier validation, DAIRA trace, 3-tier edit matching,
+      ShortCoder post-processing, failure taxonomy, file read enhancement,
+      incremental compilation check (cargo check / ruff / tsc / go vet per language).
+      IPC ToolRequest/ToolResult serialization for all tools.
+    MEASURE:  tool execution latency via IPC vs direct (overhead target: <2ms),
+      compilation check latency per language, auditor BLOCK reduction from compilation feedback
+
+  4C: Plugins (hooks, tiered static analysis)
+    SKELETON: PreToolUse/PostToolUse/Stop hook stubs, T1/T2/T3 analysis stubs.
+      Hooks run in orchestrator process. Agent tool requests pass through hooks
+      before execution. Agent never sees hook existence.
+    VERIFY:   compiles
+    TEST:
+      - PreToolUse blocks forbidden tool calls, agent sees generic error
+      - PostToolUse runs ruff/AST check on file writes, agent sees generic error on failure
+      - Stop hook prevents non-IDLE termination
+      - T1 fires on every SSB write in <1ms
+      - T2 fires on file_write only, <10ms for files <5000 lines
+      - T3 fires only when T1/T2 return WARN
+      - BLOCK recorded in SSB, agent receives sanitized rejection (no hook/rule details)
+    IMPLEMENT: hook system in orchestrator, tiered static analysis on SSB writes.
+      Error sanitization layer between hook verdicts and IPC responses to agent.
+    MEASURE:  hook overhead per tool call (target: <1ms for T1)
+
+  4D: Pipeline Factory L1 (designer, with FlashResearch tree architecture)
+    SKELETON: Research Agent role config, GRC-grounded task decomposition stubs,
+      PipelineSpec + QualitySpec types, ResearchTree + ResearchNode types
+      (FlashResearch-derived, arxiv 2510.05145).
+      Research Agent runs as isolated process with network allowlist for web search.
+    VERIFY:   compiles
+    TEST:
+      - task description -> Research Report with grounded alternatives
+      - PipelineSpec generated from Research Report (only grounded references)
+      - QualitySpec has measurable metrics (unmeasurable -> REJECT)
+      - Research Agent has network access to search APIs (isolated, no other endpoints)
+      - Research Agent cannot access .elai_cc/ or project source (only web search)
+      - research tree is acyclic (no child references ancestor)
+      - tree depth bounded by depth_limit (default 5)
+      - tree breadth bounded by breadth_factor per node (default 3)
+      - dual-threshold convergence: phi >= phi_min AND psi >= psi_min per node
+      - speculative execution disabled for local models (single GPU)
+      - speculative execution bounded by speculative_depth * breadth_factor
+    IMPLEMENT: Research Agent, GRC-grounded decomposition, ResearchTree with
+      tree-structured expansion, speculative execution (cloud only),
+      dual-threshold convergence, adaptive breadth/depth,
+      PipelineSpec + QualitySpec generation.
+    MEASURE:  research quality (grounding level distribution), pipeline spec size,
+      tree depth/breadth utilization, speculative hit rate, convergence speed
+
+  4E: Pipeline Factory L2 (builder, with AutoB2G-derived repair loops)
+    SKELETON: deterministic pipeline assembler, structural validator, FSM state generator,
+      DAG repair loop (AutoB2G-derived, arxiv 2603.26005).
+      L2 runs entirely in orchestrator (no LLM, no agent process needed).
+    VERIFY:   compiles
+    TEST:
+      - PipelineSpec -> ExecutablePipeline with valid FSM states
+      - tools referenced in PipelineSpec exist in registry
+      - no dependency cycles in pipeline graph
+      - resource requirements fit hardware (ModelPool query)
+      - test harness skeleton generated from QualitySpec
+      - DAG repair: cycle detected -> auto-repair attempt (reorder/substitute)
+      - DAG repair: max T_DAG=10 repair rounds before escalation
+      - DAG repair: each repair round produces a structurally different graph
+      - invalid PipelineSpec with repairable issue -> repaired within T_DAG rounds
+      - invalid PipelineSpec with unrepairable issue -> escalation after T_DAG rounds
+      Phase Sizing tests:
+      - phase_complexity > available_for_work * 0.6 -> phase split triggered
+      - split preserves input/output contracts from skeleton
+      - max split depth: 2 (no recursive splitting beyond)
+      - adjacent-only merge (no merge when external dependents between phases)
+      - Kahn's cycle detection rejects cyclic dependency graphs
+    IMPLEMENT: pipeline assembly, structural validation, FSM state generation,
+      dependency graph validation with bounded repair loop (T_DAG=10),
+      resource estimation, Phase Sizing (split/merge by contract boundaries).
+    MEASURE:  assembly time (target: <1s for 10-phase pipeline),
+      repair success rate, average repair rounds per pipeline,
+      Phase Sizing split frequency and accuracy
+
+  4F: FEASIBILITY_PROBE
+    SKELETON: SYSTEM_PROBE types, stub testing harness.
+      Stubs execute in isolated agent process (same isolation as executor).
+    VERIFY:   compiles
+    TEST:
+      - SYSTEM_PROBE detects GPU, memory, disk constraints
+      - novel step stub (<50 lines) executes in sandbox
+      - max 3 alternatives tried before escalation
+      - stub cannot access .elai_cc/ or other project files outside scope
+    IMPLEMENT: hardware probe, stub test execution in sandbox, alternative selection.
+    MEASURE:  probe accuracy, stub execution time
+
+  4G: AUTONOMOUS MODE ENABLEMENT
+    Prerequisite: Phase 3 INTERACTIVE loop validated, Phase 4A-4F complete.
+    This is where AUTONOMOUS auto-advance is implemented on top of the proven
+    INTERACTIVE pipeline. All components already work with HITL gates —
+    this phase adds the auto-advance logic that skips human approval when
+    evidence artifacts pass.
+
+    SKELETON: AutonomousGate logic (wraps existing INTERACTIVE gate),
+      auto-advance evaluator, escalation-to-human triggers
+    VERIFY:   compiles, all INTERACTIVE tests still pass (no regression)
+    TEST:
+      - AUTONOMOUS auto-advance: evidence artifact present -> gate auto-approves
+      - AUTONOMOUS escalation: 3x anti-spiral on same issue -> pauses for human
+      - AUTONOMOUS HIGH-risk actions still pause for human (file deletion, etc.)
+      - AUTONOMOUS auditor reviews dangerous actions (not human)
+      - mode switch: AUTONOMOUS -> INTERACTIVE mid-pipeline preserves state
+      - mode switch: INTERACTIVE -> AUTONOMOUS mid-pipeline preserves state
+      - AUTONOMOUS SPLIT_TASK on context budget exhaustion (vs INTERACTIVE ESCALATE)
+      - AUTONOMOUS SUBSTITUTE_MODEL on max_restarts (vs INTERACTIVE ESCALATE)
+      - all Phase 3 INTERACTIVE tests still pass (regression suite)
+    IMPLEMENT: AutonomousGate (wraps InteractiveGate with auto-advance),
+      evidence-based auto-approval, escalation triggers (anti-spiral, HIGH risk),
+      mode switching at phase boundaries, SPLIT_TASK and SUBSTITUTE_MODEL fallbacks.
+    MEASURE:  auto-advance accuracy, false escalation rate, mode switch latency
+
+  4H: Self-modification Layer 1+2 (DGM-derived, CEL-derived, DarwinNet MSI)
+    SKELETON: PipelineOutcome metrics types, MSI (Modification Solidification Index,
+      DarwinNet-derived), sandbox config copy, SWE-bench harness,
+      config_variants SQLite table, UCB parent selection, staged evaluation types.
+      Self-modification agent runs as isolated process with EXTRA restrictions:
+        - Cannot write to: metrics code, gate definitions, auditor config,
+          benchmark harness, test suite, config_variants table schema.
+        - THREE enforcement layers (defense in depth):
+          1. IPC-level: orchestrator rejects WriteFile/EditFile to locked paths
+             (canonical realpath comparison, not string match).
+          2. Filesystem-level: locked dirs mounted read-only in agent namespace.
+             BashRequest cannot bypass — mount is OS-enforced.
+          3. Git-level: orchestrator filters GitCommit, rejects if diff touches locked path.
+        - Agent cannot read the lock list (lock enforcement is invisible).
+    VERIFY:   compiles
+    TEST:
+      Config archive:
+      - config_variants table: insert variant, query by UCB score, max 50 enforced
+      - UCB selection: all variants have non-zero selection probability
+      - only one variant has status='ACTIVE' at any time
+      - variant revert: status -> REVERTED, previous active restored
+      Log-driven proposals:
+      - self-mod agent reads SSB pipeline logs (phases, findings, anti-spiral, context)
+      - proposal cites specific SSB log entries as evidence
+      - heuristic triggers remain as fallback (low first-try ratio, excessive tokens)
+      Staged evaluation:
+      - Stage 1 (10 tasks) failure -> no Stage 2 (early termination)
+      - Stage 2 (50 tasks) includes trigger task
+      - Stage 3 (200 tasks) only if Stage 2 score > threshold AND top 2 in archive
+      Self-referential alignment:
+      - Layer 1: PipelineOutcome triggers arithmetic metric updates (no LLM)
+      - Layer 2: log-driven proposal -> plan -> sandbox -> staged benchmark -> gate
+      - gate: better on trigger AND no regression AND auditor passes AND no gate mods
+      - cross-transfer: test winning config with different FM, flag FM-specific results
+      Safety:
+      - self-mod agent cannot write to locked files (IPC rejects, generic error)
+      - self-mod agent cannot read the lock list itself
+      - auto-revert: metrics degrade >10% over 3 pipelines -> variant REVERTED
+      - sandbox physically separate from active config
+      MSI (DarwinNet-derived):
+      - MSI computed after every Layer 2 benchmark (pure arithmetic)
+      - MSI IMPROVING (>0.3): self-mod frequency maintained (1 per 3 pipelines)
+      - MSI STABILIZING (-0.1 to 0.3): frequency reduced to 1 per 5 pipelines
+      - MSI DIVERGING (<=-0.1): self-mod paused, user alerted, highest-score restored
+      - MSI in [-1, 1] range always (weighted moving average)
+    IMPLEMENT: metric collection, log-driven proposal mechanism, config_variants
+      SQLite table + UCB selection, staged evaluation (10/50/200), sandbox environment,
+      SWE-bench rotation, deterministic gate checks, revert protocol,
+      MSI computation and adaptive frequency control,
+      cross-transfer validation (optional, cloud model test).
+      READ-LOCK enforcement via IPC tool request filtering in orchestrator.
+    MEASURE:  self-mod pipeline time, staged eval cost savings vs full benchmark,
+      archive variant count over time, causal vs spurious rule ratio,
+      cross-transfer pass rate, revert frequency, MSI trajectory over time
+
+    EVALUATE (SWE-World-derived, arxiv 2602.03419):
+      Learned reward model for pre-screening config variants before staged evaluation.
+      Concept: train a lightweight reward predictor on accumulated PipelineOutcome data
+      (SSB logs). Use it to score candidate config variants before committing to real
+      Stage 1 (10-task) execution. Could screen 100 variants in the time of 10 real runs.
+      Precondition: sufficient PipelineOutcome history (>50 pipelines with outcomes).
+      Decision: implement only if MSI tracking shows variant selection is a bottleneck
+      (too many Stage 1 failures, indicating poor variant search).
+      Risk: learned predictor may bias toward variants that look good on training
+      distribution but fail on novel tasks (see R53 in risk register).
+
+  4I: Media Validator (conditional — only if needed by pipeline)
+    SKELETON: two-tier validation types, external tool wrappers.
+      VLM model loads on demand in separate process (not in agent process).
+      Tier 1 (deterministic) runs in orchestrator. Tier 2 (VLM) runs in isolated process.
+    VERIFY:   compiles
+    TEST:
+      - Tier 1 validates image/3D/audio deterministically in <100ms
+      - Tier 2 VLM produces structured output (constrained decoding)
+      - Tier 1 fail overrides Tier 2 pass
+      - VLM process cannot access project source or .elai_cc/
+      - VLM loaded only when PipelineSpec has media steps
+    IMPLEMENT: deterministic validators, VLM integration, external tool wrappers.
+    MEASURE:  Tier 1 latency, Tier 2 latency, VRAM swap cost
+
+  EXIT CRITERIA:
+    - System can accept arbitrary task, design pipeline, execute in INTERACTIVE mode.
+    - AUTONOMOUS auto-advance works on top of validated INTERACTIVE pipeline (4G).
+    - Mode switch (INTERACTIVE <-> AUTONOMOUS) preserves state at phase boundary.
+    - All agents run as isolated processes. No agent can see enforcement internals.
+    - Agent instructed to find .elai_cc/ or rules.db fails (isolation escape test).
+    - End-to-end overhead from process isolation <5% of total turn time.
+    - Self-modification cannot touch its own evaluation criteria.
+
+
+================================================================================
+PHASE 5: EMPIRE INTEGRATION (D2 — deferred)
+================================================================================
+
+Spec: integration/empire.txt
+Not started until Phase 0-4 proven.
+
+
+================================================================================
+MEASUREMENT FRAMEWORK
+================================================================================
+
+Every phase collects and records:
+  - Compile time (cargo check, cargo build)
+  - Test count (total, passing, failing)
+  - LOC (total, added this phase, removed this phase)
+  - Contract test coverage per crate
+  - Performance metrics specific to the phase (latency, throughput, etc.)
+
+Stored in: .elai_cc/metrics/phase_{N}.toml
+Format:
+  [phase_0]
+  compile_time_seconds = 26.24
+  tests_total = 666
+  tests_passing = 650
+  tests_failing = 16
+  loc_total = 59449
+  loc_added = 0
+  loc_removed = 1420
+  notes = "stripped compact.rs, summary_compression.rs, telemetry"
+
+This is the empirical data that drives elaboration decisions.
+If Phase 1C (vectors) adds <5% retrieval quality over BM25 alone,
+deprioritize it and move to Phase 2. Data decides, not the plan.
+
+
+================================================================================
+WALKING SKELETON VERIFICATION CHECKLIST
+================================================================================
+
+After Phase 0 + Phase 3 (minimum viable INTERACTIVE loop), verify:
+
+[ ] User can type a task in CLI
+[ ] System connects to ollama, sends structured prompt
+[ ] FSM transitions through all states in INTERACTIVE mode
+[ ] INTERACTIVE gate pauses at each transition with evidence + reasoning
+[ ] Human can approve gate -> FSM advances
+[ ] Human can reject gate -> FSM returns to previous state
+[ ] Human can modify gate -> updates plan/context, then advances
+[ ] Human can redirect gate -> switches to different phase/task
+[ ] Risk-level gating: LOW auto-advances, MEDIUM pauses, HIGH always pauses
+[ ] At least one file is read, edited, and committed
+[ ] Auditor agent runs and produces findings
+[ ] Knowledge engine query returns relevant results during PLANNING
+[ ] GRC rejects ungrounded claims during PLANNING/EXECUTING
+[ ] Session state can be saved and restored (handoff)
+[ ] All contract tests pass
+[ ] Compile time under 60 seconds
+[ ] No stripped code (compact, telemetry, bias) remains
+[ ] Zero raw time/entropy access (entropy quarantine, Phase 0.8)
+[ ] DST reference model matches actual FSM for 10,000+ random ops (Phase 3I)
+[ ] Same seed produces identical SSB output on repeated test runs
+
+INTERACTIVE PIPELINE GATE: all above must pass before Phase 4 begins.
+No autonomous behavior until INTERACTIVE mode is proven end-to-end.
+
+After Phase 4G (AUTONOMOUS enablement), additionally verify:
+[ ] AUTONOMOUS auto-advance works when evidence artifacts pass
+[ ] AUTONOMOUS escalates to human after 3x anti-spiral
+[ ] Mode switch INTERACTIVE <-> AUTONOMOUS preserves state
+[ ] All INTERACTIVE tests still pass (regression)
+
+If all pass: the walking skeleton works. Elaborate from data.
+If any fail: fix before adding features.

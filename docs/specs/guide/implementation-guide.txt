@@ -1,0 +1,325 @@
+ELAI_CC IMPLEMENTATION GUIDE
+For LLM-driven phase-by-phase implementation.
+Date: 2026-04-06
+
+
+HOW TO USE THIS GUIDE
+
+You are implementing elai_cc, a Rust-native LLM workflow engine (INTERACTIVE-first).
+This guide is the entry point. Each phase has its own step file in steps/.
+
+Workflow per session:
+  1. Read this file (you are here) for project scope and phase map.
+  2. Identify which phase/sub-phase to implement.
+  3. Read the step file: steps/phase-{N}.txt (e.g. steps/phase-1A.txt).
+  4. The step file lists READ directives — read those spec files for detail.
+  5. Follow the cycle: SKELETON -> VERIFY -> TEST -> IMPLEMENT -> MEASURE.
+  6. Do not start a phase until its prerequisites are complete.
+
+Setup prerequisite (before any phase):
+  ONNX models must be pre-staged at .elai_cc/models/onnx/.
+  Run setup script: download models + blake2 hash verify + write index_version.toml.
+  Missing models at startup -> DEGRADED mode (BM25_ONLY), not crash.
+  See core.txt section 4 (ONNX model storage) for canonical path and details.
+
+
+PROJECT SCOPE (concise)
+
+elai_cc is a Rust-native LLM workflow engine (INTERACTIVE-first, then AUTONOMOUS).
+Human provides task, system executes the development cycle.
+Not a CLI assistant — a development engine. INTERACTIVE (HITL) mode validated
+end-to-end before AUTONOMOUS auto-advance is enabled (Phases 0-3 = INTERACTIVE,
+Phase 4G = AUTONOMOUS enablement).
+
+9 crates: core, providers, knowledge, reasoning, orchestrator, tools, plugins, rules, cli.
+Base: claw-code-rust-port fork (61,317 LOC, 69 .rs files, 684 tests, compiles clean).
+  Verified 2026-04-06 from local copy at .elai_cc/rust/. Older specs say 59,449/666 (stale).
+Target dir: .elai_cc/ (all generated code goes here).
+
+FSM states: IDLE -> PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST -> EXECUTING
+  -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE.
+Storage: msgpack (disk), postcard (wire), SQLite WAL (SSB inter-agent state).
+Parallelism: BSP supersteps with typed channels (LastValue, Topic, Ephemeral, Untracked).
+
+Hardware: Phase 0 = 1x RTX 3060 12GB. Production = 2x RTX 3090 24GB.
+Phase 0 model: Qwen2.5-Coder-7B-Instruct NF4+FA2 (5.18GB, 90% code pass rate).
+  Fallback: Qwen2.5-Coder-3B-Instruct NF4+FA2 (1.92GB, 72% pass, longer context).
+  Gemma 4 E2B: REJECTED (mixed head_dim blocks FA2, 18x larger KV cache).
+Production models: Qwen2.5-Coder-32B NF4+FA2+TQ4 (all roles, 48GB GPU).
+  Per-role model routing deferred until multi-model quality comparison done.
+  Cloud fallback available.
+Model storage: F:\.ELAI_workflow\.elai_cc\models\ (local HF format, not ollama).
+Inference: sidecar server (python/elai_inference/server.py), not ollama.
+  Ollama is fallback only. Sidecar provides: FA2, DoLa, steering, TQ8/TQ4.
+Model-agnostic: all behind LlmProvider trait.
+
+Key properties:
+  - Entropy-quarantined: all time/randomness via injectable traits (deterministic testing)
+  - Deterministic-first: all outputs verified by deterministic scripts
+  - Token-efficient: msgpack, postcard, phase-aware context loading
+  - Per-project: all state lives inside project directory
+  - Code-driven orchestration: ~330 tokens meta-instructions per turn, not 1600+
+
+Two deliverables: D1 (standalone elai_cc), D2 (Empire integration, deferred).
+
+Full architecture: docs/specs/architecture-overview.txt
+All specs index: docs/specs/design_index.txt
+
+
+CRATE MAP (dependency order)
+
+  core/           (leaf — no deps)     Config, paths, logging, serde, entropy traits
+  providers/      (core)               LlmProvider trait, Ollama/vLLM, ModelPool, cache
+  knowledge/      (core, providers)    DKG, BM25, vectors, CatRAG, A-RAG, PageRank
+  reasoning/      (core, providers, tools)  GRC engine, grounding, CSQ, budgets
+  rules/          (core)               Predicate DSL, SQLite rule store, self-improving
+  tools/          (core, knowledge)    File ops, bash, git2, DAIRA, ShortCoder, validation
+  plugins/        (core, rules)        Hooks, skills, MCP bridge, tiered static analysis
+  orchestrator/   (core, providers, reasoning, rules, tools)  FSM, agents, SSB, BSP
+  cli/            (core, orchestrator, tools, providers)       Thin REPL shell
+
+
+TRAIT BOUNDARIES (the contracts between crates)
+
+  providers::LlmProvider    — complete(prompt,config)->Stream, embed(text)->Vec<f32>,
+                               token_count(text)->usize, token_count_estimate(text)->usize
+  knowledge::KnowledgeEngine — build_graph, query, rerank, update, readiness_check, index_stats
+  reasoning::GrcEngine       — think, set_budget, verify_claim, ground_plan
+  orchestrator::Fsm          — get_state, transition, get_active_tools, get_active_rules
+  orchestrator::AgentPool    — spawn, spawn_parallel, communicate
+  orchestrator::Dispatch     — MetaDispatchTable, PlanDispatchTable, DispatchPipeline
+  rules::RuleEngine          — evaluate(action,context)->ALLOW|BLOCK|WARN, get_active_rules
+  tools::ToolRegistry        — execute(tool_id,params)->ToolResult, available_tools(state)
+
+Agent roles (9 total):
+  Executor, Designer (NEW), Auditor, Researcher, PromptEngineer,
+  ContextCompiler, MemoryWriter, MediaValidator
+  Designer: produces PipelineSpec from Research Report. Distinct from Executor
+  (different role_prompt, GRC steps, output format). See orchestrator.txt S14.
+
+
+PHASE MAP
+
+  Pre-Phase 0: WINDOWS PLATFORM FIXES (clean base)
+            steps/pre-phase-0.txt
+            Fix all compile errors and test failures from claw-code on Windows.
+            5 steps: P0.1 (compile guards) -> P0.2 (plugin hooks) -> P0.3 (tools tests)
+                     -> P0.4 (warnings) -> P0.5 (verify clean baseline).
+
+  Phase 0:  FORK AND STRIP (walking skeleton)
+            steps/phase-0.txt
+            13 steps: 0.1-0.10 (0.4 split into 0.4a/b/c, 0.7 split into 0.7a/b/c).
+            Order: baseline -> strip (structural: TokenUsage, slash commands, compat-harness)
+              -> verify strip -> restructure leaf crates (core/rules/providers)
+              -> restructure mid-layer (tools/plugins) -> restructure top-layer (orchestrator/cli)
+              -> verify -> contracts (crates/contracts/ test crate) -> implement (3 sub-steps)
+              -> verify -> entropy quarantine -> determinism proof.
+            Includes complete MODULE MAPPING table (all 69 files mapped to target crates).
+            Key decisions: strip before restructure, SandboxConfig in core/ (avoids circular dep),
+              TokenUsage replaced (not just deleted), workspace migrates from .elai_cc/rust/ to .elai_cc/.
+
+  Phase 1:  KNOWLEDGE ENGINE (one layer at a time)
+            steps/phase-1A.txt  DKG (tree-sitter -> SQLite graph)
+            steps/phase-1B.txt  BM25 (tantivy full-text)
+            steps/phase-1C.txt  Vector search (dual-model ONNX)
+            steps/phase-1D.txt  PageRank repo map
+            steps/phase-1E.txt  CatRAG + A-RAG (query pipeline)
+            steps/phase-1F.txt  Speculative decoding evaluation
+            steps/phase-1G.txt  Cross-encoder reranker
+            steps/phase-1H.txt  SPLADE keyword expansion (conditional)
+            steps/phase-1I.txt  Resilience layer (circuit breaker, degradation)
+
+  Phase 2:  REASONING ENGINE (GRC)
+            steps/phase-2A.txt  GRC state machine (basic)
+            steps/phase-2B.txt  Grounding verification
+            steps/phase-2C.txt  Per-agent GRC configuration
+            steps/phase-2D.txt  CSQ and inline feasibility
+
+  Phase 3:  ORCHESTRATION + RULES (INTERACTIVE-first)
+            steps/phase-3A.txt  Full FSM (INTERACTIVE mode)
+            steps/phase-3B.txt  SSB (Shared State Board)
+            steps/phase-3C.txt  Agent system
+            steps/phase-3D.txt  BSP supersteps + channels
+            steps/phase-3E.txt  Context budget allocator
+            steps/phase-3F.txt  Rules engine (self-improving)
+            steps/phase-3G.txt  Hierarchical plan management
+            steps/phase-3H.txt  Session handoff (CMV-derived DAG)
+            steps/phase-3I.txt  Deterministic Simulation Testing (DST)
+
+  Phase 4:  WORKFLOW INTEGRATION + AGENT PROCESS ISOLATION + AUTONOMOUS MODE
+            steps/phase-4A.txt  Agent process isolation (Tier C) — IMPROVED 2026-04-06
+              6 steps: 4A.1 (skeleton) -> 4A.2 (verify) -> 4A.3 (functional tests)
+                -> 4A.4 (adversarial tests) -> 4A.5 (implement) -> 4A.6 (measure)
+              Covers all 9 audit BLOCKs + 9 WARNs from audit-results-phase4.txt.
+            steps/phase-4B.txt  Tools (git, validation, trace, edit matching, incr. compilation)
+              5 steps: 4B.1 (skeleton) -> 4B.2 (verify) -> 4B.3 (tests)
+                -> 4B.4 (implement) -> 4B.5 (measure)
+              8 deliverables: git2, validation pipeline, DAIRA trace, edit matching,
+                ShortCoder, failure taxonomy, file read, incremental compilation.
+              Requires DAIRA + ShortCoder paper ingestion before TESTING_FIRST.
+            steps/phase-4C.txt  Plugins (hooks, tiered static analysis) — IMPROVED 2026-04-06
+              6 steps: 4C.1 (skeleton) -> 4C.2 (verify) -> 4C.3 (tests)
+                -> 4C.4 (adversarial tests) -> 4C.5 (implement) -> 4C.6 (measure)
+              Hooks intercept IPC messages in orchestrator (Tier C): PreToolUse,
+                PostToolUse (+ ShortCoder), Stop, PreCompact.
+              Tiered static analysis: T1 rules (<1ms), T2 AST (<10ms), T3 pattern (<5ms).
+              Circular trust prevention for self-discovery pathway.
+              40 tests (30 contract + 10 adversarial). Skills/MCP bridge deferred.
+            steps/phase-4D.txt  Pipeline Factory L1 (designer + FlashResearch) — IMPROVED 2026-04-06
+              6 steps: 4D.1 (skeleton) -> 4D.2 (verify) -> 4D.3 (tests)
+                -> 4D.4 (adversarial tests) -> 4D.5 (implement) -> 4D.6 (measure)
+              Types: ResearchTree, ResearchNode, ResearchReport, SubQuestionResult,
+                SourceQuality (5-tier deterministic), PipelineSpec, QualitySpec.
+              Research Agent: isolated process (Tier C), GRC budget 10/1200,
+                IPC-proxied verification, web search via orchestrator proxy only.
+              FlashResearch-derived: tree-structured expansion, speculative execution
+                (cloud only), dual-threshold convergence (phi/psi), adaptive breadth/depth,
+                time_budget enforcement. 14 testable invariants + 10 adversarial tests.
+              Requires FlashResearch paper ingestion before TESTING_FIRST.
+            steps/phase-4E.txt  Pipeline Factory L2 (builder + AutoB2G repair) — IMPROVED 2026-04-06
+              6 steps: 4E.1 (skeleton) -> 4E.2 (verify) -> 4E.3 (tests)
+                -> 4E.4 (adversarial tests) -> 4E.5 (implement) -> 4E.6 (measure)
+              Types: ExecutablePipeline, DependencyGraph, DagNode, PipelineFsmState,
+                ResourceEstimate, TestHarnessSkeleton, AgentPhaseConfig, RuleBinding,
+                RepairAction (Reorder, Substitute), RepairOutcome, ValidationError.
+              Deterministic-only: no LLM, no agent process, runs in orchestrator crate.
+              AutoB2G-derived: bounded DAG repair (T_DAG=10), 2 strategies (reorder, substitute).
+              7-point structural validation, novel step detection (4F dependency),
+                compiled predicates (rules::compile_predicate), QualitySpec validation.
+              28+ tests (contract + integration + adversarial + property-based).
+            steps/phase-4F.txt  FEASIBILITY_PROBE — IMPROVED 2026-04-06
+              6 steps: 4F.1 (skeleton) -> 4F.2 (verify) -> 4F.3 (tests)
+                -> 4F.4 (adversarial tests) -> 4F.5 (implement) -> 4F.6 (measure)
+              Types: SystemProbeResult, GpuInfo, SystemConstraints, StubResult,
+                ResourceDelta, ConstraintResult, FeasibilityReport, FeasibilityEscalation,
+                FeasibilityDecision. FeasibilityProbe trait (object-safe, &self).
+              Hardware: nvml-wrapper (GPU VRAM), sysinfo 0.37+ (RAM/disk).
+              Stubs: <50 lines strict, Tier C sandbox, 25s graceful / 30s hard kill
+                (explicit child.kill().await — tokio kill_on_drop is false).
+              SSB branch-and-explore: max 3 alternatives per novel step.
+              Skip: novel_steps.is_empty() AND free >= required * 1.20 (all resources).
+              Escalation: 3 failures -> Escalate (INTERACTIVE) or Replan (AUTONOMOUS).
+              24 tests (16 contract + 8 adversarial). 12 testable invariants.
+            steps/phase-4G.txt  AUTONOMOUS MODE ENABLEMENT (on top of INTERACTIVE) — IMPROVED 2026-04-06
+              6 steps: 4G.1 (skeleton) -> 4G.2 (verify) -> 4G.3 (tests)
+                -> 4G.4 (adversarial tests) -> 4G.5 (implement) -> 4G.6 (measure)
+              AutonomousGate wraps InteractiveGate with AutoAdvanceEvaluator.
+              Evidence gate checks per S13 (deterministic, no LLM).
+              Escalation: anti-spiral(3x), HIGH-risk, ReplanRequest(MAJOR), circuit breaker.
+              Fallbacks: SPLIT_TASK (max 4 sub-tasks, depth 2), SUBSTITUTE_MODEL (ModelPool chain).
+              Evidence provenance: artifact verified from correct agent role.
+              36 tests (28 contract + 8 adversarial).
+            steps/phase-4H.txt  Self-modification (DGM/CEL/DarwinNet-derived) — IMPROVED 2026-04-06
+              9 steps: 4H.1 (skeleton) -> 4H.2 (verify) -> 4H.3 (config archive tests)
+                -> 4H.4 (log-driven proposal tests) -> 4H.5 (staged eval tests)
+                -> 4H.6 (safety tests) -> 4H.7 (MSI tests) -> 4H.8 (implement)
+                -> 4H.9 (measure)
+              3 layers: L1 automatic metrics, L2 config proposals (DGM archive +
+                staged eval + log-driven proposals), L3 structural (human-only, stubs).
+              DGM-derived: sigmoid-weighted parent selection, config archive,
+                staged evaluation (10/50/200, >40% + top 2 for Stage 3),
+                self-referential alignment loop, objective hacking defense.
+              DarwinNet-inspired: MSI convergence metric (3-phase adaptive frequency).
+              SWE-World: TestOutcomeReport 4-category, optional SWR pre-screening.
+              42+ tests (archive, proposals, staged eval, safety, MSI, adversarial).
+            steps/phase-4I.txt  Media Validator (conditional) -- IMPROVED 2026-04-06
+              6 steps: 4I.1 (skeleton) -> 4I.2 (verify) -> 4I.3 (tests)
+                -> 4I.4 (adversarial tests) -> 4I.5 (implement) -> 4I.6 (measure)
+              Two-tier: Tier 1 deterministic (CPU, <100ms), Tier 2 VLM advisory (GPU, ~2-5s).
+              VLM modes: A (Qwen3.5-VL-30B-A3B, single image) B (InternVL3.5-38B, SGLang, sequences).
+              Constrained decoding (SGLang JSON schema / ollama format=json).
+              CLAP audio-text similarity (~200M params, always-loaded).
+              External tools: ImageMagick, FFmpeg, Tesseract, Blender CLI (graceful degradation).
+              >= 28 tests (20 contract/functional + 8 adversarial). Lazy loading enforced.
+
+  Phase 5:  EMPIRE INTEGRATION (deferred until D1 proven)
+            See docs/specs/integration/empire.txt
+
+
+DEPENDENCY GRAPH (what must complete before what)
+
+  Pre-Phase 0 ──> Phase 0 ──> Phase 1A ──> 1B ──> 1C ──> 1D ──> 1E ──> 1G ──> 1H (conditional)
+                                                    └──> 1F       └──> 1I
+  Phase 0 ──> Phase 2A ──> 2B ──> 2C ──> 2D
+  Phase 0-2 ──> Phase 3A ──> 3B ──> 3C ──> 3D ──> 3E
+                                              └──> 3F
+                                              └──> 3G ──> 3H
+                Phase 0.8 + 3A-3D ──> 3I
+  Phase 3 (INTERACTIVE validated) ──> Phase 4A ──> 4B ──> 4C
+                                            └──> 4D ──> 4E ──> 4F
+                      Phase 4A-4F ──> 4G (AUTONOMOUS enablement)
+                      Phase 4A ──> 4H (self-modification)
+                      Phase 4A ──> 4I (media validator, conditional)
+  Phase 4 ──> Phase 5 (deferred)
+
+
+EVERY PHASE CYCLE
+
+  0. IMPROVE   — ground all claims, add pre-gates and deterministic checks, inject adversarial tests
+  1. SKELETON  — minimal structure, stubs, types
+  2. VERIFY    — does it compile? do existing tests still pass?
+  3. TEST      — write contract/integration tests (they FAIL — that's the point)
+  4. IMPLEMENT — make tests pass
+  5. MEASURE   — collect metrics (compile time, test count, LOC, coverage)
+  6. DECIDE    — fix issues found, then proceed
+
+  Step 0 (IMPROVE) runs once per phase before implementation begins.
+  Trigger: "improve phase {N}" in the workflow. See planning-workflow skill for full protocol.
+  Produces: grounded phase file with PRE_GATE, DETERMINISTIC_CHECK, ADVERSARIAL, ACCEPTANCE blocks.
+  Grounding log: workflow/reasoning/phase-{N}-grounding.md
+  Idempotent: can run multiple times; no-ops if nothing changed.
+
+  No phase starts until previous phase's tests pass.
+  Metrics stored in: .elai_cc/metrics/phase_{N}.toml
+
+
+IMPROVED PHASE STEP FORMAT
+
+  Each step in an improved phase file contains these blocks (added by step 0):
+
+  {N}.{M} [STEP NAME]
+    PRE_GATE:
+      - [deterministic condition that must hold before this step starts]
+      - [command or check, not subjective criteria]
+    TASK:
+      - [original step content, unchanged]
+    DETERMINISTIC_CHECK:
+      - [command/assertion that proves step succeeded, runnable by auditor]
+    ADVERSARIAL:
+      - If [assumption] is wrong, [consequence]. Test: [deterministic check].
+    ACCEPTANCE:
+      - [binary pass/fail criterion per deliverable, tied to command or metric]
+    GROUNDING:
+      - "[claim]" -> [GROUNDED|VERIFIED|INGESTED|UNGROUNDED]: [evidence]
+
+
+WALKING SKELETON VERIFICATION
+
+  After Phase 0 (minimal skeleton):
+  [ ] System connects to ollama, sends structured prompt
+  [ ] FSM transitions IDLE -> EXECUTING -> IDLE
+  [ ] file_read tool executes and returns metadata
+  [ ] All Phase 0 contract tests pass
+  [ ] Compile time under 30 seconds
+  [ ] No stripped code remains (compact, telemetry, bias)
+  [ ] Zero raw time/entropy access (entropy quarantine)
+  [ ] Same seed produces identical output on repeated test runs
+
+  After Phase 0 + Phase 3 (full INTERACTIVE skeleton):
+  [ ] User can type a task in CLI
+  [ ] FSM transitions through all states in INTERACTIVE mode (IDLE through COMPLETE)
+  [ ] INTERACTIVE gate pauses at each transition with evidence + reasoning
+  [ ] Human approve/reject/modify/redirect all work correctly
+  [ ] Risk-level gating: LOW auto, MEDIUM pause, HIGH always pause
+  [ ] Knowledge engine query returns relevant results during PLANNING
+  [ ] GRC rejects ungrounded claims during PLANNING/EXECUTING
+  [ ] At least one file is read, edited, and committed
+  [ ] Auditor agent runs and produces findings
+  [ ] Session state saved and restored (handoff)
+  [ ] All contract tests pass (Phase 0 + Phase 3)
+  [ ] Compile time under 60 seconds
+  [ ] DST reference model matches actual FSM for 10,000+ random ops
+  [ ] Same seed produces identical SSB output on repeated runs
+
+  INTERACTIVE PIPELINE GATE: all above must pass before Phase 4 begins.
+  No autonomous behavior until INTERACTIVE mode is proven end-to-end.

@@ -1,0 +1,1883 @@
+TESTING AND TRUST ENFORCEMENT DESIGN
+Date: 2026-04-19 (rev 3: added Layer -1 Inference Determinism, Layer 5.5
+  Cryptographic Provenance, ArchCodex DSL, AdverTest co-evolution, FRONT/
+  CiteAudit grounding verification, PRPO hybrid MSI, Differential Prompting
+  replacement for BDG dual-gen, Rulebreakers Paired-Accuracy, XGrammar/CRANE/
+  CodeFast, FACET R-DAG tool dispatch, DGM/DarwinNet layered immutability;
+  corrected PBT soundness metric)
+Status: PROPOSAL (research-grounded, post-MVP) — needs user review
+Author: Claude Opus 4.7 (design session)
+Depends on: Phase 1A (DKG — used by Layer 0 reachability), Phase 3B (SSB
+  — used by Layer 0 observable effect), Phase 3F (rules engine), Phase 3I
+  (DST), Phase 4B (tools + 5-tier validation), Phase 4C (plugins + hooks),
+  Phase 4E (DecompositionTree + baby steps), Phase 4G (AutonomousGate +
+  evidence gates), Phase 4H (self-modification)
+  Additionally (rev 3): sidecar (python/elai_inference) — used by Layer -1
+  determinism controls (batch-invariant kernels, LayerCast, prefix-cache
+  hygiene, system_fingerprint pin).
+Scope: language-agnostic (Rust + Python first, extensible to TS/Go/Java/C#)
+Research grounding: 2025-2026 empirical data from 60+ papers (arXiv + peer-reviewed).
+  Layer 0 additionally grounded in the ELAI MVP wiring audit
+  (.elai_cc/docs/mvp-wiring-audit-2026-04-18.md), which documented
+  the concrete failure class Layer 0 addresses.
+  rev 3 additions grounded in three Gemini Deep Research syntheses archived at
+  docs/.new_research/testing veracity problems/:
+    "Validating LLM-Generated Code & Tests.txt"
+    "LLM Determinism and Reproducibility Research.txt"
+    "LLM Trust Mechanisms for Coding Engines.txt"
+  Key sources cited inline. Full citations in GROUNDING section.
+
+
+========================================================================
+PROBLEM STATEMENT
+========================================================================
+
+The central failure mode of LLM-generated code is not syntactic. It is
+SCOPE-OF-TEST drift: a test written by an LLM can compile cleanly, hit
+100% line coverage, pass every run, and assert on the wrong behavior.
+
+When the same model writes both the test and the implementation, the two
+can be "wrong in the same direction" and still pass ELAI's current
+TESTING_FIRST -> EXECUTING gate ("all tests fail for the right reasons").
+The gate verifies that tests exist and initially fail; it does NOT verify
+that the tests encode the user's intent.
+
+Nine documented failure manifestations plus one meta-trust gap,
+grouped by concern area. Every layer in the 8-layer stack exists
+to address at least one of these; every item below maps to at
+least one layer. Rev 1-2 listed only the first four (scope-of-test
+frame); rev 3 adds determinism, orchestration-safety, reasoning-
+integrity, and self-knowledge concerns surfaced in the Gemini deep-
+research files.
+
+FAMILY A — FAILURE MANIFESTATIONS (what goes wrong)
+
+PROBLEM 1: COVERAGE LIES (test-adequacy)
+  Meta's ACH LLM-test study: 32% coverage vs 5.3% baseline, but only
+  15% vs 2.4% mutation score. LLM tests hit lines without asserting meaning.
+  Extreme case: MutGen corpus shows LLM-generated suites reaching 100%
+  coverage at 4% mutation score. Coverage is a weak oracle for LLM tests.
+  Canonical anchor (AdverTest, Defects4J): 94.8% line coverage at 52.1%
+  mutation score even after adversarial co-evolution — coverage plateau
+  exists an order of magnitude above discrimination plateau.
+
+PROBLEM 2: PLAUSIBILITY BIAS (generation)
+  LLMs optimize likelihood of token sequences, not correctness.
+  A test that "looks like" a correct test is generated in preference to
+  a test that IS correct. "Plausibility as Failure" (arXiv 2512.16750)
+  shows this is a structural property of next-token prediction, not a
+  training defect fixable with more data.
+  Specific amplifier — BDG (Bimodal Dual Generation) trap: the same
+  model prompted twice with the same-intent framing (even at different
+  temperatures) emits correlated latent bugs and "agrees with itself"
+  on a wrong answer. This defeats naive differential-testing strategies
+  that generate two candidates from the same model at different temps
+  (File 1 §4(a)). The trap is the reason Layer 4 tier 3.6 uses
+  Differential Prompting with distinct intent framings or independent-
+  model differential, not temperature variation.
+
+PROBLEM 3: CO-DRIFTING TESTS AND CODE (coupling)
+  When a single model writes test + implementation in the same session,
+  failure modes are correlated. A misinterpreted spec produces a test
+  asserting the wrong behavior AND code that satisfies that wrong
+  assertion. "Bugs in LLM-Generated Code" (arXiv 2403.08937) documents
+  characteristic bug classes that existing test cases do not catch
+  because those test cases share the misinterpretation.
+
+PROBLEM 4: DEAD WIRING (structure / runtime reachability)
+  Problems 1-3 assume the code under test is REACHED at runtime. In
+  practice, LLM-built systems ship large regions of code that are
+  implemented, typecheck-clean, unit-tested in isolation, and NEVER
+  executed on the production path. Three sub-manifestations, all
+  observed in the ELAI codebase (see GROUNDING):
+    (a) placeholder-on-dispatch: real executor constructed but config
+        passes None / Synthetic* / NoOp* / Empty* on the production
+        field. Unit tests pass because tests wire the real thing
+        directly; production runs the stub.
+    (b) dual-entry divergence: CLI entry path wires component X,
+        dashboard (or second entry) skips it. Callgraph from one entry
+        looks complete, the other runs blind.
+    (c) emitter-without-consumer: backend emits an event / action_type
+        / API response; no frontend or downstream consumer reads it.
+        "Works" on the wire, invisible to the user.
+  This failure mode is STRUCTURAL, not semantic: the oracle is the
+  callgraph, not the output. It precedes and amplifies problems 1-3
+  because a test on unreached code tells you nothing about runtime
+  behavior — coverage, mutation, and intent gates all silently pass.
+
+PROBLEM 5: NON-DETERMINISTIC INFERENCE (infrastructure)
+  Even with temperature=0 and a fixed seed, LLM output is NOT bit-exact
+  reproducible. Three independent sources: (a) float non-associativity
+  under dynamic batching (reduction order varies with batch shape),
+  (b) GPU-class divergence (A100 vs H100 vs RTX 4090 produce different
+  logits at tie points), (c) provider-side silent routing patches
+  (watch `system_fingerprint` in Anthropic/OpenAI responses). Additional
+  amplifiers: prefix-cache collisions (vLLM xxhash-128), KV-cache
+  poisoning across sessions, tool-call arg casing drift, whitespace
+  normalization changing cache keys. "Falácia do temperature zero"
+  is the documented pattern. Without a determinism layer, every other
+  layer's "same input same output" assumption breaks silently — the
+  same baby step passes validation one run and fails the next, eroding
+  trust in the entire stack. Hardware invariance is impossible; GPU-class
+  locking + batch-invariant kernels + FP32 compute is the minimum viable
+  guardrail. This manifestation did not appear in rev 1-2 because the
+  scope-of-test frame assumed reproducibility as given; the 2025-2026
+  determinism research makes clear it is NOT given and must be enforced
+  as a pre-Layer-0 substrate.
+
+PROBLEM 6: GROUNDING HALLUCINATION (evidence integrity)
+  LLM-generated reasoning chains, grounding files, and context packages
+  routinely fabricate sources: arXiv IDs, paper titles, API references,
+  library version numbers, cited file paths. GhostCite 2026 measures
+  14-95% hallucination across 13 models over 375K instances (File 3 §1).
+  The failure is insidious because the downstream trust stack assumes
+  grounding claims are true: a plan built on fabricated evidence
+  passes the grounding sweep, reaches TESTING_FIRST, and the code
+  that implements the hallucinated API fails for reasons unrelated
+  to the actual spec. ELAI's GRC (Grounded Reasoning Chain),
+  phase-X-grounding.md files, and context-compiler outputs are all
+  vulnerable. Distinct from PROBLEM 2 (plausibility bias) because
+  plausibility bias produces wrong CODE; grounding hallucination
+  produces wrong EVIDENCE ABOUT the code — a deeper layer of lie.
+  Mitigated by Layer 5 FRONT / CiteAudit verification.
+
+PROBLEM 7: MULTI-AGENT STATE DRIFT (orchestration integrity)
+  When an LLM agent's output drives another agent's input, tiny
+  divergences compound. MLR-Bench documents up to 80% of multi-agent
+  reasoning chains emitting invented experiments (File 2 §7). ELAI
+  runs multiple agents in parallel (executor + auditor + context-
+  compiler + memory-writer + designer + researcher) communicating
+  via SSB. Current SSB is append-only but agents read "latest tail"
+  with no version anchor; a later-writing agent can silently supply
+  stale context to a parallel reader. BSP supersteps (Phase 3D)
+  bound this but are not enforced at every inter-agent boundary.
+  Distinct from CO-DRIFTING TESTS AND CODE (PROBLEM 3) because that
+  is about test + code written by the same model in the same
+  session; state drift is about independent agents operating on
+  diverging views of shared state. Mitigated by Layer -1 Digital
+  Sibling + SSB SNAPSHOT_V_n read semantics.
+
+PROBLEM 8: REWARD HACKING UNDER SELF-MODIFICATION (self-mod safety)
+  Systems that modify their own configs, prompts, or rule sets drift
+  toward whatever metric the self-mod signal optimizes — even when
+  that metric is a flawed proxy for user intent. "Optimize pipeline
+  pass rate" can be satisfied by relaxing evidence gates; "optimize
+  mutation score" can be satisfied by writing tests that trivially
+  kill generated mutants while missing real bugs. Phase 4H (self-
+  modification) is the locus; File 3 §10-11 documents this as the
+  dominant failure mode of long-running self-evolving systems.
+  Distinct from COVERAGE LIES because reward hacking happens at
+  the system level (the system gaming its own evaluation), not
+  the test level (a test gaming its own adequacy). Mitigated by
+  Layer 5 PRPO hybrid MSI (includes RHSI term) + Layer 6 DGM/
+  DarwinNet layered immutability (L0/L1 cryptographically locked).
+
+PROBLEM 9: CALIBRATION GAP (self-knowledge)
+  LLM-stated confidence ("I'm uncertain", "high confidence") is
+  uncorrelated with actual error risk. Verbal confidence, logprob-
+  derived confidence, and self-critique all degrade under
+  distribution shift; the model "knows what it doesn't know" only
+  in narrow in-distribution cases. Rulebreakers (File 3 §3, §5, §12)
+  shows that "I am following this rule" statements can be satisfied
+  by priors-only pattern matching, not actual rule application.
+  Concrete consequence for ELAI: the auditor agent's "zero BLOCK
+  findings" verdict is not evidence the code is correct — it is
+  evidence the auditor did not find anything it recognized as wrong.
+  Distinct from PLAUSIBILITY BIAS (PROBLEM 2) because bias affects
+  generation; calibration gap affects self-report during evaluation.
+  Mitigated by Layer 6 Rulebreakers Paired-Accuracy tau + reference-
+  model independence (auditor weights independent of executor).
+
+FAMILY B — META-TRUST GAPS (what we cannot prove went right)
+
+META-TRUST GAP M1: UNVERIFIABLE PROVENANCE
+  Even when every upper-layer check passes, the outcome is currently
+  not independently verifiable by a third party. A downstream claim
+  "this code was verified by Kani on 2026-04-19 at mutation score
+  87% under seed S on hardware H" is unfalsifiable — there is no
+  tamper-evident artifact to audit. This is a verifiability gap,
+  not a failure mode: the system can be perfectly correct and still
+  unable to prove it. Matters for regulatory compliance (EU AI Act
+  Art. 12/14/19; NIST AI RMF MEASURE-2.7), for internal post-mortem,
+  for establishing chain-of-custody when multiple agents (or
+  multiple humans) touched a baby step, and for detecting silent
+  tampering of SSB or memory-bank after-the-fact. Distinct from all
+  PROBLEMS above because those are about the system getting the
+  wrong answer; this is about the system getting the right answer
+  but unable to demonstrate it. Closed by Layer 5.5 cryptographic
+  provenance (PunkGo Merkle + Ed25519 + RFC3161).
+
+Cross-reference with P1-P25 matrix below:
+  Top-level PROBLEMS 1-9 + M1 are the high-level concern areas.
+  Matrix entries P1-P25 are concrete sub-failures with specific
+  solutions. Mapping:
+    PROBLEM 1 -> P1, P2 (coverage lies + mutation gap)
+    PROBLEM 2 -> P4 (plausibility), P17 (BDG trap)
+    PROBLEM 3 -> P1 (co-drifting)
+    PROBLEM 4 -> P13, P14, P15 (placeholder / dual-entry / unconsumed)
+    PROBLEM 5 -> P19, P21, P25 (cache, tool casing, temp=0 fallacy)
+    PROBLEM 6 -> P16 (citation hallucination)
+    PROBLEM 7 -> P20 (multi-agent state drift)
+    PROBLEM 8 -> P22 (reward hacking)
+    PROBLEM 9 -> P23 (verbal confidence)
+    GAP M1   -> P24 (cryptographic provenance)
+  P3, P5, P6, P7, P8, P9, P10, P11, P12, P18 are implementation-
+  level concerns that don't need top-level framing (PBT soundness,
+  equivalent mutants, Kani scalability, differential triggers, MSI
+  drift, human review scalability, fuzzing attack surface,
+  regression recurrence, auditor reliability, constrained-decoding
+  reasoning penalty).
+
+Human review catches scope drift via "consciousness about the code" —
+semantic understanding of what the code is SUPPOSED to do. Automated
+trust must substitute structural checks for semantic understanding.
+No single technique achieves this. A stack of complementary techniques
+can approach it asymptotically, with a measurable remaining ceiling.
+
+
+========================================================================
+DESIGN PRINCIPLE: STACK COMPLEMENTARY ORACLES
+========================================================================
+
+Every technique below is chosen because it fails DIFFERENTLY from the
+others. Stacking them forces an LLM error to survive every filter, which
+is mathematically much harder than fooling any one filter.
+
+Oracle types used:
+  DETERMINISM oracle   — bit-exact reproducibility under fixed seed / hw / kernel
+  REACHABILITY oracle  — symbol is called from a named entrypoint (DKG path)
+  RUNTIME-OBSERVE oracle — effect observable on shipped binary (SSB event)
+  REFERENCE oracle     — another implementation (differential)
+  INVARIANT oracle     — property holds for all inputs (PBT)
+  TRANSFORM oracle     — output relation under input change (metamorphic)
+  DISCRIMINATION oracle — tests distinguish correct from mutated (mutation)
+  SPECIFICATION oracle — proof against formal spec (Kani/Verus)
+  INTENT oracle        — human or reference model confirms interpretation (TiCoder)
+  CITATION oracle      — grounding claim aligns to source (FRONT / CiteAudit)
+  PAIRED-ACCURACY oracle — rule-following AND rule-breaking prompt both handled (Rulebreakers)
+  COVERAGE oracle      — lines/branches touched (weakest, still useful)
+
+The existing TESTING_FIRST gate uses only a degenerate INVARIANT oracle
+(tests exist, tests initially fail). This design adds the other eleven as
+first-class evidence artifacts. DETERMINISM is foundational — without
+bit-exact reproducibility, every other oracle is noisy (Layer -1).
+REACHABILITY and RUNTIME-OBSERVE are the cheapest semantic-independent
+oracles and catch the largest failure class (dead wiring) before any
+semantic test runs — hence Layer 0.
+
+
+========================================================================
+THE EIGHT-LAYER TRUST STACK (Layer -1 through Layer 6)
+========================================================================
+
+Layers run in temporal order relative to a baby step. Each layer catches
+a failure mode the previous layers cannot.
+
+------------------------------------------------------------------------
+LAYER -1 — INFERENCE DETERMINISM (SUBSTRATE, pre-everything)
+------------------------------------------------------------------------
+
+Goal: make the same (prompt, seed, config) produce bit-exact identical
+output across runs. Without this, every other layer is noisy: a baby
+step passes mutation gate once and fails the next run for reasons
+unrelated to its correctness. Prevents Problem 5 (non-deterministic
+inference) at the inference substrate.
+
+This layer runs in the SIDECAR (python/elai_inference/) and the
+providers crate, not in the baby-step cycle. It is enforced at startup
+and continuously monitored. No per-baby-step cost.
+
+Six deterministic-inference guardrails (seven if on CRITICAL path):
+
+D-1 HARDWARE-CLASS LOCK
+  elai_cc.toml [inference.hardware] declares one allowed GPU SKU per
+  environment (rtx_3060 | rtx_3090 | rtx_4090 | a100 | h100). Sidecar
+  startup refuses to load if nvidia-smi reports a mismatch. Rationale:
+  mixing SKUs in a deploy pool breaks reproducibility (FP8 on H100,
+  bandwidth-driven reduction trees on A100 vs consumer cards).
+  Verified via: nvml-wrapper + SM compute capability string.
+
+D-2 BATCH-INVARIANT KERNELS (CRITICAL-tier only)
+  Dynamic batching reorders float reductions, cascading through depth
+  and flipping logits at tie points. For CRITICAL classification, the
+  sidecar engages batch-invariant kernels (TBIK — Tree-Based Invariant
+  Kernels, unified binary-tree reduction topology across TP=1/4/8;
+  or vLLM batch-invariant path when available). Accept throughput
+  penalty up to 56% on CRITICAL paths only. STANDARD and TRIVIAL paths
+  continue using FlashAttention-2 / SDPA with batched reductions.
+
+D-3 LAYERCAST COMPUTE DTYPE (CRITICAL-tier only)
+  BF16 storage + FP32 compute. Mitigates up to 9% accuracy swing and
+  9000-token response-length swing observed on DeepSeek-R1-7B under
+  pure BF16 compute (File 2 §1). Enabled via sidecar --compute-dtype
+  fp32 flag; independent of storage quantization.
+
+D-4 PREFIX-CACHE HYGIENE
+  Replace vLLM's xxhash-128 prefix cache key with blake3 (collision-
+  resistant at 128 bits; same cost). Enable PinnedCachingManager so
+  cross-request KV state cannot leak. Pre-hash prompt-normalization pass
+  strips trailing whitespace, collapses internal \n\n+, removes stray
+  BOM / zero-width characters. This closes KV-cache poisoning and
+  whitespace-drift cache-key collisions simultaneously.
+
+D-5 TEMPERATURE=0 + SEED + FINGERPRINT PIN
+  "Temp=0 alone is deterministic" is false (Problem 5 above). Minimum
+  viable determinism is:
+    sampling.temperature = 0
+    sampling.top_k = 1
+    sampling.seed = <project-pinned integer>
+    provider.system_fingerprint = <pinned string, verified per request>
+  Every cloud-provider response carries system_fingerprint. Sidecar
+  logs divergence as DETERMINISM_DRIFT SSB action. Mismatch on
+  CRITICAL-tier call = BLOCK; on STANDARD = WARN.
+
+D-6 LLM-42 SPECULATIVE VERIFIED DECODING (optional, throughput recovery)
+  Fast path (non-deterministic kernels) + rollback when speculative
+  tokens disagree with deterministic reference. <11% overhead vs fully
+  deterministic kernels. Enable per-agent-role via elai_cc.toml
+  [inference.speculative_verified] — off by default, on for CRITICAL
+  executors that hit batch-invariant latency ceiling.
+
+D-7 TOOL-CALL DETERMINISM: FACET R-DAG (at tool dispatch boundary)
+  Anthropic/OpenAI tool-use casing drift (decision_F vs decision_f)
+  and field-reordering produce non-reproducible tool invocations even
+  when upstream generation is deterministic. Solution: FACET-style
+  R-DAG compilation — declare each tool's arg schema as a compiled
+  AST contract; reject emissions that don't match, don't silently
+  retry. Replaces the current ToolDispatcher try/catch+JSON-retry
+  pattern. Claims 100% reproducibility on tool invocations (File 2 §8).
+
+Framework selection (2025-2026 status):
+  vLLM: batch-invariant kernels via Triton/FlashInfer (in active
+    development). Default choice for sidecar post-rev3.
+  llama.cpp: PR#16016 adds full-determinism opt-in. Use for CPU-fallback.
+  SGLang: DAG-based; strongest determinism under isolation. Second
+    choice when vLLM unavailable.
+  TGI: maintenance mode — explicitly blocked in elai_cc.toml
+    [inference.backend.disallow = ["tgi"]].
+
+Digital Sibling (CRITICAL-tier shadow):
+  Run a parallel sidecar instance with the exact same config
+  (hw class, seed, fingerprint, batch-invariant, LayerCast) on a
+  dedicated GPU. Executor writes to primary, auditor reads from
+  sibling. Divergence between primary and sibling outputs on the
+  same prompt = BLOCK with diff captured. Only activates on CRITICAL
+  classification to bound cost. Conceptually the "reference
+  implementation" for non-reference code.
+
+Regulatory driver:
+  EU AI Act Art. 13 (high-risk systems transparency) requires
+  reproducibility for audit. Layer -1 is the technical realization.
+  Audit attestation comes from Layer 5.5 (Cryptographic Provenance).
+
+New types:
+  DeterminismConfig     — hardware_class + compute_dtype + cache_hash
+                          + seed + fingerprint_pin + batch_invariant_mode
+  DeterminismDriftEvent — SSB action type 21: expected vs observed
+                          fingerprint/logprob/token on identical input
+  DigitalSiblingResult  — primary_hash, sibling_hash, divergence_tokens[]
+
+New SSB action types:
+  DETERMINISM_DRIFT     — fingerprint or logit mismatch on replay
+  SIBLING_DIVERGENCE    — primary vs digital-sibling output differed
+
+Cost:
+  STANDARD/TRIVIAL paths: near-zero (hygiene is startup-only;
+    prefix-cache and whitespace normalization run per request at <1ms).
+  CRITICAL paths: +30-56% latency from batch-invariant + LayerCast;
+    +1 GPU if Digital Sibling enabled. Configurable per agent role.
+
+Benefit: eliminates silent variance that otherwise poisons Layers 1-6.
+  Makes the mutation / differential / formal gates meaningful by
+  guaranteeing "same run produces same answer."
+
+Placement rationale:
+  Every upper layer assumes deterministic replay. A mutation test
+  that flaps between runs for FP-reduction reasons is statistically
+  indistinguishable from a genuine surviving mutant. Without Layer -1,
+  Layers 4-5 produce noise the self-mod loop (Phase 4H) learns from
+  as signal — the worst failure mode of the stack.
+
+------------------------------------------------------------------------
+LAYER 0 — WIRING CONTRACT (PLANNING + ACCEPTANCE)
+------------------------------------------------------------------------
+
+Goal: make dead code and dead wiring impossible to land. Prevents
+Problem 4 (placeholder-on-dispatch, dual-entry divergence,
+emitter-without-consumer). Runs as deterministic evidence at
+decomposition time (4D) and at baby-step acceptance (4E). Zero LLM in
+the hot path. No semantic reasoning required.
+
+Two complementary sub-mechanisms (both needed — each catches what the
+other cannot):
+
+Grounding for DKG-based approach (rev 3): arXiv 2601.08773 (DKB via
+Tree-sitter) reports 0.902 coverage on symbol-reachability queries vs
+0.641 for LLM-inferred knowledge bases — empirical justification for
+preferring tree-sitter-derived callgraphs over LLM reasoning here.
+
+APPROACH A — STRUCTURAL: DKG REACHABILITY + STUB-BAN + ARCHCODEX DSL
+  Designer extends BabyStepSpec with a 9th block WIRING_CONTRACT:
+    produces_symbols: [fully-qualified paths introduced by this step]
+    consumes_symbols: [paths expected to call the produced symbols]
+    reachable_from:   [ordered set of project entrypoints, must be
+                       non-empty for production steps; empty = library
+                       or test-only]
+    stub_ban:         [config_field_path + forbidden_pattern regex,
+                       e.g. "TaskRunnerConfig.baby_step_executor !=
+                       None", "DashboardState.anti_spiral_enabled !=
+                       false"]
+    frontend_pair:    optional — when produces_symbols introduces an
+                       SSB action_type / API endpoint / IPC message,
+                       this field names the consumer baby step (must
+                       be a sibling at the same decomposition level).
+  Deterministic auditor (extends A-12 DeterministicAuditor) runs at
+  baby-step acceptance:
+    (1) For each produces_symbol S, query DKG: exists path from any
+        entrypoint in reachable_from to S? If not, BLOCK.
+    (2) For each stub_ban entry, grep + tree-sitter partial parse on
+        the declared config field. If pattern matches on production
+        path (not in #[cfg(test)] / tests/ / fixtures), BLOCK.
+    (3) If frontend_pair is set, verify the paired consumer baby step
+        is present in the same step-level node of the DecompositionTree
+        before either step enters TESTING_FIRST.
+    (4) ArchCodex DSL evaluation (rev 3): stub_ban generalizes into a
+        broader architectural-guard DSL over Tree-sitter ASTs. Predicate
+        types: FORBID_CALL (from layer A to layer B), CIRCULAR_DEP_BAN
+        (graph cycle among named crates/modules), DEPRECATED_IMPORT,
+        LAYER_VIOLATION (UI->DB direct access), UNCONSUMED_EMIT
+        (SSB action_type emitted but not read anywhere in DKG).
+        Evaluated deterministically, zero LLM involvement (File 3 §2,
+        ArchCodex arXiv 2603.00822). This is the architectural-rules
+        primitive replacing prompt-based "constitutional" constraints.
+  Cost: <10ms per baby step (DKG is already indexed). Zero LLM tokens.
+
+APPROACH B — RUNTIME: OBSERVABLE-EFFECT SMOKE GATE
+  For baby steps classified as USER_FACING (Layer 6 classification
+  gains this tag for steps that wire dashboard commands, CLI
+  dispatch, dashboard UI reads, SSB emitters intended for UI, or
+  public-API endpoints), the contract adds:
+    observable_effect:
+      trigger:   deterministic action on shipped binary
+                 (e.g. "POST /submit_task with body X",
+                  "Tauri command submit_task(X)",
+                  "CLI: elai task 'hello'")
+      expect_ssb: [action_type + filter predicate + within_ms budget]
+                 (e.g. "task_submitted within 1000ms",
+                  "preview_available within 15000ms")
+      expect_artifact: optional file / stdout pattern
+  Auditor executes the trigger inside the existing BashSandbox (4B) /
+  Tier B-C isolation (4A), observes SSB via the read-only pool (same
+  path the dashboard uses), and enforces the expect_ssb predicate
+  within its time budget. Timeout or mismatch = BLOCK with
+  captured SSB tail as finding evidence.
+  Cost: ~10-30s per user-facing baby step. TRIVIAL / library /
+  test-only steps do not pay this cost.
+
+Evidence gate addition (EXECUTING -> AUDITING and AUDITING -> MEMORIZING):
+  REACHABILITY evidence: for every produces_symbol, DKG path to at
+    least one entrypoint in reachable_from.
+  STUB-BAN evidence: zero production-path matches for any stub_ban
+    pattern.
+  PAIRING evidence: if frontend_pair declared, paired step is present
+    AND also passed Layer 0 in the same phase.
+  OBSERVABLE-EFFECT evidence: for USER_FACING steps, the expect_ssb
+    predicate fired within budget on the real binary.
+
+Closed entrypoint set:
+  Defined once per project in elai_cc.toml:
+    [wiring.entrypoints]
+    production = [
+      "crates/cli/src/main.rs::main",
+      "crates/dashboard/src/lib.rs::run",
+      "crates/dashboard/src/commands.rs::submit_task",
+      "crates/orchestrator/src/task_runner.rs::drive_task",
+    ]
+    optional = ["crates/cli/src/dep_audit.rs::run"]  # out-of-band tools
+  Any produces_symbol not reachable from the production set at phase
+  completion = phase BLOCK regardless of per-step wiring pass. This
+  catches the dual-entry divergence explicitly (CLI wired X, dashboard
+  didn't — both listed as entrypoints, both must reach X).
+
+LLM-safety of Layer 0 artifacts:
+  The WIRING_CONTRACT and observable_effect blocks are written by the
+  Designer (LLM). Reliability is structural, not semantic:
+    - Assertions are enumerable strings (symbol paths, entrypoint
+      names, SSB action_types, file/config-field paths). No computed
+      output to hallucinate.
+    - Reverse check (deterministic): every WIRING_CONTRACT must
+      reference at least one symbol introduced in the same baby step
+      (diff match). A contract that references nothing new is auto-
+      rejected as a no-op.
+    - stub_ban pattern validator: patterns must parse as valid regex
+      AND the named config_field_path must exist in the DKG. Bogus
+      patterns rejected at decomposition, not at audit.
+  Mutation / fuzz / IntentPair validation DO NOT apply — oracle is
+  structural callgraph, not semantic behavior. This is the same reason
+  wiring tests escape the Problem 1-3 class even though an LLM wrote
+  them.
+
+New types:
+  WiringContract        — produces/consumes/reachable_from/stub_ban/
+                          frontend_pair/observable_effect bundle
+  StubBanEntry          — config_field_path + pattern + exemptions
+  ObservableEffect      — trigger + expect_ssb + expect_artifact
+  EntrypointSet         — production + optional path lists
+  WiringEvidence        — SSB action type 19: reachability_pass,
+                          stub_ban_pass, pairing_pass, observable_pass
+  WiringViolation       — SSB action type 20: which check, which
+                          symbol, which path, captured evidence
+  UserFacingClassification — tag on BabyStepSpec, fed from Layer 6
+
+Cost: ~80-150 extra tokens per baby step spec (contract block).
+Runtime audit: <10ms deterministic, +10-30s only on user-facing steps.
+Benefit: eliminates the largest observed failure class (MVP wiring
+audit: ~40% of completed A-steps exhibited some Layer 0 violation).
+
+Placement rationale:
+  Layer 0 runs BEFORE Layer 1 because if the code isn't reached, no
+  other layer produces meaningful evidence. An IntentPair confirming
+  semantic behavior of code that never runs is dead weight.
+  Layer 1-5 tests themselves are also subject to Layer 0 wiring:
+  a mutation gate that is wired into config but never triggered on
+  the dispatch path is the same failure, recursively.
+
+------------------------------------------------------------------------
+LAYER 1 — INTENT FORMALIZATION (pre-TESTING_FIRST)
+------------------------------------------------------------------------
+
+Goal: align LLM understanding of "correct" with user intent before
+any test is written. Prevents co-drifting tests and code.
+
+Mechanism (TiCoder-derived, arXiv 2404.10100):
+  1. Designer agent extracts N=3-5 representative input/output pairs
+     from the baby step spec.
+  2. Pairs formatted as IntentPairs struct:
+       input_description: bounded string (120 chars)
+       expected_output: bounded string (120 chars)
+       rationale: bounded string (80 chars)
+  3. INTERACTIVE mode: presented to user as multiple-choice panel.
+     User approves / edits / rejects each pair.
+  4. AUTONOMOUS mode: reference model (higher tier than executor)
+     reviews pairs. Disagreement triggers research escalation.
+  5. Approved IntentPairs written to SSB as INTENT_CONFIRMED action.
+     Injected into TESTING_FIRST context slot as grounding.
+
+Evidence gate addition (PLANNING -> TESTING_FIRST):
+  require SSB action INTENT_CONFIRMED with at least 3 pairs per baby step
+
+New types:
+  IntentPair           — input/output/rationale tuple
+  IntentPairSet        — Vec<IntentPair> with baby_step_id
+  IntentConfirmation   — SSB action (17 -> 18)
+  IntentAlignment      — enum (APPROVED/EDITED/REJECTED/AUTO_APPROVED)
+
+Cost: ~200-300 extra tokens per baby step in context.
+Benefit: eliminates most scope drift at the source. Cheapest layer.
+
+------------------------------------------------------------------------
+LAYER 2 — PROPERTY AND METAMORPHIC TESTS (TESTING_FIRST)
+------------------------------------------------------------------------
+
+Goal: express correctness as RULES, not examples. LLM cannot cherry-pick
+passing inputs when the property quantifies over all inputs.
+
+Three test types required per non-trivial baby step:
+  EXAMPLE tests      — concrete inputs (existing pattern)
+  PROPERTY tests     — proptest (Rust) / Hypothesis (Python) invariants
+  METAMORPHIC tests  — input-transform relations
+
+Property test generation:
+  Designer proposes properties during 4D decomposition.
+  Stored in BabyStepSpec.properties field.
+  Auditor validates property soundness via GROUNDING_CHECK.
+  Critical: recent refinement (Gemini research synthesis 2026-04-19,
+    GPT-4 two-stage prompting) reports ~20.5% PBT soundness — earlier
+    41.74% figure cited in rev 1-2 was a misattributed metric.
+    Core finding unchanged: LLM-written PBTs are majority unsound.
+  Mitigation: properties are validated against IntentPairs from Layer 1.
+  Property that rejects an approved IntentPair is flagged and re-synthesized.
+
+Metamorphic relation generation:
+  Designer proposes MR triples: (transform_input, expected_output_relation).
+  Common patterns seeded in rules.db:
+    sort:         sort(reverse(x)) == sort(x)
+    idempotent:   f(f(x)) == f(x)
+    inverse:      decode(encode(x)) == x
+    scaling:      f(k*x) == k*f(x) for linear f
+    permutation:  f(shuffle(x)) == f(x) for commutative aggregation
+  Domain-specific MR libraries:
+    sql_text:     SQLHD-style two-stage MRs — structure-aware
+                  (schema+join preserved under synonym swap) and
+                  logic-aware (WHERE-clause negation flips result set).
+                  Achieves F1 69.36-82.76% detecting hallucinated SQL
+                  WITHOUT ground-truth comparison (File 1 §2(b)).
+    api_calls:    idempotent retries with same idempotency key;
+                  authorization monotonicity (permission loss never
+                  elevates access).
+    ml_models:    input perturbation boundaries (robustness), label
+                  permutation invariance (classifier-agnostic metrics).
+  Designer selects relations matching baby step semantics from this library.
+
+Evidence gate addition (TESTING_FIRST -> EXECUTING):
+  at least 1 property test OR 1 metamorphic relation per non-trivial step
+  trivial = pure wiring/glue (detected via AST: no branches, no loops)
+
+New types:
+  PropertyTest        — spec + proptest strategy + shrinking hints
+  MetamorphicRelation — transform_fn_id + output_relation_fn_id
+  RelationLibrary     — seed set keyed by semantic category
+
+Cost: ~20-40% more test code per baby step.
+Benefit: 75% detection rate on LLM semantic errors (arXiv 2406.06864).
+  Hybrid PBT+example: 81.25% bug detection vs 68.75% individually
+  (arXiv 2506.18315).
+
+------------------------------------------------------------------------
+LAYER 3 — GENERATION-TIME CONSTRAINTS (EXECUTING)
+------------------------------------------------------------------------
+
+Goal: make invalid output physically impossible, not merely rejected.
+Catches the 60-70% of errors that are syntactic/structural.
+
+Components (largely present in current ELAI, enumerated here for completeness):
+  constrained decoding (grammar + JSON schema)   — providers crate, Phase 3J
+  anti-staleness VERSION_GATE                    — A-6, A-7
+  incremental compile feedback (max 3 retries)   — 4B
+  streaming validation (lazy code stop at ~50tok) — focus-tunnel-design
+  ShortCoder post-generation simplification      — A-24
+
+rev 3 additions (2026-04-19):
+  XGrammar CFG-based constrained decoding        — replaces Outlines default
+    where latency matters (3.5-10x faster, File 2 §4). Default in providers
+    crate post-rev3; Outlines kept as fallback.
+  CRANE reasoning pocket (arXiv 2502.09061)      — strict-schema decoding
+    collapses LLM capacity toward logspace-uniform threshold circuits,
+    silently degrading reasoning (Problem P18). CRANE carves an
+    unconstrained CoT window inside the constrained output:
+    '{"reasoning": "<<free text reasoning, 150-300 tokens>>", "answer": {schema}}'
+    Reclaims +10% on GSM-Symbolic vs strict-mode decoding. Mandatory
+    on STANDARD+ tier whenever JSON-schema output is required.
+  CodeFast / GenGuard JSON decoding              — 34%-452% throughput
+    improvement over lm-format-enforcer with zero accuracy loss
+    (File 2 §4). Replace lm-format-enforcer in sidecar for JSON-mode
+    completions.
+  SemanticForge (SMT + beam search during generation) — optional
+    inference-time grounding against knowledge graph (File 1 §7);
+    blocks symbol hallucinations at emission rather than at audit.
+    Feature-gated behind [inference.semantic_forge] = false by default
+    until measured on ELAI workload.
+  PRLCoder-style process rewards (partial feed)  — feed incremental
+    compile + lint + static-check results back into generation as PRM
+    reward signal (File 3 §4). Improves Pass@k vs pure outcome reward.
+    Ties to Layer 5 PRPO hybrid MSI.
+
+FACET R-DAG tool dispatch (cross-cuts with Layer -1 D-7):
+  Tool invocations are a separate non-determinism channel from model
+  generation. Anthropic/OpenAI tool paths mutate argument casing
+  (decision_F vs decision_f) and reorder fields. Current ToolDispatcher
+  uses try/catch + JSON-retry. Replace with FACET-style compiled R-DAG
+  contract per tool: args parsed against an AST contract, non-matching
+  emissions rejected deterministically. Claims 100% tool-call
+  reproducibility (File 2 §8).
+
+Layer 4 inherits clean input (no compile errors, no placeholders,
+no constrained-decoding reasoning degradation, no tool-call drift)
+and can focus on semantic validation.
+
+------------------------------------------------------------------------
+LAYER 4 — MULTI-ORACLE VALIDATION (AUDITING)
+------------------------------------------------------------------------
+
+Goal: test the tests. Prove the test suite actually discriminates correct
+from incorrect behavior.
+
+This is the LARGEST gap in current ELAI. The existing 5-tier validation
+pipeline (determinism -> quality/AST -> unit -> integration -> stress)
+checks that tests pass, not that tests are meaningful.
+
+New tier 3.5: MUTATION GATE
+  Tools:
+    Rust:       cargo-mutants (primary, function-replacement granularity)
+    Python:     mutmut / Cosmic-Ray
+    JS/TS:      LLMorpheus (rev 3) — semantic-dependent mutations that
+                surface concurrency and subtle bugs AST mutations miss;
+                required for dashboard frontend (File 1 §1(b)).
+    Java:       PIT (if cross-language project).
+  Trigger: after tier 3 unit tests pass, before tier 4 integration.
+  Scope: current baby step's modified files only (not workspace).
+  Timeout: bounded by baby step size — ~30s for 25 LOC, ~120s for 100 LOC.
+  Gate threshold (seed values — INTERNAL HEURISTIC, not industry standard,
+    per File 1 §1(c); adjustable via self-mod Layer 1A):
+    critical code (money/auth/unsafe/public API): 85%
+    business logic:                                75%
+    internal utilities:                            65%
+    generated/glue code:                           0% (gate skipped)
+  Classification from ProjectProfile + DKG effect tags.
+  Surviving mutants written to MistakeBook with high priority for next retry.
+
+  Equivalent-mutant suppression (rev 3):
+    Two-stage filter (replaces rev 1-2's single LRU cache):
+      (1) ACH-style classifier: LLM agent evaluates (pre-mutation AST,
+          post-mutation AST) pair for semantic equivalence after
+          stripping comments and whitespace. Meta reports precision
+          0.95 / recall 0.96 on Defects4J (File 1 §1(d)).
+      (2) Behind the classifier: LRU cache of confirmed equivalents,
+          blake3-keyed on pre-mutation AST, survives across sessions.
+          User-confirmed equivalents promoted to cache permanently.
+    Both stages skippable per cost profile; classifier runs only when
+    >=10 mutants remain after cache lookup.
+
+New tier 3.55: CONSISTENCY VOTE (optional, STANDARD+ tier)
+  When cloud budget allows ≥3 candidate implementations or the executor
+  has tried ≥3 repair attempts, ConTested-style consistency voting
+  (File 1 §9) compares test-suite behavior across candidates. A
+  candidate whose behavior diverges from the consensus on IntentPair
+  inputs is rejected. Reduces the BDG single-model correlated-bug
+  class that defeats naive dual generation. Triggered only when extra
+  candidates already exist — no new generation cost when not applicable.
+
+New tier 3.6: DIFFERENTIAL GATE (conditional) — REWRITTEN rev 3
+  Activated when one of three conditions hold:
+    (a) baby step has a reference implementation in DKG (e.g. rewriting
+        legacy code with new API — old version is the oracle)
+    (b) ProjectProfile marks module as critical (money/auth/crypto)
+    (c) Digital Sibling enabled (Layer -1) — sibling serves as oracle
+  BDG TRAP AVOIDANCE (new in rev 3):
+    Rev 1-2 called for "generate a second implementation at temperature 0
+    (conservative), then compare outputs." The Portuguese research
+    (File 1 §4) explicitly documents this as the Bimodal Dual Generation
+    trap — the same model prompted twice with same-intent framing emits
+    correlated latent bugs and "agrees with itself." Temp variation is
+    insufficient because BDG correlates output distributions.
+  Corrected mechanism (Differential Prompting / LOOPRAG pattern):
+    Generate N=2-3 candidate implementations with DISTINCT INTENT FRAMINGS,
+    NOT distinct temperatures. Framings seeded in rules.db:
+      "from_spec"       — prompt: natural-language spec only
+      "from_tests"      — prompt: IntentPairs + TESTING_FIRST tests only
+      "from_types"      — prompt: type signatures + contracts only
+      "from_reference"  — prompt: DKG reference impl (when available)
+    Cross-compare outputs on fuzzed inputs (1000 iterations, libFuzzer
+    corpus seeded from IntentPairs + regression corpus). Divergence =>
+    BLOCK with all candidate outputs surfaced plus framing provenance.
+    Independent-model differential (different provider or different
+    weights) is strictly stronger than same-model differential and
+    must be used on CRITICAL classification; framing diversity is the
+    cheaper fallback.
+  Digital Sibling mode (rev 3):
+    When Layer -1 Digital Sibling is available and the step is CRITICAL,
+    sibling executes at locked config; any divergence from primary is
+    the differential signal. Conceptually the reference implementation
+    for non-reference code.
+  Skipped when not triggered — does not add cost to common case.
+  Evidence basis:
+    RustAssure 69.9% on LLM C->Rust via differential symbolic execution
+      (arXiv 2510.07604).
+    DiffSpec: 4 confirmed eBPF kernel bugs (arXiv 2410.04249).
+    LOOPRAG / Differential Prompting (File 1 §4).
+    BDG trap documentation (File 1 §4(a)).
+
+New tier 3.7: FORMAL VERIFICATION OPPORTUNISTIC HOOK
+  Tool: Kani (Rust), crosshair (Python).
+  Trigger: DKG post-write scan detects one of:
+    (a) function contains unsafe{} block
+    (b) pure function with bounded input types and cyclomatic complexity <=5
+    (c) function tagged #[kani::proof] by designer
+  Budget: 30s per function, skipped on timeout (non-fatal).
+  Success => VERIFIED tag written to SSB, surfaces in dashboard.
+  Failure with counterexample => BLOCK with counterexample as MistakeBook entry.
+  Failure with timeout => WARN only, does not block progression.
+  Rationale: Kani is dispositive where applicable but intractable at scale.
+  Opportunistic application captures value on the small surface where it
+  works (unsafe, parsers, data-structure cores) without blocking progress
+  elsewhere. Grounded in AutoVerus / VeriStruct / Quokka 2025 work.
+  Updated empirical anchors (rev 3):
+    AutoVerus: 91% success on module-level Rust verification.
+    VeriStruct: 128/129 = 99.2% on 11 legacy Rust modules — stronger
+      per-module anchor than AutoVerus. Use VeriStruct as the default
+      orchestrator when Kani proof annotations are being synthesized.
+
+New tier 3.8: FUZZING GATE (conditional)
+  Tool: cargo-fuzz / libFuzzer / AFL++ / Hypothesis-fuzz. PILLM (File 1
+    §6(a)) for LLM-guided corpus seeding — up to 45.7% improvement
+    vs Fuzz4All on JS engines; use where attack surface matches.
+  Trigger: file touches parser, deserializer, unsafe block, or network boundary.
+  Budget: 60s by default, configurable per baby step.
+  Success criterion: zero crashes, zero panics, zero OOM within budget.
+  Corpus persists across sessions per file (seeds next run).
+
+Existing tier 4 integration tests and tier 5 stress tests run after all
+new tiers pass. ordering:
+  1 -> 2 -> 3 -> 3.5 -> 3.55 -> 3.6 -> 3.7 -> 3.8 -> 4 -> 5
+
+Evidence gate addition (AUDITING -> MEMORIZING):
+  mutation_score >= classification_threshold AND
+  (differential_gate == PASS OR SKIPPED) AND
+  (formal_hook == PASS OR SKIPPED OR WARN) AND
+  (fuzz_gate == PASS OR SKIPPED) AND
+  zero BLOCK findings
+
+New types:
+  MutationResult      — score, survivors[], equivalents[], timeout_count
+  MutationThreshold   — per-code-classification tier
+  DifferentialResult  — impl_a_hash, impl_b_hash, divergence_inputs[]
+  FormalProofResult   — PROVED | COUNTEREXAMPLE(witness) | TIMEOUT | NOT_APPLICABLE
+  FuzzResult          — iterations, crashes[], corpus_size, coverage_delta
+  ValidationTier      — enum including new 3.5-3.8 tiers
+
+Cost: ~60-120s per baby step for mutation, ~30-60s for fuzzing when
+triggered, negligible for Kani (opportunistic). Amortizes across
+retry attempts — surviving mutants become free test-improvement signal.
+
+------------------------------------------------------------------------
+LAYER 5 — LEARNING FROM FAILURE (MEMORIZING + SELF-MODIFICATION)
+------------------------------------------------------------------------
+
+Goal: surviving mutants, counterexamples, and regressions become permanent
+test-quality signal. The system learns what kinds of bugs it keeps missing.
+
+MuTAP feedback loop (arXiv 2307.11315, MutationBench-verified pattern):
+  Surviving mutants from Layer 4 tier 3.5 are NOT just logged.
+  On the NEXT generation of tests for this baby step (or sibling steps
+  in the same concept), surviving mutants are injected into the test-gen
+  prompt as negative examples: "tests must kill this mutation."
+  Empirical result: MuTAP achieves 93.57% mutation score with this loop.
+
+AdverTest co-evolution (rev 3):
+  Upgrade from one-shot MuTAP to continuous co-evolution: a
+  Mutant-Generation agent and a Test-Generation agent run in tandem,
+  each new test-batch tries to kill the current mutant population and
+  each new mutant-batch tries to survive the current tests. Track
+  co-evolution MSI as the stopping criterion. Defects4J reference
+  ceiling: ~52.1% (File 1 §1(c)) — adopt this as the pure-autonomous
+  MSI anchor in AUTONOMOUS mode (vs MuTAP's 93.57% which assumed
+  human-curated prompts). Meta ACH companion result: humans accepted
+  73% of autonomous mutant-driven patches across 10,795 Android Kotlin
+  classes — the realistic deployment anchor.
+
+Grounding verification (rev 3 — addresses Problem P16):
+  LLM-generated reasoning chains routinely fabricate citations (14-95%
+  across 13 models per GhostCite 2026, File 3 §1). ELAI's GRC and
+  context-compiler emit claims-with-sources; these must themselves be
+  verified. Two tools:
+    FRONT (two-stage citation alignment with KL regularization):
+      scores each claim against its cited source. +14.21% citation
+      precision/recall vs baseline LLM judgment.
+    CiteAudit (multi-agent citation verification):
+      F1 0.903 real / 0.97 synthetic on hallucinated-citation detection.
+      Contrast: general LLM-as-judge F1 drops to 0.331 under adversarial
+      perturbation.
+  Integration: phase-X-grounding.md (already mandated by planning-workflow)
+  is post-processed by CiteAudit before being accepted. Sub-threshold
+  grounding files route back to context-compiler for re-work.
+
+Regression corpus growth:
+  Every confirmed real bug (from audit or from user feedback post-deploy)
+  becomes a permanent regression test in a dedicated corpus. Per project.
+  Tests stored with: bug_description, failing_input, root_cause_class,
+  date_added. Corpus runs on every baby step in same module.
+
+MSI becomes a PRPO HYBRID REWARD (rev 3):
+  Phase 4H self-modification previously treated MSI as pure outcome
+  metric (pipeline pass/fail + mutation score). PRPO (File 3 §4) fuses
+  process reward and outcome reward, mitigating reward hacking:
+    MSI_composite = alpha * PROCESS_SCORE
+                  + beta  * OUTCOME_SCORE
+                  + gamma * RHSI
+  Components:
+    PROCESS_SCORE   — PRLCoder-style line-level static-check reward
+                      accumulated during EXECUTING (compile clean,
+                      lint clean, streaming validation no-trigger)
+    OUTCOME_SCORE   — existing pipeline-level metrics (mutation,
+                      differential, integration tests, user acceptance)
+    RHSI (Reward Hacking Severity Index) — measures divergence between
+                      optimizer behavior and original author intent.
+                      Rising RHSI with rising OUTCOME_SCORE is the
+                      reward-hacking signature (File 3 §10).
+  Seed weights: alpha=0.3, beta=0.5, gamma=0.2. Tunable per risk tier:
+    CRITICAL: gamma bumped to 0.35 (stricter hack detection).
+    TRIVIAL : gamma reduced to 0.05 (throughput over paranoia).
+  Declining MSI_composite across recent pipelines triggers Layer 1A
+    investigation. RHSI alone above threshold = immediate pause
+    regardless of composite score — reward hacking takes precedence
+    over aggregate.
+  If DIVERGING (<=-0.1), pipeline pauses per existing MSI contract.
+
+IntentPair violation log:
+  When auditor later discovers a bug that VIOLATES an approved IntentPair,
+  the IntentPair becomes a permanent assertion in the test corpus for
+  that module (user-confirmed intent is the strongest oracle we have).
+
+New SSB action types:
+  MUTATION_SURVIVED    — mutant_id, file, line, operator, baby_step_id
+  FORMAL_PROVED        — function_id, verifier, duration_ms
+  INTENT_VIOLATED      — intent_pair_id, actual_output, bug_id
+  REGRESSION_ADDED     — bug_id, test_path, module
+  CITATION_REJECTED    — claim_id, cited_source, CiteAudit_score
+  RHSI_SPIKE           — pipeline_id, prev_score, curr_score, delta
+
+------------------------------------------------------------------------
+LAYER 5.5 — CRYPTOGRAPHIC PROVENANCE (POST-ACCEPTANCE)
+------------------------------------------------------------------------
+
+Goal: produce a tamper-evident audit trail of every AI-driven action
+on the codebase. Enables post-hoc verification, regulatory compliance
+(EU AI Act Art. 12/14/19), and attribution of outcomes to specific
+pipeline configurations. Addresses Problem P24.
+
+Mechanism (PunkGo Kernel, File 3 §8):
+  Append-only Merkle log, RFC 6962 tree construction, Ed25519
+  signatures per entry, RFC 3161 timestamps. Claimed performance:
+  <1.3ms median write, 448-byte attestation size.
+
+Integration:
+  Every SSB action with impact_class >= STANDARD is hash-chained into
+  the provenance log at write time. The chain root is periodically
+  anchored to an external immutable store (choice: local filesystem
+  append-only file, optionally mirrored to a remote witness — git
+  notes, a WORM bucket, or a public transparency log).
+
+  Per-phase provenance bundle:
+    baby_step_id + agent_role + model_id + seed + system_fingerprint
+    + prompt_hash + output_hash + validation_gate_results[]
+    + mutation_score + kani_proofs[] + intent_pair_refs[]
+    + layer_0_wiring_evidence_refs[]
+  Bundle signed with Ed25519 per ELAI instance keypair (key material
+  stored per-user via OS keychain; rotated per install).
+
+Verification (elai trust attest <baby_step_id>):
+  Recomputes the Merkle path from the leaf entry to the current root,
+  verifies Ed25519 signature, compares RFC3161 timestamp window,
+  returns PASS/FAIL + signed attestation bundle.
+
+Regulatory mapping:
+  EU AI Act Art. 12 (record keeping): satisfied by Merkle log.
+  Art. 14 (human oversight): satisfied when HITL events are logged
+    with signed approver identity.
+  Art. 19 (automatically generated logs): satisfied by the bundle.
+  US NIST AI RMF: compatible; satisfies MEASURE-2.7 (traceability).
+
+Cost:
+  Per-action: <5ms (hash + write). Per-phase bundle: <50ms + Ed25519
+    signature. Negligible relative to baby-step cost.
+
+New types:
+  ProvenanceEntry       — SSB-action hash + Merkle position + signature
+  ProvenanceBundle      — per-phase bundle + root signature + timestamp
+  ProvenanceLog         — append-only file handle (per project)
+  AttestationArtifact   — signed bundle returned by `elai trust attest`
+
+New SSB action types:
+  PROVENANCE_ANCHORED   — root_hash, rfc3161_timestamp, witness_target
+  ATTESTATION_SIGNED    — bundle_id, key_id, signature
+
+When required (not always):
+  TRIVIAL pipelines: provenance log optional (overhead noise > value).
+  STANDARD: mandatory log, local store only.
+  CRITICAL / PROVEN: mandatory log + remote witness anchoring.
+  UNVERIFIED: mandatory regardless; human approval events co-logged.
+
+Benefit: turns the trust stack into something auditable beyond the
+ELAI session boundary. Without this, every downstream claim ("this
+code was verified by Kani on 2026-04-19 with model X at mutation
+score 87%") is unfalsifiable by a third party.
+
+------------------------------------------------------------------------
+LAYER 6 — HUMAN TRUST RATCHET
+------------------------------------------------------------------------
+
+Goal: not all code needs all seven layers. Layer 0 is mandatory on
+every production step; Layers 1-5 scale with risk. Classify risk and apply
+proportionate validation. Humans make the final call above the ceiling.
+
+Classification from ProjectProfile + DKG effect tags + file path:
+  TRIVIAL    — glue, configuration, wiring. Layers 1-3 + unit tests.
+  STANDARD   — business logic, internal APIs. + Layer 4 tier 3.5 mutation.
+  CRITICAL   — money, auth, crypto, unsafe, public API. + differential + fuzz.
+  PROVEN     — has Kani proof. Mutation + proof both required.
+  UNVERIFIED — not automatable in current stack. Requires human review.
+
+Classification engine (no LLM):
+  Rust regex on module path (src/auth/, src/crypto/, src/unsafe/)
+  DKG effect tags (from Layer 1 DKG concept annotations: unsafe, filesystem,
+    network, database, auth)
+  ProjectProfile domain detection (trading, security, gamedev override table)
+  Manual override in .elai_cc/testing-risk.toml
+
+Human gate (INTERACTIVE mode only, informational in AUTONOMOUS):
+  Dashboard surfaces each baby step's classification + achieved trust tier.
+  Classification CRITICAL with only STANDARD validation => WARN, not BLOCK.
+  AutonomousGate treats classification CRITICAL or UNVERIFIED as HIGH-risk
+  gate, requiring human approval (ties into existing 4G risk levels).
+
+Rulebreakers Paired-Accuracy (rev 3):
+  Verbal confidence ("I am uncertain") is uncorrelated with actual error
+  risk (Problem P23). For CRITICAL classification, generate both a
+  rule-following and a rule-breaking version of each IntentPair and
+  require the generated spec to accept the former AND reject the latter.
+  Paired-Accuracy tau = 2 * (follow_accept AND break_reject) / (N_follow + N_break).
+  Gate CRITICAL on tau >= 0.9. Mathematically incompatible with priors-
+  only pattern matching — forces the model to have actually applied
+  the rule. Source: Rulebreakers (File 3 §3, §5).
+
+Sandboxing for runtime validation (rev 3):
+  Layer 0 observable-effect smoke tests on CRITICAL classification
+  must execute inside Firecracker / gVisor / Kata microVM, not the
+  host BashSandbox. Same applies to any Layer 4 test that executes
+  generated code with FILESYSTEM or NETWORK effect tags. Rationale:
+  LLM-generated code CAN be adversarial (intentional or accidental);
+  host sandbox escape is a documented attack class. Ties into Phase 4A
+  Tier B-C isolation; this layer mandates which cases must use which
+  tier.
+
+Reference-model independence (rev 3):
+  When Layer 4 auditor evaluates CRITICAL code, the auditor model MUST
+  have independent weights from the executor — not just different
+  temperature, not same base + different system prompt. Single-weight
+  self-critique is sycophantic (File 3 §3, §11). Concrete: if executor
+  is Qwen2.5-Coder, auditor is DeepSeek or Claude (KL-bounded to a
+  reference distribution). Tracked per baby step in AUDITOR_MODEL
+  field of SSB.
+
+Self-mod safety — DGM / DarwinNet layered immutability (rev 3):
+  Ties into Phase 4H. Classify all self-modifiable keys into tiers:
+    L0: cryptographically immutable — FSM transitions, evidence gate
+        contracts, mutation thresholds on CRITICAL code, Kani proof
+        requirements, human-gate triggers. Hash-sealed in a signed
+        TOML manifest; self-mod agent physically cannot rewrite.
+    L1: immutable without human approval — rule seed sets, GRC budgets
+        for auditor role, AutonomousGate risk mappings.
+    L2: immutable under MSI divergence — STANDARD mutation thresholds,
+        model assignments per role, context budget weights.
+    L3: self-modifiable within staged evaluation — TRIVIAL thresholds,
+        rule priority ordering within a tier, retry strategy selection.
+  Self-mod agent reads a REDACTED config (L0/L1 visible as opaque
+  hash tokens, not values) so it cannot even propose a modification
+  to a locked key. Echoes DGM / DarwinNet evolutionary-isolation
+  doctrine (File 3 §10, §11).
+
+No new infrastructure in this section: reuses AutonomousGate and
+dashboard from 4G and 4K, and Phase 4A isolation tiers for sandboxing.
+
+
+========================================================================
+PROBLEMS FOUND AND SOLUTIONS (MATRIX)
+========================================================================
+
+Problem P1: TESTING_FIRST gate ("tests fail for right reasons") does not
+  verify tests match user intent. LLM can co-drift test + code.
+Solution: Layer 1 (IntentPairs with user/reference confirmation).
+Evidence: TiCoder (arXiv 2404.10100), co-drifting bugs documented
+  (arXiv 2403.08937).
+
+Problem P2: line coverage is near-useless for LLM tests. 100% coverage
+  seen at 4% mutation score.
+Solution: Layer 4 tier 3.5 mutation gate. Coverage demoted to secondary
+  signal, never a gate.
+Evidence: Meta ACH (arXiv 2501.12862), MutGen (arXiv 2506.02954),
+  LLM test-gen benchmarks (arXiv 2508.00408).
+
+Problem P3: ~20.5% of LLM-written property tests are sound under best
+  two-stage prompting (GPT-4). Generating PBTs does not yield
+  trustworthy PBTs — rev 1-2 cited 41.74%, corrected in rev 3 per
+  Gemini deep-research synthesis.
+Solution: validate properties against approved IntentPairs (Layer 1).
+  Property that rejects an approved pair is unsound by definition.
+Evidence: Can LLMs Write Good PBTs? (arXiv 2307.04346); refined by
+  Gemini research file 1 §3(a) 2026-04-19.
+
+Problem P4: LLM optimizes plausibility, not correctness. Structural
+  property of next-token prediction.
+Solution: no single-layer fix. Stack Layers 0+1+2+4+5 so an error must
+  survive multiple uncorrelated filters (Layer 0 ensures the code is
+  at least reached; without that, the other filters operate on dead
+  code and always pass spuriously).
+Evidence: Plausibility as Failure (arXiv 2512.16750).
+
+Problem P5: equivalent mutants inflate false-positive rate in mutation
+  testing, making the signal noisy.
+Solution: persistent LRU cache of confirmed-equivalent mutants per file,
+  keyed by blake3 of pre-mutation AST. User marks equivalent once,
+  system remembers across sessions.
+Evidence: Stryker equivalent-mutants limitation.
+
+Problem P6: formal verification (Kani) is dispositive but intractable
+  at scale. Binary-applying it blocks progress.
+Solution: opportunistic hook — Kani runs only on DKG-detected surfaces
+  where it is tractable (unsafe blocks, bounded pure functions).
+  Failure is WARN not BLOCK except with counterexample.
+Evidence: AutoVerus (arXiv 2409.13082), VeriStruct (arXiv 2510.25015),
+  Quokka (arXiv 2509.21629).
+
+Problem P7: differential testing requires a reference. Most code has none.
+Solution: trigger differential ONLY under three documented conditions.
+  Do not force it on the common path.
+Evidence: RustAssure (arXiv 2510.07604), DiffSpec (arXiv 2410.04249).
+
+Problem P8: test quality decays under self-modification. Prompt drift
+  can reduce future test rigor without any single failure.
+Solution: mutation score as weighted MSI component. Declining trend
+  triggers investigation before failure.
+Evidence: MSI-derived monitoring pattern from DarwinNet and self-mod literature.
+
+Problem P9: humans are the ultimate oracle but cannot review every baby
+  step. Binary gate (human on everything / human on nothing) fails.
+Solution: Layer 6 classification engine. Human review proportional to
+  risk tier. CRITICAL/UNVERIFIED escalate, TRIVIAL does not.
+Evidence: industry practice (Claude Code Best Practices, Anthropic
+  antfooding notes).
+
+Problem P10: fuzzing is noisy and slow on code without an attack surface.
+Solution: fuzz gate triggers ONLY on parser / deserializer / unsafe /
+  network-boundary code. Rest of codebase unaffected.
+Evidence: Fuzz4All (arXiv 2308.04748), OSS-Fuzz LLM integration.
+
+Problem P11: regression bugs recur across sessions. Fix-in-one-place pattern.
+Solution: Layer 5 regression corpus — every confirmed real bug becomes
+  a permanent test. Corpus runs on all related baby steps.
+
+Problem P12: the auditor itself is an LLM and can hallucinate bugs or
+  miss bugs. "LLM Critics Help Catch LLM Bugs" paper shows critics
+  hallucinate even while catching real ones.
+Solution: deterministic validation (Layers 3, 4 tiers 3.5/3.7/3.8)
+  comes BEFORE LLM audit. Auditor acts on remaining uncertain cases
+  only, with its own IntentPair grounding.
+Evidence: LLM Critics (arXiv 2407.00215), LLM reviewer reliability
+  study (arXiv 2603.00539).
+
+Problem P13: placeholder-on-dispatch. Real executor / real provider /
+  real indexer constructed, unit-tested, and available — but the
+  production config field passes None / Synthetic* / NoOp* / Empty*.
+  Unit tests pass because tests construct the real thing directly.
+  Symptom in ELAI MVP audit: dashboard/src/lib.rs:357 sets
+  baby_step_executor: None; SyntheticBabyStepExecutor runs instead,
+  returning Passed in 1ms. Every downstream retry/mistake/checkpoint
+  feature is dead at runtime.
+Solution: Layer 0 stub_ban enforced by deterministic auditor.
+  Production-path matches on None / Synthetic* / NoOp* / Empty*
+  against declared config fields = BLOCK. Catches the exact class
+  from a closed ban-list, not from open-ended reasoning.
+Evidence: ELAI MVP wiring audit (.elai_cc/docs/mvp-wiring-audit-2026-04-18.md),
+  items 1-10 of section 4.
+
+Problem P14: dual-entry divergence. A component is wired through one
+  entrypoint (CLI main) and silently skipped through another (dashboard
+  setup). Callgraph analysis from either endpoint is internally
+  consistent; only the union exposes the gap.
+  Symptom in ELAI MVP audit: IndexingService wired in
+  crates/cli/src/main.rs:82, absent from TaskRunnerConfig; dashboard
+  path runs baby steps against a project with no DKG/BM25.
+Solution: closed EntrypointSet in elai_cc.toml, every produces_symbol
+  must be reachable from ALL listed production entrypoints (or be
+  explicitly marked single-entry in its contract). Makes the gap
+  machine-detectable.
+Evidence: MVP audit item 6 (IndexingService in task_runner);
+  item 3 (patch-1.32 dashboard LLM backend wiring).
+
+Problem P15: emitter-without-consumer. Backend writes SSB action_type
+  X; frontend ActivityEntry component renders only 6 of 31 action
+  types. User sees real work as undifferentiated dim rows — same as
+  the event never happening.
+Solution: Layer 0 frontend_pair field. Designer cannot emit a baby
+  step that introduces a new action_type / API endpoint without a
+  sibling step that introduces its consumer. Both must pass Layer 0
+  before either enters TESTING_FIRST.
+Evidence: MVP audit item 8 (Dashboard frontend action-type coverage);
+  backend emits 31 SSB action types, frontend colour-codes 6.
+
+Problem P16: GROUNDING / CITATION HALLUCINATION. Reasoning chains and
+  grounding files (phase-X-grounding.md) contain fabricated arXiv IDs
+  and paper references. GhostCite 2026 measures 14-95% hallucination
+  across 13 models, 375K instances. Current design trusts grounding
+  claims verbatim.
+Solution: Layer 5 FRONT-style citation alignment + CiteAudit multi-
+  agent verification (F1 0.903) on every grounding file before it is
+  accepted into the pipeline. Sub-threshold files route back to
+  context-compiler for rework.
+Evidence: File 3 §1; GhostCite 2026; arXiv TBD.
+
+Problem P17: BDG (BIMODAL DUAL GENERATION) TRAP. Same model prompted
+  twice at different temperatures produces correlated latent outputs —
+  "agrees with itself" on the same bug. Rev 1-2 tier 3.6 specified
+  exactly this failure pattern.
+Solution: Layer 4 tier 3.6 rewrite — Differential Prompting with
+  varied intent framings (from_spec / from_tests / from_types /
+  from_reference); independent-model differential on CRITICAL.
+Evidence: File 1 §4(a); LOOPRAG pattern.
+
+Problem P18: CONSTRAINED-DECODING REASONING PENALTY. Strict JSON-schema
+  decoding collapses LLM capacity toward logspace-uniform threshold
+  circuits, silently degrading reasoning quality. Current Layer 3 uses
+  JSON schema unconditionally.
+Solution: Layer 3 CRANE pocket — unconstrained reasoning window
+  delimited by `<< >>` inside the otherwise-constrained output.
+  Reclaims +10% on GSM-Symbolic. Mandatory for STANDARD+ JSON-mode.
+Evidence: CRANE arXiv 2502.09061; File 2 §4.
+
+Problem P19: PREFIX-CACHE COLLISIONS / KV-CACHE POISONING. vLLM xxhash-128
+  key collisions; whitespace-drift changes cache keys; async scheduler
+  can deliver cross-request KV state. Current sidecar uses defaults.
+Solution: Layer -1 prefix-cache hygiene — blake3 keys, PinnedCaching-
+  Manager, prompt normalization (strip trailing \n, collapse \n\n+,
+  strip BOM/ZWC) before hash.
+Evidence: File 2 §5.
+
+Problem P20: STATE DRIFT IN MULTI-AGENT PIPELINES. MLR-Bench reports
+  up to 80% of multi-agent reasoning chains emit invented experiments.
+  Current SSB is append-only but reads "latest tail" without version
+  anchor.
+Solution: formalize SNAPSHOT_V_n read semantics (read by version,
+  not by tail) + BSP supersteps at phase boundaries (already designed
+  in 3D but not enforced cross-phase) + Digital Sibling for CRITICAL.
+Evidence: File 2 §7; MLR-Bench.
+
+Problem P21: TOOL-CALL ARG CASING / FIELD-ORDER DRIFT. Anthropic /
+  OpenAI tool paths mutate argument casing (decision_F vs decision_f)
+  and reorder fields, breaking deterministic tool dispatch.
+Solution: Layer -1 D-7 + Layer 3 FACET — R-DAG compiled tool contract;
+  non-matching emissions rejected, not retried. Claimed 100%
+  reproducibility on tool invocations.
+Evidence: File 2 §8.
+
+Problem P22: REWARD HACKING UNDER SELF-MODIFICATION. Current MSI tracks
+  outcome (mutation score); doesn't detect proxy-goal divergence from
+  author intent. Self-mod can optimize the metric while drifting away
+  from the user's goal.
+Solution: Layer 5 PRPO hybrid MSI = alpha*process + beta*outcome +
+  gamma*RHSI; Layer 6 DGM/DarwinNet L0-L3 layered immutability with
+  cryptographic lock on L0/L1. Self-mod agent sees redacted config so
+  it cannot propose modifications to locked keys.
+Evidence: File 3 §4, §10, §11.
+
+Problem P23: VERBAL CONFIDENCE ≠ ACTUAL CONFIDENCE. "I am uncertain"
+  in LLM output is uncorrelated with actual error risk. Calibration
+  gap is well-documented. Current design has no adversarial
+  calibration guardrail.
+Solution: Layer 6 Rulebreakers Paired-Accuracy tau — generate rule-
+  following and rule-breaking versions of each IntentPair on CRITICAL
+  classification; require both handled correctly (follow accepted,
+  break rejected). Gate on tau >= 0.9.
+Evidence: Rulebreakers (File 3 §3, §5, §12).
+
+Problem P24: NO CRYPTOGRAPHIC PROVENANCE OF AI ACTIONS. EU AI Act Art.
+  12/14/19 compliance gap. Currently SSB is append-only but not
+  tamper-evident beyond process boundary; no third-party can verify
+  claims about what happened in a pipeline.
+Solution: Layer 5.5 PunkGo Kernel — RFC6962 Merkle log + Ed25519 +
+  RFC3161 timestamps; per-phase signed provenance bundles;
+  `elai trust attest <baby_step_id>` returns verifiable bundle.
+  Mandatory for AUTONOMOUS + CRITICAL.
+Evidence: File 3 §8; PunkGo Kernel.
+
+Problem P25: DETERMINISM FALLACY (temperature=0 is deterministic).
+  Three non-determinism sources persist even at temp=0: (a) float
+  non-associativity under dynamic batching, (b) GPU-class divergence,
+  (c) provider silent routing (system_fingerprint changes).
+Solution: Layer -1 full stack — hardware-class lock + batch-invariant
+  kernels (CRITICAL) + LayerCast FP32 compute + system_fingerprint
+  pin verified per request + optional Digital Sibling for CRITICAL.
+Evidence: File 2 §1, §2, §3; LLM-42; TBIK; LayerCast.
+
+
+========================================================================
+IMPLEMENTATION INTEGRATION INTO EXISTING PHASE PLAN
+========================================================================
+
+No new Phase required. All additions slot into existing 3J / 4A / 4B /
+4C / 4E / 4G / 4H.
+
+Layer -1 (inference determinism) integration — rev 3:
+
+Phase 3J additions (sidecar + providers) for Layer -1:
+  DeterminismConfig loader from elai_cc.toml [inference.*].
+  Hardware-class lock: nvml-wrapper probe at sidecar startup; refuse
+    load on SKU mismatch.
+  Batch-invariant kernel mode (TBIK or vLLM batch-invariant build);
+    flag via sidecar --batch-invariant; per-role enablement.
+  LayerCast FP32 compute path; sidecar --compute-dtype fp32.
+  blake3 prefix-cache keys replacing xxhash-128.
+  PinnedCachingManager for KV-cache isolation.
+  Prompt normalization pre-hash pass.
+  system_fingerprint pin + verification per provider response;
+    DETERMINISM_DRIFT SSB write on mismatch.
+  LLM-42 speculative-verified decoding module (optional, off by default).
+  Digital Sibling: second sidecar instance under [inference.sibling];
+    activates on CRITICAL baby step.
+
+Phase 4C additions (plugins) for Layer -1:
+  PreToolUse hook blocks tool invocation if DeterminismConfig
+    mismatches per-role requirement.
+  PostToolUse hook records actual system_fingerprint + seed + logit
+    hash to SSB for each generation on CRITICAL code.
+
+Phase 4H additions (self-mod) for Layer -1:
+  DeterminismConfig keys are L0 (cryptographically immutable).
+  Sibling-divergence rate becomes a dashboard health metric; rising
+    rate triggers investigation, not self-mod.
+
+Layer 0 (wiring) integration:
+
+Phase 4B additions (tool suite) for Layer 0:
+  DkgReachabilityAuditor (wraps existing DkgEngine path query)
+  StubBanAuditor (regex + tree-sitter field-resolution, skips
+    #[cfg(test)] / tests/ / fixtures/ / examples/)
+  ObservableEffectRunner (wraps existing BashSandbox; shells out the
+    trigger, polls SSB read-only connection until predicate or timeout)
+  EntrypointSetLoader (parses elai_cc.toml [wiring.entrypoints])
+  WiringContractValidator (reverse check: every contract references
+    at least one symbol from this step's diff)
+
+Phase 4D additions (designer) for Layer 0:
+  Designer emits WiringContract per baby step (9th spec block).
+  Designer sets USER_FACING tag during decomposition when the step
+    touches: dashboard/commands, CLI slash commands, SSB emitters
+    with frontend consumers, public-API endpoints, IPC message types.
+  Designer enforces frontend_pair sibling rule at decomposition time:
+    emitter step rejected if no consumer sibling at the same level.
+
+Phase 4E additions (builder + baby-step cycle) for Layer 0:
+  Baby step cycle extended (Layer 0 runs first, then intent/testing):
+    context -> pre_gate -> WIRING_CHECK -> INTENT_CONFIRM ->
+      TESTING_FIRST -> EXECUTING -> AUDITING (includes observable
+      effect smoke on user-facing) -> ACCEPTANCE -> integration -> exit
+  PipelineBuilder structural validation step 4.5: every baby step
+    with USER_FACING tag must have observable_effect present.
+  PipelineBuilder structural validation step 4.6: every new
+    SSB action_type / API endpoint emitter in the plan has its
+    consumer sibling declared.
+
+Phase 4G additions (autonomous gate) for Layer 0:
+  WIRING_FAIL and OBSERVABLE_FAIL both route to HIGH risk in
+    AutonomousGate (human approval required before retry). Rationale:
+    these failures indicate the plan is structurally wrong, not that
+    the executor had a bad attempt — retry without replan is futile.
+  Circuit breaker: 3 Layer 0 fails in one concept = MAJOR ReplanRequest.
+
+Phase 4H additions (self-modification) for Layer 0:
+  stub_ban_patterns is a Class A data table (Layer 1A growth). When
+    auditor catches a new placeholder idiom in user-confirmed dead
+    wiring 3+ times, system auto-proposes a new pattern.
+  Locked keys (never auto-modifiable): entrypoint set definition,
+    WIRING_CONTRACT schema, USER_FACING classification rules.
+
+Layers 1-6 integration:
+
+Phase 4B additions (tool suite) for Layers 1-6:
+  ValidationTier enum extension (3.5/3.6/3.7/3.8)
+  MutationRunner (wraps cargo-mutants and mutmut)
+  FormalVerifierHook (wraps Kani; skeleton for crosshair)
+  DifferentialRunner (2-impl generator + fuzz-input comparator)
+  FuzzRunner (wraps cargo-fuzz and AFL++)
+  RegressionCorpusManager (per-project bug corpus)
+  EquivalentMutantCache (SQLite-backed, project-scoped)
+
+Phase 4C additions (plugins/hooks):
+  PostValidationHook fires after each new tier
+  MutationSurvivorHook writes MistakeBook entry per survivor
+  IntentConfirmationHook writes SSB INTENT_CONFIRMED on user approval
+
+Phase 4D additions (designer):
+  Designer emits PropertyTest + MetamorphicRelation per baby step
+  Designer emits IntentPair set per baby step (for Layer 1)
+  Designer classifies code risk tier for Layer 6
+
+Phase 4E additions (builder + baby-step cycle):
+  Baby step cycle extended: context -> pre_gate -> INTENT_CONFIRM ->
+    TESTING_FIRST -> EXECUTING -> AUDITING (multi-oracle) -> ACCEPTANCE ->
+    integration -> exit
+  Evidence gate definitions updated per Layer 1/2/4 descriptions above.
+
+Phase 4G additions (autonomous gate):
+  Layer 6 risk classification drives risk_level in existing
+    AutonomousGate (BabyStep=LOW, Step=LOW, Phase=MEDIUM, Concept=HIGH,
+    CRITICAL code overrides to HIGH regardless of level).
+
+Phase 4H additions (self-modification):
+  MUTATION_QUALITY_SCORE added to MSI weighted components.
+  Layer 1A learns new metamorphic relation templates from successful usage.
+  Layer 1A learns equivalent-mutant patterns from user confirmations.
+  Locked keys (never auto-modifiable): mutation thresholds for CRITICAL
+    classification, Kani proof requirements, human-gate triggers.
+  PRPO hybrid MSI (rev 3): PROCESS + OUTCOME + RHSI weighted components.
+    Weights themselves L2-locked (modifiable only after human review).
+    RHSI computation spec L0-locked (cryptographically immutable).
+  Layered immutability (rev 3): config keys classified L0/L1/L2/L3:
+    L0 hash-sealed in signed TOML manifest; self-mod agent sees
+    redacted values. L1 requires human approval to modify. L2 pauses
+    modification under MSI divergence. L3 freely self-modifiable
+    within staged evaluation (10/50/200).
+
+Phase 4A additions (agent isolation) for Layer 6 (rev 3):
+  AgentRole sandbox policy extended:
+    role=auditor on CRITICAL code → isolate in Firecracker microVM
+    role=executor on FILESYSTEM/NETWORK effect tag → Firecracker/gVisor
+    role=researcher → existing network-enabled sandbox (4A Tier B)
+  Observable-effect smoke tests on CRITICAL baby steps route through
+    microVM not host BashSandbox.
+
+Layer 5.5 (cryptographic provenance) integration — rev 3:
+
+Phase 3B additions (SSB) for Layer 5.5:
+  ProvenanceLog append-only file per project; SSB action hashes
+    chained into it on write (impact_class >= STANDARD).
+  Ed25519 keypair per ELAI install, stored via OS keychain.
+  SSB action types PROVENANCE_ANCHORED and ATTESTATION_SIGNED wired.
+
+Phase 4B additions (tool suite) for Layer 5.5:
+  ProvenanceAttestor (wraps Merkle proof + Ed25519 sign).
+  RFC3161 timestamp client (trusted-timestamp RFC).
+  `elai trust attest <baby_step_id>` CLI subcommand.
+
+Phase 4K additions (dashboard) for Layer 5.5:
+  Provenance panel: Merkle root, last anchor time, external witness
+    status, signature verification state. Exposes per-baby-step
+    attestation download.
+
+Group A preparation steps (post-MVP, before Phase 4B/E implementation):
+  T-(-1): Determinism substrate — sidecar DeterminismConfig loader,
+       hardware-class lock probe, blake3 cache-key swap, prompt
+       normalizer, system_fingerprint pin + DETERMINISM_DRIFT SSB
+       writer, batch-invariant kernel feature flag. Digital Sibling
+       scaffolding (second sidecar launch script). ~600-900 LOC.
+  T-0: Wiring harness — WiringContract type, EntrypointSet loader,
+       DkgReachabilityAuditor (one DKG query wrapper), StubBanAuditor
+       regex+tree-sitter, ArchCodex DSL predicates, SSB action types
+       19-20 (WiringEvidence, WiringViolation). Seed stub_ban patterns
+       from MVP wiring audit (None on *_executor fields, Synthetic*/
+       NoOp*/Empty* constructor names on production paths). ~700-900 LOC.
+  T-1: Mutation tooling probe — verify cargo-mutants on one ELAI crate,
+       establish baseline score. LLMorpheus adapter for TS dashboard.
+       ~150-200 LOC.
+  T-2: IntentPair schema + SSB action type. ~200 LOC.
+  T-3: Metamorphic relation seed library (TOML). ~100 entries,
+       including SQLHD structure+logic patterns. ~120 entries.
+  T-4: Risk classification engine (deterministic, no LLM). ~300 LOC.
+  T-5: Equivalent mutant cache schema + ACH-style classifier shim
+       (comment-strip + LLM equiv check). ~300 LOC.
+  T-6: Regression corpus schema + runner. ~250 LOC.
+  T-7: Kani + VeriStruct opportunistic detector (DKG query + verifier
+       driver). ~400 LOC.
+  T-8: Provenance kernel (Merkle RFC6962 + Ed25519 + RFC3161 timestamp
+       client + SSB hash chain + `elai trust attest` CLI). ~500-700 LOC.
+  T-9: CiteAudit citation-verification shim for phase-X-grounding.md
+       outputs + FRONT alignment scoring. ~200-300 LOC.
+  T-10: RHSI scorer + PRPO hybrid MSI refactor in Phase 4H
+       self-mod components. ~300-400 LOC.
+  T-11: Rulebreakers Paired-Accuracy tau runner for CRITICAL
+       classification. ~200 LOC.
+  T-12: XGrammar / CRANE / CodeFast integration into providers crate
+       (replacing Outlines + lm-format-enforcer). ~400-500 LOC.
+  T-13: FACET R-DAG tool-contract compiler for ToolDispatcher.
+       ~300-400 LOC.
+
+Total new LOC estimate (rev 3): ~10,400-14,700 across all phases.
+  Rev 2 baseline: ~6,500-9,700.
+  Rev 3 delta: ~3,900-5,000 LOC for Layer -1 substrate, Layer 5.5
+  provenance, XGrammar/CRANE/CodeFast, FACET, AdverTest loop,
+  CiteAudit, RHSI/PRPO, Rulebreakers tau, ArchCodex DSL.
+
+
+========================================================================
+ACCEPTANCE CRITERIA
+========================================================================
+
+Per-baby-step (runtime):
+  Layer -1: DeterminismConfig loaded and validated; no DETERMINISM_DRIFT
+    SSB event in the step's generation window; if CRITICAL, sibling
+    divergence rate = 0 for the step's prompts.
+  Layer 0: WiringContract present with non-empty produces_symbols;
+    DKG path exists from every entrypoint in reachable_from to every
+    produces_symbol; zero stub_ban matches on production paths;
+    zero ArchCodex DSL violations (FORBID_CALL / CIRCULAR_DEP_BAN /
+    DEPRECATED_IMPORT / LAYER_VIOLATION / UNCONSUMED_EMIT);
+    if frontend_pair set, paired consumer step is present and also
+    passed Layer 0; if USER_FACING, observable_effect ran on shipped
+    binary and expect_ssb predicate fired within budget.
+  Layer 1: INTENT_CONFIRMED SSB action exists with >=3 IntentPairs;
+    for CRITICAL code, IntentPairs include both follow and break
+    variants for Rulebreakers tau (Layer 6).
+  Layer 2: >=1 property test OR >=1 metamorphic relation per non-trivial
+    step; property soundness check passes (property does not reject
+    any approved IntentPair).
+  Layer 4 tier 3.5: mutation_score >= classification_threshold.
+  Layer 4 tier 3.55 (if triggered): consistency vote consensus reached.
+  Layer 4 tier 3.6-3.8: PASS or SKIPPED per trigger conditions; if
+    differential triggered, at least 2 distinct intent framings
+    (from_spec / from_tests / from_types / from_reference) agreed
+    on fuzzed inputs.
+  Layer 5: surviving mutants written to MistakeBook, fed into next
+    iteration; MSI_composite delta > -0.1 (not DIVERGING); RHSI below
+    threshold; grounding-file CiteAudit score above threshold.
+  Layer 5.5: ProvenanceEntry signed and hash-chained; bundle available
+    via `elai trust attest <baby_step_id>`; for CRITICAL, external
+    witness anchored.
+  Layer 6: risk_classification attached to each baby step in SSB;
+    if CRITICAL, auditor model has independent weights from executor
+    and Rulebreakers tau >= 0.9.
+
+Per-phase (aggregate):
+  Workspace mutation score trend >= previous phase (no regression).
+  Regression corpus grows monotonically (never shrinks without user action).
+  Zero CRITICAL-classified steps in AUTONOMOUS mode without human approval.
+  Every production-path symbol introduced in the phase is reachable
+    from every entrypoint in [wiring.entrypoints].production.
+  Zero stub_ban pattern matches anywhere outside test/fixture paths.
+  Every new SSB action_type or API endpoint introduced in the phase
+    has a frontend / consumer reader in the same phase.
+
+System-wide (post-MVP rollout):
+  Per-project trust report queryable via CLI (elai trust <project>):
+    per-module classification, achieved mutation score, Kani proofs,
+    IntentPair coverage, differential coverage, regression corpus size,
+    wiring coverage (% of produces_symbols reachable from all listed
+    entrypoints), stub_ban violation count (target: 0).
+  Dashboard 4K surfaces trust tier per concept with drill-down to baby
+    step. Wiring violations surface with a distinct SSB action_type
+    (WIRING_VIOLATION) and render red in ActivityEntry.
+  `elai wiring audit` CLI subcommand: re-runs Layer 0 across the whole
+    codebase (not just the last phase). Output compatible with the
+    existing MVP wiring audit format.
+
+
+========================================================================
+TRADEOFFS AND RISKS
+========================================================================
+
+Cost inflation: baby step validation time grows from ~30s to ~2-4 minutes
+  when mutation + fuzz + Kani all trigger. Partial mitigation: gates
+  trigger only on classification match; TRIVIAL code sees no new cost.
+  Full CRITICAL path is intentionally expensive — matches human review cost.
+
+False positive rate: mutation testing raises many equivalent-mutant
+  false-positives on first run. Mitigation: EquivalentMutantCache
+  learns per project. First 3-5 sessions noisy, stabilizes thereafter.
+
+Ceiling is not 100%: this stack raises trust to high confidence on
+  STANDARD code, very high confidence on CRITICAL with differential,
+  and dispositive ONLY on PROVEN code with Kani. "100% deterministic
+  LLM" is not achievable without a formal spec per function. The stack
+  is explicit about this.
+
+Prompt drift under self-modification: Layer 5 MSI monitoring catches
+  test-quality regression but does not prevent it. Layer 6 human gate
+  is the backstop. Locked keys in Layer 4H prevent self-mod from
+  loosening CRITICAL thresholds.
+
+Language coverage: Rust and Python have mature tooling. TypeScript
+  (Stryker), Go (go-mutesting), Java (PIT) are supported by design
+  but need per-language adapter implementations. C/C++ mutation tooling
+  is weaker; recommend deferring until specific project need arises.
+
+LLM-written properties and metamorphic relations are themselves
+  LLM-generated and inherit all LLM risks. Layer 1 IntentPairs partially
+  mitigate by providing approved negative examples. Fully avoiding this
+  recursion requires formal specs, which return to the spec-writing
+  bottleneck that caused the entire field to adopt LLMs in the first place.
+
+rev 3 additional tradeoffs:
+
+Layer -1 determinism cost curve is non-linear. Moving from STANDARD
+  to CRITICAL engages batch-invariant kernels + LayerCast FP32
+  compute + optional Digital Sibling. Measured real-world penalty:
+  up to +56% latency, +1 full GPU for Sibling. Not a drop-in; must
+  be opted into per project.
+
+Prefix-cache hygiene (blake3 keys + PinnedCachingManager) breaks
+  compatibility with vLLM prefix-cache statistics reports and with
+  cross-version KV snapshots. Accept the break — rev 3 explicitly
+  prefers correctness over cache-statistics continuity.
+
+Provenance Merkle log grows linearly with SSB action volume. At
+  ELAI's current rate (~10K-50K actions per day in AUTONOMOUS on a
+  mid-size project), the log reaches hundreds of MB per month before
+  compaction. Anchoring strategy: periodic consolidation root written
+  every 10K entries, entries prior to the root stored compressed.
+
+FACET R-DAG tool contracts break compatibility with Anthropic / OpenAI
+  tool-call argument drift. Legacy tools that rely on the drift for
+  fallback behavior must be explicitly declared LEGACY in elai_cc.toml
+  [tools.legacy] to bypass FACET. Limit: LEGACY tools cannot run on
+  CRITICAL code.
+
+Independent-model auditor requirement on CRITICAL can double API
+  spend on those paths. Mitigation: cost-capped per baby step via
+  existing cloud budget tracking (cloud-mode-design.txt). Above cap,
+  classification auto-downgrades CRITICAL -> STANDARD with explicit
+  user warning + dashboard entry.
+
+XGrammar / CRANE / CodeFast replacement of Outlines + lm-format-
+  enforcer requires providers-crate refactor. Backward compatibility
+  not preserved. Users of the existing structured-output API must
+  migrate; migration script auto-generated by `elai config migrate`.
+
+Rulebreakers Paired-Accuracy tau adds a second IntentPair generation
+  pass on CRITICAL steps. Roughly doubles Layer 1 cost for CRITICAL.
+  Mitigation: cache break-variants across retries (same content hash).
+
+
+========================================================================
+GROUNDING (FULL CITATION LIST)
+========================================================================
+
+Primary sources grounded via WebSearch 2026-04-19:
+
+Mutation testing:
+  Mutation-Guided LLM-based Test Generation at Meta — arXiv 2501.12862
+  Comprehensive Study on LLMs for Mutation Testing — arXiv 2406.09843
+  MutGen — arXiv 2506.02954
+  MuTAP (MutationBench pattern) — arXiv 2307.11315 / github.com/ExpertiseModel/MuTAP
+  What It Would Take to Reach 100% Mutation Score (Facebook) — arXiv 2010.13464
+  cargo-mutants — mutants.rs (2025 maintained)
+
+Metamorphic testing:
+  Validating LLM-Generated Programs with Metamorphic Prompt Testing — arXiv 2406.06864
+  Metamorphic Testing of Deep Code Models — ACM SLR 10.1145/3766552
+  LLMORPH (ASE 2025) — valerio-terragni.github.io/assets/pdf/cho-ase-2025.pdf
+
+Property-based testing:
+  Can LLMs Write Good Property-Based Tests? — arXiv 2307.04346
+  Use PBT to Bridge LLM Code Generation — arXiv 2506.18315
+  proptest (Rust), Hypothesis (Python), PropertyEval
+
+Formal verification:
+  AutoVerus — arXiv 2409.13082
+  VeriStruct — arXiv 2510.25015
+  Quokka — arXiv 2509.21629
+  Kani (model-checking Rust) — github.com/model-checking/kani
+  Symbolic Execution Survey — arXiv 2508.06643
+
+Differential testing:
+  RustAssure — arXiv 2510.07604
+  DiffSpec — arXiv 2410.04249
+  Mokav — arXiv 2406.10375
+
+Intent formalization:
+  TiCoder — arXiv 2404.10100
+  ChatTester — FSE 2024
+  CoverUp — arXiv 2403.16218
+  CodaMosa — ICSE 2023
+
+Failure modes and ceiling analysis:
+  Plausibility as Failure — arXiv 2512.16750
+  Bugs in LLM-Generated Code — arXiv 2403.08937
+  LLM Critics Help Catch LLM Bugs — arXiv 2407.00215
+  Are LLMs Reliable Code Reviewers — arXiv 2603.00539
+  TestExplora — arXiv 2602.10471
+
+Fuzzing:
+  Fuzz4All — arXiv 2308.04748
+  OSS-Fuzz LLM integration — google.github.io/oss-fuzz/research/llms
+
+Test adequacy:
+  Benchmarking LLMs for Unit Test Generation — arXiv 2508.00408
+  MC/DC and coverage adequacy — Wikipedia code coverage
+
+Industry practices:
+  Claude Code Best Practices — code.claude.com/docs/en/best-practices
+  How Anthropic Teams Use Claude Code — www-cdn.anthropic.com
+  Meta ACH deployment — arXiv 2501.12862
+
+Dead wiring evidence (ELAI internal, primary motivation for Layer 0):
+  MVP wiring audit 2026-04-18 —
+    .elai_cc/docs/mvp-wiring-audit-2026-04-18.md
+    (concrete failure inventory: baby_step_executor=None,
+     anti_spiral_enabled=false, IndexingService CLI-only,
+     compute_vector_via_sidecar zero callers, frontend recognizes
+     6 of 31 SSB action types, evaluate_at_pre_gate runs on
+     natural-language task text not source)
+  MVP wiring gaps (rolling log) — docs/mvp-wiring-gaps.md
+
+Callgraph / dead-code research (Layer 0 technique grounding):
+  tree-sitter call-graph extraction — github.com/tree-sitter/tree-sitter
+  DKG Phase 1A spec — docs/specs/crates/knowledge.txt section S1
+  SSB Phase 3B spec — docs/specs/crates/orchestrator.txt section S3
+  Smoke-test-as-gate pattern — Google testing blog, "Just Say No to
+    More End-to-End Tests" (counter-example reference:
+    smoke tests are the MIN viable E2E, not the MAX)
+
+rev 3 additions (Gemini deep-research 2026-04-19):
+
+Inference determinism (Layer -1):
+  TBIK (Tree-Based Invariant Kernels) — binary-tree reduction topology
+  DASH (Deterministic Attention Scheduling)
+  LayerCast (BF16 storage + FP32 compute)
+  LLM-42 speculative verified decoding
+  FACET R-DAG tool-call contracts
+  File 2 §1-§5, §8 (docs/.new_research/testing veracity problems/
+    LLM Determinism and Reproducibility Research.txt)
+
+Mutation + adversarial:
+  AdverTest co-evolution — File 1 §1(c)
+  LLMorpheus (JS/TS semantic mutations) — File 1 §1(b)
+  ACH equivalent-mutant classifier (precision 0.95 / recall 0.96) —
+    File 1 §1(d)
+  Meta ACH autonomous 73% patch acceptance — File 1 §10
+  MutationBench benchmark reference — File 1 §1
+
+Metamorphic domain-specific:
+  SQLHD (Text-to-SQL structure+logic MRs, F1 69.36-82.76%) —
+    File 1 §2(b)
+
+Property-based testing correction:
+  20.5% soundness (GPT-4 two-stage) — File 1 §3(a)
+  41.74% rev 1-2 figure deprecated as misattributed
+
+Differential testing (BDG trap + correction):
+  Differential Prompting / LOOPRAG — File 1 §4(a-b)
+  BDG trap documentation — File 1 §4(a)
+  ConTested consistency-aided test gen — File 1 §9
+
+Constrained decoding:
+  CRANE reasoning-pocket (arXiv 2502.09061) — File 2 §4
+  CodeFast / GenGuard JSON mode (34-452% speedup) — File 2 §4
+  XGrammar CFG-based constrained decoding (3.5-10x vs Outlines) —
+    File 2 §4
+  SemanticForge (SMT + beam search) — File 1 §7
+
+Grounded citation verification:
+  FRONT (two-stage + KL, +14.21%) — File 3 §1
+  CiteAudit (F1 0.903 real / 0.97 synthetic) — File 3 §1
+  GhostCite 2026 (14-95% hallucination, 375K instances) — File 3 §1
+  DKB via Tree-sitter (0.902 vs 0.641) — arXiv 2601.08773 / File 3 §1
+
+Architectural DSL:
+  ArchCodex (AST-based rules) — arXiv 2603.00822 / File 3 §2
+
+Process reward models + hybrid:
+  PRPO hybrid (alpha*process + beta*outcome) — File 3 §4
+  PRLCoder line-level process reward — File 3 §4
+  RHSI (Reward Hacking Severity Index) — File 3 §10
+
+Reliability + adversarial eval:
+  Rulebreakers Paired-Accuracy tau — File 3 §3, §5, §12
+  Calibration gap / verbal-confidence — File 3 §12
+
+Self-modification safety:
+  DGM / DarwinNet layered immutability (L0-L3) — File 3 §10, §11
+  Locked-key cryptographic seal pattern — File 3 §11
+
+Cryptographic provenance (Layer 5.5):
+  PunkGo Kernel (RFC6962 + Ed25519 + RFC3161) — File 3 §8
+  EU AI Act Art. 12/14/19; NIST AI RMF MEASURE-2.7
+
+Digital Sibling + BSP:
+  Shadow simulator pattern — File 2 §7
+  BSP supersteps in multi-agent pipelines — File 2 §7
+  Append-only agent memory + SNAPSHOT_V_n — File 2 §7
+
+Autonomy gradients (Layer 6 calibration anchor):
+  Devin 67% scoped / ~15% unscoped — File 3 §9
+
+Full reports from research session archived at workflow/reasoning/
+  testing-trust-research-2026-04-19.md (to be generated on acceptance).
+Primary rev 3 sources (Gemini Deep Research outputs, Portuguese):
+  docs/.new_research/testing veracity problems/
+    "Validating LLM-Generated Code & Tests.txt" (File 1)
+    "LLM Determinism and Reproducibility Research.txt" (File 2)
+    "LLM Trust Mechanisms for Coding Engines.txt" (File 3)
+
+
+========================================================================
+OPEN QUESTIONS FOR USER REVIEW
+========================================================================
+
+Q1: Should CRITICAL classification trigger mandatory Kani attempt even
+  when not clearly applicable, or only on DKG-detected surfaces?
+  Default proposal: DKG-detected only (opportunistic). Mandatory on CRITICAL
+  would often fail due to unbounded inputs and block progress.
+
+Q2: AUTONOMOUS mode and IntentPairs — is reference-model confirmation
+  sufficient, or should AUTONOMOUS still pause on novel intents?
+  Default proposal: reference-model approves up to pipeline N=5, then
+  requires human spot-check. Tied to circuit-breaker pattern in 4G.
+
+Q3: Mutation threshold for STANDARD code — 75% is the 2025 industry norm.
+  Willing to accept lower (65-70%) for higher throughput in early post-MVP
+  phase, ratcheting up as EquivalentMutantCache matures?
+  Default proposal: start 65% month 1, 70% month 2, 75% month 3+.
+
+Q4: Regression corpus retention policy — permanent, or age-out at N years?
+  Default proposal: permanent. Regression corpus runs on CI only, not on
+  every baby step, so size does not directly cost tokens.
+
+Q5: Language priority for post-Rust-Python expansion — TypeScript first
+  (dashboard frontend) or Go first (services)?
+  Default proposal: TypeScript first (natural ELAI coverage for 4K dashboard).
+
+Q6: Differential testing cost — dual-generation doubles LLM cost on
+  CRITICAL code. Acceptable, or should differential be human-triggered only?
+  Default proposal: auto-trigger on CRITICAL with cost cap per baby step.
+  User can disable via elai_cc.toml.
+
+Q7: Layer 0 smoke cost — user-facing steps gain ~10-30s per baby step
+  on the shipped binary. Acceptable default, or should smoke gate run
+  once per STEP-level (not per BABY_STEP-level) to amortize?
+  Default proposal: per-baby-step for new user-facing emitters,
+  per-step for modifications to existing ones. Configurable via
+  elai_cc.toml [wiring.smoke] granularity = "baby_step" | "step".
+
+Q8: Layer 0 and greenfield projects — on phase 0 (empty repo) the
+  DKG is empty and reachable_from cannot be verified. Should Layer 0
+  soft-skip on the first phase per project, or should phase 0 declare
+  a synthetic entrypoint that the first baby step creates?
+  Default proposal: synthetic entrypoint. Phase 0's first baby step
+  is always "create main() / lib.rs and register in elai_cc.toml
+  [wiring.entrypoints]". Subsequent steps verify against it.
+
+Q9: Retrofit of Layer 0 onto ELAI itself — the MVP wiring audit
+  identifies ~10 concrete violations. Should the Layer 0 harness be
+  built as pure post-MVP work, OR built first and used to close the
+  existing ~10 gaps (dogfooding)?
+  Default proposal: dogfooding. T-0 ships standalone, runs against
+  current .elai_cc, the 10 P0/P1 items from the audit become the
+  first regression corpus for the wiring auditor.
+
+Q10: Layer -1 hardware-class lock at what granularity? Per-install,
+  per-session, or per-pipeline? If a user runs on RTX 3060 today and
+  wants to run the same project on RTX 3090 tomorrow, does the
+  Determinism SSB attestation become invalid, or does the system
+  re-anchor with a new fingerprint under a named "class profile"?
+  Default proposal: per-pipeline fingerprint, re-anchor allowed with
+  explicit `elai hw migrate` command that writes a MIGRATION attestation.
+
+Q11: Batch-invariant kernel + LayerCast cost on CRITICAL is up to +56%
+  latency. Acceptable default, or require opt-in per CRITICAL baby
+  step?
+  Default proposal: opt-in via [inference.strict_determinism] = true
+  per-project config. Defaults off; flips on for projects with
+  [risk.domain] = "trading" | "crypto" | "medical".
+
+Q12: AdverTest MSI ceiling ~52.1% on Defects4J vs MuTAP 93.57% on
+  curated benchmarks. Which anchor does ELAI use in AUTONOMOUS
+  gate thresholds?
+  Default proposal: AUTONOMOUS uses 52.1% floor (conservative real-
+  world anchor); INTERACTIVE uses 75% mid-point; user can override
+  via elai_cc.toml.
+
+Q13: PRPO hybrid MSI weights (alpha=0.3 process, beta=0.5 outcome,
+  gamma=0.2 RHSI) — are these starting defaults or should they be
+  calibrated per-project via a short self-mod warmup run?
+  Default proposal: starting defaults for first 10 pipelines, then
+  self-mod proposes adjustments within [0.2, 0.5] for alpha / [0.3,
+  0.6] for beta / [0.1, 0.35] for gamma, staged eval per Phase 4H.
+
+Q14: Layer 5.5 external witness — local append-only file only, or
+  mirror to a remote store (git notes on a dedicated provenance
+  branch, WORM bucket, public transparency log)? Affects both cost
+  and regulatory-compliance strength.
+  Default proposal: local-only for STANDARD; git-notes mirror for
+  CRITICAL; public transparency log (sigstore-style) opt-in only.
+
+Q15: CiteAudit on phase-X-grounding.md — should it run synchronously
+  (blocks TESTING_FIRST until verified) or asynchronously (verifies
+  in background, flags retroactively)?
+  Default proposal: synchronous on first-time grounding files,
+  cached decisions re-used for identical content hashes; async only
+  for re-verification of unchanged content.
+
+Q16: Reference-model independence for CRITICAL auditor — does this
+  require a second cloud API key (Claude + DeepSeek + Qwen-local)?
+  Latency and cost implications.
+  Default proposal: yes, independent model required for CRITICAL;
+  fall back to STANDARD classification if no independent model
+  available. Prevents silent degradation.

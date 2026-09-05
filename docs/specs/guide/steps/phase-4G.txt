@@ -1,0 +1,917 @@
+PHASE 4G: AUTONOMOUS MODE ENABLEMENT — IMPROVED 2026-04-06
+Prerequisites: Phase 3 INTERACTIVE loop validated end-to-end, Phase 4A-4F complete
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+  Enable AUTONOMOUS auto-advance on top of the validated INTERACTIVE pipeline.
+  All components already work with HITL gates (InteractiveGate trait, Phase 3A) —
+  this phase adds the auto-advance logic that skips human approval when evidence
+  artifacts pass per the evidence gate protocol (orchestrator.txt S13).
+  INTERACTIVE mode remains the foundation; AUTONOMOUS wraps it.
+  No new FSM states — only new gate evaluation behavior at existing transitions.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/architecture-overview.txt        S6 (execution modes: INTERACTIVE first, AUTONOMOUS second)
+  docs/specs/architecture-overview.txt        S9 (agent roles — which roles available for SUBSTITUTE_MODEL)
+  docs/specs/crates/orchestrator.txt          S6 (context budget allocator, adaptive reduction, Terminal path)
+  docs/specs/crates/orchestrator.txt          S7 (agent checkpointing, supervision tree, max_restarts, anti-spiral)
+  docs/specs/crates/orchestrator.txt          S12 (Tier C IPC — AutonomousGate routes through same IPC)
+  docs/specs/crates/orchestrator.txt          S13 (evidence gate protocol — per-transition artifact requirements)
+  docs/specs/crates/providers.txt             S4 (ModelPool, SLO tiers, swap protocol, can_fit_onnx)
+  docs/specs/guide/steps/phase-3A.txt         InteractiveGate trait, risk-level gating (LOW/MEDIUM/HIGH)
+  docs/specs/guide/steps/phase-3C.txt         Supervision tree (Erlang-derived), restart policies
+  docs/specs/guide/steps/phase-3E.txt         Context budget allocator, SPLIT_TASK Terminal path stub
+  docs/specs/crates/orchestrator.txt          S3 (SSB schema, action_types — escalation type needed)
+  docs/specs/decisions/risk-register.txt      R4, R5 (VRAM contention), R22 (ONNX GPU contention)
+  docs/specs/architecture-overview.txt        S8 (model swap latency targets: 15-30s)
+
+
+TYPES (new — to be propagated to orchestrator.txt after approval)
+
+  enum ExecutionMode {
+      Interactive,
+      Autonomous,
+  }
+  // Already defined in orchestrator::types (phase-4F:L161). Reused here.
+
+  struct AutonomousGate {
+      inner: Box<dyn InteractiveGate>,       // wraps existing HITL gate
+      evaluator: AutoAdvanceEvaluator,       // checks evidence artifacts
+      mode: ExecutionMode,                   // per-session, from SessionState
+      escalation_policy: EscalationPolicy,   // configurable thresholds
+      dispatch_table: PlanDispatchTable,     // dynamic dispatch from PipelineSpec (technical-analysis-v3 §5)
+  }
+  // AutonomousGate implements the same InteractiveGate trait.
+  // In Interactive mode: delegates to inner directly (zero behavior change).
+  // In Autonomous mode: evaluator checks evidence first, delegates to inner (human pause) only
+  //   on HIGH-risk gate or missing/invalid evidence. Within EXECUTING state, dangerous tool
+  //   calls (file deletion, etc.) are reviewed by auditor agent, not human (arch-overview S6:L220).
+  //   This is a different path from gate transitions — tool-call review is in-state, not at gate.
+  // AutonomousGate uses DispatchPipeline/PlanDispatchTable types for agent dispatch.
+  //   Plan-dispatch states (TESTING_FIRST, EXECUTING, AUDITING, MEMORIZING) use
+  //   PlanDispatchTable built from PipelineSpec at L2. Meta-dispatch states (PLANNING,
+  //   CONFIGURING) use static MetaDispatchTable. Source: technical-analysis-v3.txt §5.
+
+  struct AutoAdvanceEvaluator {
+      gate_checks: HashMap<FsmTransition, EvidenceCheck>,
+      // Maps each FSM transition to its required evidence artifact check.
+      // Populated from evidence gate protocol (orchestrator.txt S13):
+      //   IDLE->PLANNING: knowledge_engine.readiness_check() != UNAVAILABLE
+      //   PLANNING->TESTING_FIRST: grounding_sweep_report has zero UNGROUNDED
+      //   TESTING_FIRST->EXECUTING: all tests fail for right reasons. Heuristic:
+      //     cargo test exit code != 0 (tests ran) AND zero "error[E" in stderr
+      //     (no compilation errors — compilation errors are "wrong reasons").
+      //     This is an approximation: a test that panics during setup looks like
+      //     a "right reason" failure. Acceptable for auto-advance because AUDITING
+      //     catches false positives. If too many false advances, tighten heuristic.
+      //   EXECUTING->AUDITING: at least 1 test flipped FAIL->PASS (diff test results)
+      //   AUDITING->MEMORIZING: zero BLOCK findings in audit_report
+      //   MEMORIZING->next: DKG updated AND changelog has entry
+  }
+
+  struct EvidenceCheck {
+      artifact_path: String,                 // relative to .elai_cc/sessions/{sid}/
+      check_fn: fn(&[u8]) -> EvidenceVerdict,  // deterministic, no LLM
+      description: String,                   // for audit trail
+  }
+
+  enum EvidenceVerdict {
+      Pass,                                  // artifact present and valid -> auto-advance
+      Fail { reason: String },               // artifact invalid -> block (same as INTERACTIVE)
+      Missing,                               // artifact not found -> block
+  }
+
+  struct EscalationPolicy {
+      anti_spiral_threshold: u32,            // default 3 — triggers on 3rd failure (orchestrator.txt
+                                             // S7:L180 "3x same GRC step failure"). Note: L173 says
+                                             // "same_step_count > 3" (4th). We pin to L180 (3x).
+                                             // Spec inconsistency documented in grounding log.
+      high_risk_pauses_in_both_modes: bool,  // default true (architecture-overview.txt S6:L227
+                                             // "HIGH: pause in both modes"). Note: L220 says
+                                             // "dangerous actions reviewed by auditor agent, not human"
+                                             // — this refers to tool-call review within EXECUTING,
+                                             // not FSM gate transitions. Gates pause for human.
+      replan_major_always_human: bool,       // default true (orchestrator.txt S13:L590)
+      max_auto_advances_per_phase: u32,      // circuit breaker: if >N auto-advances without
+                                             // human check, force one pause. Default 10.
+  }
+
+  enum EscalationTrigger {
+      AntiSpiral { step_id: String, count: u32 },        // same GRC step failed 3x
+      HighRisk { transition: FsmTransition },             // HIGH-risk gate
+      ReplanMajor { evidence: String },                   // ReplanRequest(MAJOR)
+      CircuitBreaker { auto_advance_count: u32 },         // max_auto_advances_per_phase exceeded
+      SubstituteModelFailed { tried: Vec<String> },       // no fallback model fits
+      SplitTaskFailed { reason: String },                 // decomposition produced 0 sub-tasks
+  }
+
+  struct SplitTaskPlan {
+      parent_phase: String,                  // phase that exhausted context budget
+      sub_tasks: Vec<SubTask>,               // max 4 sub-tasks (prevent exponential blowup)
+      merge_strategy: MergeStrategy,         // how sub-task results rejoin
+      max_depth: u32,                        // 2 (no recursive splits — sub-task exhaustion -> ESCALATE)
+      current_depth: u32,                    // tracked per session
+  }
+
+  struct SubTask {
+      task_id: String,
+      scope: String,                         // subset of parent PipelineSpec
+      context_budget: usize,                 // fresh budget per sub-task
+      depends_on: Vec<String>,               // ordering constraints (DAG, not tree)
+  }
+
+  enum MergeStrategy {
+      Sequential,                            // sub-tasks execute in order, each writes to parent
+                                             // session's SSB directly. No branching needed.
+                                             // NOTE: S10 branching (orchestrator.txt L312) has
+                                             // pick-one semantics ("pick winning branch, discard
+                                             // others") — incompatible with SPLIT_TASK which needs
+                                             // ALL sub-task results. Sequential avoids this.
+                                             // Future: if parallel sub-tasks needed, define a new
+                                             // merge protocol (not S10 branches). Deferred.
+  }
+
+  struct ModelFallback {
+      role: String,                          // agent role that exceeded max_restarts
+      current_model: String,                 // model that failed
+      fallback_chain: Vec<String>,           // from elai_cc.toml [agents.{role}.fallback_models]
+      attempted: Vec<String>,                // models already tried this phase
+  }
+  // Selection: iterate fallback_chain, skip attempted, use ModelPool swap protocol
+  //   (providers.txt S4:L111-115): check VRAM via "Fits alongside current?" multiplexing
+  //   check or unload-then-load path. ModelPool has can_fit_onnx() for ONNX models but
+  //   no can_fit() for LLM models — VRAM feasibility uses the swap protocol's implicit
+  //   check (step 2: "Fits alongside current?" / step 3: "wait for checkpoint, unload, load").
+  //   NOTE: Phase 4G MUST add a can_fit_llm(model_id) -> bool method to ModelPool
+  //   (new API — propagate to providers.txt after approval). Without it, SUBSTITUTE_MODEL
+  //   cannot pre-check VRAM before attempting load (load failure = wasted swap time).
+  // If no model fits VRAM -> EscalationTrigger::SubstituteModelFailed.
+  // Fallback chain example: ["gemma4-31b-q4", "gemma4-12b-q4", "gemma4-4b-q8"]
+  // SLO tier mismatch logged as WARNING (providers.txt S4:L85) but allowed.
+
+
+STEPS
+
+  4G.1 SKELETON (types + stubs)
+    PRE_GATE:
+      - cargo test --workspace passes (all Phase 3 + Phase 4A-4F tests green)
+      - InteractiveGate trait exists and is implemented (grep for "trait InteractiveGate")
+      - ExecutionMode enum exists in orchestrator::types (grep for "enum ExecutionMode")
+      - Context budget allocator Terminal path returns Err(SplitTask) stub (phase-3E)
+      - Supervision tree max_restarts policy implemented (phase-3C)
+    TASK:
+      - Define AutonomousGate struct implementing InteractiveGate trait
+      - Define AutoAdvanceEvaluator with gate_checks HashMap
+      - Define EvidenceCheck, EvidenceVerdict, EscalationPolicy, EscalationTrigger
+      - Define SplitTaskPlan, SubTask, MergeStrategy
+      - Define ModelFallback
+      - Add execution_mode: ExecutionMode field to SessionState
+      - Stub all methods: auto_advance() returns Err("not implemented"),
+        split_task() returns Err("not implemented"), substitute_model() returns Err("not implemented")
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace (zero errors)
+      - grep -r "AutonomousGate" finds struct + impl InteractiveGate
+      - grep -r "AutoAdvanceEvaluator" finds struct with gate_checks field
+      - grep -r "SplitTaskPlan" finds struct with max_depth field
+      - grep -r "ModelFallback" finds struct with fallback_chain field
+      - grep -r "execution_mode.*ExecutionMode" in session state struct
+    ADVERSARIAL:
+      - If AutonomousGate does NOT implement InteractiveGate, it cannot be used as drop-in
+        replacement. Test: trait object Box<dyn InteractiveGate> compiles with AutonomousGate.
+      - If ExecutionMode is duplicated (not reused from phase-4F), types diverge silently.
+        Test: grep -c "enum ExecutionMode" == 1 across entire workspace.
+    ACCEPTANCE:
+      - cargo check passes with all new types defined
+      - All stubs return Err (not panic, not todo!)
+      - Zero changes to existing InteractiveGate behavior (existing tests still pass)
+
+  4G.2 VERIFY (compilation + regression)
+    PRE_GATE:
+      - 4G.1 SKELETON complete (all types exist, all stubs return Err)
+    TASK:
+      - cargo test --workspace (full regression)
+      - Verify AutonomousGate in Interactive mode delegates to inner gate identically
+      - Verify no existing test behavior changed
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace exit code 0
+      - Test count >= previous phase test count (zero tests removed)
+      - cargo clippy --workspace -- -D warnings (zero new warnings)
+    ADVERSARIAL:
+      - If AutonomousGate in Interactive mode adds ANY overhead (extra allocation, extra check),
+        INTERACTIVE performance degrades. Test: benchmark gate.present_gate() latency,
+        assert Autonomous(Interactive) overhead < 0.5ms absolute (not percentage —
+        percentage is meaningless without baseline. Architecture-overview S8 targets <10ms
+        total for gate evaluation; 0.5ms overhead keeps AutonomousGate well within budget).
+    ACCEPTANCE:
+      - All existing tests pass (exact same count and names)
+      - Zero clippy warnings introduced
+
+  4G.3 TEST (auto-advance + evidence evaluation)
+    PRE_GATE:
+      - 4G.2 VERIFY passes (zero regression)
+    TASK:
+      Write contract tests for auto-advance behavior. All tests FAIL initially.
+      Test categories:
+        Auto-advance (6 tests, one per evidence gate from S13):
+          - test_auto_advance_idle_to_planning: knowledge engine READY -> auto-advance
+          - test_auto_advance_planning_to_testing: zero UNGROUNDED -> auto-advance
+          - test_auto_advance_testing_to_executing: tests fail correctly -> auto-advance
+          - test_auto_advance_executing_to_auditing: test flipped -> auto-advance
+          - test_auto_advance_auditing_to_memorizing: zero BLOCKs -> auto-advance
+          - test_auto_advance_memorizing_to_next: DKG+changelog present -> auto-advance
+        Evidence missing (6 tests, same transitions):
+          - test_block_*: same transitions but evidence artifact missing -> blocks
+        Risk-level (3 tests):
+          - test_low_risk_auto_advances: MEMORIZING->next auto-advances in both modes
+          - test_medium_risk_auto_advances_autonomous: PLANNING->TESTING auto in AUTONOMOUS
+          - test_high_risk_always_pauses: file deletion gate pauses even in AUTONOMOUS
+        Escalation (5 tests):
+          - test_anti_spiral_escalates: 3x same step -> EscalationTrigger::AntiSpiral
+          - test_replan_major_escalates: ReplanRequest(MAJOR) -> human gate
+          - test_replan_minor_auditor_gated: ReplanRequest(MINOR) -> auditor, not human
+          - test_circuit_breaker: >10 auto-advances -> forced human pause
+          - test_escalation_logged_to_ssb: all escalations produce SSB entry.
+            NOTE: orchestrator.txt S3:L57-63 lists 16 action_types — 'escalation' is NOT
+            among them. Phase 4G MUST add 'escalation' to the SSB CHECK constraint
+            (spec update to orchestrator.txt S3). Until then, SSB will reject the write.
+            Alternatively, use existing 'checkpoint' type with a payload field indicating
+            escalation — but this loses queryability. Preferred: add 'escalation' to schema.
+        Fallback (4 tests):
+          - test_split_task_on_budget_exhaustion: Terminal -> SplitTaskPlan with <= 4 sub-tasks
+          - test_split_task_max_depth: sub-task at depth 2 exhausts -> ESCALATE, not recurse
+          - test_substitute_model_on_max_restarts: tries fallback_chain in order
+          - test_substitute_model_no_fit_escalates: no model fits VRAM -> ESCALATE
+        Mode switch (3 tests):
+          - test_mode_switch_preserves_fsm_state: switch does not reset FSM
+          - test_mode_switch_at_gate_boundary: switch takes effect at next gate evaluation
+          - test_mode_switch_interactive_unchanged: mode=Interactive behaves identically to Phase 3
+        Regression (1 test):
+          - test_all_phase3_contracts_pass: run full Phase 3 contract suite
+    DETERMINISTIC_CHECK:
+      - 28 new test functions exist (grep -c "fn test_" in phase-4G test files)
+      - All 28 tests FAIL (cargo test -p orchestrator --lib -- phase_4g 2>&1 | grep "FAILED" | wc -l == 28)
+        NOTE: scoped to orchestrator crate + phase_4g module filter to avoid counting
+        unrelated failures from other crates.
+      - Zero tests from prior phases changed
+    ADVERSARIAL:
+      - If auto-advance evaluator uses LLM (not deterministic check), evidence quality
+        depends on model. Test: AutoAdvanceEvaluator has no LlmProvider dependency (grep).
+      - If circuit breaker threshold is configurable but not bounded, user sets 0 -> every
+        gate pauses. Test: EscalationPolicy::new() enforces min=1 on max_auto_advances_per_phase.
+      - If SplitTaskPlan allows max_depth > 2, exponential sub-task blowup possible
+        (4^3 = 64 sub-tasks at depth 3). Test: SplitTaskPlan::new() clamps max_depth to 2.
+      - If SUBSTITUTE_MODEL fallback_chain is empty in config, panic on index.
+        Test: empty fallback_chain -> immediate ESCALATE (no panic).
+    ACCEPTANCE:
+      - 28 test functions compile and fail for right reasons (missing impl, not syntax error)
+      - Zero prior-phase tests modified
+      - All adversarial edge cases have corresponding test functions
+
+  4G.4 TEST (adversarial — mode interaction edge cases)
+    PRE_GATE:
+      - 4G.3 tests all compile and fail correctly
+    TASK:
+      Write adversarial tests targeting mode interaction edge cases.
+        - test_concurrent_mode_switch: two sessions, one switches mode mid-pipeline,
+          other session unaffected (mode is per-session, not global)
+        - test_mode_switch_during_escalation: switch AUTONOMOUS->INTERACTIVE while
+          escalation pending -> escalation still delivered to human (not swallowed)
+        - test_auto_advance_with_degraded_knowledge: knowledge engine DEGRADED,
+          IDLE->PLANNING auto-advances with warning (not blocked)
+        - test_split_task_ssb_ordering: sub-tasks write to parent SSB sequentially,
+          SSB seq monotonically increasing across sub-task boundaries
+        - test_substitute_model_vram_accounting: after swap, ModelPool VRAM tracking
+          reflects new model (not old model's VRAM still counted)
+        - test_evidence_artifact_tampering: agent writes fake audit_report with zero
+          BLOCKs -> evaluator checks report came from auditor agent_id (provenance)
+        - test_escalation_during_split_task: sub-task escalates -> parent task notified,
+          not silently dropped
+        - test_replan_limit_per_phase: second ReplanRequest in same phase -> rejected
+          (orchestrator.txt S13:L463 — max 1 per agent per phase)
+    DETERMINISTIC_CHECK:
+      - 8 adversarial test functions exist
+      - All 8 fail for right reasons
+    ADVERSARIAL:
+      - If evidence provenance check is missing, agent can forge audit results to auto-advance
+        past AUDITING->MEMORIZING. Test: test_evidence_artifact_tampering specifically covers this.
+      - If mode switch races with gate evaluation (TOCTOU), gate could evaluate with stale mode.
+        Test: mode switch acquires SessionState write lock before gate reads mode.
+    ACCEPTANCE:
+      - All 8 adversarial tests compile and fail correctly
+      - Provenance check test exists for evidence artifact validation
+
+  4G.5 IMPLEMENT (make all tests pass)
+    PRE_GATE:
+      - 4G.3 + 4G.4 tests compile and fail for right reasons (36 total)
+      - Decision doc exists: workflow/reasoning/phase-4G-decisions.md
+    TASK:
+      Implement in order (each makes a subset of tests pass):
+        1. AutoAdvanceEvaluator: populate gate_checks from evidence gate protocol (S13).
+           Each check is a pure function over artifact bytes. No LLM. No network.
+        2. AutonomousGate.present_gate(): check mode -> if Interactive, delegate to inner.
+           If Autonomous: evaluate evidence -> if Pass and risk != HIGH, auto-advance.
+           If Fail/Missing or HIGH risk, delegate to inner (same as INTERACTIVE).
+        3. EscalationPolicy enforcement: anti-spiral counter (from checkpoint data),
+           circuit breaker counter (per-phase), ReplanRequest routing (MINOR->auditor,
+           MAJOR->human in both modes).
+        4. SPLIT_TASK: on context budget Terminal, decompose PipelineSpec phases into
+           sub-tasks. Each sub-task: fresh SessionState, fresh context budget, own SSB branch.
+           Max 4 sub-tasks. Max depth 2. Sub-tasks run sequentially (not parallel — simpler,
+           and budget exhaustion implies resource pressure). Each sub-task writes directly to
+           parent session's SSB (Sequential merge — no S10 branching, which has pick-one semantics).
+        5. SUBSTITUTE_MODEL: on max_restarts, iterate fallback_chain.
+           For each candidate: ModelPool::can_fit_llm(candidate) -> if true, swap protocol
+           (providers.txt S4:L111-115: unload current, load new, health check).
+           If none fit VRAM -> ESCALATE. (can_fit_llm is new API added by this phase.)
+        6. Mode switch: SessionState.execution_mode field. CLI command: /mode autonomous
+           or /mode interactive. Takes effect at next gate evaluation (not mid-phase).
+           TOCTOU prevention: gate evaluation reads mode under Arc<RwLock<SessionState>>
+           read lock; mode switch acquires write lock. Standard Rust RwLock semantics —
+           no custom locking primitive needed. NOTE: SessionState is not yet a defined
+           struct in any spec — Phase 3A or 3B must define it. Phase 4G adds the
+           execution_mode field to whatever struct exists by then.
+        7. Evidence provenance: EvidenceCheck includes expected_producer: String (role name,
+           e.g. "auditor", "executor" — matches role field from AgentPool::spawn()).
+           AutoAdvanceEvaluator verifies artifact was written by correct agent: query SSB
+           for the artifact's seq, join to get agent_id, look up agent_id in AgentPool's
+           internal registry (HashMap<Uuid, AgentHandle> from orchestrator.txt S12) to get
+           role. NOTE: AgentPool currently has spawn/spawn_parallel/communicate — no role
+           lookup. Phase 4G MUST add fn get_role(agent_id: Uuid) -> Option<String> to
+           AgentPool (new API — propagate to orchestrator.txt after approval).
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace (all 36 new tests pass)
+      - cargo test --workspace (all prior-phase tests still pass)
+      - cargo clippy --workspace -- -D warnings (zero warnings)
+      - grep -r "todo!()" in phase-4G code == 0
+      - grep -r "unimplemented!()" in phase-4G code == 0
+    ADVERSARIAL:
+      - If SPLIT_TASK sub-tasks run in parallel on budget exhaustion, VRAM may be double-booked.
+        Test: sub-tasks run sequentially (assert no concurrent agent spawns during SPLIT_TASK).
+      - If mode switch does not acquire write lock, race condition: gate reads Interactive
+        while switch sets Autonomous. Test: test_mode_switch_at_gate_boundary uses concurrent
+        threads with barrier to verify atomicity.
+      - If evidence provenance only checks agent_id (not role), a compromised agent could
+        impersonate auditor. Provenance check must verify agent_id maps to correct role
+        via AgentPool::get_role(agent_id) (new API). Without this lookup, agent_id alone
+        is insufficient — agent_ids are UUIDs assigned at spawn, not tied to role by format.
+    ACCEPTANCE:
+      - All 36 tests pass (28 contract + 8 adversarial)
+      - All prior-phase tests pass (zero regression)
+      - Zero clippy warnings
+      - Zero todo!/unimplemented! in new code
+      - SPLIT_TASK sub-tasks capped at 4 (grep for max_sub_tasks or similar constant)
+      - SUBSTITUTE_MODEL fallback_chain loaded from config (grep for fallback_models)
+
+  4G.6 MEASURE
+    PRE_GATE:
+      - 4G.5 IMPLEMENT complete (all tests pass, zero regression)
+    TASK:
+      Collect metrics:
+        - Auto-advance accuracy: gates that should have paused but didn't = 0
+          (measured by running 10 deterministic scenarios with known-correct outcomes)
+        - False escalation rate: unnecessary human interruptions out of total gates
+        - Mode switch latency: time from /mode command to next gate using new mode
+        - SPLIT_TASK overhead: time to decompose + merge vs single-context execution
+        - SUBSTITUTE_MODEL swap time: model unload + load + health check duration
+        - End-to-end pipeline time: AUTONOMOUS vs INTERACTIVE on same deterministic task
+        - Gate evaluation overhead: AutonomousGate vs raw InteractiveGate (target <1ms delta)
+      Store in: .elai_cc/metrics/phase_4G.toml
+    DETERMINISTIC_CHECK:
+      - .elai_cc/metrics/phase_4G.toml exists and contains all 7 metric categories
+      - Auto-advance accuracy == 100% (zero false auto-advances in deterministic scenarios)
+      - Gate evaluation overhead < 1ms (AutonomousGate adds negligible overhead)
+    ADVERSARIAL:
+      - If metrics only test happy path, AUTONOMOUS may silently auto-advance past a gate
+        that should block in production. Test: at least 3 of 10 scenarios are adversarial
+        (missing evidence, HIGH risk, anti-spiral triggered).
+    ACCEPTANCE:
+      - Metrics file exists with all categories populated
+      - Auto-advance accuracy: 100% on deterministic scenarios
+      - Gate evaluation overhead: < 1ms
+      - All prior-phase tests still pass
+      - AUTONOMOUS mode completes same task faster than INTERACTIVE with simulated
+        human decision latency (5s per gate). Without simulated latency, INTERACTIVE
+        with mocked gates (0ms) will always be faster than AUTONOMOUS (evidence eval
+        overhead). The comparison must include realistic human wait time to be meaningful.
+
+
+GROUNDING LOG
+
+  "AutonomousGate wraps InteractiveGate" -> GROUNDED: phase-3A:L185,L208-209 defines
+    InteractiveGate as trait, L211 says "AUTONOMOUS mode adds auto-advance timeout in Phase 4G".
+  "Evidence gate protocol per transition" -> GROUNDED: orchestrator.txt S13:L576-596 defines
+    7 specific evidence gates with artifact requirements per FSM transition.
+  "SPLIT_TASK on context budget exhaustion" -> GROUNDED: orchestrator.txt S6:L159 defines
+    Terminal path, phase-3E:L163-165 says "SPLIT_TASK via PipelineSpec decomposition".
+  "SUBSTITUTE_MODEL on max_restarts" -> GROUNDED: orchestrator.txt S7:L179 defines
+    "on_max_restarts: ESCALATE (interactive) or SUBSTITUTE_MODEL (autonomous, Phase 4G)".
+  "ModelPool fallback chain via SLO tiers" -> GROUNDED: providers.txt S4:L67-84 defines
+    ModelPool with SLO tiers (BEST/GOOD/FAIR/BASIC) and swap protocol (L111-115).
+  "Anti-spiral threshold 3" -> GROUNDED with CAVEAT: orchestrator.txt S7:L180 says "3x same
+    GRC step failure" (triggers on 3rd), but L173 says "same_step_count > 3" (triggers on 4th).
+    Spec-internal contradiction. Pinned to L180 interpretation (3x = escalate on 3rd failure).
+  "Max 1 ReplanRequest per agent per phase" -> GROUNDED: orchestrator.txt S13:L463.
+  "ReplanRequest MAJOR requires human in both modes" -> GROUNDED: orchestrator.txt S13:L590.
+  "Risk levels LOW/MEDIUM/HIGH" -> GROUNDED: architecture-overview.txt S6:L224-227.
+  "ExecutionMode enum in orchestrator::types" -> GROUNDED: phase-4F:L161.
+  "Max 4 sub-tasks for SPLIT_TASK" -> UNGROUNDED: no spec defines this limit. Chosen as
+    conservative bound to prevent exponential blowup (4^2 = 16 max at depth 2). Verify
+    empirically during 4G.6 MEASURE — adjust if too restrictive.
+  "Max depth 2 for SPLIT_TASK" -> UNGROUNDED: no spec defines this limit. Prevents
+    recursive budget exhaustion. At depth 2, sub-task exhaustion -> ESCALATE to human.
+  "Circuit breaker max_auto_advances_per_phase = 10" -> UNGROUNDED: no spec defines this.
+    Safety net to ensure human oversight in AUTONOMOUS mode. Verify during 4G.6 MEASURE.
+  "Evidence provenance check (agent_id -> role)" -> UNGROUNDED: no spec requires this.
+    Added as defense-in-depth against forged evidence artifacts. Adversarial test covers it.
+  "Sub-tasks run sequentially (not parallel)" -> UNGROUNDED: simplicity choice. Budget
+    exhaustion implies resource pressure; parallel sub-tasks would compete for same resources.
+    Revisit if MEASURE shows unacceptable latency.
+  "MergeStrategy::Sequential only (no ParallelMerge)" -> GROUNDED: S10 branching
+    (orchestrator.txt L312) has pick-one semantics ("pick winning branch, discard others")
+    which is incompatible with SPLIT_TASK (needs ALL results). Sequential avoids this.
+  "HIGH-risk gates pause for human in both modes" -> GROUNDED: architecture-overview.txt
+    S6:L227 "HIGH: pause in both modes". L220 "dangerous actions reviewed by auditor" refers
+    to within-EXECUTING tool-call review, not FSM gate transitions. Clarified in types.
+  "SSB action_type='escalation' needed" -> UNGROUNDED: not in current SSB schema
+    (orchestrator.txt S3:L57-63, 16 types). Must be added to schema. Spec update required.
+  "ModelPool::can_fit_llm() needed" -> UNGROUNDED: only can_fit_onnx() exists in spec
+    (providers.txt S4:L181). New API required for LLM VRAM pre-check. Spec update required.
+  "AgentPool::get_role(agent_id) needed" -> UNGROUNDED: current API is spawn/spawn_parallel/
+    communicate only (architecture-overview.txt S4:L144-148). New API required for provenance.
+  "TESTING_FIRST->EXECUTING heuristic (exit code + no error[E)" -> UNGROUNDED: approximation.
+    Cargo test exit code != 0 means tests ran; zero "error[E" in stderr means no compilation
+    errors. False positives (setup panics look like right-reason failures) caught by AUDITING.
+
+
+EXIT CRITERIA
+  AUTONOMOUS auto-advance works correctly on top of INTERACTIVE pipeline.
+  All INTERACTIVE tests still pass (zero regression).
+  Mode switch preserves FSM state, takes effect at next gate.
+  Escalation works: anti-spiral (now subsumed by Spinning pattern in 4G.9),
+    HIGH risk, ReplanRequest(MAJOR), circuit breaker.
+  SPLIT_TASK decomposes on budget exhaustion (max 4 sub-tasks, max depth 2).
+  SUBSTITUTE_MODEL tries fallback chain on max_restarts (ESCALATE if none fit).
+  Evidence provenance verified (artifact from correct agent role).
+  HIGH-risk actions always pause for human regardless of mode.
+  4G.9: 4 stagnation patterns detected (Spinning/Oscillation/NoDrift/
+    DiminishingReturns), 5 lateral-thinking personas with affinity table,
+    GenerationWatchdog enforces 3 timeout kinds with workflow_fingerprint
+    dedup, parallel fan-out mode verified context-isolated, goal-drift
+    Jaccard canary blocks topically misaligned baby step outputs before
+    audit (3 verdict bands: Pass / Warning / Block; saves audit LLM call
+    on Block).
+  All 36 base tests + new 4G.9 tests pass.
+  Metrics collected in .elai_cc/metrics/phase_4G.toml.
+  Every call site and struct that participates in request routing must wire ssb, fsm, and clock through the single RuntimeClient; no step may leave these fields as None or uninitialized after construction.
+
+
+TREE-LEVEL AUTONOMOUS ADVANCE EXTENSION
+
+  The base 4G auto-advances at FSM gate transitions (phase-level).
+  This extension auto-advances at the baby step level within the DecompositionTree.
+
+  DESIGN
+    In AUTONOMOUS mode with a DecompositionTree, the system auto-advances through
+    baby steps without human intervention, subject to the same evidence checks.
+    The granularity is finer: instead of one human gate per FSM phase, there is
+    one evidence check per baby step cycle (TESTING_FIRST->EXECUTING->AUDITING).
+
+    Per-baby-step auto-advance:
+      TESTING_FIRST->EXECUTING: tests compile and fail -> auto-advance
+      EXECUTING->AUDITING: at least 1 test flipped -> auto-advance
+      AUDITING->ACCEPTANCE: zero BLOCKs -> auto-advance to acceptance check
+      ACCEPTANCE->NEXT_BABY_STEP: all acceptance criteria met -> TreeNavigator advances
+
+    Escalation within tree:
+      Baby step failure after max retries -> BubbleUpHandler (4E) determines action
+      BubbleUp to step level -> re-research (auto in AUTONOMOUS, human in INTERACTIVE)
+      BubbleUp to phase level -> INTERACTIVE: human decides. AUTONOMOUS: auto if LOW risk.
+      BubbleUp to concept level -> always human (HIGH risk, fundamental approach change)
+
+    Integration auto-advance:
+      BABY_STEP integration pass -> auto-advance to next baby step
+      BABY_STEP integration fail -> auto-retry once, then bubble up
+      STEP integration pass -> auto-advance to next step
+      PHASE integration pass -> auto-advance to next phase
+      CONCEPT integration pass -> auto-advance to next concept
+      CONCEPT integration fail -> always human (end-to-end failure)
+
+  NEW TYPES
+
+    struct TreeAutoAdvancePolicy {
+        baby_step_auto: bool,                    // auto-advance per baby step (default true in AUTONOMOUS)
+        step_integration_auto: bool,             // auto-advance on step integration (default true)
+        phase_integration_auto: bool,            // auto-advance on phase integration (default true)
+        concept_integration_auto: bool,          // auto-advance on concept integration (default false — always human)
+        max_auto_baby_steps_per_concept: u32,    // circuit breaker (default 50)
+        bubble_up_risk: BTreeMap<DecompositionLevel, RiskLevel>,
+          // BabyStep -> LOW, Step -> LOW, Phase -> MEDIUM, Concept -> HIGH
+    }
+
+    Merges with existing EscalationPolicy. TreeAutoAdvancePolicy extends it for tree context.
+
+  STEPS (4G.7-4G.8, extend base 4G.1-4G.6)
+
+  4G.7 TREE AUTO-ADVANCE TESTS
+    PRE_GATE:
+      - 4G.6 complete (base autonomous mode working)
+      - 4E.10+ complete (TreeNavigator + BubbleUp working)
+    TASK:
+      Tests:
+        - Baby step auto-advance: TESTING->EXECUTING->AUDITING->ACCEPTANCE all auto in AUTONOMOUS
+        - Baby step pause in INTERACTIVE: each sub-gate pauses for human
+        - Circuit breaker: 50 baby steps in one concept -> forced human check
+        - Bubble-up at step level: auto in AUTONOMOUS (LOW risk)
+        - Bubble-up at phase level: pause in AUTONOMOUS (MEDIUM risk)
+        - Bubble-up at concept level: always pause (HIGH risk)
+        - Integration auto-advance: pass at step/phase level -> auto
+        - Integration pause: concept-level -> always human
+        - Mixed mode: switch AUTONOMOUS->INTERACTIVE mid-concept -> takes effect at next baby step
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- tree_auto_advance (>= 9 tests)
+    ACCEPTANCE:
+      - 9+ tests exist, initially failing
+
+  4G.8 TREE AUTO-ADVANCE IMPLEMENT + MEASURE
+    PRE_GATE:
+      - 4G.7 tests exist and fail
+    TASK:
+      - Implement TreeAutoAdvancePolicy evaluation per baby step
+      - Implement per-level risk classification for bubble-up decisions
+      - Implement circuit breaker per concept
+      - Integrate with existing AutonomousGate (wrap tree-level checks)
+      - Measure: auto-advance accuracy on deterministic scenarios with tree
+    DETERMINISTIC_CHECK:
+      - All tree auto-advance tests pass
+      - Metrics appended to .elai_cc/metrics/phase_4G.toml
+    ACCEPTANCE:
+      - Tree auto-advance operational in AUTONOMOUS mode
+      - Concept-level always pauses for human
+      - Zero false auto-advances in deterministic scenarios
+
+
+STAGNATION + LATERAL THINKING + WATCHDOG EXTENSION (NEW, ouroboros port)
+
+  Replaces ELAI's lone "3x same GRC step -> escalate" anti-spiral with a
+  4-pattern detector + 5-persona unstuck path + per-baby-step watchdog.
+  Source: github.com/Q00/ouroboros (MIT). Ports:
+    src/ouroboros/resilience/stagnation.py (4 patterns + thresholds)
+    src/ouroboros/resilience/lateral.py (5 personas + affinity_patterns)
+    src/ouroboros/evolution/watchdog.py (3 timeout types + material-progress
+      filtering + workflow_fingerprint deduplication)
+  CHANGELOG.md "Parallel multi-persona dispatch" (2026-05-08) for the
+  parallel fan-out variant.
+
+  TYPES (new -- propagate to orchestrator.txt after approval)
+
+    enum StagnationPattern {
+        Spinning,                              // same hash 3+ times
+        Oscillation,                           // A->B->A->B period-2
+        NoDrift,                               // drift score stuck < epsilon
+        DiminishingReturns,                    // improvements < threshold AND
+                                               //   monotonically_decreasing
+    }
+
+    struct ExecutionHistory {
+        phase_outputs: Vec<String>,            // last N baby step outputs
+        error_signatures: Vec<String>,         // last N error messages
+        drift_scores: Vec<f32>,                // last N goal-drift measurements
+        iteration: u32,
+    }
+
+    struct StagnationDetection {
+        pattern: StagnationPattern,
+        detected: bool,
+        confidence: f32,                       // pattern-specific
+        evidence: serde_json::Value,           // for SSB row
+    }
+
+    enum ThinkingPersona {
+        Hacker,        // affinity: Spinning
+        Researcher,    // affinity: NoDrift, DiminishingReturns
+        Simplifier,    // affinity: DiminishingReturns, Oscillation
+        Architect,     // affinity: Oscillation, NoDrift
+        Contrarian,    // affinity: ALL (catch-all)
+    }
+
+    struct PersonaStrategy {
+        persona: ThinkingPersona,
+        system_prompt: String,                 // from .claude/agents/persona-{name}.md
+        approach_instructions: Vec<String>,
+        question_templates: Vec<String>,
+    }
+
+    struct GenerationWatchdog {
+        baby_step_id: BabyStepId,
+        idle_timeout_seconds: u64,             // default 60s (no SSB events)
+        no_material_progress_timeout_seconds: u64,  // default 180s
+        safety_timeout_seconds: u64,           // default 600s wall-clock
+        material_event_types: BTreeSet<String>,// SSB action_types that count
+        workflow_fingerprint: Option<Vec<u8>>, // last seen state shape
+    }
+
+    enum WatchdogTimeoutKind {
+        Idle,                                  // no SSB events at all
+        NoMaterialProgress,                    // events flowing, no real change
+        Safety,                                // wall-clock cap
+    }
+
+
+  4G.9 STAGNATION + PERSONAS + WATCHDOG  (NEW)
+    PRE_GATE:
+      - 4G.8 passes (tree auto-advance operational)
+      - 5 persona agent files exist:
+          .claude/agents/persona-hacker.md
+          .claude/agents/persona-researcher.md
+          .claude/agents/persona-simplifier.md
+          .claude/agents/persona-architect.md
+          .claude/agents/persona-contrarian.md
+        Each follows the .claude/agents/<name>.md format consistent with
+        existing agent files (auditor.md, context-compiler.md, etc).
+    TASK:
+      A. STAGNATION DETECTOR (stateless, hash-based, ports
+         ouroboros stagnation.py):
+        Inputs: ExecutionHistory { phase_outputs, error_signatures,
+                drift_scores, iteration }.
+        Patterns and thresholds (matching ouroboros defaults):
+          Spinning: blake3 of last 3 phase_outputs all identical OR
+                    last 3 error_signatures all identical.
+                    confidence = 1.0
+                    NOTE: ELAI uses blake3 (CLAUDE.md anti-stale rule),
+                    ouroboros uses sha256[:16]. Equivalent for collision
+                    avoidance at this length.
+          Oscillation: even-index hashes all same, odd-index hashes all
+                       same, even != odd, over last min_length =
+                       oscillation_cycles*2 = 4 outputs.
+                       confidence = 0.9
+          NoDrift: |drift[i] - drift[i-1]| < epsilon (default 0.01) for
+                   last 3 iterations.
+                   confidence = 1.0 - (avg_delta / epsilon)
+          DiminishingReturns: improvements all < threshold (0.01) AND
+                              monotonically_decreasing.
+                              confidence = 0.8 if monotonic else 0.6
+        Each pattern emits its own SSB action_type:
+          stagnation_spinning_detected, stagnation_oscillation_detected,
+          stagnation_no_drift_detected, stagnation_diminishing_returns_detected.
+        Detector is stateless: takes ExecutionHistory, returns
+        Vec<StagnationDetection>. No internal state.
+
+      B. LATERAL-THINKING PERSONAS (ports ouroboros lateral.py):
+        Affinity table (one persona may have affinity for multiple
+        patterns, one pattern may be addressed by multiple personas):
+          Hacker      -> [Spinning]
+          Researcher  -> [NoDrift, DiminishingReturns]
+          Simplifier  -> [DiminishingReturns, Oscillation]
+          Architect   -> [Oscillation, NoDrift]
+          Contrarian  -> [Spinning, Oscillation, NoDrift, DiminishingReturns]
+
+        suggest_persona_for_pattern(pattern, exclude: &[ThinkingPersona])
+          -> Option<ThinkingPersona>
+        Algorithm: filter ThinkingPersona::all() by (pattern in
+        affinity_patterns) AND (not in exclude). First match wins (order
+        defines priority). Fallback: any non-excluded persona.
+
+        On detection of stagnation:
+          - Pick persona via suggest_persona_for_pattern
+          - Spawn isolated agent (Tier C, reusing existing 4A
+            process-isolation infrastructure)
+          - Inject persona's system_prompt + problem_context +
+            current_approach + failed_attempts
+          - Agent produces alternative approach
+          - Emit lateral_thinking_activated SSB row
+        On agent success: emit lateral_thinking_succeeded, apply approach,
+          reset stagnation history.
+        On agent failure: add to exclude list, retry with next persona.
+        On all-personas-tried: emit lateral_thinking_exhausted, escalate
+          via existing EscalationPolicy (INTERACTIVE: pause for human;
+          AUTONOMOUS: HALT and require human resume).
+
+      C. PARALLEL FAN-OUT MODE (optional, ouroboros CHANGELOG):
+        When Contrarian-affinity pattern triggers AND parallel_dispatch=true
+        in EscalationPolicy: spawn ALL 5 personas in parallel via Tier C.
+        Each persona runs in its own agent process with FRESH context
+        (only problem_context + own persona strategy; NEVER other
+        personas' outputs -- prevents anchoring bias). Wait for first
+        agent to return success or all to return failure. First-success
+        wins; remaining agents cancelled.
+
+      D. GENERATION WATCHDOG (per baby step, ports ouroboros watchdog.py):
+        Three timeouts (independent):
+          idle_timeout: no SSB events at all for N seconds (default 60s)
+          no_material_progress_timeout: events flowing but no "material"
+            event for N seconds (default 180s)
+          safety_timeout: max wall-clock for one baby step (default 600s)
+        Material event types (filtered set):
+          phase_transition, evidence_gate_evaluated,
+          integration_checkpoint_success, bubble_up_typed,
+          agent_lifecycle (state change only -- not heartbeat).
+        Excluded (do NOT count as material progress):
+          heartbeat, status_echo, log_entry, grc_observe (status only).
+        workflow_fingerprint deduplication: if a "workflow.progress.updated"
+          event arrives but its (completed_count, total_count, ac_statuses)
+          tuple equals the previous fingerprint, do NOT count as material
+          progress. This ports ouroboros's _workflow_material_fingerprint
+          and prevents "events flowing but state frozen" from gaming the
+          watchdog.
+        On timeout: cancel current baby step task, emit
+        watchdog_timeout SSB row with timeout_kind, hand off to
+        BubbleUpHandler (4E.10 already handles this contract).
+
+      E. GOAL-DRIFT CANARY (per baby step, partial port of ouroboros
+         observability/drift.py — goal_drift component only):
+        Cheap pre-audit sanity check: did the executor produce output
+        topically related to what was asked, or did it hallucinate an
+        unrelated task? Computed in microseconds, no LLM, no network.
+
+        struct GoalDriftCanary {
+            threshold: f32,                    // default 0.5 (warning)
+                                               // default 0.7 (block)
+            min_token_count: usize,            // default 20 (skip below)
+        }
+
+        compute(baby_step_output: &str, baby_step_goal: &str) -> f32:
+          tokens_out  = baby_step_output.lowercased().split_whitespace()
+                          .map(|w| alphanumeric_only(w))
+                          .filter(|w| !w.is_empty()).collect::<HashSet>()
+          tokens_goal = same transformation on baby_step_goal
+          if |tokens_goal| == 0 OR |tokens_out| < min_token_count:
+            return 0.0  // insufficient data, skip the check
+          jaccard = |tokens_out ∩ tokens_goal| / |tokens_out ∪ tokens_goal|
+          return 1.0 - jaccard   // 0.0 = identical, 1.0 = disjoint
+
+        Verdict logic:
+          drift < 0.5  -> Pass (output topically aligned)
+          0.5 <= drift < 0.7 -> Warning: emit goal_drift_warning SSB row,
+            tag the baby step output with the score, continue to audit
+            (audit may catch real issues; canary is advisory at this band)
+          drift >= 0.7 -> Block: emit goal_drift_block SSB row, fail the
+            baby step BEFORE audit (saves the audit LLM call), trigger
+            BubbleUpHandler with action=RetryBabyStep (retries with
+            stricter prompt). Max 1 block-retry per baby step; second
+            block escalates per existing 4G escalation rules.
+
+        Boundary cases:
+          - Below min_token_count: skip (output too short to score
+            meaningfully). Common for one-line config edits. The full
+            audit catches issues at that scale.
+          - Empty goal: skip (treat as if goal is unconstrained).
+          - Code-heavy outputs: tokenization on whitespace is robust
+            enough for English+code mixes. We do NOT need stemming or
+            lemmatization; Jaccard at this resolution catches the gross
+            "wrote about cats when asked about parsers" failure mode,
+            not subtle semantic drift (audit handles that).
+
+        SCOPE CONSTRAINT: this canary covers the goal_drift component
+        ONLY. The constraint_drift and ontology_drift components from
+        ouroboros's drift.py are NOT ported because:
+          constraint_drift: redundant with T1/T2/T3 hooks (already count
+            violations; same data, different aggregation)
+          ontology_drift: 4H.7B OSC already covers structural drift at
+            the ConfigVariant level, which is the meaningful scope.
+            Concept-name Jaccard against a static seed.ontology_schema
+            does not generalize to ELAI's pipeline shape.
+
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_orchestrator -- stagnation_pattern (4 patterns)
+      - cargo test -p elai_orchestrator -- lateral_persona (5 personas
+        + affinity table + parallel fan-out)
+      - cargo test -p elai_orchestrator -- generation_watchdog (3 timeout
+        kinds + workflow_fingerprint dedup)
+      - cargo test -p elai_orchestrator -- goal_drift_canary
+      - grep -c "StagnationPattern::Spinning\|StagnationPattern::Oscillation
+        \|StagnationPattern::NoDrift\|StagnationPattern::DiminishingReturns"
+        .elai_cc/crates/orchestrator/src/ >= 4
+      - grep -c "ThinkingPersona::" .elai_cc/crates/orchestrator/src/ >= 5
+      - grep "GoalDriftCanary\|goal_drift_warning\|goal_drift_block"
+        .elai_cc/crates/orchestrator/src/ | wc -l >= 3
+      - ls .claude/agents/persona-*.md | wc -l == 5
+    ADVERSARIAL:
+      - If only Spinning is detected (current ELAI anti-spiral),
+        Oscillation goes unnoticed and the system flips between two
+        wrong answers forever. Test: A->B->A->B->A->B sequence triggers
+        Oscillation (NOT Spinning).
+      - If persona affinity is ignored, Hacker may be chosen for
+        Oscillation (wrong fit -- Oscillation needs structural rethink,
+        not workarounds). Test: suggest_persona_for_pattern(Oscillation)
+        returns Architect or Simplifier, never Hacker.
+      - If watchdog counts heartbeat events as material progress, stuck
+        baby steps with active heartbeats never time out. Test: 200
+        heartbeat events with zero material events trigger
+        no_material_progress_timeout after threshold.
+      - If parallel fan-out shares context across personas, anchoring
+        bias re-emerges. Test: each persona's prompt contains ONLY
+        problem_context + own persona strategy, NOT other personas'
+        outputs. Snapshot test on prompt assembly.
+      - If workflow_fingerprint dedup is missing, "AC count: 5/10" event
+        firing every 100ms with no actual progress fakes material
+        activity forever. Test: 100 identical-fingerprint events
+        -> watchdog still counts only the first one as material.
+      - If exhausted personas escalate to silent HALT in INTERACTIVE
+        mode, user has no idea what happened. Test: INTERACTIVE
+        exhaustion -> InterventionCard rendered with all 5 personas
+        listed and reason for each failure.
+      - If goal-drift canary blocks at < 0.5 threshold, false positives
+        on legitimate baby steps that legitimately introduce new tokens
+        (e.g., implementing a function that imports new crates whose
+        names don't appear in the goal). Test: baby step with output
+        containing all goal tokens PLUS new implementation tokens has
+        drift < 0.5 (Jaccard penalizes adding tokens, but only when
+        intersection / union dips below threshold; verify boundary).
+      - If goal-drift canary skips ALL baby steps because min_token_count
+        is too high, the canary is dead code. Test: realistic 50-line
+        baby step output passes the min_token_count gate.
+      - If goal-drift block fires but BubbleUpHandler does not retry,
+        the system halts on a recoverable signal. Test: drift >= 0.7
+        on first attempt -> BubbleUp action = RetryBabyStep, second
+        attempt invoked with stricter prompt.
+      - If goal-drift block recurs on retry, infinite loop. Test:
+        max 1 block-retry per baby step; second block escalates to
+        existing 4G escalation rules (anti-spiral / persona path).
+    ACCEPTANCE:
+      - 4 stagnation patterns detected with specified thresholds
+      - 5 personas with affinity table (no off-by-one, no missing pattern)
+      - GenerationWatchdog enforces 3 timeout kinds independently
+      - workflow_fingerprint dedup prevents fingerprint-replay gaming
+      - Parallel fan-out mode verified context-isolated
+      - AllPersonasExhausted escalates correctly per mode (INTERACTIVE
+        pause / AUTONOMOUS HALT)
+      - Existing "3x same GRC step -> escalate" anti-spiral SUBSUMED
+        by Spinning pattern (not removed -- the existing rule is now
+        the Spinning detector with threshold=3)
+      - Goal-drift canary fires before audit, with 3 verdict bands
+        (Pass / Warning / Block) and explicit retry semantics
+      - Goal-drift block saves at least one audit LLM call per
+        triggering baby step (measured in 4G.6 metrics)
+    GROUNDING:
+      - "4 stagnation patterns + thresholds" -> GROUNDED: ouroboros
+        src/ouroboros/resilience/stagnation.py:58-99 + DEFAULT_*_THRESHOLD
+        constants. MIT.
+      - "5 personas + affinity_patterns property" -> GROUNDED: ouroboros
+        src/ouroboros/resilience/lateral.py:50-114.
+      - "GenerationWatchdog 3 timeout kinds + material-event filter +
+        workflow_fingerprint" -> GROUNDED: ouroboros
+        src/ouroboros/evolution/watchdog.py:79-471 (full port).
+      - "Parallel multi-persona dispatch" -> GROUNDED: ouroboros
+        CHANGELOG.md unreleased "lateral_think: Parallel multi-persona
+        dispatch" entry; OpenCode bridge plugin v23 in same CHANGELOG
+        (max_fanout=10, per-payload dedupe, error isolation).
+      - "blake3 instead of sha256[:16]" -> OUR CHOICE: CLAUDE.md
+        anti-stale rule. Equivalent collision behavior at 16 hex chars.
+      - "agent files at .claude/agents/persona-*.md" -> OUR DESIGN:
+        ouroboros loads from src/ouroboros/agents/{name}.md. ELAI
+        equivalent path uses .claude/agents/ to keep persona definitions
+        co-located with existing agent files.
+      - "goal_drift Jaccard formula" -> GROUNDED: ouroboros
+        src/ouroboros/observability/drift.py:125-156 calculate_goal_drift.
+        MIT. Tokenization (alphanumeric_only, lowercase, whitespace
+        split) matches ouroboros _tokenize at lines 217-229.
+      - "constraint_drift + ontology_drift NOT ported" -> OUR CHOICE:
+        constraint_drift redundant with T1/T2/T3 hooks; ontology_drift
+        redundant with 4H.7B OSC (which scopes to ConfigVariant blobs,
+        the meaningful unit, rather than against a static seed).
+      - "0.5 / 0.7 thresholds + 3 verdict bands" -> OUR DESIGN:
+        ouroboros uses single threshold 0.3 against COMBINED drift
+        (weighted sum of all 3 components). Since we ship goal_drift
+        alone, single-component thresholds need recalibration. 0.5
+        (warning) and 0.7 (block) chosen to be conservative; tune in
+        4G.6 measure phase based on false-positive rate on real
+        baby step outputs.
+
+
+================================================================================
+4G.ADDENDUM — Shipped extensions
+================================================================================
+
+Status: extensions landed against 4G after the original spec body. Each item
+is shipped in code and covered by contract or integration tests.
+
+AutoAdvanceEvaluator — reasoning-exhaustion check
+  File: .elai_cc/crates/orchestrator/src/task_runner.rs:7162
+        (derive_framing_evidence)
+  Role: 7th evaluator in the AutoAdvance ladder. Exhaustion is detected
+        when `AutoAdvanceStats.evidence_rounds >= evidence_rounds_max`.
+        At that point auto-advance is suppressed and the gate returns
+        ContinueInteractive (or Halt in AUTONOMOUS depending on mode).
+  Wiring: AutoAdvanceStats lives in orchestrator/src/auto_advance.rs;
+          evidence_rounds_max sourced from elai_cc.toml
+          [autonomy.auto_advance].
+
+CloudSpendTracker — escalation policy
+  Contract test: cloud_spend_ssb_contract.rs (verifies thresholds).
+  Policy:
+    - At 50 % of session budget → emit SSB row `cloud_spend_warning`
+      { spent_usd, budget_usd, remaining_pct }.
+    - At 20 % remaining → emit SSB row `cloud_spend_critical`
+      { spent_usd, budget_usd, remaining_pct }.
+    - Below 20 % remaining:
+        * INTERACTIVE mode: escalate to user (return EscalationRequired).
+        * AUTONOMOUS mode: halt task with reason "cloud_spend_exhausted".
+  Budget threshold:
+    elai_cc.toml [cloud.session_budget_usd]. Default 5.00 USD.
+    Computed as max(remaining_pct, 0.0) so a single overspend cannot
+    underflow.
+
+================================================================================
+End of 4G.ADDENDUM.
+================================================================================

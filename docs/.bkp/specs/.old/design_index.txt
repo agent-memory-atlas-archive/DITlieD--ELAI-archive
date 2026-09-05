@@ -1,0 +1,33 @@
+ELAI_CC DESIGN SPEC INDEX
+Split from docs/elai_cc_design_document.txt (archive, do not edit).
+Date: 2026-04-06. 21 files.
+
+START HERE:
+  architecture-overview.txt    The map. Crate layout, trait boundaries, data flow, hardware, agents.
+  implementation-plan.txt      Walking skeleton phases (INTERACTIVE-first). Cycle: skeleton>verify>test>implement>measure. Includes entropy quarantine (0.8), speculative decoding (1F), DST framework (3I), AUTONOMOUS enablement (4G).
+
+PER-CRATE SPECS (crates/):
+  core.txt                     Config, paths, serde (msgpack/postcard), logging, strip/replace list, entropy quarantine (ClockProvider/EntropySource).
+  providers.txt                LlmProvider trait, Ollama/vLLM, ModelPool VRAM lifecycle, cache, prefill, speculative decoding.
+  knowledge.txt                DKG, BM25, dual-vector, SPLADE, PageRank, CatRAG, A-RAG, cross-encoder. 7-layer pipeline. Circuit breaker, degradation, startup readiness, index versioning.
+  reasoning.txt                GRC engine, grounding verification, CSQ, per-agent budgets, inline feasibility.
+  orchestrator.txt             FSM, SSB (SQLite WAL), BSP supersteps, agents, checkpointing, context budget, sessions, reasoning traces, supervision, cognitive isolation metric. Dual modes: INTERACTIVE first (Phase 3), AUTONOMOUS second (Phase 4G).
+  tools.txt                    File read/edit, git2, DAIRA trace, ShortCoder, failure taxonomy, 3-tier edit match, incremental compilation feedback.
+  plugins.txt                  Hooks (Pre/Post/Stop), tiered static analysis (T1/T2/T3), MCP bridge.
+  rules.txt                    RuleEngine, rule types (structural/security/trading/workflow/custom), phase-aware.
+  cli.txt                      Thin REPL shell. Slash-command routing. Input/output/rendering.
+
+INTEGRATION SPECS (integration/):
+  prompt-architecture.txt      How elai_cc eliminates prompt-driven orchestration. .md spaghetti -> Rust code + SQLite.
+  empire.txt                   D2 integration. 6-step plan. What works, what's broken, what's dead code.
+  pipeline-factory.txt         L1 designer, L2 builder, L3 executor. Research Agent (deep research engine), QualitySpec, templates.
+  self-modification.txt        3 layers (data/config/structure). DGM config archive, log-driven proposals, staged eval. CEL counterfactual rules.
+  media-validator.txt          Tier 1 deterministic + Tier 2 VLM. Images, 3D, audio, ComfyUI.
+
+DECISION LOG (decisions/):
+  base-fork-comparison.txt     Why claw-code-rust-port over CruciTitan. Module mapping.
+  external-analysis.txt        OMC, LangGraph, Aider, DAIRA, ShortCoder, DGM, CEL, FlashResearch, CMV, Murakkab, AutoB2G, DarwinNet, DST (FoundationDB/TigerBeetle/madsim), EAGLE-3, TIDE, SWE-World, observable inference + source analysis. Adopted/rejected and why.
+  audit-results.txt            16 BLOCKs found across 2 adversarial audits. All resolved.
+  risk-register.txt            R1-R60. 4 closed, 1 mitigated-by-design, 55 active.
+  audit-results-phase4.txt     Phase 4 adversarial audit. 9 BLOCKs, 9 WARNs. All resolved.
+  technical-analysis-v3.txt    5 user concerns (local infra, context preservation, proactive thinking, auto task breakdown, deterministic dispatch). 2 audit rounds, all 7+5 BLOCKs/WARNs resolved. Spec updates to 12 files.

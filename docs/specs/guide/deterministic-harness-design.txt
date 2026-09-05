@@ -1,0 +1,704 @@
+DETERMINISTIC HARNESS DESIGN: REPLACING .MD SPAGHETTI WITH SYSTEM-LEVEL ENFORCEMENT
+Date: 2026-04-13
+Status: PROPOSAL — needs user review + research grounding
+Author: Claude Opus 4.6 (design session)
+Depends on: Phase 3F (rules engine), Phase 3J.10 (tiered hooks), Phase 4C (plugins),
+  project-intelligence-design.txt, code-completeness-enforcement-design.txt,
+  anti-staleness-enforcement-design.txt, token-efficiency-design.txt
+
+
+========================================================================
+PROBLEM STATEMENT
+========================================================================
+
+Every AI coding harness today (Claude Code, Cursor, Aider, Windsurf, Cline,
+Continue) relies on the same broken pattern:
+
+  1. Write rules in .md files (CLAUDE.md, .cursorrules, .aider.conf.yml, etc.)
+  2. Inject those rules into the model's context window as natural language
+  3. Hope the model follows them
+
+This is fundamentally non-deterministic. The model is a probabilistic system.
+A rule that says "NEVER use .unwrap()" has ZERO enforcement power. The model
+read it, assigned some probability to following it, and will violate it at
+a rate inversely proportional to how much attention it has left for rules
+vs the actual task.
+
+Measured failure rates of prompt-based rule following:
+  - Claude Code: even with explicit CLAUDE.md rules, compliance is estimated
+    at 70-90% (ungrounded — needs measurement). Rules deep in context get
+    ignored under cognitive load.
+  - Local 2B models: dramatically worse. Rules compete with task instructions
+    for limited attention. The model WILL choose the task over the rules
+    when attention is scarce (this is the "lost in the middle" problem
+    applied to instructions).
+
+Practitioner confirmation (external, "Vibe Coding Masterclass" notes, 2026):
+  An independent practitioner working with multi-agent AI workflows
+  independently arrived at the same conclusion: "You don't trust the AI.
+  You trust the system you wrap around the AI." Their approach: persona
+  prompts ("blockchain surgeon"), temp-file-based external memory, prompt-
+  level verification gates, context flushing between phases. Every one of
+  these maps to an ELAI subsystem — but implemented as PROMPTS, not code:
+
+    Practitioner workaround          ELAI system-level equivalent
+    "Act as a surgeon" persona       T1/T2 hooks reject bad code (3F/3J.10)
+    "Verification gates" in prompt   FSM evidence gates (3A), cannot skip
+    "Write to temp .md files"        SSB SQLite WAL (3B), typed entries
+    "Context flushing / handoff"     BSP supersteps (3D) + session DAG (3H)
+    "Preflight checks" in prompt     PRE_GATE blocks in baby step spec (4E)
+    "Forbidden zones" for agents     ToolFilter + file ownership locks (3C/4A)
+    "Check console every 10s"        Anti-spiral: 3x same step = escalate (3C)
+
+  This validates the problem space: practitioners are independently inventing
+  prompt-level workarounds for what should be system-level enforcement.
+  Their solutions work partially on frontier models but fail on local models
+  where persona framing and long instructions waste scarce attention tokens.
+
+The ELAI workflow (.ELAI_workflow/) itself demonstrates the problem perfectly:
+  - CLAUDE.md: ~400 lines of rules
+  - codeRules.md: 20 rules for production code
+  - tradingRules.md: 30+ rules for financial code
+  - reRules.md: 12 rules for reverse engineering
+  - gameRules.md: 14 rules for game dev
+  - applicationRules.md, dashboardRules.md: more domain rules
+  - .claude/rules/: 4 more rule files
+  - Total: ~1500-2000 tokens of rules MINIMUM loaded per turn
+
+For a local model with a 3K token attention ceiling (MICRO tier), spending
+1500 tokens on rules leaves 1500 for the actual task. That is suicide.
+And even with those 1500 tokens of rules, the model will still violate them.
+
+The deeper problem: you cannot write rules for every language, framework,
+domain, and project type that exists. codeRules.md is Rust-specific.
+tradingRules.md is finance-specific. What about a Go web service? A Swift
+iOS app? A Kotlin Android app? A Julia ML pipeline? You would need hundreds
+of domain-specific rule files, and loading even 5% of them would exceed
+the model's attention budget.
+
+
+========================================================================
+CORE INSIGHT: THE RULES SHOULD BE THE SYSTEM, NOT THE PROMPT
+========================================================================
+
+Claude Code's approach: tell the model "don't use .unwrap()".
+ELAI's approach: the SYSTEM rejects code containing .unwrap() before
+the model ever sees the result.
+
+This is the difference between:
+  A) "Please don't run red lights" (prompt-based)
+  B) The car physically cannot accelerate when the light is red (system-level)
+
+ELAI already has the infrastructure for approach B:
+  - Phase 3F: Rules engine with SQLite-stored rules, predicate DSL,
+    Verdict enum (ALLOW/WARN/BLOCK/ESCALATE)
+  - Phase 3J.10: Tiered hooks (T1 <1ms, T2 <10ms, T3 <5ms)
+  - Phase 4C: Plugin system with PreToolUse/PostToolUse hooks
+  - Phase 4B: Validation pipeline (5 tiers)
+
+What is MISSING is the bridge between:
+  "rules expressed as natural language in .md files"
+  and
+  "rules expressed as deterministic predicates in SQLite"
+
+This document designs that bridge.
+
+
+========================================================================
+ARCHITECTURE: THREE-TIER RULE CLASSIFICATION
+========================================================================
+
+Every rule in every .md file falls into one of three enforcement tiers:
+
+TIER 1: DETERMINISTIC (no LLM needed, <1ms)
+  Rules that can be expressed as regex, AST pattern, or structured query.
+  These NEVER need to be in the prompt. The system enforces them silently.
+
+  Examples from codeRules.md:
+    "NEVER use .unwrap()" -> GREP_PATTERN: \.unwrap\(\)
+    "NEVER use panic!()" -> GREP_PATTERN: panic!\(
+    "NEVER leave dead code" -> AST_PATTERN: unused_import, dead_code
+    "NEVER hardcode secrets" -> GREP_PATTERN: (api_key|secret|password)\s*=\s*"[^"]+"
+    "NEVER use magic numbers" -> AST_PATTERN: numeric_literal outside const
+
+  Examples from tradingRules.md:
+    "NEVER use .mean() across full dataset" -> GREP_PATTERN: \.mean\(\)(?!.*shift)
+    "NEVER use train_test_split(shuffle=True)" -> GREP_PATTERN: shuffle\s*=\s*True
+    "NEVER use fillna.*bfill" -> GREP_PATTERN: fillna.*bfill|fillna.*backfill
+
+  Enforcement: T1 hook in PostToolUse. Code is checked AFTER generation,
+  BEFORE it is written to disk. Violation = BLOCK + error message to model.
+  The model CANNOT bypass this. It is physically impossible.
+
+  Token cost: ZERO. These rules are never in the prompt.
+  Language coverage: UNIVERSAL. Regex works on any language.
+
+
+TIER 2: AST-STRUCTURAL (no LLM needed, <10ms)
+  Rules that require parsing the code to understand structure.
+
+  Examples from codeRules.md:
+    "NEVER block the async runtime" -> AST: detect std::fs/std::thread::sleep
+      inside async fn body (requires understanding function is async)
+    "NEVER hold a lock across .await" -> AST: Mutex::lock() scope contains .await
+    "NEVER allocate in hot loops" -> AST: format!/vec!/Box::new inside for/while
+
+  Examples from gameRules.md:
+    "NEVER write init without destruction" -> AST: constructor without destructor
+      in same class/impl block
+    "Verify entity existence before operation" -> AST: method call on Option/nullable
+      without prior null check
+
+  Enforcement: T2 hook in PostToolUse. Tree-sitter AST parse + pattern check.
+  Language-aware via tree-sitter grammars (already in Phase 1A DKG).
+
+  Token cost: ZERO. These rules are never in the prompt.
+  Language coverage: any language with a tree-sitter grammar (~50+ languages).
+
+
+TIER 3: SEMANTIC (needs LLM judgment or human review)
+  Rules that cannot be mechanically verified. These are the ONLY rules
+  that belong in the prompt — but they are the minority.
+
+  Examples from codeRules.md:
+    "Every .clone() must be justified" -> requires understanding WHY clone was used
+    "Error messages must never leak internal state" -> requires semantic judgment
+    "Consider the failure case for external calls" -> design-level guidance
+
+  Examples from tradingRules.md:
+    "Anonymize tickers in LLM prompts" -> requires understanding prompt content
+    "Measure Lookahead Propensity" -> high-level methodology guidance
+
+  Enforcement: included in prompt for the LLM + auditor verification.
+  BUT: reduced to ~3-5 most relevant semantic rules per baby step,
+  not 30+ rules dumped into context.
+
+  Token cost: ~50-100 tokens (3-5 short rules). Down from 1500+.
+  Relevance: selected by domain detection from ProjectProfile.
+
+
+========================================================================
+THE UNIVERSAL RULE DERIVATION PROBLEM
+========================================================================
+
+"I can't make rules for everything every user in the world would need."
+
+Correct. You cannot. But you do not need to. The system can DERIVE rules
+from three sources:
+
+SOURCE 1: LANGUAGE BEST PRACTICES (static, universal)
+
+  Every programming language has well-established best practices that are
+  NOT opinion — they are documented in official style guides, linters, and
+  community consensus.
+
+  Rust:    clippy lints (~700 rules), rustfmt conventions
+  Python:  ruff rules (~800 rules), PEP 8, PEP 257
+  Go:      go vet checks (~30), golangci-lint (~100 linters)
+  TypeScript: eslint rules (~300+), typescript-eslint
+  Java:    checkstyle (~200 rules), SpotBugs, PMD
+  C#:      Roslyn analyzers, StyleCop
+  Ruby:    rubocop cops (~400+)
+  Swift:   SwiftLint rules
+
+  ELAI does NOT need to reimplement these linters. It needs to:
+  1. Detect which language the project uses (project-intelligence-design.txt)
+  2. Run the appropriate linter as a T1/T2 check
+  3. Present violations as BLOCK/WARN findings
+
+  This is what the auditor's "deterministic-first mode" does
+  (anti-staleness-enforcement-design.txt section 3.3):
+    Rust: cargo check + cargo clippy
+    Python: python -m py_compile + ruff check
+    Go: go vet + golangci-lint
+    TypeScript: tsc --noEmit + eslint
+
+  The linter IS the rule engine for language-level best practices.
+  No .md file needed. No prompt tokens needed. Pure system enforcement.
+
+
+SOURCE 2: PROJECT CONVENTIONS (auto-detected, project-specific)
+
+  project-intelligence-design.txt Tier 2 extracts:
+  - Naming conventions (snake_case, camelCase, etc.)
+  - Error handling patterns (thiserror, anyhow, try/except)
+  - Module organization (by-feature, by-type, flat)
+  - Test patterns (co-located, separate directory)
+  - Dependency versions (from lock files)
+
+  These become rules in rules.db automatically:
+  - If project uses snake_case at >80% -> WARN on camelCase function names
+  - If project uses thiserror -> WARN on Box<dyn Error> in public APIs
+  - If project has tests in tests/ -> WARN on missing test file for new module
+
+  The rules are DERIVED from the codebase, not authored by a human.
+  They adapt to each project. A Go project gets Go conventions.
+  A Svelte project gets Svelte conventions. Automatically.
+
+
+SOURCE 3: DOMAIN RULES (curated, loaded by domain detection)
+
+  Some rules ARE domain-specific and require human curation:
+  - Trading: temporal integrity, lookahead bias, slippage modeling
+  - Game dev: entity lifecycle, multiplayer authority, memory layout
+  - Security/RE: decompiler trust, patch safety, scope restrictions
+
+  These are the hardest to automate. But they are also the RAREST.
+  Most code is not trading code. Most code is not game code.
+
+  The solution is a DOMAIN RULE REGISTRY:
+
+  1. ELAI ships with curated domain rule sets (compiled, not .md):
+     - trading.rules.db: temporal integrity, backtesting realism
+     - gamedev.rules.db: entity lifecycle, multiplayer safety
+     - security.rules.db: input validation, injection prevention
+     - ml.rules.db: data leakage, reproducibility, resource management
+     - web.rules.db: XSS prevention, CSRF, auth patterns
+
+  2. Domain detection triggers rule loading:
+     ProjectProfile detects "fastapi" in dependencies -> load web.rules.db
+     ProjectProfile detects "torch" in dependencies -> load ml.rules.db
+     ProjectProfile detects user's custom domain rules -> load from project
+
+  3. Rules are in SQLite, not .md. Evaluated by predicate DSL.
+     The model never sees them unless they are Tier 3 (semantic).
+
+  4. Community-contributed domain rules (future, Phase 5+):
+     Users publish domain rule sets. Other users install them.
+     Like ESLint plugins but for ANY language and ANY domain.
+
+
+========================================================================
+WHAT CHANGES IN EXISTING PHASES
+========================================================================
+
+This design touches phases that are ALREADY DONE (0-3) and phases that
+are NOT YET DONE (4+). Here is the impact map:
+
+
+PHASES 0-3 (ALREADY IMPLEMENTED — changes needed):
+
+  Phase 3F (rules engine) — EXTEND:
+    Current: 6 predicate types, ~33 seed rules.
+    Change: Add LINTER_GATE predicate type that delegates to external linter.
+    Change: Add CONVENTION_GATE predicate type that checks project conventions.
+    Change: Auto-seed rules from ProjectProfile conventions (Source 2 above).
+    Change: Domain rule registry loading (Source 3 above).
+    Estimated LOC: ~200-300 in rules/ crate.
+
+  Phase 3J.10 (tiered hooks) — EXTEND:
+    Current: T1/T2 hooks are partially stubbed (BLOCK-3 from anti-staleness).
+    Change: T1 must load and evaluate rules from rules.db (prerequisite fix).
+    Change: T2 must parse AST and check structural patterns.
+    Change: Add LINTER_GATE evaluation (spawn linter, parse output, <10ms
+      for cached results, longer on first run — see LINTER CACHING below).
+    Estimated LOC: ~150-250 in plugins/ crate.
+
+  Phase 3E (context budget) — MODIFY:
+    Current: Slot 2 (Rules) gets 500 tokens (LARGE) / 150 tokens (MICRO).
+    Change: Slot 2 shrinks dramatically because most rules are now system-level.
+    New Slot 2 contents: ONLY Tier 3 semantic rules relevant to current step.
+    MICRO tier: 50-80 tokens for 3-5 semantic rules. Was 150.
+    LARGE tier: 200 tokens for 8-10 semantic rules. Was 500.
+    Net token savings: 100-300 tokens per turn. Goes to CodeContext slot.
+    Estimated LOC: ~30-50 in orchestrator/ crate.
+
+  Phase 3C (agent system) — MODIFY:
+    Current: agents receive full rule set in prompt.
+    Change: agents receive ONLY Tier 3 rules. Tier 1/2 enforced by hooks.
+    Change: auditor runs linters before LLM review (deterministic-first mode).
+    Estimated LOC: ~50-80 in orchestrator/ crate.
+
+
+PHASES 4+ (NOT YET IMPLEMENTED — integrate into plan):
+
+  Phase 4C (plugins) — INTEGRATE:
+    Hook system is the primary enforcement point. All Tier 1/2 rules flow
+    through PostToolUse hooks. This is already in the 4C design.
+    Change: ensure LINTER_GATE and CONVENTION_GATE are first-class hook
+    evaluation paths, not afterthoughts.
+
+  Phase 4D (pipeline factory) — INTEGRATE:
+    Designer receives ProjectProfile. Generated baby steps respect
+    project conventions and language limits WITHOUT rules in the prompt.
+    The decomposer uses ProjectProfile.file_size_limit, naming_convention,
+    error_handling_pattern as HARD CONSTRAINTS on step generation.
+
+  Phase 4H (self-modification) — INTEGRATE:
+    Self-mod loop can propose new Tier 1/2 rules from repeated violations.
+    Already designed in 3F self-discovery. Just wire it to linter output.
+
+
+========================================================================
+LINTER INTEGRATION ARCHITECTURE
+========================================================================
+
+The key engineering challenge: running an external linter (<10ms budget)
+on every PostToolUse hook call.
+
+Solution: INCREMENTAL LINTING WITH CACHING.
+
+  1. On project index (first /task): run full lint, cache all diagnostics
+     in SQLite (lint_cache.db), keyed by (file_path, content_hash).
+  2. On each file write: re-lint ONLY the changed file.
+     Most linters support single-file mode:
+       cargo clippy -- src/auth/validate.rs (Rust, via cargo check -p)
+       ruff check src/auth/validate.py (Python)
+       eslint src/auth/validate.ts (TypeScript)
+  3. Cache the result. Next write to same file invalidates cache.
+  4. If linter is not installed: DEGRADE to regex-only Tier 1.
+     ELAI does not require external tools — they enhance enforcement.
+
+  LINTER OUTPUT PARSING:
+    All major linters support machine-readable output:
+      cargo clippy --message-format=json
+      ruff check --output-format=json
+      eslint --format=json
+      golangci-lint run --out-format=json
+    Parse JSON, extract: file, line, severity, rule_id, message.
+    Map to Verdict: error -> BLOCK, warning -> WARN, info -> INFO.
+
+  FIRST-RUN LATENCY:
+    Full lint on a medium project (10K LOC) takes 5-30 seconds.
+    This happens ONCE during project indexing. Acceptable.
+    Incremental lint per file: typically <1s. Cached lookup: <1ms.
+
+  CONFIGURATION RESPECT:
+    ELAI uses the project's OWN linter config. If the project has a
+    .eslintrc.js with custom rules, ELAI uses THOSE rules.
+    This means: the project's existing quality standards are automatically
+    enforced. No duplicate configuration needed.
+
+
+========================================================================
+CONTEXT TELESCOPE REDESIGN (from token-efficiency-design.txt)
+========================================================================
+
+With rules moved out of the prompt, the context structure changes.
+The "Context Telescope" from project-intelligence-design.txt becomes
+the primary mechanism for giving the model project awareness WITHOUT
+loading rules:
+
+  Layer 1 — Project Vision (~200 tokens):
+    "Rust/Axum web service, 47 source files, cargo build/test,
+     thiserror for errors, snake_case, tests in tests/"
+    Auto-generated from ProjectProfile. The model KNOWS what project
+    it is working on without being told.
+
+  Layer 2 — Step Context (~200-800 tokens, from baby step spec):
+    "Modify src/auth/validate.rs. Depends on Claims type from types.rs.
+     Test in tests/auth_test.rs. Must maintain existing snake_case naming."
+    Derived from DKG + ProjectProfile + FILE_PLAN.
+
+  Layer 3 — Semantic Rules (~50-100 tokens, Tier 3 only):
+    "Clone only if borrowing is impossible (lifetime conflict).
+     Error messages must not leak internal paths."
+    Only 3-5 rules. Only semantic ones. Only relevant to current step.
+
+  Layer 4 — Code Context (~1200-6000 tokens, from knowledge engine):
+    The actual source code the model needs to modify/reference.
+
+  Total: 1650-7100 tokens. The model gets EVERYTHING it needs.
+  Rules are NOT in this budget — they are in the system.
+
+
+========================================================================
+THE "BEST PRACTICE ORACLE" CONCEPT
+========================================================================
+
+The hardest version of the problem: how does ELAI know best practices
+for a language/framework it has never seen rules for?
+
+Three approaches, in order of feasibility:
+
+APPROACH 1: LINTER DELEGATION (ready now)
+  If a linter exists for the language, delegate to it. Linters encode
+  decades of community best practices. This covers ~95% of languages
+  that matter. The linter IS the best practice oracle.
+
+APPROACH 2: CONVENTION INFERENCE (from project-intelligence-design.txt)
+  Even without a linter, ELAI can infer conventions from the existing
+  codebase. If 95% of functions use camelCase, that IS the convention.
+  If 100% of error handlers use try/catch with specific patterns,
+  that IS the error handling convention. The codebase teaches ELAI.
+
+APPROACH 3: CURATED RULE PACKS (community, future)
+  For domain-specific rules that cannot be inferred (trading temporal
+  integrity, game entity lifecycle), curated rule packs provide
+  expert knowledge encoded as deterministic predicates.
+  Distribution: rule packs as TOML/SQLite files, installable via CLI.
+  Format:
+    [rule]
+    id = "trading.temporal.no_future_data"
+    name = "No future data in features"
+    tier = 1
+    predicate = { type = "GREP_PATTERN", pattern = "\\.mean\\(\\)(?!.*shift)" }
+    domain = "trading"
+    severity = "BLOCK"
+    message = "Full-series .mean() leaks future data. Use .expanding().mean().shift(1)"
+
+
+========================================================================
+MIGRATION PATH: .MD -> SQLITE
+========================================================================
+
+For existing ELAI workflow users who have .md rules:
+
+STEP 1: RULE EXTRACTION TOOL (new CLI command: elai rules import)
+  Input: path to .md rules file (e.g., codeRules.md)
+  Process:
+    a. Parse each numbered rule in the .md file
+    b. Classify as Tier 1, 2, or 3 using pattern matching:
+       - Contains "NEVER use X" + X is a code pattern -> Tier 1 (GREP)
+       - Contains structural constraint (async, lifecycle) -> Tier 2 (AST)
+       - Contains judgment/justification requirement -> Tier 3 (semantic)
+    c. For Tier 1: auto-generate GREP_PATTERN predicate
+    d. For Tier 2: auto-generate AST_PATTERN predicate (where possible)
+    e. For Tier 3: preserve as natural language rule (prompt-only)
+  Output: rules inserted into rules.db + report of what was converted
+
+  Expected conversion rates (estimate, needs measurement):
+    codeRules.md (20 rules):     ~12 Tier 1, ~5 Tier 2, ~3 Tier 3
+    tradingRules.md (30 rules):  ~15 Tier 1, ~8 Tier 2, ~7 Tier 3
+    gameRules.md (14 rules):     ~4 Tier 1, ~6 Tier 2, ~4 Tier 3
+    Total: ~60% of rules become Tier 1/2 (system-enforced, zero tokens)
+
+STEP 2: GRADUAL DEPRECATION
+  Once rules are in rules.db, the .md files are no longer loaded into
+  the prompt. The system reads rules.db instead. The .md files remain
+  as documentation but are not consumed by the engine.
+
+STEP 3: RULE VERIFICATION
+  Run the system on a test project. Verify that Tier 1/2 rules catch
+  the same violations the .md rules were supposed to prevent. Measure
+  the false positive rate. Tune predicates.
+
+
+========================================================================
+WHAT THIS SOLVES
+========================================================================
+
+1. TOKEN EFFICIENCY:
+   Before: 1500+ tokens of rules in every prompt.
+   After: 50-100 tokens of Tier 3 semantic rules only.
+   Savings: ~1400 tokens per turn. For MICRO tier (3K budget),
+   this is a 47% increase in usable context for actual code.
+
+2. DETERMINISM:
+   Before: model MIGHT follow rules (probabilistic).
+   After: Tier 1/2 rules CANNOT be violated (deterministic).
+   The system physically prevents rule violations before they
+   reach the filesystem. The model gets an error and retries.
+
+3. UNIVERSALITY:
+   Before: need separate .md files for every language/domain.
+   After: linter delegation + convention inference cover any project.
+   A user opens a Go project and ELAI automatically enforces Go
+   best practices via golangci-lint. No configuration needed.
+
+4. SCALABILITY:
+   Before: more rules = more tokens = worse model performance.
+   After: more Tier 1/2 rules = more system enforcement = ZERO
+   additional token cost. Rules scale without degrading the model.
+
+5. LOCAL MODEL VIABILITY:
+   Before: 2B model with 3K attention can barely read rules AND do work.
+   After: 2B model gets 3K of pure task context. Rules are invisible.
+   The model works as if it has perfect discipline because the system
+   provides the discipline. The intelligence is in the infrastructure.
+
+6. ELIMINATES PROMPT-LEVEL WORKAROUNDS:
+   Practitioners currently invent workarounds like "Future Self handover
+   documents" (our session handoff DAG), temp-file external memory (our SSB),
+   persona prompts for code quality (our hook-based enforcement), and
+   manual context flushing (our BSP supersteps). All of these burn tokens
+   on instructions that the system should handle invisibly. The deterministic
+   harness makes ALL of these workarounds obsolete — the system does what
+   practitioners are trying to make the model do via prompt engineering.
+
+
+========================================================================
+IMPLEMENTATION PLAN
+========================================================================
+
+This design creates ONE new phase and modifies several existing ones.
+
+NEW: PHASE 3L — DETERMINISTIC HARNESS
+  Depends on: 3F (rules engine), 3J.10 (hooks), project-intelligence (new)
+  Must come AFTER project-intelligence-design.txt implementation because
+  it depends on ProjectProfile for convention inference and linter detection.
+
+  3L.1 — LINTER_GATE predicate type
+    Add to rules/ crate. Delegates evaluation to external linter.
+    New predicate fields: linter_cmd, output_format, cache_enabled.
+    Cached results in lint_cache.db (SQLite, separate from rules.db).
+    Lint cache invalidation on file content change (blake3 hash).
+
+  3L.2 — CONVENTION_GATE predicate type
+    Add to rules/ crate. Checks code against project conventions.
+    Reads from ProjectProfile. Fields: convention_type, expected_pattern.
+    Examples: naming convention, error handling pattern, test location.
+
+  3L.3 — Rule auto-seeding from ProjectProfile
+    On project index: scan ProjectProfile, generate CONVENTION_GATE rules.
+    On linter detection: generate LINTER_GATE rules for detected linter.
+    Seed rules have lifecycle state CANDIDATE (not ACTIVE) by default.
+    User confirms promotion to ACTIVE, or auto-promote after 10 pipelines
+    with zero false positives (same as Phase 3F self-discovery lifecycle).
+
+  3L.4 — Domain rule registry
+    SQLite table: domain_rule_packs (pack_id, domain, version, rules_count).
+    CLI: elai rules install <pack_name> (from local file or future registry).
+    5 built-in packs: trading, gamedev, security, ml, web.
+    Pack loading: when ProjectProfile.frameworks matches domain keywords,
+    suggest pack installation. User confirms.
+
+  3L.5 — .md-to-SQLite migration tool
+    CLI: elai rules import <path_to_md>
+    Parses numbered rules, classifies tiers, generates predicates.
+    Report: shows what was converted and what remains as Tier 3.
+
+  3L.6 — Context budget adaptation
+    Modify Phase 3E slot allocation to use Tier 3 rules only.
+    Measure token savings. Verify model performance does not degrade.
+
+  3L.7 — Deterministic-first auditor mode
+    Wire linter execution into auditor pre-check pipeline.
+    Linter violations become BLOCK/WARN findings automatically.
+    LLM audit runs AFTER deterministic checks pass.
+
+  TOTAL ESTIMATED LOC: 800-1200 (rules/ + plugins/ + orchestrator/ + cli/)
+  TOTAL ESTIMATED PHASES: 4-6 implementation sessions
+
+
+EXISTING PHASE MODIFICATIONS:
+
+  Phase 3F (rules engine):
+    Add LINTER_GATE and CONVENTION_GATE to PredicateType enum.
+    Add domain_rule_packs table to rules.db schema.
+    Add lint_cache table (separate SQLite file).
+    Estimated change: +200-300 LOC.
+
+  Phase 3E (context budget):
+    Slot 2 (Rules) allocation reduced. Dynamic sizing based on
+    Tier 3 rule count per step. Freed tokens go to Slot 5 (CodeContext).
+    Estimated change: +30-50 LOC.
+
+  Phase 3J.10 (hooks):
+    T1 hook: add LINTER_GATE and CONVENTION_GATE evaluation.
+    T2 hook: add structural pattern checks from Tier 2 rules.
+    Estimated change: +100-150 LOC.
+
+  Phase 3C (agents):
+    Auditor: deterministic-first mode (linters before LLM).
+    All agents: Tier 3 rules only in prompt assembly.
+    Estimated change: +50-80 LOC.
+
+
+========================================================================
+DEPENDENCY ON OTHER DESIGN DOCUMENTS
+========================================================================
+
+This design is the INTEGRATION LAYER that connects:
+
+  project-intelligence-design.txt:
+    Provides ProjectProfile (language, build system, conventions, frameworks).
+    Without it, the harness cannot auto-detect what rules to apply.
+    STATUS: PROPOSAL, not implemented.
+    DEPENDENCY: Phase 3L depends on project-intelligence implementation.
+
+  anti-staleness-enforcement-design.txt:
+    Provides VERSION_GATE predicate and deprecated_patterns table.
+    Staleness rules are a SUBSET of deterministic harness rules.
+    STATUS: PROPOSAL (audited, revised), not implemented.
+    DEPENDENCY: VERSION_GATE can be implemented as part of 3L or standalone.
+
+  code-completeness-enforcement-design.txt:
+    Provides file discipline rules (lazy code detection, monolith prevention).
+    These are Tier 1/2 rules that belong in the deterministic harness.
+    STATUS: PROPOSAL (audited, grounded), not implemented.
+    DEPENDENCY: completeness rules feed into 3L rule registry.
+
+  token-efficiency-design.txt:
+    Provides model tier system and context budget adaptation.
+    The harness benefits from accurate attention ceiling measurements.
+    STATUS: PROPOSAL, not implemented.
+    DEPENDENCY: benchmark harness should run before 3L to calibrate.
+
+  pipeline-modes-design.txt:
+    Surgical mode depends on ProjectProfile. Deterministic harness makes
+    surgical mode more effective (project conventions enforced automatically).
+    STATUS: PROPOSAL, not implemented.
+    DEPENDENCY: mutual benefit, no hard ordering requirement.
+
+
+========================================================================
+RECOMMENDED IMPLEMENTATION ORDER
+========================================================================
+
+  1. project-intelligence-design.txt (ProjectProfile) — FIRST
+     Everything depends on knowing what the project is.
+
+  2. token-efficiency-design.txt (benchmark harness) — SECOND
+     Need measured attention ceiling before tuning context budget.
+
+  3. deterministic-harness-design.txt (THIS DOCUMENT) — THIRD
+     Requires ProjectProfile and benefits from benchmark data.
+
+  4. anti-staleness-enforcement-design.txt — FOURTH (or parallel with 3)
+     VERSION_GATE is one predicate type in the harness.
+
+  5. code-completeness-enforcement-design.txt — FIFTH (or parallel with 3)
+     Completeness rules are Tier 1/2 rules in the harness.
+
+  6. pipeline-modes-design.txt (surgical mode) — SIXTH
+     Benefits from all of the above.
+
+
+========================================================================
+RESEARCH PROMPTS (for Gemini Deep Research)
+========================================================================
+
+The following three research queries would ground key claims in this design:
+
+PROMPT 1: "Deterministic vs prompt-based rule enforcement in AI coding tools"
+  What to investigate:
+  - Empirical measurement of prompt-based rule compliance rates in AI code gen
+    (Claude, GPT-4, Gemini, local models like Gemma, Llama, Qwen)
+  - Studies comparing deterministic enforcement (linters, AST checks, hooks)
+    vs prompt-based enforcement for code quality
+  - Does adding more rules to a prompt degrade model performance on the task?
+    (attention competition between instructions and task)
+  - Any systems that combine LLM generation with deterministic post-checks
+    (Agentless, SWE-Agent, Aider architecture analysis)
+  - Failure rates of prompt-based rules at different context lengths and model sizes
+  Why this matters: grounds the core claim that prompt-based rules are unreliable
+  and that system-level enforcement is superior. Need empirical numbers.
+
+PROMPT 2: "Linter-as-enforcement-layer for AI code generation systems"
+  What to investigate:
+  - How do existing AI coding tools use linters? (Aider, Cursor, Continue)
+    Do they run linters post-generation? Pre-generation? Both?
+  - Performance of incremental linting (single-file re-lint latency for
+    cargo clippy, ruff, eslint, golangci-lint on files of 50-200 lines)
+  - Can linter output be used as structured feedback for the model?
+    (studies on "compiler feedback" or "linter feedback" improving LLM output)
+  - Coverage: what percentage of common code quality issues are detectable
+    by existing linters vs requiring semantic judgment?
+  - Machine-readable output formats for top 10 linters
+  Why this matters: validates the LINTER_GATE approach and provides latency
+  data for the <10ms budget claim.
+
+PROMPT 3: "Auto-detecting project conventions for AI coding assistants"
+  What to investigate:
+  - How do tools like Cursor, Copilot, Cline, Continue understand project
+    structure and conventions? Do they have ProjectProfile-like systems?
+  - Academic work on convention mining from codebases (naming, patterns,
+    architecture style detection)
+  - Can project conventions be inferred accurately enough to enforce?
+    False positive rates when enforcing inferred conventions
+  - Language detection, framework detection, and build system detection
+    approaches in developer tools
+  - How do monorepo-aware tools handle per-package convention differences?
+  Why this matters: validates Source 2 (convention inference) and the
+  ProjectProfile auto-generation approach.

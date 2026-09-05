@@ -1,0 +1,43 @@
+Local LLM Monitoring
+
+Ollama Installation and Setup:
+- Install ollama and pull qwen3.5:4b model
+- Rust toolchain build: rustup, cargo build --release
+- Environment setup for local LLM deployment
+- Cross-platform compatibility (Windows/Linux)
+
+Claude Code Integration:
+- Litellm framework for model management
+- Config.yml with model routing to localhost endpoints
+- OpenAI API wrapper for local model access
+- Model aliases for different LLM endpoints
+
+Configuration Structure:
+```yaml
+model_list:
+  - model_name: claude-opus-4-6
+  litellm_params:
+    model: openai/qwen3.5:4b
+    api_base: http://localhost:11434/v1
+server:
+  host: 0.0.0.0
+  port: 4000
+  aliases:
+    /v1/api/generate: /v1/message
+```
+
+Environment Variables:
+- ANTHROPIC_API_KEY=0 (local proxy)
+- ANTHROPIC_BASE_URL=http://localhost:4000
+- HOME and PATH setup for Rust toolchain
+
+Technical Architecture:
+- Local model hosting via ollama
+- Proxy layer for API compatibility
+- Multiple model support with routing capabilities
+- Environment-based configuration management
+
+Deployment Strategy:
+- 48GB VRAM allocation for efficient local inference
+- Specialized local models for agent replacement
+- Time-efficient operations using local compute resources

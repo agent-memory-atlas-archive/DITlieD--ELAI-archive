@@ -1,0 +1,339 @@
+Unity Mobile Development: Consolidated Research Summary (2024-2026)
+===================================================================
+Sources: 111-Unity Mobile Performance Workflow, 222-AI Unity Code Deprecation Research, 333-Indie Unity Mobile Dev Workflow Research
+
+
+PART 1: AUTOMATED PROFILING & CI/CD PERFORMANCE ENFORCEMENT
+============================================================
+
+Unity Performance Testing Extension (com.unity.test-framework.performance v3.1.x)
+- Free built-in package bridging Unity Test Framework and internal profiler metrics
+- Requires Assembly Definition referencing Unity.PerformanceTesting assembly
+- CI gotcha: aggressive Managed Code Stripping strips the framework via reflection; fix with link.xml: <assembly fullname="Unity.PerformanceTesting" preserve="all"/>
+- Docs: https://docs.unity3d.com/Packages/com.unity.test-framework.performance@3.1/manual/index.html
+
+Custom Profiler Markers
+- Profiler.BeginSample("Name") / Profiler.EndSample() around critical paths (AI, physics, procgen)
+- Measure.ProfilerMarkers(SampleGroupDefinition) in [Performance] tests to aggregate min/max/median/stddev
+
+Memory Profiler (com.unity.memoryprofiler)
+- Captures managed + native memory snapshots; built-in diffing tool
+- Workflow: snapshot empty scene -> load gameplay -> snapshot -> unload -> snapshot -> diff 1st vs 3rd to find leaks
+- Heisenberg effect: deep profiling alters perf characteristics; isolate memory tests from frame-timing tests
+
+Frame Debugger Limitation
+- Cannot run headless/batch mode; requires Editor UI
+- For CI: use RenderDoc or Android GPU Inspector (AGI) with command-line capture on target devices
+
+Unity Performance Benchmark Reporter (free, open-source)
+- https://github.com/Unity-Technologies/PerformanceBenchmarkReporter
+- CLI: dotnet UnityPerformanceBenchmarkReporter.dll --baseline=baseline.xml --results=current_run_directory --reportdirpath=report_output
+- Compares current .xml/.json results against baseline; threshold in SampleGroupDefinition (e.g. 0.15f = 15% regression)
+
+Failing Builds on Budget Exceedance
+- Unity exit codes don't auto-fail CI; must capture $LastExitCode (PowerShell) or throw BuildFailedException (not System.Exception)
+- Dynamic regression detection: fail only if current median > trailing 5 successful runs median (filters hardware variance)
+
+Roslyn Analyzers for GC Prevention
+- Microsoft.Unity.Analyzers (free, open-source) for baseline checks (e.g. empty Update())
+- HotPathAllocationAnalyzer: https://github.com/Abc-Arbitrage/HotPathAllocationAnalyzer
+- Scans AST for allocations/boxing/closures in hot paths; whitelisting config for acceptable allocs
+- TreatWarningsAsErrors in csc.rsp weaponizes the pipeline: heap alloc in Update() = build break
+
+Unity Project Auditor (com.unity.project-auditor v1.0)
+- Docs: https://docs.unity3d.com/Packages/com.unity.project-auditor@1.0/manual/index.html
+- Batch mode API: ProjectAuditorCI.AuditAndExport -> JSON report
+- Checks: non-power-of-two textures, meshes exceeding vertex budgets, audio missing mobile compression
+
+
+PART 2: EMULATION vs REAL-DEVICE TESTING
+=========================================
+
+Unity Device Simulator (com.unity.device-simulator)
+- Simulates screen layouts/notches/safe areas only; runs on host GPU/CPU, NOT ARM architecture
+- Does NOT simulate tile-based rendering, mobile memory bandwidth, or thermal throttling
+- Docs: https://docs.unity3d.com/6000.3/Documentation/Manual/device-simulator-introduction.html
+
+Cloud Device Farms
+                    Firebase Test Lab              AWS Device Farm
+Pricing             Paid + generous free tier       Paid per device-minute
+CI Integration      gcloud CLI (trivial)            Complex plugin + auth
+Device Pool         ~15-20 benchmark models         Hundreds of models
+Game Loop Testing   Native support                  Custom scripting required
+Reporting           Digested reports + video         Raw reports, needs parsing
+
+Minimum Indie Device Matrix (3-4 physical devices)
+1. Baseline Android: older device, Android 11, 2-3GB RAM (catches strict memory limits)
+2. Modern Mainstream Android: mid-range SoC (Adreno 610 / Mali-G52)
+3. OEM-Specific: Xiaomi MIUI or Samsung One UI (aggressive background killers)
+4. Baseline iOS: older iPhone (Apple RAM limits + Metal compliance)
+
+
+PART 3: FRAME BUDGET ENFORCEMENT
+=================================
+
+Frame Time Math
+- 60 FPS = 16.67ms budget; 30 FPS = 33.33ms budget
+- FPS is non-linear and hides micro-stutters; enforce on millisecond thresholds + 99th percentile spikes
+- Example: 59 frames in 0.75s + 1 frame in 0.25s = 60 FPS average but 250ms freeze
+
+
+PART 4: ZERO-ALLOCATION PHILOSOPHY (HOT PATHS)
+================================================
+
+Allocation Sources & Mitigations
+- String concatenation in Update: use pre-allocated StringBuilder or event-driven UI updates
+- Array-returning APIs (Mesh.vertices, Input.touches): cache in Start/Awake
+- Boxing (value->reference): use generic interfaces, non-allocating formatters, remove Debug.Log from prod
+- LINQ in game loop: BANNED; replace with for-loops on pre-allocated List<T>/arrays
+
+
+PART 5: DRAW CALL & MEMORY BUDGETS (Mali-G52 / Adreno 610)
+=============================================================
+
+Draw Calls: 50-100 per frame (CPU render thread bottleneck above this)
+Triangles: 100,000 per frame on screen
+Usable RAM on 2-3GB device: 300-512MB (OS reserves the rest; OOM kill beyond)
+Texture memory dominates footprint; use packed atlases + Addressables + ASTC compression
+
+Mitigations: SRP Batcher (batches by shader variant), GPU Instancing (identical meshes)
+
+
+PART 6: BUILD SIZE OPTIMIZATION
+================================
+
+Texture Compression: ASTC vs ETC2
+                    ASTC                            ETC2
+Compatibility       >80% active Android             >95% (legacy GLES 3.0)
+Flexibility         4x4 to 12x12 block sizes        Fixed 4bpp/8bpp
+                    <1 bpp possible
+Size Example        16MB atlas -> 1.8MB (6x6)       Larger footprint
+Gotcha              APK may bloat if fallback        Lower quality on alpha/
+                    formats bundled                  gradients/normals
+
+ASTC is the 2024-2026 standard. Force ASTC 6x6, max 1024x1024 for standard 3D background assets.
+
+Managed Code Stripping (IL2CPP)
+- "High" stripping level for max binary reduction
+- Risk: reflection/serialization/DI code stripped -> MissingMethodException on device
+- Fix: maintain link.xml whitelists; automated play-mode tests on real devices
+
+Build Report Inspector (com.unity.build-report-inspector) - free, for post-build footprint analysis
+
+
+PART 7: AI CODE DEPRECATION RISKS (Unity 2022 -> Unity 6)
+==========================================================
+
+LLMs are trained on 2017-2020 era Unity code; they generate deprecated/removed APIs.
+
+Critical API Changes
+Old (LLM generates)                 Current (Unity 6)                       Risk
+Object.FindObjectOfType<T>()        Object.FindFirstObjectByType<T>()       PERFORMANCE (full-scene traversal)
+Physics2D.RaycastNonAlloc()         Physics2D.Raycast()                     COMPILE_ERROR (removed)
+LightingSettings integer props      Float properties                        COMPILE_ERROR
+AudioSettings.speakerMode           AudioSettings.GetConfiguration()        Deprecated
+UnityEngine.Social.*                Third-party SDKs                        COMPILE_ERROR (removed in Unity 6)
+Advertisement.AddListener()         LevelPlayRewardedAd.LoadAd()            COMPILE_ERROR (Ads 4.x/9.x)
+PhysicMaterialCombine               PhysicsMaterialCombine                  COMPILE_ERROR (typo fix)
+ExecuteDefaultAction()              HandleEventTrickleDown()                COMPILE_ERROR
+
+C# Language Constraints in Unity 6
+- Unity 6 locks Roslyn compiler to C# 9.0 by default
+- LLMs generate C# 10-13 features that won't compile:
+  - File-scoped namespaces (C# 10)
+  - Primary constructors (C# 12)
+  - Required members (C# 11)
+  - Collection expressions (C# 12)
+  - List/property patterns (C# 10/11)
+- Record type trap: compiles in C# 9 but Unity serialization silently drops data (Inspector blank, JsonUtility fails)
+- init-only setters need IsExternalInit polyfill (missing in .NET Standard 2.1)
+
+Package/Architecture Replacements LLMs Miss
+Old (LLM generates)                 Current Standard                        Risk
+Input.GetKeyDown()                  InputAction.CallbackContext             RUNTIME_ERROR if old system disabled
+Resources.Load<T>()                 Addressables.InstantiateAsync()         PERFORMANCE (blocks main thread)
+[Command]/[ClientRpc] (Mirror)      NetworkVariable/NGO RPCs                COMPILE_ERROR (namespace mismatch)
+class MySystem : ComponentSystem    partial struct MySystem : ISystem        COMPILE_ERROR (DOTS 1.0+)
+UxmlFactory classes                 [UxmlElement] attribute                 Deprecated (Unity 2023.2+)
+Server-authoritative only           DistributedAuthorityTransport           Misses Unity 6 decentralized topology
+
+Top 10 AI Hallucination Patterns
+1. async Task/void instead of async Awaitable/UniTask (thread pool bypasses PlayerLoop; memory leaks)
+2. Hallucinated namespaces (e.g. UnityEngine.AI.Navigation sub-namespaces that don't exist; supply chain attack vector)
+3. Continuous ServerRpc in Update instead of NetworkVariable<T> with OnValueChanged
+4. GetComponent<T>() in Update() instead of cached references in Awake()
+5. renderer.material.color (silently clones material -> VRAM leak) instead of MaterialPropertyBlock
+6. evt.PreventDefault() (deprecated) instead of evt.StopPropagation() in UI Toolkit
+7. Missing destroyCancellationToken on async methods -> orphaned tasks after scene change/object destroy
+8. "Zebra pattern" - mixing incompatible architectural styles in one codebase
+9. Synchronous NavMesh.CalculatePath instead of NavMeshQuery + Job System + Burst
+10. Custom List<GameObject> pooling instead of UnityEngine.Pool.ObjectPool<T>
+
+Mobile Deployment Pitfalls from AI
+- AI targets old API levels / 32-bit ARM; Google Play mandates Android 15 + ARM64 by late 2025
+- AI generates reflection-heavy code stripped by IL2CPP High stripping -> MissingMethodException on device only
+- AI recommends ETC2/PVRTC instead of ASTC
+- AI uses MaterialPropertyBlock which breaks SRP Batcher (worse perf than no optimization)
+
+
+PART 8: INDIE STUDIO PROJECT ARCHITECTURE
+==========================================
+
+Folder Structure: "Type then Purpose" methodology
+- Separate third-party plugins, core logic, runtime data, visual assets at root level
+- No empty folders (VCS sync issues)
+
+Assembly Definitions: critical for compile time reduction
+- Without: any script change recompiles entire global assembly (minutes)
+- With: only affected assembly recompiles (seconds)
+- Namespace conventions must mirror folder structure + assembly boundaries
+
+Architectural Patterns for Small Teams (1-5 devs)
+- ScriptableObject Architecture (Ryan Hipple, Unite 2017): data containers + event channels + variable refs
+  - Trade-off: can create chaotic dependency graphs if scope not documented
+- Model-View-Presenter (MVP): for metagame/UI flows; decouples visuals from logic
+- Single Entry Point / Bootstrap: one script initializes all systems in deterministic order
+- Extract pure logic from MonoBehaviour into plain C# classes for testability
+- Custom update managers to avoid managed-to-native boundary overhead from thousands of Update() calls
+
+Dependency Injection Frameworks for Mobile
+Framework           Mobile Suitability    Notes
+Zenject/Extenject   Low                   Runtime reflection; slow startup, high allocs
+VContainer          High                  Source generators; no reflection; type-safe
+Reflex              Very High             Minimal allocs; immutable containers; IL2CPP safe
+Manual/Asset-Based  High                  No library overhead; editor-driven
+
+
+PART 9: TESTING STRATEGY FOR INDIE TEAMS
+==========================================
+
+Practical Focus: core math (combat formulas, procgen seeds, economy), critical progression paths, IAP flows
+Smoke Tests: automated boot -> menu -> load level -> basic actions; flag broken builds before human testing
+
+EditMode vs PlayMode Ratio: heavily favor EditMode (millisecond execution, no engine startup)
+- EditMode: pure logic models separated from MonoBehaviour
+- PlayMode: only for engine-lifecycle-dependent integration (animation events, prefab instantiation, physics collisions)
+
+Non-Determinism Handling
+- Physics: step engine manually in tests (decouple from framerate)
+- Randomness: fixed seed in test setup
+- Timing: mock time provider / manual frame-stepping (never real-time delays)
+
+Deterministic Playback: record lightweight player inputs during beta; replay in editor to reproduce bugs
+(used by Dinosaur Polo Club for Mini Motorways QA)
+
+
+PART 10: PERFORMANCE OPTIMIZATION CHECKLIST
+=============================================
+
+1. Draw calls under 150-200/frame; Static Batching + GPU Instancing
+2. ASTC texture compression (ETC2 for legacy only)
+3. Disable Read/Write on textures/meshes (halves memory footprint)
+4. Cap framerate to 30 FPS (battery + thermal + sustained perf)
+5. Texture atlas for UI (50 elements = 1 draw call vs 50)
+6. IL2CPP backend + engine code stripping
+7. Audio: streaming + compressed for BGM; decompress-on-load for SFX
+8. Zero GC in Update: pre-allocate collections, cache refs, ban LINQ
+9. Simple primitive colliders; disable auto transform sync
+10. Baked lighting; no real-time GI/reflections/heavy AA unless essential
+
+Object Pooling
+- Pre-instantiate during loading screens; use ISpawnable/IDespawnable interfaces
+- Centralized manager: dequeue -> reset state -> activate; on end: deactivate -> enqueue
+- Built-in: UnityEngine.Pool.ObjectPool<T> (preferred over custom implementations)
+
+UI Performance (100 items benchmark)
+Metric              Legacy (Canvas)     UI Toolkit      Delta
+CPU Frame Time      12.5ms              ~4.1ms          3x faster
+Memory              125MB               ~48MB           2.6x less
+Instantiation       85ms                ~15ms           5.7x faster
+Draw Calls          High (manual batch) Optimized       9x fewer
+- UI Toolkit: best for layout menus, inventories, metagame
+- Legacy Canvas: still needed for world-space UI (health bars) and particle-driven animations
+
+Shader Optimization
+- Minimize texture samples (memory lookups > math ops on mobile)
+- Move calculations from fragment to vertex shader where acceptable
+- Use half-precision floats (2 ops per cycle on mobile GPU)
+- Strip unused shader variants via IPreprocessShaders to reduce memory + build size
+
+Adaptive Performance APIs
+- Real-time thermal state callbacks
+- On throttling warning: step down framerate, lower LOD bias, disable post-processing
+- Prevents catastrophic frame drops from thermal throttling
+
+
+PART 11: ASSET MANAGEMENT
+===========================
+
+Loading Systems Comparison
+System              Use Case                        Limitations
+Resources/          Rapid prototyping ONLY           Bakes all into binary; massive startup delay;
+                                                     universally condemned for production
+StreamingAssets     Raw video, static JSON/XML       No compression/optimization by pipeline
+Addressables        Production loading, remote CDN   High learning curve; requires async code +
+                    memory management                memory handle management
+
+ScriptableObjects for Data: enemy stats, weapon damage, level config as standalone assets
+- Designers edit in Project window without opening scenes
+- Eliminates merge conflicts between programmers and designers
+
+Version Control
+- Git LFS for binary files (textures, audio, models) -> tiny text pointers in repo
+- Strict .gitignore: exclude Library/, Temp/, Logs/, UserSettings/
+- Alternative: Plastic SCM (Unity-integrated, built for binaries, visual branching, file locking)
+
+
+PART 12: CI/CD FOR INDIE TEAMS
+================================
+
+CI Systems
+- Unity Cloud Build: zero config, paid, less flexible for custom scripting
+- GitHub Actions + GameCI: free for public repos, generous private tier, containerized
+  - Handles license activation, testing, multi-platform builds
+  - https://game.ci/
+- Jenkins/local runners: for absolute data control or massive repos
+
+Automated Pipeline Sequence
+1. Checkout repo + activate Unity license (encrypted secrets)
+2. Run EditMode + PlayMode tests headless; any failure = pipeline halt + merge block
+3. Build optimized AAB (Android) + IPA (iOS)
+4. Auto-upload to internal testing tracks (Fastlane/Google Play API)
+
+Build Time Optimization
+- Cache Library/ folder between runs
+- Reduces 45-minute fresh build to <5 minutes (delta recompilation only)
+
+
+PART 13: STORE SUBMISSION COMPLIANCE
+======================================
+
+Google Play
+- Privacy policy link required in-game main menu
+- Deobfuscation mapping file required with code minification
+- Target Android 15 (API 35) by late 2025
+- ARM64 only (32-bit deprecated)
+
+Apple App Store
+- Privacy manifest required (declare all data tracking + third-party analytics)
+- iOS 15 minimum, Xcode 16
+- ATT consent flow for ad tracking must be integrated
+
+Both Platforms
+- No unnecessary permissions (location/camera for offline puzzle = rejection)
+- Ad tracking consent flows must be tested before submission
+
+
+PART 14: COMMON INDIE MISTAKES
+================================
+
+1. OOM crashes on low-end devices: maintain <150MB memory budget for low-end compatibility
+2. Not testing on physical low-end hardware (editor/flagship phone gives false confidence)
+3. Missing app lifecycle handling: save state + pause audio on background; resume on foreground
+4. Uncapped framerate -> thermal throttling -> 60 FPS drops to 15 FPS after 3 minutes
+5. Using Resources.Load in production (startup time + memory bloat)
+6. Not releasing Addressable handles (memory leaks in long sessions)
+7. Single Canvas for all UI (one dynamic element rebuilds entire canvas geometry)
+8. Accepting AI-generated code without checking for deprecated APIs
+9. Reflection-heavy code that works in Editor but crashes on IL2CPP mobile builds
+10. Not using Assembly Definitions (minutes of compile time per script change)

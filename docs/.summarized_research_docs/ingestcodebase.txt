@@ -1,0 +1,1 @@
+make a ingest that automatically maps the entire codebase in a architecture diagram easy for the llm to understand, so it knows how a 500k LOC codebase works from much less, like less than 1k lines of text.. 

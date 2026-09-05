@@ -476,9 +476,9 @@ mod tests {
 
     #[test]
     fn tilde_expands_to_home() {
-        let home = PathBuf::from("/home/maintainer");
+        let home = PathBuf::from("/home/user");
         let e = expand_fs_token("~/secret", Some(&home));
-        assert_eq!(e, ExpandedToken::Path(PathBuf::from("/home/maintainer/secret")));
+        assert_eq!(e, ExpandedToken::Path(PathBuf::from("/home/user/secret")));
     }
 
     #[test]
@@ -491,8 +491,8 @@ mod tests {
 
     #[test]
     fn glob_keeps_literal_base() {
-        let e = expand_fs_token("/home/maintainer/*.rs", None);
-        assert_eq!(e, ExpandedToken::GlobBase(PathBuf::from("/home/maintainer")));
+        let e = expand_fs_token("/home/user/*.rs", None);
+        assert_eq!(e, ExpandedToken::GlobBase(PathBuf::from("/home/user")));
     }
 
     #[test]

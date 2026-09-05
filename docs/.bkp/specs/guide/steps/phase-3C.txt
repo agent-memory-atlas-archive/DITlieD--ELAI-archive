@@ -1,0 +1,470 @@
+PHASE 3C: AGENT SYSTEM
+Prerequisites: Phase 3B complete (SSB operational with single-writer guarantee)
+Status: IMPROVED (grounded against orchestrator.txt, reasoning.txt, architecture-overview.txt, worker_boot.rs)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Agent spawning, lifecycle management, checkpointing, crash recovery, supervision tree,
+and anti-spiral escalation. Agents run in-process in Phase 3 (Tier A isolation only).
+Process separation (Tier C) deferred to Phase 4A.
+
+This phase transforms the claw-code WorkerRegistry (worker_boot.rs, ~1069 LOC) and
+recovery_recipes.rs (~630 LOC) into the AgentPool trait defined in architecture-overview.txt
+section 4, with full checkpoint/recovery/supervision semantics from orchestrator.txt section 7.
+
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          Section 7 (agent checkpointing: location, files, triggers, recovery, supervision tree)
+  docs/specs/crates/orchestrator.txt          Section 7A (structured reasoning trace: ReasoningTraceEntry schema and purpose)
+  docs/specs/crates/orchestrator.txt          Section 8 (dynamic fan-out: Send, namespace, resource-aware scheduling)
+  docs/specs/crates/orchestrator.txt          Section 12 (agent isolation model: Tier A invisible walls — Phase 3 scope)
+  docs/specs/architecture-overview.txt        Section 4 (AgentPool trait: spawn, spawn_parallel, communicate)
+  docs/specs/architecture-overview.txt        Section 9 (agent roles: executor, auditor, prompt-engineer, etc.)
+  docs/specs/crates/reasoning.txt             Section 7 (per-agent GRC configuration: AgentGrcConfig per role)
+  docs/specs/decisions/risk-register.txt      R6 (agent parallelism resource contention), R31 (enforcement pattern learning)
+  .elai_cc/rust/crates/runtime/src/worker_boot.rs    Claw-code foundation: WorkerStatus, WorkerRegistry, WorkerEvent
+  .elai_cc/rust/crates/runtime/src/recovery_recipes.rs  Claw-code foundation: FailureScenario, RecoveryRecipe
+
+
+INPUT CONTRACTS (from prerequisite phases)
+  From 3B (SSB): ssb::write(action_type, payload) for checkpoint/reasoning_trace writes.
+    Invariant: single-writer guarantee, append-only within session, seq monotonic.
+  From 3A (FSM): Fsm::get_state() for phase-aware behavior, Fsm::transition() for escalation.
+    Invariant: phase-aware tool loading restricts agent tool access per FSM state.
+  From 2C (GRC): AgentGrcConfig { budget, required_steps, grounding_level, csq_required }.
+    Invariant: per-role config loaded at spawn time, applied to agent GrcEngine instance.
+  From 2A (GRC): GrcEngine::think() for structured reasoning within agents.
+    Invariant: each ThinkStep produces ReasoningTraceEntry written to SSB.
+
+OUTPUT CONTRACTS (consumed by dependent phases)
+  To 3D (BSP): AgentPool::spawn() returns AgentHandle. BSP loop calls prepare_next_tasks
+    using agent handles. spawn_parallel STUBBED here (returns Vec<AgentHandle> but runs
+    sequentially), implemented with true parallelism in 3D.
+  To 3E (Context Budget): AgentHandle exposes agent_id, role, active_files for context
+    budget allocator file-overlap scoring (orchestrator.txt section 6).
+  To 3F (Rules): Agent tool calls pass through RuleEngine::evaluate() — 3C wires this
+    by routing all tool requests through the orchestrator dispatch (not direct tool calls).
+  To 4A (Tier C): AgentHandle abstraction is IPC-ready. In 3C it wraps in-process agent.
+    In 4A it wraps IPC socket. Same interface, different transport.
+  To 3A/4G (ReplanRequest): Agent can emit ReplanRequest(evidence, severity) to orchestrator.
+    In 3C this is an in-process method call on orchestrator dispatch. In 4A it becomes IPC message.
+    Invariant: max 1 ReplanRequest per agent per phase (orchestrator.txt L425).
+    Orchestrator logs to SSB as action_type='replan_request'. Auditor validates evidence
+    before any replan. MINOR: fast-track to PLANNING. MAJOR: human gate required.
+
+CLAW-CODE MAPPING
+  worker_boot.rs WorkerStatus enum      -> AgentStatus (rename, add Checkpointing + BudgetExceeded)
+  worker_boot.rs WorkerRegistry         -> AgentPool (expand with checkpoint/supervision)
+    NOTE: WorkerRegistry uses HashMap<String, Worker> with string worker_id
+    ("worker_{:08x}_{counter}"). AgentPool uses HashMap<Uuid, AgentHandle> with UUID v4.
+    Migration: replace string key generation (worker_boot.rs L171) with Uuid::new_v4()
+    via EntropySource trait (not raw uuid crate — entropy quarantine).
+  worker_boot.rs WorkerEvent/EventKind  -> AgentEvent (expand with checkpoint/recovery events)
+  worker_boot.rs WorkerFailure          -> AgentFailure (expand with death classification)
+  worker_boot.rs now_secs() (L20-26)    -> REPLACE with ClockProvider::now_monotonic()
+    Raw SystemTime::now() violates entropy quarantine (architecture-overview.txt L31-33).
+    All timestamp generation in agent/checkpoint code must use injected ClockProvider.
+  recovery_recipes.rs FailureScenario   -> maps to death classification + recovery policy
+  recovery_recipes.rs RecoveryRecipe    -> SupervisionPolicy.on_failure()
+
+RISKS TO WATCH
+  R6 (MEDIUM): Agent parallelism resource contention. In Phase 3 (single GPU), all agents
+    share one model. VRAM check before spawn: if model loaded + embedding model > available
+    VRAM, serialize agents (never parallel on 12GB). Mitigation built into spawn().
+  R31 (HIGH): Agent learns enforcement patterns. Relevant because 3C defines what agents
+    CAN see. Tier A invisible walls (orchestrator.txt section 12) must be wired into
+    agent tool dispatch: hidden paths return "not found", not "denied".
+
+
+DELIVERABLES: 6 (each independently testable)
+  3C.1  AgentPool trait + AgentHandle + AgentStatus
+  3C.2  Agent lifecycle (spawn -> run -> checkpoint -> kill) with death classification
+  3C.3  Checkpointing (msgpack snapshots, 5 files, automatic triggers)
+  3C.4  Recovery protocol (restart from checkpoint, inject as structured context)
+  3C.5  Supervision tree (max_restarts, restart_window, escalation policy)
+  3C.6  Anti-spiral detection and escalation
+
+
+STEPS
+
+  3C.1 AGENTPOOL TRAIT + AGENTHANDLE + AGENTSTATUS
+    PRE_GATE:
+      - Phase 3B SSB tests pass:
+        cargo test -p orchestrator --lib ssb 2>&1 | grep "test result: ok"
+      - Phase 2C per-agent GRC config tests pass:
+        cargo test -p reasoning --lib agent_grc 2>&1 | grep "test result: ok"
+      - Claw-code worker_boot.rs module exists and compiles:
+        cargo check -p runtime 2>&1 | grep -v "error\[E"
+    TASK:
+      - Define AgentStatus enum: Spawning, Ready, Running, Checkpointing, Finished, Failed.
+        Derived from claw-code WorkerStatus (Spawning, TrustRequired, ReadyForPrompt,
+        Running, Finished, Failed). Changes: TrustRequired dropped (no trust gates in
+        elai_cc — agents are system-spawned, not user-spawned), ReadyForPrompt renamed
+        to Ready, Checkpointing added (new state during snapshot writes).
+      - Define AgentHandle { agent_id: Uuid, role: AgentRole, status: AgentStatus,
+        active_files: Vec<PathBuf>, grc_config: AgentGrcConfig, scratch_dir: PathBuf }.
+        agent_id: UUID v4 assigned at spawn (orchestrator.txt L436).
+        active_files: files this agent is working on (for SSB conflict detection and
+        context budget file-overlap scoring).
+        grc_config: loaded from elai_cc.toml [agents.{role}] at spawn time.
+      - Define AgentRole enum: Executor, Auditor, PromptEngineer, ContextCompiler,
+        MemoryWriter, Researcher, MediaValidator, Designer (architecture-overview.txt section 9,
+        technical-analysis-v3.txt Concern 5).
+        Designer: produces PipelineSpec from Research Report. NOT Executor (different role_prompt,
+        different GRC required_steps, different output format). Reuses executor model (Gemma 4 31B)
+        but has separate AgentGrcConfig. Source: technical-analysis-v3.txt Concern 5.
+      - Define AgentPool trait: spawn(role, task) -> AgentHandle,
+        spawn_parallel(tasks) -> Vec<AgentHandle> (STUB: runs sequentially, true parallel in 3D),
+        communicate(from, to, message) -> () (STUB: direct in-process call, IPC in 4A).
+      - Implement AgentPool backed by HashMap<Uuid, AgentHandle> (from WorkerRegistry pattern).
+      - Wire VRAM check in spawn(): query ModelPool::available_vram() (orchestrator.txt L195).
+        ModelPool wraps the actual VRAM query (nvml-wrapper or sysinfo, evaluated in Phase 0).
+        AgentPool does NOT call nvml directly — it goes through ModelPool abstraction.
+        If insufficient: return ResourceError, caller decides to queue or serialize.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib agent_pool 2>&1 | grep "test result: ok"
+      - grep -r "AgentPool" crates/orchestrator/src/ | wc -l  (expect >= 3: trait def, impl, test)
+      - grep -r "AgentRole" crates/orchestrator/src/ | wc -l  (expect >= 8: one per variant + enum def, including Designer)
+      - grep -r "spawn_parallel" crates/orchestrator/src/ | grep "stub\|sequential\|todo\|unimplemented" | wc -l  (expect 0 — no lazy stubs. Stub means sequential execution, not unimplemented!())
+    ADVERSARIAL:
+      - If AgentHandle does not include active_files, context budget allocator (3E) cannot
+        compute file-overlap scores. Test: AgentHandle struct has active_files field.
+      - If spawn() does not check VRAM, OOM on 12GB GPU with large model + embedding.
+        Test: spawn() with mock VRAM=0 returns ResourceError, never panics.
+      - If AgentGrcConfig is not loaded at spawn, agent runs with default budget (too generous
+        for memory-writer, too restrictive for executor). Test: spawn(Executor) gets
+        budget(8/1200), spawn(MemoryWriter) gets budget(2/400) (reasoning.txt section 7).
+    ACCEPTANCE:
+      - AgentPool::spawn() returns valid AgentHandle with correct role and grc_config: PASS/FAIL
+      - AgentPool::spawn_parallel() executes sequentially and returns all handles: PASS/FAIL
+      - VRAM insufficient -> ResourceError (not panic, not silent ignore): PASS/FAIL
+      - All 8 AgentRole variants constructible and serializable (including Designer): PASS/FAIL
+      - Designer has distinct AgentGrcConfig from Executor (role_prompt, required_steps differ): PASS/FAIL
+    GROUNDING:
+      - "AgentPool has spawn, spawn_parallel, communicate" -> GROUNDED: architecture-overview.txt L140-143
+      - "WorkerRegistry is the foundation" -> GROUNDED: worker_boot.rs L145 (pub struct WorkerRegistry)
+      - "AgentGrcConfig loaded at spawn" -> GROUNDED: orchestrator.txt L446-448
+      - "UUID v4 assigned at spawn" -> GROUNDED: orchestrator.txt L436
+      - "8 agent roles (including Designer)" -> GROUNDED: architecture-overview.txt L266-273, technical-analysis-v3.txt Concern 5
+
+  3C.2 AGENT LIFECYCLE WITH DEATH CLASSIFICATION
+    PRE_GATE:
+      - 3C.1 tests pass (AgentPool trait exists and compiles)
+      - SSB schema action_type CHECK constraint includes 'reasoning_trace' and
+        'isolation_metric'. NOTE: orchestrator.txt section 3 (L57-58) lists action_types
+        but omits these two. They are referenced in section 7A (L157) and section 15 (L608-610).
+        If SSB schema was created in 3B with only the section 3 list, add a schema migration
+        here: ALTER TABLE ssb ADD CHECK or recreate constraint to include reasoning_trace,
+        isolation_metric, spiral_detected, supervision_exhausted. Verify:
+        SELECT sql FROM sqlite_master WHERE name='ssb' — must include new action_types.
+    TASK:
+      - Implement agent lifecycle state machine: Spawning -> Ready -> Running -> Finished|Failed.
+        Running agents execute GRC reasoning loop with tool calls dispatched through orchestrator.
+        In Phase 3 (in-process), agent is a tokio task, not a separate process.
+      - Define AgentDeathClassification enum (orchestrator.txt L148-149):
+        CLEAN_EXIT: agent produced AgentResponse before finishing. Normal completion.
+        CRASH: agent task panicked or returned Err without AgentResponse. Restart from checkpoint.
+        TIMEOUT: heartbeat missed for 15 seconds. Cancel task + restart from checkpoint.
+        BUDGET_EXCEEDED: GRC budget overflow detected by GrcEngine. Inject convergence signal.
+      - Implement heartbeat mechanism: agent task sends heartbeat every 5 seconds via
+        tokio::sync::watch channel. Orchestrator monitors. 15s silence = TIMEOUT classification.
+        In-process heartbeat is a watch channel. Tier C (Phase 4A) replaces with IPC AgentHeartbeat.
+      - Wire Tier A invisible walls into agent tool dispatch (orchestrator.txt section 12):
+        Agent tool calls (read_file, glob, grep) pass through visibility filter.
+        Per-agent allowed_paths: Vec<GlobPattern>. Hidden paths return "not found".
+        Default hidden: .elai_cc/, rules.db, harness source, other agent checkpoints,
+        SSB database, ONNX model files, elai_cc binary internals (orchestrator.txt L320-321).
+      - Wire ReplanRequest stub: agent can call orchestrator.request_replan(evidence, severity).
+        Orchestrator enforces max 1 per agent per phase (counter in AgentHandle).
+        Second call returns ReplanDenied error. Logged to SSB as action_type='replan_request'.
+        MINOR severity: auditor validates, then fast-track EXECUTING->PLANNING for sub-phase.
+        MAJOR severity: requires human approval (INTERACTIVE gate).
+      - Wire ReasoningTraceEntry emission: every GRC think() call within agent writes
+        a ReasoningTraceEntry to SSB (orchestrator.txt section 7A).
+        Fields: agent_id, step_index (monotonic), step_type, content_summary (max 200 chars),
+        grounding_source, grounding_level, confidence, elapsed_ms, topic, budget_remaining.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib agent_lifecycle 2>&1 | grep "test result: ok"
+      - Test: spawn agent -> run -> produce AgentResponse -> status == Finished, death == CLEAN_EXIT
+      - Test: spawn agent -> panic inside task -> death == CRASH
+      - Test: spawn agent -> block forever -> 15s timeout -> death == TIMEOUT
+      - Test: spawn agent -> exceed GRC budget -> death == BUDGET_EXCEEDED
+      - grep -r "not found\|NotFound" crates/orchestrator/src/agent | grep -v "denied\|permission" | wc -l  (expect > 0: invisible wall returns NotFound)
+      - Test: agent sends ReplanRequest -> SSB has replan_request entry -> max 1 enforced
+      - Test: agent sends 2nd ReplanRequest in same phase -> ReplanDenied error
+    ADVERSARIAL:
+      - If heartbeat interval is too short (<1s), false TIMEOUT on slow GRC steps.
+        Test: agent doing 10s GRC step with 5s heartbeat does NOT timeout (heartbeat sent during GRC wait).
+      - If invisible wall returns "permission denied" instead of "not found", agent can
+        distinguish hidden from nonexistent (R31). Test: access to .elai_cc/ssb.db and
+        /nonexistent/path return identical error type and message format.
+      - If ReplanRequest counter is not per-phase, agent sends unlimited replans across
+        phases (abuse). Test: agent sends ReplanRequest, phase transitions, agent sends
+        another ReplanRequest in new phase -> allowed (counter reset at phase boundary).
+      - If ReasoningTraceEntry is not written to SSB, post-mortem debugging is blind and
+        self-modification (Phase 4H) has no fuel. Test: after agent runs, SSB contains
+        >= 1 reasoning_trace entry with monotonic step_index.
+    ACCEPTANCE:
+      - All 4 death classifications correctly triggered by corresponding scenarios: PASS/FAIL
+      - Heartbeat timeout fires at 15s (not before, not much after): PASS/FAIL
+      - Hidden path access indistinguishable from nonexistent path access: PASS/FAIL
+      - ReasoningTraceEntry written to SSB for every GRC step: PASS/FAIL
+      - ReplanRequest: max 1 per agent per phase enforced, 2nd call denied: PASS/FAIL
+    GROUNDING:
+      - "4 death classifications" -> GROUNDED: orchestrator.txt L148-149
+      - "Heartbeat 5s interval, 15s timeout" -> GROUNDED: orchestrator.txt L149
+      - "Invisible walls return not found" -> GROUNDED: orchestrator.txt L309-310, L327
+      - "ReasoningTraceEntry schema" -> GROUNDED: orchestrator.txt L157-169
+      - "ReplanRequest max 1 per agent per phase" -> GROUNDED: orchestrator.txt L425
+
+  3C.3 CHECKPOINTING (MSGPACK SNAPSHOTS)
+    PRE_GATE:
+      - 3C.2 tests pass (agent lifecycle works, agents can run)
+      - SSB write operational (3B): test SSB insert returns Ok
+      - rmp-serde available: cargo check confirms rmp_serde resolves
+    TASK:
+      - Implement checkpoint storage at .elai_cc/sessions/{sid}/agents/{agent_id}/
+        (orchestrator.txt L127-128). Four files:
+        state.msgpack       — AgentStatus + current GRC state + active_files
+        grc_history.msgpack — full GRC reasoning history for current topic
+        tool_results.msgpack — tool call results received since last checkpoint
+        output_draft.msgpack — partial AgentResponse being assembled
+        checkpoint_ts        — plain text timestamp (for quick staleness check).
+          MUST use ClockProvider::now_monotonic() (not SystemTime::now()).
+          Entropy quarantine: architecture-overview.txt L31-33.
+      - Implement automatic checkpoint triggers (orchestrator.txt L131):
+        After every GRC think() step.
+        After every tool call result received.
+        After every file edit confirmed.
+        Before slow operations (model inference, web search — if latency > 1s threshold).
+      - Checkpoint write is atomic: write to temp file, fsync, rename. No partial checkpoints.
+        On Windows: write to temp, close handle, rename (rename is atomic on NTFS for
+        same-volume within same directory when target does not exist; delete old first).
+      - Record checkpoint event in SSB: action_type='checkpoint', payload=checkpoint metadata
+        (agent_id, step_index, file sizes). NOT the checkpoint data itself (too large for SSB).
+      - UntrackedValue channel rejection: checkpoint serializer validates channel references
+        against channel registry type map. If a checkpoint references an UntrackedValue
+        channel ID, reject the checkpoint with CheckpointError::UntrackedValueReference.
+        CONTRACT: agents MUST NOT use UntrackedValue for state they cannot recompute from
+        SSB or tool re-execution. UntrackedValue is for transient data only (streaming
+        progress, temporary counters). Enforcement: checkpoint serializer checks all channel
+        IDs in serialized data against registry, rejects if any are UntrackedValue type.
+        Source: technical-analysis-v3.txt Concern 2 (WARN 3 resolution), orchestrator.txt §7.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib checkpoint 2>&1 | grep "test result: ok"
+      - Test: after agent GRC step, checkpoint files exist at expected path
+      - Test: checkpoint files are valid msgpack (deserialize without error)
+      - Test: checkpoint_ts updated monotonically after each trigger
+      - Test: concurrent checkpoint writes do not corrupt (single agent = single writer to its dir)
+      - Test: checkpoint referencing UntrackedValue channel -> CheckpointError::UntrackedValueReference
+      - Test: checkpoint referencing LastValue/Topic channels -> succeeds (allowed types)
+      - ls .elai_cc/sessions/test/agents/*/  (expect: state.msgpack, grc_history.msgpack, tool_results.msgpack, output_draft.msgpack, checkpoint_ts)
+    ADVERSARIAL:
+      - If checkpoint write is not atomic (no temp+rename), crash during write = corrupt checkpoint
+        = unrecoverable agent. Test: simulate crash mid-write (drop file handle before rename) ->
+        previous checkpoint still valid.
+      - If checkpoint_ts is not monotonic, recovery may load stale checkpoint.
+        Test: two rapid checkpoints -> second ts > first ts (use monotonic clock, not wall clock).
+      - If tool_results.msgpack grows unbounded, checkpoint becomes slow.
+        Test: after 100 tool calls, checkpoint write < 100ms. If exceeded, implement
+        rolling window (keep last N results, configurable, default 50).
+    ACCEPTANCE:
+      - Checkpoint created after every GRC step and tool call: PASS/FAIL
+      - All 5 checkpoint files present and 4 msgpack files deserializable after creation: PASS/FAIL
+      - Atomic write: crash mid-checkpoint does not corrupt previous checkpoint: PASS/FAIL
+      - SSB contains checkpoint action_type entry after each checkpoint: PASS/FAIL
+      - UntrackedValue channel reference in checkpoint -> rejected: PASS/FAIL
+      - LastValue/Topic channel reference in checkpoint -> accepted: PASS/FAIL
+    GROUNDING:
+      - "UntrackedValue checkpoint rejection" -> GROUNDED: technical-analysis-v3.txt Concern 2 (WARN 3), orchestrator.txt §7
+      - "Checkpoint location and 5 files" -> GROUNDED: orchestrator.txt L127-129
+      - "Checkpoint triggers" -> GROUNDED: orchestrator.txt L131
+      - "Checkpoint event in SSB" -> GROUNDED: orchestrator.txt L58 (action_types includes checkpoint)
+      - "Atomic write via temp+rename" -> GROUNDED: standard filesystem atomicity pattern (POSIX rename is atomic; NTFS rename is atomic for same-directory same-volume when target absent)
+
+  3C.4 RECOVERY PROTOCOL
+    PRE_GATE:
+      - 3C.3 tests pass (checkpoints are being created)
+      - At least one valid checkpoint exists from test run
+    TASK:
+      - Implement recovery detection: orchestrator monitors agent task.
+        tokio::JoinHandle returns Err (panic) or agent returns Err -> CRASH.
+        Heartbeat watch timeout -> TIMEOUT.
+        On detection: classify death, log to SSB, initiate recovery.
+      - Implement recovery from checkpoint (orchestrator.txt L133-135):
+        1. Read latest checkpoint from .elai_cc/sessions/{sid}/agents/{agent_id}/
+        2. Spawn new agent instance (same role, same agent_id, new tokio task)
+        3. Inject checkpoint as structured context: GRC history, tool results, output draft
+        4. Agent continues from last GRC step (not from scratch)
+      - Map claw-code recovery_recipes.rs patterns: FailureScenario -> death classification.
+        TrustPromptUnresolved -> N/A (no trust gates in elai_cc).
+        PromptMisdelivery -> CRASH (prompt assembly failed).
+        StaleBranch -> CRASH (git state inconsistent).
+        CompileRedCrossCrate -> CRASH (tool returned compile error).
+        McpHandshakeFailure -> N/A (no MCP in agent path).
+        PartialPluginStartup -> N/A (plugins are orchestrator-level).
+        ProviderFailure -> CRASH (model call failed — retry with same or fallback model).
+      - Recovery preserves agent_id (same UUID). SSB entries remain linked to same agent.
+      - After recovery, agent emits first GRC step with grounding_source="CHECKPOINT:{path}"
+        to mark the recovery point in the reasoning trace.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib recovery 2>&1 | grep "test result: ok"
+      - Test: agent crashes (panic) -> recovered agent has same agent_id
+      - Test: agent crashes after 3 GRC steps -> recovered agent GRC history has 3 prior steps
+      - Test: recovered agent can complete its task (not just start)
+      - Test: SSB has death event followed by recovery event for same agent_id
+    ADVERSARIAL:
+      - If checkpoint is corrupt (truncated msgpack), recovery fails permanently.
+        Test: truncate state.msgpack to 0 bytes -> recovery falls back to fresh start
+        with empty history (degraded, not stuck). Log WARNING to SSB.
+      - If agent_id changes on recovery, SSB reasoning trace has a gap (orphaned entries).
+        Test: recovered agent_id == original agent_id. Assert SSB step_index continues
+        monotonically (no reset to 0).
+      - If recovery injects checkpoint but agent re-executes already-completed tool calls,
+        side effects are duplicated (double file write). Test: recovered agent's first action
+        is the NEXT GRC step, not a replay of the last completed step.
+    ACCEPTANCE:
+      - CRASH recovery: agent resumes from checkpoint within 2 seconds: PASS/FAIL
+      - TIMEOUT recovery: agent killed and restarted within heartbeat_timeout + 2s: PASS/FAIL
+      - Corrupt checkpoint: graceful degradation (fresh start), not permanent failure: PASS/FAIL
+      - SSB trace continuity: step_index monotonic across crash boundary: PASS/FAIL
+    GROUNDING:
+      - "Recovery protocol" -> GROUNDED: orchestrator.txt L133-135
+      - "Same agent_id preserved" -> GROUNDED: orchestrator.txt L436 (agent_id assigned at spawn, recovery reuses)
+      - "Claw-code recovery_recipes.rs mapping" -> GROUNDED: recovery_recipes.rs L18-26 (FailureScenario enum)
+      - "Checkpoint as structured context" -> GROUNDED: orchestrator.txt L134
+
+  3C.5 SUPERVISION TREE
+    PRE_GATE:
+      - 3C.4 tests pass (recovery works for single crash)
+      - Recovery can be triggered multiple times for same agent
+    TASK:
+      - Implement Erlang-derived supervision tree (orchestrator.txt L137-149):
+        Orchestrator is root supervisor. Each agent has a SupervisionPolicy:
+          max_restarts: u32 (default 3, configurable per role in elai_cc.toml [agents.{role}.supervision])
+          restart_window: Duration (= current phase duration, measured from phase start)
+          on_max_restarts: EscalationAction enum { Escalate, SubstituteModel(ModelId) }
+        Phase 3 (INTERACTIVE): on_max_restarts = Escalate (pause, show human the failure chain).
+        Phase 4G (AUTONOMOUS): on_max_restarts = SubstituteModel (try cloud fallback).
+        In Phase 3, SubstituteModel variant EXISTS in enum but is gated: attempting to use it
+        in INTERACTIVE mode returns error. This keeps the type system ready for Phase 4G.
+      - Track restart_count per agent per phase. Reset to 0 at phase boundary.
+      - Supervision integrates with death classification:
+        CLEAN_EXIT: no restart needed.
+        CRASH: restart from checkpoint. Increment restart_count.
+        TIMEOUT: kill + restart from checkpoint. Increment restart_count.
+        BUDGET_EXCEEDED: inject convergence, do NOT restart (not a crash — agent is alive).
+      - When restart_count >= max_restarts within restart_window:
+        Stop restarting. Checkpoint final state. Execute on_max_restarts action.
+        Log supervision_exhausted event to SSB with full restart history.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib supervision 2>&1 | grep "test result: ok"
+      - Test: agent crashes 3 times -> 3 restarts -> 4th crash -> Escalate (not restart)
+      - Test: agent crashes 2 times, phase boundary, crashes 1 time -> restart (count reset)
+      - Test: max_restarts=1 in config -> 2nd crash -> Escalate
+      - Test: BUDGET_EXCEEDED does NOT increment restart_count
+      - Test: SubstituteModel in INTERACTIVE mode -> error (not silently accepted)
+    ADVERSARIAL:
+      - If restart_count is not reset at phase boundary, agent exhausts restarts across
+        phases (agent that crashed once in PLANNING cannot be restarted in EXECUTING).
+        Test: restart_count == 0 after phase transition.
+      - If BUDGET_EXCEEDED triggers restart, agent enters infinite loop (budget exceeded ->
+        restart -> budget exceeded again). Test: BUDGET_EXCEEDED -> convergence injected,
+        restart_count unchanged.
+      - If max_restarts is 0 (misconfiguration), first crash = permanent death.
+        Test: max_restarts < 1 in config -> clamp to 1 with WARNING log.
+    ACCEPTANCE:
+      - Supervision limits restarts to max_restarts per phase: PASS/FAIL
+      - restart_count resets at phase boundary: PASS/FAIL
+      - on_max_restarts fires correct action (Escalate in INTERACTIVE): PASS/FAIL
+      - BUDGET_EXCEEDED does not trigger restart: PASS/FAIL
+    GROUNDING:
+      - "Erlang-derived supervision" -> GROUNDED: orchestrator.txt L137
+      - "max_restarts: 3, configurable" -> GROUNDED: orchestrator.txt L139
+      - "restart_window = phase duration" -> GROUNDED: orchestrator.txt L140
+      - "on_max_restarts: ESCALATE or SUBSTITUTE_MODEL" -> GROUNDED: orchestrator.txt L141
+      - "Death classification integration" -> GROUNDED: orchestrator.txt L142-149
+
+  3C.6 ANTI-SPIRAL DETECTION AND ESCALATION
+    PRE_GATE:
+      - 3C.5 tests pass (supervision tree operational)
+      - GRC step tracking available (step_type and topic recorded per agent)
+    TASK:
+      - Implement anti-spiral detection (orchestrator.txt L135, L142-143):
+        Track per-agent: last N GRC steps (step_type + topic + content_hash).
+        If same_step_count > 3 (same step_type + same topic + similar content for 3
+        consecutive steps), classify as SPIRAL.
+        "Similar content" = content_hash matches (not string equality — allows minor
+        rephrasing but catches substantive repetition). Hash = blake2s of normalized
+        content (lowercase, whitespace-collapsed).
+      - On SPIRAL detection:
+        1. Checkpoint current state (safety net).
+        2. Inject escalation signal: GRC convergence with step_type="status",
+           content="Anti-spiral: 3x repeated step detected. Converge or request help."
+        3. If agent produces ANOTHER identical step after escalation signal: supervisor
+           stops the agent (not restart — permanent stop for this task).
+        4. Log spiral_detected event to SSB with the 3 repeated steps as evidence.
+      - Anti-spiral integrates with supervision: spiral stop counts as a supervised stop
+        (not a crash). on_spiral: same as on_max_restarts (Escalate in INTERACTIVE).
+      - In INTERACTIVE mode, spiral escalation pauses and shows human:
+        "Agent {role} spiraling on {topic}: repeated {step_type} 3x. Evidence: [3 steps].
+        Options: [retry with hint] [substitute model] [skip step] [abort task]"
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib anti_spiral 2>&1 | grep "test result: ok"
+      - Test: 3 identical GRC steps -> spiral_detected event in SSB
+      - Test: 3 different GRC steps -> no spiral (control case)
+      - Test: spiral + escalation signal + 1 more identical step -> agent stopped
+      - Test: spiral + escalation signal + different step -> agent continues (recovery)
+      - Test: content with minor whitespace differences but same semantic -> detected as spiral
+    ADVERSARIAL:
+      - If content comparison is exact string match, minor rephrasing evades detection
+        (agent learns to add "also" or change punctuation). Test: "check file X" vs
+        "check file X " (trailing space) -> same hash -> detected.
+      - If anti-spiral threshold is too low (e.g. 2), legitimate retry-after-fix is flagged.
+        Test: agent fails -> fixes -> retries same step with different grounding -> NOT spiral
+        (grounding source differs, so content_hash differs).
+      - If spiral stop does not preserve pre-spiral state, recovery re-enters spiral.
+        Note: 3C.3 checkpoints at every GRC step, so the latest checkpoint IS a spiral step.
+        Resolution: on spiral detection, tag the pre-spiral checkpoint (step N-3 where N is
+        current step) as recovery_target. Spiral stop preserves the tagged checkpoint.
+        Recovery loads the pre-spiral checkpoint, not the latest.
+        Test: after spiral stop, recovery checkpoint step_index == (spiral_start - 1).
+    ACCEPTANCE:
+      - 3x same step triggers spiral detection: PASS/FAIL
+      - Escalation signal injected before hard stop: PASS/FAIL
+      - Human shown evidence and options in INTERACTIVE mode: PASS/FAIL
+      - Checkpoint preserved before spiral stop: PASS/FAIL
+    GROUNDING:
+      - "same_step_count > 3 -> escalate" -> GROUNDED: orchestrator.txt L135
+      - "Supervision integrates with anti-spiral" -> GROUNDED: orchestrator.txt L142-143
+      - "Checkpoint + escalate" -> GROUNDED: orchestrator.txt L135 ("checkpoint + escalate")
+      - "Content hash for similarity" -> JUSTIFIED: exact string match is trivially evadable (adversarial test above proves this). blake2s is already a project dependency (architecture-overview.txt section 10, used for vector cache content hashing in Phase 1C).
+
+
+DEFERRED (explicit, not forgotten)
+  Tier B sandbox (Firecracker/gVisor): orchestrator.txt section 12 scopes Tier B to
+    "Phase 3-4". In Phase 3C, bash tool execution within agents has NO sandbox boundary —
+    only Tier A invisible walls (filesystem visibility filter). Bash commands run in the
+    host process. This is a known security gap for Phase 3. Tier B implemented in Phase 4A.
+    Until then, agent bash commands are filtered by Tier A path rules only.
+  Cognitive isolation metric (action_type='isolation_metric'): orchestrator.txt L180-186
+    defines per-phase metric logged at phase transitions. Phase 3C wires per-agent GRC
+    token counting (ReasoningTraceEntry includes budget_remaining). The aggregation and
+    metric emission at phase boundary is orchestrator-level logic wired in 3A or 3D
+    (phase transition hook). 3C provides the per-agent data; aggregation is not 3C scope.
+
+MEASURE
+  - Checkpoint write latency: target < 50ms per checkpoint (5 files, msgpack serialized)
+  - Recovery time: target < 2s from crash detection to resumed GRC step
+  - Checkpoint size: target < 1MB per agent per checkpoint (monitor growth)
+  - Heartbeat overhead: < 0.1% CPU (watch channel, no serialization)
+  - Anti-spiral detection overhead: < 1ms per GRC step (hash comparison)
+  - Memory overhead per agent: measure and log (baseline before 3D parallelism)
+
+EXIT CRITERIA
+  Agents spawn with correct role and GRC config, checkpoint reliably after every
+  GRC step and tool call, recover from crashes preserving SSB trace continuity,
+  supervision limits restarts and escalates to human in INTERACTIVE mode,
+  anti-spiral detects repetition and stops runaway agents with evidence.
+  All 6 deliverables independently tested. No lazy stubs (unimplemented!() is a build failure).

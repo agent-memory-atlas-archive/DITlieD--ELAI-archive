@@ -1,0 +1,332 @@
+PHASE 1F: SPECULATIVE DECODING EVALUATION
+
+STATUS (2026-04-07, see workflow/reasoning/phase-1F-decisions.md):
+  Steps 1F.1 + 1F.2 shipped (SpeculativeConfig, OllamaConfig nesting, ProbeResult,
+  probe_speculative_support in crates/providers/src/providers/ollama.rs, with unit + live
+  integration tests). 1F.2 live probe returned NOT_AVAILABLE on ollama v0.20.2 (PR #8134
+  closed never-merged; draft_model parameter silently ignored, accepted_tokens always
+  null). Per the RESOLVED block + the 1F.5 decision gate below, steps 1F.3 / 1F.3b /
+  1F.4 / 1F.5 are DEFERRED-BY-DESIGN to Phase 2+ (vLLM provider) — they are NOT missing
+  work. The per-step TOMLs (phase_1F_correctness.toml / phase_1F_throughput.toml /
+  phase_1F_vram.toml / phase_1F_prompt_lookup.toml) are intentionally not produced; the
+  consolidated .elai_cc/metrics/phase_1F.toml records decision=UNAVAILABLE with reason.
+  Phase 1F EXIT CRITERIA "Decision made and documented: ADOPT or DROP" is satisfied via
+  the DROP path.
+
+Prerequisites: Phase 1C complete (vector search operational; VRAM accounting available)
+  Dependency graph ref: implementation-guide.txt L141 shows 1F branches from 1C.
+  Correction: original said "Phase 0 complete (independent of 1A-1E)" which conflicts
+  with the dependency graph. 1C is required because ModelPool VRAM accounting (from
+  providers/) must be operational to measure draft model overhead accurately.
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Evaluate whether speculative decoding improves throughput enough to justify VRAM cost.
+Decision gate: adopt if >1.3x throughput on target hardware, drop if less.
+This is an EVALUATION phase, not a feature phase. Output is a measured decision, not shipped code.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/providers.txt                  Speculative decoding section (L87-97)
+  docs/specs/.old/decisions/external-analysis.txt  EAGLE-3 / TIDE entries (L308-320, L456-461)
+  docs/specs/architecture-overview.txt             Section 7 HARDWARE TARGET (L233-252, VRAM constraints)
+
+RISKS TO WATCH
+  R4: VRAM contention. Draft model must fit alongside main model on RTX 3060 12GB.
+       Gemma 4 E2B = ~7.2GB Q4_K_M. Headroom = ~4.8GB (not ~10GB as providers.txt L47
+       incorrectly states).
+       Scenario A (expected ~2GB draft): 12 - 7.2 - 2.0 = ~2.8GB remaining for OS/CUDA.
+       Scenario B (decision gate max ~3GB delta): 12 - 7.2 - 3.0 = ~1.8GB remaining.
+       Both scenarios fit but B is tight. Monitor nvidia-smi --query-gpu=memory.used
+       with polling during benchmark (not static snapshots).
+  R-NEW-1: Ollama speculative decoding support NOT confirmed merged. PR #8134 open as of
+       April 2026. Fallback options: (a) direct llama.cpp speculative mode (only viable
+       Phase 1 fallback — vLLM integration does not exist until Phase 2+, per providers.txt
+       L55), (b) defer phase until ollama merges. If neither ollama nor llama.cpp fallback
+       is viable, the only correct outcome is DROP or defer to Phase 2 re-evaluation.
+       Must verify API availability before any benchmark work.
+  R-NEW-2: EAGLE-3 published benchmarks (2x-6.5x) measured on large models (70B+) with
+       dedicated hardware. Gains on 2.3B effective model on consumer GPU will be substantially
+       lower. The 1.3x threshold accounts for this but expectations should be calibrated.
+  R-NEW-3: Gemma 4 EAGLE-3 draft model may not exist as a published artifact. vLLM
+       GitHub issue #38893 flags unresolved Gemma 4 EAGLE-3 support. If no compatible draft
+       model is available, standard speculative decoding (same-family smaller model) must
+       be used instead of EAGLE-3 head. Step 1F.2 must verify draft model availability.
+  RESOLVED (2026-04-07, auto-pilot P1F.2 commit eeb9a63):
+       Ollama v0.20.2 CONFIRMED no speculative decoding support. PR #8134 closed, never merged.
+       Live probe verified: draft_model parameter silently ignored, accepted_tokens always null.
+       Decision: DROP speculative decoding for Phase 1. Steps 1F.3-1F.5 skipped.
+       Prompt Lookup Decoding (1F.3b) remains viable as zero-VRAM alternative.
+       Speculative decoding revisited in Phase 2+ when vLLM provider is implemented.
+       vLLM natively supports speculative decoding, EAGLE-3, and layer-level intervention
+       that ollama cannot provide (providers.txt L56-64: "ollama is a black box").
+       The OllamaProvider + LlmProvider trait abstraction built in 1F.1 means vLLM
+       integration is a new provider impl, not a rewrite.
+  SPEC CORRECTIONS APPLIED (session s-937656, 2026-04-06):
+       providers.txt L46-47: corrected to 2x-6.5x and ~4.8GB headroom.
+       external-analysis.txt L312,456: corrected to 2x-6.5x.
+       Remaining: implementation-plan.txt L184 still has stale "1.8-2.3x" (INFO, not blocking).
+
+
+GROUNDING
+  "EAGLE-3 1.8-2.3x" -> CORRECTED: EAGLE-3 achieves 2x-6.5x on large models (NeurIPS'25,
+    RedHat/Vertex benchmarks). Original 1.8-2.3x appears from older EAGLE-1/2. On small
+    models (2.3B) on consumer hardware, gains will be much lower.
+    Source: arxiv 2503.01840, RedHat developer article 2025-07-01, LMSYS blog 2025-12-01.
+  "~10GB headroom on 3060 after main model" -> WRONG: 12GB - 7.2GB = 4.8GB headroom.
+    Source: architecture-overview.txt L206 (RTX 3060 12GB), implementation-guide.txt L39
+    (Gemma 4 E2B ~7.2GB Q4_K_M).
+  "TIDE 1.15x over static speculative decoding" -> VERIFIED: arxiv 2602.05145 confirms
+    "up to 1.15x throughput improvement over static speculative decoding."
+  "Ollama supports natively" -> UNVERIFIED: PR #8134 (github.com/ollama/ollama/pull/8134)
+    not confirmed merged. Feature may not be available. Must check at implementation time.
+  ">1.3x adoption threshold" -> UNGROUNDED design decision. No external justification for
+    this specific number. Acceptable as conservative project threshold given small-model
+    context where EAGLE-3 gains will be modest.
+  "Draft model same family, smaller variant" -> GROUNDED but INCOMPLETE: standard pattern
+    confirmed, but draft model SIZE matters critically. llama.cpp discussion #10466 shows:
+    3B draft = max 1.08x@k=1, 1.5B = 1.17x@k=4, 0.5B = 1.4x@k=4. Smaller drafts
+    outperform larger ones on consumer GPUs due to lower latency overhead. Added sizing
+    guidance to step 1F.2.
+  "num_draft_tokens = 5 default" -> SUBOPTIMAL: optimal k varies by draft model size
+    (llama.cpp #10466). 3B draft optimal at k=1, 0.5B at k=4. Fixed k=5 may miss optimal
+    operating point. Changed to parameter sweep in step 1F.4.
+  "Acceptance rate" -> MISSING METRIC: below 0.5 acceptance rate, speculative decoding
+    actively HURTS throughput (vLLM blog 2024-10-17, Spheron production guide). Must measure
+    acceptance rate and use as early kill signal. Added to step 1F.4.
+  "Prompt lookup decoding" -> MISSING ALTERNATIVE: zero-VRAM overhead, up to 2.8x on
+    summarization tasks (vLLM blog, prompt-lookup-decoding repo). Should benchmark as
+    baseline before committing VRAM to draft model. Added as step 1F.3b.
+  Prerequisite "Phase 0 (independent of 1A-1E)" -> CORRECTED: dependency graph
+    (implementation-guide.txt L141) shows 1F branches from 1C. Changed to "Phase 1C complete."
+
+
+STEPS
+
+  1F.1 SPECULATIVE DECODING CONFIG SKELETON
+    PRE_GATE:
+      - Phase 1C tests pass: cargo test -p elai_cc_knowledge --lib exits 0
+      - providers/ crate compiles: cargo check -p elai_cc_providers exits 0
+      - OllamaConfig struct exists: grep -r "struct OllamaConfig" .elai_cc/crates/providers/src/ returns hits
+    TASK:
+      - Add speculative decoding fields to providers/ config:
+        speculative_decoding: bool (default false)
+        draft_model: Option<String>
+        num_draft_tokens: u8 (default 5)
+      - Add to OllamaConfig or as nested SpeculativeConfig struct
+      - Serde support (deserialize from config file, serialize for persistence)
+    DETERMINISTIC_CHECK:
+      - cargo check -p elai_cc_providers exits 0
+      - grep -r "speculative_decoding\|draft_model\|num_draft_tokens" .elai_cc/crates/providers/src/ returns 3+ hits
+      - Existing Phase 0 + 1A-1C tests still pass
+    ADVERSARIAL:
+      - If serde field names mismatch config file keys, deserialization silently drops values.
+        Test: round-trip serialize/deserialize SpeculativeConfig, assert all fields preserved.
+      - If num_draft_tokens = 0, behavior undefined. Test: validate num_draft_tokens >= 1 at
+        construction, return error for 0.
+    ACCEPTANCE:
+      - cargo check -p elai_cc_providers exits 0 with new config fields
+      - Unit test: SpeculativeConfig default values match spec (false, None, 5)
+      - Unit test: SpeculativeConfig serde round-trip preserves all fields
+
+  1F.2 OLLAMA SPECULATIVE DECODING API AVAILABILITY CHECK
+    PRE_GATE:
+      - Step 1F.1 complete (config compiles)
+      - ollama running: curl -s http://localhost:11434/api/tags exits 0
+      - Main model loaded: ollama list shows gemma4-e2b or equivalent
+    TASK:
+      - Write a probe script/test that checks whether the local ollama binary supports
+        speculative decoding (draft model parameter in /api/generate or /api/chat).
+      - If NOT supported: document the finding, evaluate fallback (llama.cpp direct only —
+        vLLM not available until Phase 2+, per providers.txt L55).
+        If llama.cpp fallback also not viable: phase terminates with
+        "DROP: speculative decoding not available on current stack. Re-evaluate in Phase 2."
+      - If supported: identify exact API parameters (draft model name, num_predict interaction).
+      - Draft model selection: prefer 0.5B-1.5B over 2B-3B. Evidence (llama.cpp #10466):
+        smaller drafts have lower latency overhead, yielding better net speedup on consumer
+        GPUs (0.5B=1.4x@k=4 vs 3B=1.08x@k=1 with 8B target). For Gemma 4 E2B (2.3B target),
+        a ~0.5B draft is ideal if available. If not, smallest available same-family model.
+      - Record: draft model name, parameter count, quantization, VRAM footprint.
+    DETERMINISTIC_CHECK:
+      - Probe script exits 0 with clear output: "SUPPORTED: [api params]" or "NOT_SUPPORTED: [reason]"
+      - If NOT_SUPPORTED: workflow/reasoning/phase-1F-decisions.md documents fallback evaluation
+    ADVERSARIAL:
+      - If ollama silently ignores unknown parameters (draft_model), probe may false-positive.
+        Test: send request with draft_model param, verify response headers or timing differ
+        from baseline (speculative should be faster or show draft model in logs).
+      - If ollama version on system is outdated, feature may exist in newer version.
+        Test: ollama --version output recorded; check against minimum version for spec decode.
+    ACCEPTANCE:
+      - Binary determination: ollama speculative decoding is AVAILABLE or NOT_AVAILABLE
+      - If NOT_AVAILABLE: documented fallback decision in workflow/reasoning/phase-1F-decisions.md
+      - If AVAILABLE: API parameter names recorded for use in step 1F.3
+
+  1F.3 CORRECTNESS VERIFICATION
+    PRE_GATE:
+      - Step 1F.2 result is AVAILABLE (if NOT_AVAILABLE, skip to 1F.5 with DROP decision)
+      - Draft model downloaded: ollama list shows draft model entry
+      - nvidia-smi shows both models fit in VRAM (used < 11GB with 1GB safety margin)
+    TASK:
+      - Generate output from main model WITHOUT speculative decoding (baseline).
+      - Generate output from main model WITH speculative decoding (same prompt, same seed).
+      - Compare outputs. Speculative decoding is algorithmically lossless (draft tokens
+        verified by target model), but ollama GPU floating-point non-determinism may cause
+        minor divergence even with seed + temperature=0 (see ollama issues #586, #5321).
+      - Run 10 prompts minimum. Compare decoded text (soft match: identical text content).
+        If text matches but token IDs differ, log as WARN but do not fail.
+    DETERMINISTIC_CHECK:
+      - Test script exits 0
+      - Output file: .elai_cc/metrics/phase_1F_correctness.toml with 10/10 text matches
+      - Decoded text comparison: 10/10 identical (token ID divergence logged but not blocking)
+    ADVERSARIAL:
+      - If temperature > 0, outputs may differ due to sampling randomness, not spec decode error.
+        Test: set temperature=0 for all correctness runs. Assert deterministic.
+      - If draft model has different tokenizer, token boundaries may shift even if text matches.
+        Test: compare raw token IDs, not just decoded text.
+      - If ollama caches previous responses, second run returns cached result (false match).
+        Test: use unique prompts per run, or clear cache between runs.
+    ACCEPTANCE:
+      - 10/10 prompts produce identical decoded text with and without speculative decoding
+      - All runs at seed=fixed + temperature=0
+      - Token ID divergence (if any) logged as WARN, not a blocking failure
+      - Results logged to .elai_cc/metrics/phase_1F_correctness.toml
+
+  1F.3b PROMPT LOOKUP DECODING BASELINE (zero-VRAM alternative)
+    PRE_GATE:
+      - Step 1F.3 passes (correctness verified) OR step 1F.2 is NOT_AVAILABLE
+      - ollama or llama.cpp running and responsive
+    TASK:
+      - Benchmark prompt lookup decoding (n-gram speculation from input context).
+        Zero additional VRAM — no draft model needed. Up to 2.8x on repetitive/summarization
+        tasks (vLLM blog 2024-10-17), but gains depend heavily on input-output overlap.
+      - Use same 5 prompts as planned for 1F.4. 3 runs each (15 measurements).
+      - Record: tokens/sec with prompt lookup vs baseline (no speculation).
+      - WHY THIS MATTERS: if prompt lookup alone achieves >1.3x on our workload, draft model
+        speculative decoding is unnecessary — we get the speed without the VRAM cost.
+      - If ollama does not support prompt lookup: check llama.cpp --lookup-ngram-min flag.
+        If neither supports it: skip this step, note "UNAVAILABLE" in decision doc.
+    DETERMINISTIC_CHECK:
+      - .elai_cc/metrics/phase_1F_prompt_lookup.toml contains 15 measurements
+      - Throughput ratio (prompt_lookup / baseline) computed
+      - OR "UNAVAILABLE: [reason]" logged in decision doc
+    ADVERSARIAL:
+      - Prompt lookup gains are workload-dependent: high on summarization, low on creative
+        generation. Test: include at least 2 prompts with low input-output overlap (creative,
+        code generation) to avoid inflated results.
+    ACCEPTANCE:
+      - Prompt lookup throughput ratio measured OR documented as unavailable
+      - Results feed into 1F.5 decision gate (if prompt_lookup > 1.3x AND spec_decode also
+        > 1.3x, prefer prompt_lookup for zero VRAM cost)
+
+  1F.4 THROUGHPUT BENCHMARK (speculative decoding)
+    PRE_GATE:
+      - Step 1F.3 passes (correctness verified, 10/10)
+      - nvidia-smi accessible: nvidia-smi exits 0
+      - System idle (no other GPU workloads): nvidia-smi shows <500MB non-ollama usage
+    TASK:
+      - Benchmark tokens/sec WITH and WITHOUT speculative decoding.
+      - Use 5 diverse prompts (short, medium, long; code, prose, structured).
+      - PARAMETER SWEEP: test num_draft_tokens k={1,2,3,4,5,7} for each prompt.
+        Optimal k varies by draft model size (llama.cpp #10466: 3B optimal at k=1,
+        0.5B at k=4). Do not assume k=5 is optimal — measure.
+      - 3 runs per prompt per k value per mode. Record best k per prompt.
+      - Record per run: prompt length, output length, wall time, tokens/sec, GPU util,
+        ACCEPTANCE RATE (accepted_draft_tokens / total_draft_tokens).
+      - EARLY KILL: if acceptance rate < 0.5 across all k values for 3+ prompts, STOP
+        benchmarking. Below 0.5, speculative decoding hurts throughput (vLLM blog evidence).
+        Skip to 1F.5 with DROP decision citing low acceptance rate.
+      - Compute mean and stddev per mode at best-k. Report ratio (speculative / baseline).
+    DETERMINISTIC_CHECK:
+      - Benchmark script exits 0
+      - .elai_cc/metrics/phase_1F_throughput.toml contains all measurements (5 prompts x 6 k-values x 3 runs + baseline)
+      - Best k recorded per prompt with acceptance rate
+      - Mean acceptance rate recorded. If < 0.5: early kill triggered, documented in decision doc
+      - Throughput ratio at best-k computed and recorded (single number: e.g. "1.42x")
+      - stddev < 20% of mean PER MODE (baseline and speculative measured independently)
+    ADVERSARIAL:
+      - If GPU is thermally throttling, later runs are slower (biases ratio).
+        Test: record GPU temp per run. Discard runs where temp > 85C. Add 60s cooldown.
+      - If prompt is too short, speculative overhead dominates (false negative on throughput).
+        Test: include at least 2 prompts requiring >200 output tokens.
+      - If ollama model loading time included in measurement, first run is an outlier.
+        Test: warm-up run before each benchmark set. Exclude first measurement.
+      - If acceptance rate not exposed by ollama API, cannot measure directly.
+        Test: infer from timing — if speculative run is slower than baseline for a prompt,
+        acceptance rate is effectively < 0.5 for that prompt. Use timing as proxy.
+    ACCEPTANCE:
+      - All measurements recorded with mean, stddev, ratio at best-k
+      - stddev < 20% of mean per mode independently (not pooled)
+      - Throughput ratio is a single number with confidence interval
+      - Acceptance rate measured or inferred for each k value
+      - Best k identified per prompt (not assumed to be 5)
+      - All measurements taken at GPU temp < 85C
+      - If early kill triggered: documented with acceptance rate evidence
+
+  1F.5 VRAM MEASUREMENT AND DECISION GATE
+    PRE_GATE:
+      - Step 1F.4 complete (throughput ratio computed)
+      - OR Step 1F.2 result was NOT_AVAILABLE (skip to DROP decision)
+    TASK:
+      - Measure VRAM usage: baseline (main model only) vs speculative (main + draft).
+      - Record: baseline_vram_mb, speculative_vram_mb, delta_vram_mb.
+      - DECISION GATE (evaluate top-to-bottom, stop at first match):
+        If NOT_AVAILABLE (from 1F.2):
+          DROP. Document "speculative decoding not available on current stack as of [date]."
+        If acceptance rate < 0.5 (early kill from 1F.4):
+          DROP. Document "acceptance rate too low — spec decode hurts throughput."
+        If prompt_lookup ratio > 1.3x (from 1F.3b) AND spec_decode ratio <= prompt_lookup:
+          DROP spec decode, ADOPT prompt lookup. Zero VRAM cost achieves same or better gain.
+        If spec_decode ratio > 1.3x AND delta_vram_mb < 3000 (leaves ~1.8GB margin on 3060):
+          ADOPT. Enable speculative decoding as default for executor role. Record best-k.
+          If prompt_lookup also > 1.3x: document both, prefer spec_decode only if measurably better.
+        If spec_decode ratio <= 1.3x OR delta_vram_mb >= 3000:
+          DROP. Disable speculative decoding. Reclaim VRAM budget for embedding models.
+        Boundary: ratio == 1.3x or delta == 3000MB -> DROP (conservative tie-break).
+      - Write decision to workflow/reasoning/phase-1F-decisions.md with all measurements.
+    DETERMINISTIC_CHECK:
+      - .elai_cc/metrics/phase_1F_vram.toml contains PEAK baseline and PEAK speculative VRAM
+        (measured via nvidia-smi --query-gpu=memory.used --format=csv -l 1 polling during generation)
+      - workflow/reasoning/phase-1F-decisions.md contains ADOPT or DROP with justification
+      - If ADOPT: providers/ config default updated to enable speculative decoding
+      - If DROP: providers/ config default remains disabled
+    ADVERSARIAL:
+      - If VRAM measurement taken during generation vs idle differs significantly.
+        Test: measure peak VRAM during generation (not at rest). Use nvidia-smi --query-gpu
+        with polling during benchmark run.
+      - If ADOPT decision made but production hardware (RTX 3090) has different characteristics.
+        Test: document that Phase 1F decision applies to Phase 0 hardware only. Production
+        re-evaluation needed in Phase 4 when hardware changes.
+      - If marginal case (ratio = 1.28-1.32x), rounding error could flip decision.
+        Test: if ratio within 0.05 of threshold, run 5 additional prompts and recompute.
+    ACCEPTANCE:
+      - VRAM delta measured in MB with nvidia-smi evidence
+      - Decision is ADOPT or DROP (binary, no "maybe")
+      - Decision document exists with: throughput ratio, VRAM delta, hardware, date, rationale
+      - If ADOPT: config default changed and compiles
+      - If DROP: no config changes, phase marked complete
+
+
+EXIT CRITERIA
+  Decision made and documented: ADOPT or DROP speculative decoding based on measured data.
+  If ADOPT: which method (spec decode with draft model OR prompt lookup), at which config
+    (best-k, draft model name/size).
+  All measurements in .elai_cc/metrics/phase_1F_*.toml (correctness, throughput, vram,
+    prompt_lookup).
+  Decision rationale in workflow/reasoning/phase-1F-decisions.md.
+  If ADOPT spec decode: config defaults updated, best-k set, draft model specified.
+  If ADOPT prompt lookup: config defaults updated, no draft model needed.
+  If DROP both: speculative decoding disabled, VRAM reclaimed for embedding models.
+  Phase 0 + 1A-1C tests still pass (no regression).
+
+MEASUREMENTS
+  Throughput ratio (spec decode at best-k): target >1.3x to adopt (UNGROUNDED threshold)
+  Throughput ratio (prompt lookup): zero-VRAM baseline comparison
+  Acceptance rate: must be > 0.5 to proceed (below 0.5, spec decode hurts — vLLM blog evidence)
+  Optimal k (num_draft_tokens): swept {1,2,3,4,5,7}, best per prompt recorded
+  VRAM overhead: target <3000MB delta (leaves ~1.8GB margin on 12GB GPU)
+  Draft model size: recorded (expect 0.5B-1.5B optimal per llama.cpp #10466 evidence)
+  EAGLE-3 reference: 2x-6.5x on large models (NeurIPS'25). Expect substantially lower
+    on 2.3B effective model on consumer GPU. The 1.3x threshold is intentionally conservative.
+  TIDE reference: 1.15x over static speculative decoding (arxiv 2602.05145). Evaluate only
+    if static speculative decoding is adopted and further optimization is desired.
+  If <1.3x: disable, reclaim VRAM for embedding models (Phase 1C vector search).

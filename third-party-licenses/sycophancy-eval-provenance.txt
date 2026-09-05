@@ -1,0 +1,23 @@
+SycophancyEval provenance record
+
+Reviewed: 2026-09-06
+
+Official source:
+  https://github.com/meg-tong/sycophancy-eval
+  https://raw.githubusercontent.com/meg-tong/sycophancy-eval/main/README.md
+  https://arxiv.org/abs/2310.13548
+
+The tracked ELAI README identifies 20 syco_sharma_*.json fixtures as
+adapted from public Sharma SycophancyEval dataset patterns. The local
+generator describes these as pattern adaptations; it does not record the
+upstream dataset revision, source row IDs, or a content hash.
+
+The official repository root listing and common raw LICENSE paths were
+checked on 2026-09-06. No LICENSE, LICENSE.txt, COPYING, or NOTICE file
+was found there. No license or reuse permission is inferred from the
+repository being public. Resolve the source terms or obtain permission
+before redistributing the adapted fixtures.
+
+Final publication scope: the 20 adapted fixture files and their source
+generator are excluded. The 80 locally synthetic fixtures remain. This
+record explains the omission; it does not license the omitted material.

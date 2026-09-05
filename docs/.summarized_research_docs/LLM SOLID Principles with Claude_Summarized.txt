@@ -1,0 +1,166 @@
+LLM SOLID Principles with Claude - Technical Summary
+
+CORE PROBLEM:
+LLMs inherently favor monolithic, tightly coupled code structures due to token efficiency bias. This creates architectural decay in AI-assisted development.
+
+SOLID PRINCIPLES TRANSLATION FOR AGENTS:
+
+Single Responsibility Principle (SRP):
+- Classic: One reason to change
+- Agentic: One agent owns one responsibility
+- Pitfall: Combining UI, database, validation into God Classes
+- Enforcement: Separate subagents for distinct concerns
+
+Open/Closed Principle (OCP):
+- Classic: Open for extension, closed for modification
+- Agentic: New agents without core logic rewrite
+- Pitfall: Modifying validated core algorithms for features
+- Enforcement: Abstract routing interfaces
+
+Liskov Substitution Principle (LSP):
+- Classic: Subtypes replaceable without breaking
+- Agentic: Specialized agents interchangeable with base
+- Pitfall: Breaking agent contracts in specializations
+- Enforcement: Strict interface compliance
+
+Interface Segregation Principle (ISP):
+- Classic: No forced interface dependencies
+- Agentic: Minimal tool access per agent role
+- Pitfall: Over-provisioning tools to simplify prompts
+- Enforcement: Role-based tool permissions
+
+Dependency Inversion Principle (DIP):
+- Classic: Depend on abstractions, not concretions
+- Agentic: Agents depend on service abstractions
+- Pitfall: Direct infrastructure dependencies
+- Enforcement: Service injection patterns
+
+HOOK ARCHITECTURE:
+
+Hook Types:
+1. Shell Hooks: Fast, script-based validation
+2. LLM Hooks: Single-turn evaluation for heuristics
+3. Agent Hooks: Full subagent with 50-turn capability
+
+Lifecycle Events:
+- PreToolUse: Security gate before execution
+- PostToolUse: Semantic feedback loop
+- Stop: Final validation and cleanup
+
+PRETOOLUSE SECURITY GATE:
+Blocks dangerous operations:
+- rm -rf / commands
+- Protected file access
+- Permission bypasses
+- Returns blocking exit codes on violations
+
+POSTTOOLUSE FEEDBACK LOOP:
+Teaches architectural compliance:
+- Real-time violation detection
+- Explanatory feedback to LLM
+- Pattern reinforcement learning
+- Prevents future violations
+
+FORGECRAFT MCP SERVER:
+Setup: npx forgecraft-mcp setup
+
+Generated Components:
+- forgecraft.yaml configuration
+- Status.md for continuity tracking
+- .claude/hooks/ pre-commit gates
+- PRD.md requirements template
+- TechSpec.md architectural requirements
+- CLAUDE.md with 112 specialized template blocks
+
+Domain Tags: 18 industry-specific configurations
+- FINTECH, HEALTHCARE, GAMING, etc.
+- Regulatory compliance enforcement
+- High-throughput requirements
+
+Enforced Architectures:
+- Hexagonal architecture (ports/adapters/DTOs)
+- Clean Code methodologies (CQS)
+- Testing Pyramid (80%+ coverage requirement)
+- Zero monolithic structures allowed
+
+SUBAGENT ORCHESTRATION:
+Legacy Codebase Analysis:
+- 3-stage review process
+- Automated code review agents
+- SOLID violation detection
+- Refactoring recommendations
+
+Automated Refactoring Pipeline:
+1. Scan for SOLID violations
+2. Generate refactoring plan
+3. Execute modular restructuring
+4. Validate architectural integrity
+
+ZERO-TRUST SECURITY MODEL:
+
+Assumption: Agents are untrusted automation engines
+- Not trusted senior developers
+- Capability without judgment
+- Require strict infrastructure controls
+
+Security Measures:
+- Prerequisite tool validation
+- Command sanitization
+- Provenance tracking
+- Immutable audit logs
+- Session replay capability
+
+Implementation Requirements:
+- PreToolUse security gates
+- PostToolUse audit logging
+- Tool access minimization
+- Cryptographic validation
+
+ARCHITECTURAL ENFORCEMENT:
+Make bad code physically impossible:
+- MCP-enforced quality contracts
+- Pre-commit hook validation
+- Template-based code generation
+- Industry-specific rule sets
+
+Quality Metrics:
+- 80%+ test coverage enforced
+- Cyclomatic complexity limits
+- SOLID compliance scoring
+- Architectural drift detection
+
+CONFIGURATION EXAMPLES:
+.claude/settings.json:
+```json
+{
+  "hooks": {
+    "preToolUse": ["security-gate.sh"],
+    "postToolUse": ["audit-logger.py"],
+    "stop": ["final-validation.js"]
+  },
+  "mcpServers": {
+    "forgecraft": {
+      "command": "npx",
+      "args": ["-y", "forgecraft-mcp"]
+    }
+  }
+}
+```
+
+CRITICAL THRESHOLDS:
+- Max agent turns: 50 for complex validation
+- Minimum test coverage: 80%
+- Max cyclomatic complexity: 10
+- Required architectural patterns: Hexagonal + Clean Code
+
+VALIDATION CHECKPOINTS:
+1. Pre-commit: SOLID compliance
+2. Pre-push: Integration testing
+3. Pre-merge: Security scanning
+4. Deploy: Performance validation
+
+MITIGATION STRATEGIES:
+- Token efficiency vs architectural quality
+- Agent capability vs security constraints
+- Development speed vs maintainability
+- Automation vs human oversight

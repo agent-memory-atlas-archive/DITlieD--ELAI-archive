@@ -1,9 +1,9 @@
 *
 
-!.gitignore
-!README.md
-!.elai_cc/
-!.elai_cc/**
+!/.gitignore
+!/README.md
+!/.elai_cc/
+!/.elai_cc/**
 
 .elai_cc/projects/
 .elai_cc/models/
@@ -15,3 +15,133 @@
 .elai_cc/rust_archived/crates/**/.claude-plugin/
 .elai_cc/rust_archived/crates/**/.claw/
 
+
+# Original research archive: expose reviewed text, never the whole workspace.
+!/LICENSE
+!/THIRD_PARTY_NOTICES.md
+!/ARCHIVE.md
+!/PUBLICATION-REVIEW.md
+!/ARCHIVE-MANIFEST.sha256
+!/AGENTS.md
+!/CLAUDE.md
+!/ELAI.md
+!/WORKFLOW-OVERVIEW.md
+!/CASCADE_WORKFLOW_PLAN.md
+!/outdated-tech-audit.md
+!/outdated-tech-audit2.md
+!/docs/
+!/docs/**/
+!/docs/**/*.md
+!/docs/**/*.txt
+!/docs/**/*.toml
+!/workflow/
+!/workflow/reasoning/
+!/workflow/reasoning/**/
+!/workflow/reasoning/**/*.md
+!/workflow/papers/
+!/workflow/papers/**/
+!/workflow/papers/**/*.md
+!/memory-bank/
+!/memory-bank/**/
+!/memory-bank/**/*.md
+!/.claude/
+!/.claude/agents/
+!/.claude/agents/**/*.md
+!/.claude/rules/
+!/.claude/rules/**/*.md
+!/.agents/
+!/.agents/skills/
+!/.agents/skills/**/
+!/.agents/skills/**/*.md
+!/scripts/
+!/scripts/archive/
+!/scripts/archive/**
+!/third-party-licenses/
+!/third-party-licenses/**
+
+# Downloaded upstream code/prompts, raw media, personal infrastructure notes.
+docs/.source/
+docs/.source_files_aider/
+docs/claude-code-system-prompts-full.md
+/workflow/reasoning/ANTENNA-DISCORD-SYSTEM-PLAN.md
+/workflow/reasoning/ANTENNA-THREE-PLANS-SUMMARY.md
+workflow/reasoning/cwd-author-note-*-voice-*.md
+
+# Previously tracked local state and opaque tool downloads stay local.
+.elai_cc/.elai/
+.elai_cc/.hypothesis/
+.elai_cc/indexes/
+.elai_cc/tools/obscura/
+.elai_cc/crates/orchestrator/workflow/
+.elai_cc/benchmarks/harness_trust/venvs/
+
+# Local credentials, runtime stores and generated files at any depth.
+**/.env
+**/.env.*
+**/settings.local.json
+**/.mcp.json
+**/.git/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/venv/
+**/venvs/
+**/target/
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.pem
+**/*.key
+**/*.log
+**/*.ragsync
+**/desktop.ini
+
+# Unpinned third-party QA inputs; see calibration_bootstrap/DATA-NOTES.md.
+/.elai_cc/benchmarks/calibration_bootstrap/halueval_qa_500.jsonl
+/.elai_cc/benchmarks/calibration_bootstrap/fixtures/halueval_qa_500_full.jsonl
+/.elai_cc/benchmarks/calibration_bootstrap/mmlu_verified_500.jsonl
+/.elai_cc/benchmarks/calibration_bootstrap/fixtures/mmlu_verified_500_full.jsonl
+
+# Agent checkpoint files and dashboard runtime session state.
+/.elai_cc/.elai-agents/
+/.elai_cc/crates/dashboard-v2/workflow/
+
+# Opaque local benchmark run artifacts (fixture sources remain).
+/.elai_cc/benchmarks/**/*.rra
+
+# Raw conversations, private projects/vaults and live deployment notes.
+/workflow/reasoning/ANTENNA-*.md
+/docs/*chat*.txt
+/docs/oldsessionresume.txt
+/docs/.research/chat*.txt
+/workflow/reasoning/TEIKOKU-CHAT-SUPERMEMORY-PLAN.md
+/workflow/reasoning/TEIKOKU-RESEARCH-MACHINE-PLAN.md
+/workflow/reasoning/TEIKOKU-RESEARCH-PERSONALIZATION-PLAN.md
+/workflow/reasoning/TEIKOKU-BRAIN-EXPLAINED.md
+/workflow/reasoning/TEIKOKU-BRAIN-RAG-PLAN.md
+/workflow/reasoning/TEIKOKU-ASSET-STUDIO-PLAN.md
+/workflow/reasoning/TEIKOKU-ASSET-STUDIO-WORKFLOW-BRAINSTORM.md
+/workflow/reasoning/*-empire-and-schemas-*.md
+/workflow/reasoning/elai-personal-research-machine-2026-07-06.md
+/workflow/reasoning/elai-personal-software-incarnation-2026-07-07.md
+/.agents/skills/sidecar-protocol/SKILL.md
+/.claude/agents/sidecar-health.md
+/workflow/reasoning/teikoku-p4-explore-devin-bridge.md
+/workflow/reasoning/teikoku-0.3-probe-evidence.md
+/workflow/reasoning/teikoku-0.5-context.md
+/workflow/reasoning/phase-cloud-oauth-decisions.md
+/workflow/reasoning/TEIKOKU-CURRENT-STATE.md
+
+# Unpinned adapted benchmark material, restricted artwork and local review debris.
+/.elai_cc/benchmarks/sycophancy/fixtures/syco_sharma_*.json
+/.elai_cc/benchmarks/sycophancy/generate_fixtures.py
+/.elai_cc/crates/dashboard-v2/src-tauri/icons/icon.png
+/.coderabbit.yaml
+/a.txt
+/.elai_cc/crates/orchestrator/proptest-regressions/dst.txt
+
+# Private collaboration discussions and condensed personal chats.
+/workflow/reasoning/elai-command-center-eval-2026-07-08.md
+/workflow/reasoning/viework-elai-handoff-doctrine.md
+/docs/.summarized_research_docs/*chat*.txt

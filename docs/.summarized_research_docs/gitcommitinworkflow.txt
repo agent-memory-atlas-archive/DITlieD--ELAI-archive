@@ -1,0 +1,1 @@
+integrate git on the workflow atutomatically using tools, hooks etc, like commit after changes and auto grep form history when user sayas something broke and auto adding things to gitignore like heavy data files etc

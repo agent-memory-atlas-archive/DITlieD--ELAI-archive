@@ -1,0 +1,189 @@
+PRE-PHASE 0: WINDOWS PLATFORM FIXES (clean base for elai_cc)
+Prerequisites: claw-code-rust-port cloned into .elai_cc/
+Platform: Windows 11 (primary dev environment)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Make claw-code-rust-port compile AND pass all tests on Windows.
+Zero compile errors, zero test failures, zero warnings.
+No feature changes. Pure platform compatibility.
+
+READ BEFORE IMPLEMENTING
+  (no spec files — this is pre-spec work on the upstream fork)
+
+RISKS TO WATCH
+  R-pre1: some tests may be inherently Unix-only (shell script execution).
+    Mitigation: cfg-gate those tests, not delete them. They still run on Linux CI.
+  R-pre2: fixing path separators may break Linux behavior.
+    Mitigation: use std::path::MAIN_SEPARATOR or Path methods, never hardcode slash direction.
+
+
+BASELINE (measured 2026-04-06)
+  cargo check: 40.15s, 0 errors, 2 warnings
+  cargo test: 10 compile errors (2 root causes), 8 runtime failures (4 root causes)
+  .rs files: 69, LOC: 61,317, test annotations: 684
+
+
+STEPS
+
+  P0.1 FIX COMPILE ERRORS: PermissionsExt / std::os::unix (10 errors, 3 files)
+    PRE_GATE:
+      - cargo check passes (lib code compiles, only test code fails)
+      - cargo test 2>&1 | grep "^error\[" | wc -l returns 10
+    TASK:
+      Files to fix:
+        crates/runtime/src/mcp_stdio.rs
+          Line 1413: use std::os::unix::fs::PermissionsExt  (wrap in #[cfg(unix)])
+          Lines 1456, 1502, 1636, 1761, 2680: permissions.set_mode(0o755)
+            -> wrap each in #[cfg(unix)] block
+            -> add #[cfg(windows)] no-op (Windows has no file mode bits; executability is implicit)
+        crates/runtime/src/mcp_tool_bridge.rs
+          Line 317: use std::os::unix::fs::PermissionsExt  (wrap in #[cfg(unix)])
+          Line 434: permissions.set_mode(0o755)  (same pattern as above)
+        crates/rusty-claude-cli/tests/mock_parity_harness.rs
+          Line 4: use std::os::unix::fs::PermissionsExt  (wrap in #[cfg(unix)])
+          Line 425: permissions.set_mode(0o755)  (same pattern)
+      Pattern for each set_mode site:
+        #[cfg(unix)]
+        { permissions.set_mode(0o755); fs::set_permissions(&path, permissions).expect("chmod"); }
+        // Windows: no chmod equivalent needed; .cmd/.ps1 scripts are executable by default
+    DETERMINISTIC_CHECK:
+      - cargo test --no-run 2>&1 | grep "^error" | wc -l returns 0
+      - grep -rn "use std::os::unix" crates/ --include="*.rs" | grep -v "#\[cfg(unix)\]"
+        returns 0 hits (all unix imports are gated)
+    ADVERSARIAL:
+      - If cfg gates break the Unix code path, Linux CI will catch it.
+        Test: cargo test --no-run on Windows succeeds (our gate).
+      - If set_mode is called outside the cfg block, compile error returns.
+        Test: cargo test --no-run is the definitive check.
+    ACCEPTANCE:
+      - cargo test --no-run: 0 compile errors across all crates
+
+  P0.2 FIX RUNTIME FAILURES: PLUGIN HOOK TESTS (4 failures)
+    PRE_GATE:
+      - P0.1 complete: cargo test --no-run passes
+    TASK:
+      Files to fix:
+        crates/plugins/src/hooks.rs (test module, lines 346-498)
+      Root cause: tests create .sh scripts and use printf/exit (Unix shell).
+      Fix strategy: gate entire test functions with #[cfg(unix)] and add
+        #[cfg(windows)] equivalents using .cmd scripts or powershell.
+      Failing tests and their Unix assumptions:
+        collects_and_runs_hooks_from_enabled_plugins (line 395)
+          write_hook_plugin creates hooks/pre.sh with #!/bin/sh
+          Fix: write_hook_plugin creates .cmd on Windows (echo message)
+        pre_tool_use_denies_when_plugin_hook_exits_two (line 456)
+          Hook command: "printf 'blocked by plugin'; exit 2"
+          Fix: on Windows: "cmd /c \"echo blocked by plugin & exit /b 2\""
+        propagates_plugin_hook_failures (line 473)
+          Hook command: "printf 'broken plugin hook'; exit 1"
+          Fix: on Windows: "cmd /c \"echo broken plugin hook & exit /b 1\""
+      Also fix write_hook_plugin (line 362):
+        #[cfg(unix)]: keep .sh scripts as-is
+        #[cfg(windows)]: write .cmd scripts with @echo off + echo message
+      Also: HookRunner must invoke hooks with correct shell per platform.
+        Check how HookRunner::run_hook_command works (line ~326) — it may already
+        hardcode /bin/sh. If so, add #[cfg(windows)] to use cmd.exe.
+    DETERMINISTIC_CHECK:
+      - cargo test -p plugins --lib 2>&1 | grep "FAILED" | wc -l returns 0
+      - cargo test -p plugins --lib reports "33 passed; 0 failed"
+    ADVERSARIAL:
+      - If HookRunner hardcodes /bin/sh as shell, Windows .cmd tests will still fail.
+        Test: grep for "/bin/sh" in hooks.rs non-test code; verify platform dispatch exists.
+      - If .cmd echo includes trailing whitespace, message comparison fails.
+        Test: assert with .trim() or use exact output format.
+    ACCEPTANCE:
+      - cargo test -p plugins --lib: 0 failures on Windows
+
+  P0.3 FIX RUNTIME FAILURES: TOOLS TESTS (4 failures)
+    PRE_GATE:
+      - P0.2 complete: plugin tests pass
+    TASK:
+      Files to fix:
+        crates/tools/src/lib.rs (test module)
+      Failing tests and root causes:
+        glob_and_grep_tools_cover_success_and_errors (line 6672)
+          Asserts path ends_with("nested/lib.rs") but Windows uses backslash.
+          Fix: normalize path separators in assertion, or use Path::ends_with.
+        powershell_runs_via_stub_shell (line 7069)
+          Calls chmod on a stub shell script path that does not exist on Windows.
+          Fix: cfg-gate Unix chmod; on Windows, scripts are executable by default.
+        repl_executes_python_code (line 7007)
+          Exit code 9009 = "python3 is not recognized" (Windows uses "python" not "python3").
+          Fix: use "python" on Windows, "python3" on Unix. Or cfg-gate to detect.
+        skill_loads_local_skill_prompt (line 5745)
+          PoisonError on env lock — a previous test panicked while holding the env mutex.
+          Fix: use a dedicated mutex per test or catch_unwind around env-modifying tests.
+          Alternative: mark test as #[serial] using serial_test crate, or isolate env access.
+    DETERMINISTIC_CHECK:
+      - cargo test -p tools --lib 2>&1 | grep "FAILED" | wc -l returns 0
+      - cargo test -p tools --lib reports "61 passed; 0 failed"
+    ADVERSARIAL:
+      - If path normalization converts all paths to forward-slash, it may break Windows path APIs.
+        Test: use Path::ends_with or contains(std::path::MAIN_SEPARATOR) in assertions only.
+      - If env lock fix masks the real poison source, other tests may intermittently fail.
+        Test: run cargo test -p tools --lib 10 times; 0 failures on all runs.
+    ACCEPTANCE:
+      - cargo test -p tools --lib: 0 failures on Windows
+
+  P0.4 FIX WARNINGS (2 warnings)
+    PRE_GATE:
+      - P0.3 complete: all tests pass
+    TASK:
+      crates/plugins/src/hooks.rs line 2:
+        unused import std::path::Path -> remove if unused, or add #[allow] if conditionally used
+      crates/runtime/src/hooks.rs line 636:
+        unused mut on command_builder -> remove mut keyword
+    DETERMINISTIC_CHECK:
+      - cargo check 2>&1 | grep "^warning:" | grep -v "generated\|Finished\|build" | wc -l returns 0
+    ADVERSARIAL:
+      - If Path import is used only in cfg(unix) code, removing it breaks Linux.
+        Test: wrap import in same cfg gate as its usage.
+    ACCEPTANCE:
+      - cargo check: 0 errors, 0 warnings
+
+  P0.5 VERIFY CLEAN BASELINE
+    PRE_GATE:
+      - P0.4 complete: 0 warnings
+    TASK:
+      - cargo check: 0 errors, 0 warnings
+      - cargo test: all tests pass
+      - Record final metrics to .elai_cc/metrics/pre_phase_0.toml:
+        compile_time, test_total, test_pass, test_fail, loc_total, warnings
+    DETERMINISTIC_CHECK:
+      - cargo check 2>&1 | grep -c "error\|warning" returns 0 (excluding "generated N warnings")
+      - cargo test 2>&1 | tail -1 contains "0 failed"
+      - .elai_cc/metrics/pre_phase_0.toml exists and test_fail = 0
+    ADVERSARIAL:
+      - If a test is cfg-gated out on Windows, the pass count drops but failure count is 0.
+        Test: compare test_total against baseline 684. If significantly lower, investigate.
+    ACCEPTANCE:
+      - cargo check: 0 errors, 0 warnings
+      - cargo test: 0 failures
+      - All cfg-gated tests documented (which ones, why, Linux-only flag)
+
+
+EXIT CRITERIA
+  cargo check: 0 errors, 0 warnings on Windows.
+  cargo test: 0 failures on Windows.
+  No behavioral changes to any code path.
+  All Unix-only tests are cfg-gated (not deleted) and documented.
+
+MEASUREMENTS
+  - Compile time (cargo check)
+  - Test count: total, passed, failed, cfg-gated-out
+  - Warning count: 0
+  - Files modified (count and list)
+
+
+GROUNDING
+  "10 compile errors"             -> VERIFIED: cargo test 2>&1 | grep "^error\[" | wc -l = 10
+  "set_mode 7 sites"              -> VERIFIED: grep output lists 7 set_mode call sites
+  "std::os::unix 3 sites"         -> VERIFIED: lines 1413, 317, 4 in respective files
+  "4 plugin test failures"        -> VERIFIED: cargo test -p plugins --lib shows 4 FAILED
+  "4 tools test failures"         -> VERIFIED: cargo test -p tools --lib shows 4 FAILED
+  "2 warnings"                    -> VERIFIED: cargo check output shows 2 warnings
+  "exit code 9009 = not recognized" -> VERIFIED: Windows error code for missing command
+  "PoisonError from env lock"     -> VERIFIED: cargo test output at lib.rs:5745
+  "61,317 LOC, 69 files, 684 tests" -> VERIFIED: measured 2026-04-06

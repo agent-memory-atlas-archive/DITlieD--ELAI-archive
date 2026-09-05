@@ -1,0 +1,192 @@
+Local Models for Prompt Engineering - Technical Summary
+
+2026 PARADIGM SHIFT:
+Cloud APIs → Decentralized local architectures
+- FSM (Finite State Machine) orchestration workflows
+- Multi-agent systems: context compilation, prompt transformation, execution, auditing
+- Rule adherence as paramount success metric
+
+FSM ARCHITECTURE NODES:
+
+1. Prompt Engineering Agent:
+   - Raw user input digestion
+   - Domain complexity evaluation
+   - GRC (Governance, Risk, Compliance) budget application
+   - Rigid operational rule injection
+   - Structured package generation
+
+2. Main Execution Model:
+   - Receives structured prompts
+   - Algorithmic execution
+   - Task completion
+
+3. Adversarial Auditor:
+   - Critical security node
+   - Pipeline validation
+   - Code review and flaw detection
+   - BLOCK/AUDIT PASSED authority
+
+4. Memory Writer:
+   - Session persistence
+   - Context compilation
+   - State management
+
+MODEL COMPARISON FOR PROMPT ENGINEERING:
+
+MoE vs Dense Architectures:
+
+MoE Challenges:
+- Token-by-token expert routing causes structural degradation
+- Malformed closing tags (</thinking> instead of </thinking>)
+- Syntactic state "forgetting"
+- Unacceptable risk for prompt engineering agents
+
+Dense Advantages:
+- All parameters activated per forward pass
+- Deterministic structural outputs
+- Perfect syntactic structure rigidity
+- Strict rule following capability
+
+TOP PERFORMING MODELS:
+
+1. Qwen 3.5 27B (Prompt Engineering Leader):
+   - Efficient Hybrid Architecture
+   - Gated Delta Networks (GDN) + grouped-query attention
+   - Block layout: 16 × (3 × (GDN → FFN) → 1 × (Gated Attention → FFN))
+   - Computational highway system
+   - Deterministic structural output
+
+2. DeepSeek-R1-Distill-Qwen-32B (Auditing Champion):
+   - RL-based reasoning without supervised fine-tuning
+   - Harsh, unrelenting refactoring machine
+   - Critical code logic dissection
+   - Edge case identification
+   - Surpasses Claude 3.5 Sonnet in scrutiny
+
+3. Claude 3.5 Sonnet (Baseline):
+   - Careful, verifiable reasoning
+   - Strong ethical/structural guardrails
+   - Zero-shot formatting capabilities
+   - Context degradation resistance
+
+HARDWARE OPTIMIZATION:
+
+Quantization Strategy:
+- INT4: Maximum efficiency, minimal quality loss
+- FP8: Balance of efficiency and reasoning
+- Custom quantization: Domain-specific optimization
+
+FSM Deployment Table:
+FSM Agent RoleOptimal ModelQuantizationVRAM RequiredHardware Tier
+Context CompilerLlama 4 Scout (109B)INT4~55-65 GBDual RTX 3090/4090
+Prompt EngineerQwen 3.5 27B DenseFP8~29 GBSingle RTX 3090/4090
+Main Model (Exec)Kimi K2.5 (1T)INT4~542 GBMulti-Node DGX Cluster
+Main Model (Alt)DeepSeek V3.2 (685B)INT4~351 GB8x H100 SXM Server
+Adversarial AuditorDeepSeek R1 Distill 32BINT4~18-20 GBSingle RTX 3090/4090
+Memory WriterGLM-4.5-Air (106B)INT4~55-60 GBDual RTX 3090/4090
+
+Prosumer Deployment:
+- Single RTX 3090/4090 for most roles
+- Mac Studio alternative for prompt engineering
+- Enterprise-grade for main execution models
+- Multi-node clusters for trillion-parameter models
+
+CRITICAL CAPABILITIES:
+
+Prompt Engineering Requirements:
+- Flawless formatting fidelity
+- Perfect markdown tag adherence
+- Nested JSON schema compliance
+- Balanced array maintenance over long contexts
+
+Auditing Requirements:
+- Arbitrary code execution vector detection
+- Prompt injection artifact scanning
+- Logic bomb identification
+- Meta-prompting for security validation
+
+Context Compilation:
+- Raw project file ingestion
+- RAG data integration
+- Domain rule compliance validation
+- Feasibility and completeness analysis
+
+SECURITY CONSIDERATIONS:
+
+Adversarial Auditor Role:
+- Meta-prompted for security scanning
+- Deep logic distillation capabilities
+- Critical failure point identification
+- AUDIT PASSED/BLOCK authority
+
+Prompt Injection Defense:
+- Hidden payload detection in codebase comments
+- System instruction overwrite prevention
+- Arbitrary code execution vector blocking
+- Pipeline contamination protection
+
+Validation Pipeline:
+- Tiered validation architecture
+- Rigorous code review processes
+- Temporal integrity validation
+- Data pipeline leak hunting
+
+PERFORMANCE METRICS:
+
+Formatting Compliance:
+- 100% markdown tag accuracy required
+- JSON schema validation perfection
+- Nested structure maintenance
+- Long-context stability
+
+Reasoning Quality:
+- Chain-of-thought verification
+- Mathematical proof capability
+- Algorithmic verification accuracy
+- Edge case identification rate
+
+Security Validation:
+- Prompt injection detection rate
+- Code execution vector blocking
+- Logic bomb identification accuracy
+- Malicious payload filtering
+
+DEPLOYMENT STRATEGIES:
+
+Small Team Deployment:
+- Single workstation for all FSM roles
+- RTX 4090 with 24GB VRAM
+- Model switching based on task requirements
+- Local-only operation for security
+
+Enterprise Deployment:
+- Dedicated hardware per FSM role
+- Multi-node clusters for main execution
+- Specialized models for each function
+- High-throughput pipeline processing
+
+Edge Deployment:
+- INT4 quantization for efficiency
+- Smaller models for constrained resources
+- Batch processing for throughput
+- Offline operation capability
+
+FUTURE DIRECTIONS:
+
+Architecture Evolution:
+- Beyond hybrid attention mechanisms
+- Improved MoE routing determinism
+- Enhanced prompt formatting fidelity
+- Advanced adversarial detection
+
+Hardware Trends:
+- Specialized AI accelerators
+- Memory bandwidth improvements
+- Multi-model concurrent execution
+- Energy efficiency optimization
+
+Application Domains:
+- Enterprise workflow automation
+- Security auditing and compliance
+- Code generation and review
+- Document processing and synthesis

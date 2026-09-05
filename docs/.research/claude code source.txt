@@ -1,0 +1,198 @@
+based on my workflow and claude code leaks, you think i could modify claude code to make my workflow "part of it" ? because i want to disable some aspects too like the auto compact feature and add per session id etc
+
+i dont mind if i will not get more updates, but will i be able to still connect to anthropic ?
+Model 21:43
+Thoughts
+
+Defining the User's Intent
+
+I'm focusing on truly grasping the user's ultimate objective. It's about integrating their unique workflow – FSM, multi-agent structure, Topological Ingestor, and Git-Governance – into "Claude Code." My priority is to understand why they want to disable specific features, not just which ones. That's the core of the problem.
+
+Investigating Session Persistence
+
+I'm now diving into the implications of disabling features such as auto-compact, with a particular focus on the impact of per-session ID tracking. My concern is whether the user's modified client will maintain compatibility with the Anthropic API, even if updates are lost. I'm scrutinizing the Claude Code architecture, specifically state management and session persistence to ensure proper function.
+
+Analyzing Architectural Integrations
+
+I've been examining how the user can seamlessly integrate their workflow into Claude Code. I've confirmed that the architecture readily accommodates their needs via sub-agents and plugins. The leaked plugin architecture, specifically onQueryStart, onToolUse, and onQueryEnd hooks, is perfect for mapping to their Finite State Machine orchestrator events. I'm also confirming they can disable "auto compact" by modifying the compactIfNeeded logic.
+
+Confirming Integration Feasibility
+
+I'm now focusing on how the user's modifications affect their connectivity to Anthropic. I've confirmed Claude Code uses the standard Anthropic SDK, ensuring the API remains accessible with a valid key. The system has sessionId tracking and disk storage for sessions. This can be readily adapted to partition memory or workflow directories based on session IDs. I'm also assessing potential dependencies on internal Anthropic services, like OAuth or telemetry, though the standard API should remain unaffected if the key is valid.
+
+Confirming Implementation Options
+
+I've confirmed integration pathways. Specifically, mapping the user's system to Claude Code's plugin architecture or modifying the QueryEngine.ts file directly. I've pinpointed the src/utils/plugins/pluginLoader.ts for the non-destructive approach. For disabling auto-compact, I'm directing the user to src/services/compact/ and QueryEngineConfig. Finally, I've confirmed that per-session ID support exists in AppState.tsx and sessionStorage.ts. This utilizes standard Anthropic API calls, so the user can easily interface with Anthropic.
+
+Collapse to hide model thoughts
+chevron_right
+
+Based on the architectural leaks provided, yes, you can absolutely modify Claude Code to integrate your custom FSM workflow, and yes, you will still be able to connect to Anthropic.
+
+Here is a breakdown of why this is possible, how the Anthropic connection works, and exactly where you would make these modifications based on the leaked architecture.
+1. Will you still be able to connect to Anthropic?
+
+Yes. Claude Code uses the standard Anthropic SDK (src/services/api/) to make REST/streaming calls to Claude (e.g., claudeAPI.messages.create). The Anthropic API does not fingerprint or block clients based on local UI or orchestration modifications. As long as your local authentication (API key or OAuth token stored in the keychain) remains valid, your modified QueryEngine will continue to receive responses.
+
+Note: If you plan to heavily modify the code, you might want to strip out or disable the telemetry/analytics (src/services/analytics/) to prevent any modified state data from causing errors on their backend, though this won't impact your API access.
+2. How to Disable "Auto-Compact" (LLM Amnesia)
+
+Your goal is to stop "LLM Amnesia" and take control of the context window. Claude Code handles this in the context compression service.
+
+    Location: src/services/compact/ and src/QueryEngine.ts
+
+    Modification: Look for the compactIfNeeded function. You can simply modify this function to return messages instantly without performing the "Snip Compaction" or "Summarization".
+
+    Alternative: You can intercept the maxTokens trigger in the QueryEngineConfig (src/QueryEngine.ts:130-150) to set the compaction threshold to an impossibly high number (e.g., 9999999), effectively disabling it. You can then replace it with your Skeletonization 2.0 and Context Compiler sub-agent logic.
+
+3. Adding Per-Session IDs & Directory Isolation
+
+Claude Code actually already has an underlying session concept, which makes your goal of routing data to workflow/sessions/{session_id}/ very easy to implement.
+
+    Location: src/state/AppState.tsx and src/utils/sessionStorage.ts
+
+    Modification: The global AppState tracks sessionId. You can use this sessionId dynamically inside your tools. For example, when your Context Compiler creates a context package, you can grab getAppState().sessionId and write the topological map directly to your workflow/sessions/{session_id}/ directory.
+
+4. Integrating your FSM Workflow & Sub-Agents
+
+Because Claude Code is built on a highly modular loop, you have two ways to inject your Crispy Pipeline (IDLE → PLANNING → TESTING_FIRST → EXECUTING → AUDITING → MEMORIZING):
+Approach A: The Plugin Architecture (Non-Destructive)
+
+Claude Code has a built-in plugin system (src/utils/plugins/pluginLoader.ts). You can define your FSM Orchestrator as a plugin that hooks into the system lifecycle:
+
+    Use onQueryStart to trigger your Evidence-Based Research Gate (paper-ingestor).
+
+    Use onToolUse to block tools based on the current FSM state (e.g., block the Edit tool if the state is not EXECUTING).
+
+Approach B: Modifying the QueryEngine (Destructive but Powerful)
+
+Since you are okay with losing upstream updates, you can literally rewrite the core loop in src/QueryEngine.ts.
+
+    Right now, the QueryEngine has a simple while (true) loop that fetches tools and runs them.
+
+    You can wrap this loop in your FSM. For example, before calling claudeAPI.messages.create, you can check your .fsm-state.json. If the state is AUDITING, you physically replace the tools array with only the Auditor tools, temporarily blinding the main model from editing code until the audit passes.
+
+5. Mapping Your Specific Tools to the Codebase
+
+    Topological Ingestor (Tree-sitter AST): You can build this as a new standard tool in src/tools/TopologicalIngestorTool/. Set it to auto-trigger (bypass permissions by setting behavior: 'auto') on project load. You can hook it into the startMdmRawRead() area in src/main.tsx to prefetch the AST graph during startup.
+
+    Automated Git-Governance: You can create a lifecycle hook inside executeTool in src/QueryEngine.ts. If the ToolResult is successful, the current state is AUDITING, and the auditor passes, you automatically invoke a silent background execution of the BashTool running git add . && git commit -m "Auto-Commit:[Phase]".
+
+    Adversarial Auditor / Paper Ingestor: Claude Code has built-in support for Sub-Agents via src/tools/AgentTool/AgentTool.tsx. You can register your adversarial-auditor and paper-ingestor as specialized sub-agents with strict system prompts and isolated context windows.
+
+Summary: Your workflow architecture maps almost perfectly 1:1 with Claude Code's internal design. Because it's written in TypeScript and executed via Bun, you can clone the source, strip out the features you hate, inject your Tree-sitter AST graph and FSM orchestrator, and run it as your own customized CLI while still leveraging Anthropic's reasoning engine.
+Model 21:45
+Thoughts
+
+Expand to view model thoughts
+chevron_right
+Model 21:46
+Thoughts
+
+Clarifying User Intent
+
+I'm now focused on clarifying the user's intent regarding editing or removing built-in system prompts within "Claude Code." My goal is to determine if this action is possible and, crucially, if it would free up token space for custom prompts. The user's focus on an "instruction budget" is central to this.
+
+Reviewing Architecture Details
+
+I've been drilling deeper into the "Claude Code" architecture. I've pinpointed the locations of system prompt generation: src/context.ts, src/QueryEngine.ts, and descriptions in src/commands.ts and src/tools/. I'm analyzing the default system prompt's contents, including platform info, directory details, git status, file tree, tool availability, and user context. I'm exploring modification options through customSystemPrompt and appendSystemPrompt fields and direct code modification to address the user's concerns about the instruction budget.
+
+Confirming Token Optimization
+
+I've confirmed that stripping out unneeded default prompt parts will reclaim significant token space. By eliminating automatic git status, unused tool descriptions, and verbose instructions, users can inject their "Crispy Pipeline" instructions instead of "Claude Code's" generic assistant prompt. I've pinpointed specific files: src/context.ts (for environment data) and src/QueryEngine.ts (for prompt assembly) where modifications are possible. The suggested approach is to delete or comment out the default concatenations in fetchSystemPromptParts(), then inject the desired alternative.
+
+Collapse to hide model thoughts
+chevron_right
+
+Yes, absolutely. This is actually one of the most powerful modifications you can make to eradicate the "Monolithic Slop" you mentioned in your plan.
+
+By default, AI coding assistants pack their system prompts with massive, generalized instructions ("You are a helpful coding assistant...", "Always be polite...", etc.) and dump entire environment contexts (git status, directory trees) into the prompt on every single turn. This eats up your "Instruction Budget" and degrades the model's ability to follow strict rules.
+
+Since you are modifying the local TypeScript source code, you can completely gut the built-in system prompt and replace it with your Prompt Engineer and Context Compiler outputs.
+
+Here is exactly where the built-in prompts live in the Claude Code architecture and how to rip them out:
+1. Where the "Slop" Lives
+
+In the leaked architecture, the system prompt is assembled dynamically before calling the Anthropic API.
+
+    File: src/context.ts
+
+    Functions: getSystemContext() and getUserContext()
+
+By default, getSystemContext() injects a ton of baseline information:
+code TypeScript
+
+// Claude Code's Default (Bloated)
+export function getSystemContext(): SystemPrompt {
+  return {
+    platform: getPlatform(),           
+    workingDirectory: getCwd(),
+    gitStatus: getGitStatus(),         // Constantly re-injected
+    fileTree: getFileTree(),           // Constantly re-injected
+    availableTools: getToolDescriptions(),
+    currentDateTime: new Date().toISOString(),
+    // ... massive block of default behavioral instructions
+  }
+}
+
+2. How to Gut It (The "Crispy" Approach)
+
+You want to control exactly what the model sees based on your FSM State (IDLE, PLANNING, EXECUTING, AUDITING).
+
+You can rewrite src/QueryEngine.ts where it calls fetchSystemPromptParts(...).
+
+Instead of letting Claude Code build its giant default prompt, you intercept it:
+code TypeScript
+
+// Inside your modified src/QueryEngine.ts
+
+async function* query(config: QueryEngineConfig) {
+  // 1. Read YOUR FSM State
+  const fsmState = JSON.parse(await fs.readFile('.fsm-state.json'));
+  
+  // 2. Eradicate the built-in prompt and use YOUR Context Compiler
+  // Instead of: const systemPrompt = await fetchSystemPromptParts(...)
+  
+  let systemPrompt = "";
+  
+  if (fsmState.current === 'PLANNING') {
+      systemPrompt = await loadMemoryBankRules('planning');
+      // Inject your Evidence-Based Research Gate output here
+  } else if (fsmState.current === 'EXECUTING') {
+      systemPrompt = await loadMemoryBankRules('executing');
+      // Inject your Skeletonization 2.0 output here
+  } else if (fsmState.current === 'AUDITING') {
+      systemPrompt = await loadMemoryBankRules('auditing');
+  }
+
+  // 3. Call Anthropic with ONLY your crispy prompt
+  const response = await claudeAPI.messages.create({
+      model: config.model,
+      system: systemPrompt, // <-- 100% under your control now
+      messages: messages,
+      tools: config.tools,
+      stream: true
+  });
+  // ...
+}
+
+3. Tool Descriptions Also Eat Your Budget
+
+Keep in mind that the descriptions of the tools themselves (defined in src/tools/) are passed to the LLM and consume tokens.
+
+By default, Claude Code gives the LLM 40+ tools at once (Bash, FileRead, Grep, etc.). That is a massive waste of context if the model is currently in the PLANNING phase.
+
+Your Fix:
+Because you are implementing FSM Subsystem Orchestration, you should dynamically filter the config.tools array before sending it to the API.
+
+    If state == PLANNING, only pass the TopologicalIngestor and PaperIngestor tools.
+
+    If state == EXECUTING, only pass FileEdit and FileRead.
+
+    If state == AUDITING, only pass the AdversarialAuditor testing tools.
+
+The Result
+
+By gutting src/context.ts and filtering the tools in src/QueryEngine.ts, you shrink the system prompt from potentially 10,000+ tokens of generalized "slop" down to < 50 instructions of highly specific, state-aware FSM rules.
+
+This ensures 100% adherence to your workflow and prevents the "attention decay" you identified in your architecture plan.

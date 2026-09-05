@@ -1,0 +1,852 @@
+REASONING ARCHITECTURE DESIGN: EXTERNALIZED COGNITION FOR LOCAL LLMs
+Date: 2026-04-14
+Status: PROPOSAL -- needs user review
+Author: Claude Opus 4.6 (design session, not implementation)
+Research basis: docs/research-summary-small-llm-coding-agents.md (32 papers, Jun 2025 - Apr 2026)
+Depends on: Phase 3E (context budget), Phase 3F (rules engine), Phase 3J (sidecar),
+  Phase 4B (tools + validation), Phase 4D (pipeline factory), Phase 4E (DecompositionTree),
+  Phase 4F (feasibility probe), Phase 4G (autonomous mode)
+
+
+========================================================================
+PROBLEM STATEMENT
+========================================================================
+
+A frontier model (Claude Opus, GPT-5, 250K+ context) encounters an error and reasons
+about it in a continuous context: sees the error, recalls the code, forms hypotheses,
+tests them mentally, and adapts -- all in one unbroken chain of thought across tens of
+thousands of tokens.
+
+A local model (3B-7B, 4K-40K effective context) cannot do this. The context window is
+too small to hold code + error + history + reasoning simultaneously. Even when the
+window is large enough, small models lack the reasoning depth to chain cause and effect
+across multiple steps (ARLCP, ICLR 2026: long reflection ACTIVELY HARMS sub-10B models).
+
+This is not a size problem or a context problem. It is a DESIGN problem.
+
+The current elai_cc design handles task decomposition (baby steps), structural retries
+(decompose, template, few-shot), and verification density (T1/T2/T3 checks after every
+edit). But it does NOT handle the core question: when the model generates code that fails
+for a NOVEL reason (not classifiable by regex, not fixable by retrying with a template),
+how does the system recover?
+
+Research consensus (32 papers, 2025-2026): the answer is NOT "make the model smarter"
+or "give it more context." The answer is:
+
+  THE MODEL DOES NOT REASON. THE SYSTEM REASONS FOR IT.
+
+Evidence:
+  ClawsBench (Apr 2026, arXiv:2604.05172): unscaffolded frontier models score 0-8%
+    on complex tasks. Scaffolded models of ANY size surge to 39-63%. Top 5 models
+    cluster within 10pp band when scaffolded. Scaffold dwarfs model variance.
+  Computational Arbitrage (Mar 2026, arXiv:2603.22404): mini-coder 4B achieved
+    exact same 75% solve rate as frontier models on SWE-bench. $80 vs $150.
+  Qwen3-Coder-Next (3B active params): 44.3% on SWE-Bench Pro vs Claude Sonnet
+    4.5: 46.1%. 3B active params achieves 85-95% of frontier capability.
+
+
+========================================================================
+CORE THESIS
+========================================================================
+
+"Reasoning" in an LLM coding agent decomposes into 6 discrete operations:
+
+  1. ERROR CLASSIFICATION -- what kind of error? (compile, runtime, logic, type, import)
+  2. ROOT CAUSE LOCALIZATION -- which file:line caused it?
+  3. HYPOTHESIS GENERATION -- what could fix it? (2-3 candidates)
+  4. FIX SELECTION -- which hypothesis is most likely correct?
+  5. FIX APPLICATION -- apply the chosen fix
+  6. VERIFICATION -- did it work?
+
+A frontier model performs all 6 in one continuous context. But each operation is
+independently a SMALL, FOCUSED task. Operations 1-2 can be done DETERMINISTICALLY
+(AST, compiler, DKG). Operations 3-4 can be done via MICRO-QUERIES to the model
+(one question, one short answer). Operations 5-6 are already handled by the existing
+pipeline (constrained generation + T1/T2/T3 verification).
+
+The system externalizes the reasoning chain into infrastructure:
+  - Deterministic tools handle what they can (60-70% of errors)
+  - Micro-LLM-calls handle focused sub-questions (20-25%)
+  - Tree search explores alternatives at failure points (5-8%)
+  - Cloud API provides expert diagnosis for the long tail (2-4%)
+
+The model never "reasons." It answers precise questions and generates small code edits.
+
+
+========================================================================
+ARCHITECTURE: 6-LAYER EXTERNALIZED REASONING PIPELINE
+========================================================================
+
+Each layer is tried in order. If it resolves the error, skip remaining layers.
+Each layer is more expensive (in time or money) than the previous.
+
+
+------------------------------------------------------------------------
+LAYER 1: DETERMINISTIC ERROR REASONING (no LLM, ~60-70% of errors)
+------------------------------------------------------------------------
+
+Integration: Phase 4B (FailureTaxonomy, validation pipeline), Phase 1A (DKG)
+
+The system classifies and localizes the error using only deterministic tools.
+No LLM involved. Zero cost. Sub-100ms latency.
+
+STEP 1 -- FAILURE CLASSIFICATION (existing FailureTaxonomy, 9 categories):
+  MISSING_IMPORT, TYPE_MISMATCH, SYNTAX_ERROR, UNDEFINED_SYMBOL,
+  LIFETIME_ERROR, BORROW_ERROR, UNUSED_WARNING, TEST_ASSERTION, RUNTIME_PANIC
+
+  Each category has: regex patterns, known-fix templates, DKG query strategy.
+  Classification is deterministic (regex match on compiler/test output).
+
+STEP 2 -- ROOT CAUSE LOCALIZATION (deterministic tools):
+  a. Compiler diagnostic parsing: extract file:line:column from error output
+  b. DKG edge traversal: if error is UNDEFINED_SYMBOL, query DKG for symbol
+     definition across the codebase. If found: the fix is an import.
+  c. SVRepair-style CFG analysis (arXiv:2602.06090): for logic errors, transform
+     control flow graph into Semantic Scene Graph, serialize as Mermaid syntax.
+     Narrows bug location to specific CFG region without LLM.
+  d. Dependency analysis: if error is TYPE_MISMATCH, DKG provides the expected
+     type from the callee's signature. The fix instruction includes both the
+     actual and expected types.
+
+STEP 3 -- FIX INSTRUCTION GENERATION (deterministic templates):
+  For each FailureTaxonomy category, a template generates the fix instruction:
+
+  MISSING_IMPORT:
+    "Add `{import_statement}` to {file}. Source: DKG edge {caller} -> {callee}."
+  TYPE_MISMATCH:
+    "Line {line}: expected `{expected_type}`, got `{actual_type}`. Convert via {conversion}."
+  SYNTAX_ERROR:
+    "Line {line}: {compiler_message}. Fix: {template_fix}."
+  UNDEFINED_SYMBOL:
+    DKG found: "Add import: `{import}` from {source_file}."
+    DKG not found: escalate to Layer 2 (symbol may need to be created).
+  TEST_ASSERTION:
+    "Test {test_name} expected {expected}, got {actual}. Check function {fn_name}."
+    (Escalate to Layer 2 -- assertion failures usually require logic understanding.)
+
+  If the template produces a complete fix instruction: inject into the model's
+  next prompt as a precise directive. The model generates ONLY the code edit.
+  Pass rate for template-directed fixes: projected >95% (the task is trivial
+  when the instruction is precise).
+
+TYPES:
+  DiagnosticResult {
+    category: FailureCategory,          // from FailureTaxonomy
+    location: Option<SourceLocation>,   // file:line:column
+    root_cause: Option<RootCause>,      // structured, not prose
+    fix_instruction: Option<String>,    // precise directive for model
+    confidence: DiagnosticConfidence,   // HIGH (template match) | LOW (heuristic)
+    escalate: bool,                     // true if Layer 1 cannot resolve
+  }
+
+  RootCause {
+    kind: RootCauseKind,                // MissingImport, WrongType, LogicError, ...
+    source_symbol: Option<String>,      // DKG symbol involved
+    expected: Option<String>,           // expected type/value/behavior
+    actual: Option<String>,             // actual type/value/behavior
+  }
+
+
+------------------------------------------------------------------------
+LAYER 2: MICRO-REFLECTION (local LLM, one-sentence diagnosis, ~20-25%)
+------------------------------------------------------------------------
+
+Integration: Phase 3J (sidecar), Phase 3E (context budget)
+
+When Layer 1 cannot classify or localize (e.g., logic errors, semantic bugs),
+ask the local model ONE focused question. Output constrained to JSON.
+
+Research grounding:
+  ARLCP (ICLR 2026, arXiv:2602.12113): PPO with dynamic penalty on reflection
+    length. Qwen3-1.7B: -38.19% length, +3.00% accuracy. Long reflection
+    ACTIVELY HARMS sub-10B models.
+  "First Try Matters" (arXiv:2510.08308): small models suffer "overused checking"
+    -- overturn correct answers during deep verification.
+
+PROTOCOL:
+  1. Assemble compressed context (max 500 tokens total):
+     - Baby step spec goal (50 tokens)
+     - Generated code that failed (100-200 tokens, the function only)
+     - Error message (50-100 tokens, verbatim)
+     - Relevant type signatures from DKG (50-100 tokens)
+
+  2. Send micro-reflection prompt:
+     System: "You are diagnosing a code error. Answer in JSON only."
+     User: "Code: {code}\nError: {error}\nContext types: {types}"
+
+  3. JSON-constrained output (vLLM json_schema or grammar-guided):
+     {
+       "root_cause": "string, max 30 words",
+       "faulty_line": integer,
+       "action": "string, max 20 words"
+     }
+     Max output: 50 tokens. Temperature: 0.3 (focused, not exploratory).
+
+  4. Store diagnosis in MistakeBook (see MISTAKE BOOK section below).
+
+  5. Inject into next attempt's context as structured constraint:
+     CONSTRAINT: Previous attempt failed. Root cause: "{root_cause}".
+     Fix line {faulty_line} by: "{action}".
+     Do NOT repeat: {forbidden_diff_hash}.
+
+  Total token cost per micro-reflection: ~550 tokens input + ~50 output = ~600 tokens.
+  Fits in ANY model tier. Latency: ~2-5 seconds.
+
+
+------------------------------------------------------------------------
+LAYER 3: INTERROGATION TREE (local LLM, system-guided Q&A, ~5-8%)
+------------------------------------------------------------------------
+
+Integration: Phase 2A (GRC engine, state machine), Phase 3F (rules engine)
+
+When Layer 2 micro-reflection produces a diagnosis but the retry still fails
+(diagnosis was wrong or incomplete), the system guides the model through a
+structured decision tree using multiple-choice questions.
+
+PROTOCOL:
+  The system asks 3-7 focused questions. Each question:
+  - ~300 tokens input (question + choices + minimal code context)
+  - ~10 tokens output (the chosen letter/option)
+  - Total per question: ~310 tokens
+
+  QUESTION 1 -- ERROR LOCATION:
+    "The error is in: (A) function signature, (B) function body logic,
+     (C) return value, (D) an imported dependency, (E) test expectations"
+
+  QUESTION 2 -- ROOT CAUSE CATEGORY (conditional on Q1 answer):
+    If B: "The body logic error is: (A) wrong algorithm, (B) missing edge case,
+           (C) wrong variable used, (D) incorrect operator, (E) off-by-one"
+    If D: "The dependency issue is: (A) wrong version, (B) wrong import path,
+           (C) API changed, (D) missing feature flag"
+
+  QUESTION 3 -- FIX APPROACH (conditional on Q1+Q2):
+    "To fix this, should we: (A) modify the existing logic at line {N},
+     (B) add a new branch/case, (C) change the type signature,
+     (D) use a different function from {dependency}"
+
+  The decision tree is FINITE and DETERMINISTIC once answers are collected.
+  The system assembles a fix instruction from the path through the tree.
+
+  Total cost: 3-7 questions x ~310 tokens = 930-2170 tokens input + 30-70 output.
+  Latency: ~10-30 seconds (3-7 LLM calls x 2-5s each).
+
+  NOTE: the decision tree is LANGUAGE-PARAMETERIZED. Rust questions reference
+  lifetimes/borrows; Python questions reference type hints/imports; Go questions
+  reference goroutines/channels. Trees stored as data in rules.db, not hardcoded.
+
+TYPES:
+  InterrogationTree {
+    root: QuestionNode,
+    language: Language,                 // from ProjectProfile
+    domain: Option<Domain>,            // web, ML, CLI, game, ...
+  }
+
+  QuestionNode {
+    question_template: String,          // with {placeholders} for code context
+    choices: Vec<Choice>,              // 3-6 options
+    children: HashMap<ChoiceId, QuestionNode>,  // conditional follow-up
+    terminal: Option<FixTemplate>,     // leaf node = fix instruction
+  }
+
+  Choice {
+    id: ChoiceId,
+    label: String,                     // "wrong algorithm", "missing edge case", ...
+    confidence_hint: f32,              // system's prior estimate (from DKG analysis)
+  }
+
+
+------------------------------------------------------------------------
+LAYER 4: AB-MCTS TREE SEARCH (local LLM, branching at failure, ~3-5%)
+------------------------------------------------------------------------
+
+Integration: Phase 4G (autonomous mode), Phase 4E (DecompositionTree)
+
+When focused diagnosis (Layers 2-3) fails, switch to EXPLORATION.
+Generate multiple alternatives at the failure point and score them.
+
+Research grounding:
+  AB-MCTS (arXiv:2503.04412): adaptive "go wider" vs "go deeper" branching
+    based on external feedback. Outperforms standard repeated sampling.
+    For 7B: branch locally at failure point instead of regenerating full solution.
+  Guided by Gut (arXiv:2505.20325): intrinsic verification via token confidence
+    + generation novelty. Sub-10B matches 32B-70B. 10x less GPU memory.
+    50% KV cache reduction vs Best-of-N. Critical for 8-12GB VRAM.
+  Computational Arbitrage (arXiv:2603.22404): 7B through 15 AB-MCTS cycles
+    locally beats single cloud zero-shot.
+
+PROTOCOL:
+  1. Identify the BRANCH POINT: the specific line/function where the failure
+     originates (from Layers 1-3 localization).
+
+  2. Generate N=3 alternative implementations at the branch point.
+     Each alternative uses:
+     - Fresh context (Compressed Context Replay, see section below)
+     - Different temperature: [0.7, 1.0, 0.3] (diversity + exploration + focus)
+     - Forbidden diffs from MistakeBook (prevent regenerating known-failed patches)
+
+  3. Score each alternative using GG intrinsic verification:
+     Score = compile_success * 100
+           + tests_passed * 50
+           + token_confidence_mean * 20  // GG: intrinsic signal from model
+           + novelty_vs_previous * 10    // GG: divergence from failed attempts
+           + code_length_penalty          // shorter = better, within bounds
+
+     GG intrinsic signals extracted from the sidecar during generation:
+     - token_confidence: mean logprob of generated tokens (higher = more confident)
+     - generation_novelty: 1.0 - cosine_similarity(new_output, last_failed_output)
+     Both are FREE (computed during generation, no extra inference).
+
+  4. If best-scoring alternative passes all tests: ACCEPT.
+     If no alternative passes: branch DEEPER on the best-scoring partial solution.
+     Max depth: 3 levels. Max total branches: 15 (budget from Computational Arbitrage).
+
+  5. If 15 branches exhausted without passing: escalate to Layer 5.
+
+  Total cost: 3-15 LLM calls x ~1200 tokens each = 3600-18000 tokens processed.
+  Latency: ~30-90 seconds. All local, zero API cost.
+
+TYPES:
+  TreeSearchState {
+    branch_point: SourceLocation,       // where to branch
+    alternatives: Vec<BranchCandidate>, // generated alternatives
+    scores: Vec<BranchScore>,           // GG-scored
+    depth: usize,                       // current search depth (max 3)
+    total_branches: usize,              // total generated (max 15)
+    forbidden_diffs: Vec<DiffHash>,     // from MistakeBook
+  }
+
+  BranchCandidate {
+    code: String,                       // generated code
+    temperature: f32,                   // generation temperature used
+    token_confidence: f32,              // mean logprob (GG signal)
+    novelty: f32,                       // divergence from prior attempts (GG signal)
+  }
+
+  BranchScore {
+    compile: bool,
+    tests_passed: usize,
+    tests_total: usize,
+    confidence: f32,                    // GG token_confidence
+    novelty: f32,                       // GG generation_novelty
+    total: f32,                         // weighted sum
+  }
+
+
+------------------------------------------------------------------------
+LAYER 5: CLOUD DIAGNOSTIC ESCALATION (micro-cost, ~2-4%)
+------------------------------------------------------------------------
+
+Integration: Phase 4G (autonomous mode escalation), providers/ crate
+
+When all local methods are exhausted, escalate to a cloud model for DIAGNOSIS
+ONLY. The cloud model never generates code -- it explains what's wrong.
+The local model then uses that explanation to generate the fix.
+
+Research grounding:
+  Section 8.2 of research summary: ~95% compute handled locally, cloud =
+    "staff architect" for high-value decisions. >90% API spend reduction.
+
+PROTOCOL:
+  1. Assemble diagnostic package (max 1000 tokens):
+     - Baby step spec (200 tokens)
+     - Failed code (200 tokens)
+     - Error message (100 tokens)
+     - MistakeBook entries: what was tried, what failed (200 tokens)
+     - Relevant code context from DKG (300 tokens)
+
+  2. Route to appropriate cloud tier:
+
+     TIER 3A -- HAIKU DIAGNOSTIC ($0.002 per call):
+       First escalation attempt. Cheapest cloud model.
+       Prompt: "Diagnose this code error. Do NOT write code. Explain the root
+                cause and the approach to fix it in 2-3 sentences max."
+       Output: ~100 tokens max.
+       Sufficient for: wrong algorithm, missing edge case, API misuse.
+
+     TIER 3B -- SONNET DIAGNOSTIC ($0.01 per call):
+       If Haiku diagnosis + local retry fails.
+       Same prompt but Sonnet has deeper reasoning capability.
+       Sufficient for: subtle logic bugs, complex type errors, architectural issues.
+
+     TIER 3C -- OPUS DIAGNOSTIC ($0.05 per call):
+       Reserved for genuinely hard problems. Max 1 per task.
+       Only triggered if: Sonnet diagnosis failed AND task is marked CRITICAL.
+
+  3. Cloud diagnosis injected into local model's context:
+     EXPERT DIAGNOSIS: "{cloud_diagnosis}"
+     Apply this fix to line {line}: {cloud_suggested_approach}
+
+  4. Local model generates the fix using cloud's diagnosis as instruction.
+     If fix passes: done. If not: one more local retry with adjusted approach.
+     If that also fails: escalate to Layer 6.
+
+TYPES:
+  CloudDiagnosticRequest {
+    baby_step_spec: String,             // compressed spec
+    failed_code: String,                // the code that failed
+    error: String,                      // compiler/test error
+    mistake_book: Vec<MistakeEntry>,    // what was already tried
+    code_context: String,               // relevant DKG context
+    tier: CloudTier,                    // Haiku | Sonnet | Opus
+  }
+
+  CloudDiagnosticResponse {
+    root_cause: String,                 // 1-3 sentences
+    suggested_approach: String,         // how to fix (not code)
+    confidence: String,                 // "certain" | "likely" | "speculative"
+    cost_usd: f64,                      // actual API cost of this call
+  }
+
+  CloudTier { Haiku, Sonnet, Opus }
+
+
+------------------------------------------------------------------------
+LAYER 6: CLOUD GENERATION (last resort, expensive, ~0.5-1%)
+------------------------------------------------------------------------
+
+Integration: Phase 4G (SUBSTITUTE_MODEL), providers/ crate
+
+The cloud model generates actual code. Used only when all other layers fail.
+
+PROTOCOL:
+  1. Send full baby step context to Sonnet (or Opus if CRITICAL).
+  2. Cloud generates the code fix.
+  3. Local pipeline validates: T1 rules, T2 tree-sitter, T3 compilation, tests.
+  4. If valid: accept. Log cloud usage in SSB for cost tracking.
+  5. If invalid: BubbleUp to human (Layer 6 is the last automated resort).
+
+  Budget guard (enforced by orchestrator):
+    Monthly budget tracked in SSB table cloud_spend.
+    Daily soft limit: monthly_budget / 30.
+    Per-task hard limit: configurable (default 3 cloud generation calls).
+    Approaching limit: WARN user via INTERACTIVE gate.
+    Exceeding limit: block cloud generation, fall through to human escalation.
+
+TYPES:
+  CloudGenerationRequest {
+    baby_step_spec: String,
+    code_context: String,
+    mistake_book: Vec<MistakeEntry>,
+    cloud_diagnosis: Option<String>,    // from Layer 5 if available
+    tier: CloudTier,
+  }
+
+  CloudSpendTracker {
+    monthly_budget_usd: f64,            // from elai_cc.toml
+    daily_soft_limit_usd: f64,          // monthly / 30
+    per_task_max_generations: usize,    // default 3
+    spent_today_usd: f64,
+    spent_this_month_usd: f64,
+    generation_count_this_task: usize,
+  }
+
+
+========================================================================
+MISTAKE BOOK (externalized error memory)
+========================================================================
+
+Research grounding:
+  Code-A1 (arXiv:2603.15611): "Mistake Book" mechanism -- externalized experience
+    replay buffer. Safe with Qwen2.5-Coder-3B without self-congratulatory collapse.
+  CTIM-Rover WARNING: episodic natural language memory DEGRADES performance
+    (42% -> 31-40%). Irrelevant variable names poison small model attention.
+  GISclaw (arXiv:2603.26845) + OpenSage (arXiv:2602.16891): optimal approach
+    is external JSON state machine. Only inject active_constraints and
+    forbidden_diffs into prompt. Max 150 tokens injected.
+
+The MistakeBook is NOT a narrative log. It is a STRUCTURED constraint store.
+
+DESIGN:
+  Stored in SSB as typed records (action_type = "mistake_entry").
+  Per baby step. Cleared on baby step success.
+  Max 5 entries per baby step (oldest evicted on overflow).
+
+  MistakeEntry {
+    attempt_number: usize,
+    diff_hash: Blake3Hash,              // hash of the failed patch (for forbidden_diffs)
+    failure_category: FailureCategory,  // from FailureTaxonomy
+    faulty_line: Option<usize>,         // from localization
+    root_cause_json: Option<String>,    // from micro-reflection (Layer 2)
+    action_taken: String,               // "decomposed" | "templated" | "branched" | ...
+    timestamp: u64,                     // for ordering
+  }
+
+PROMPT INJECTION FORMAT (max 150 tokens):
+  When injecting MistakeBook into the model's context:
+
+  CONSTRAINTS (from previous attempts):
+  - Do NOT produce patch {diff_hash_short}. (failed: {failure_category})
+  - Line {faulty_line}: {root_cause_json.action} (from diagnosis)
+  - Forbidden patterns: {list of diff_hash_short values}
+
+  This is STRUCTURED DATA, not narrative. The model sees constraints, not stories.
+  Variable names, code snippets, and reasoning chains from failed attempts are
+  NEVER shown to the model (CTIM-Rover finding: they poison attention).
+
+
+========================================================================
+COMPRESSED CONTEXT REPLAY (fresh start per retry)
+========================================================================
+
+Research grounding:
+  Kimi-Dev (arXiv:2509.23045, 60.4% SWE-bench): "completely wipe context between
+    attempts, never show model its own failed CoT."
+  E-mem (arXiv:2601.21714): spawns stateless assistant agents, each receiving one
+    pristine episodic segment. -70% total token consumption.
+
+On every retry, the model receives a FRESH context assembly. NOT appended to
+the previous conversation. NOT shown its own failed output.
+
+CONTEXT COMPOSITION PER RETRY (research-grounded priorities):
+  Raw code > summarized code > embedded code (research principle 8).
+  Strict I/O formatting (arXiv:2601.13118: 44% of optimized prompts).
+  Assertive language: "must" not "should" (arXiv:2601.13118: 9%).
+
+  Slot                       Tokens    Content
+  System prompt              50        Role + output format constraint
+  Baby step spec             200       Goal, signature, file plan, constraints
+  MistakeBook constraints    150       Forbidden diffs + active constraints
+  Relevant code (DKG)        500       Only the functions/types that matter
+  Working example            300       One similar function from this codebase
+  Fix instruction            100       From Layer 1/2/3/5 diagnosis
+  Output reserve             100       For the generated code
+  TOTAL                      ~1400     Well within ANY model tier
+
+  This 1400-token prompt is MORE INFORMATION-DENSE than 50K tokens of
+  conversation history. The model sees ONLY what matters for THIS retry.
+
+ASSEMBLY PROTOCOL:
+  1. Context budget allocator (Phase 3E) builds fresh allocation per retry.
+  2. DKG query: fetch only symbols in baby step's FILE_PLAN blast radius.
+  3. BM25 query: find most similar working function in codebase (few-shot).
+  4. MistakeBook: serialize active constraints (max 150 tokens).
+  5. Fix instruction: from whichever Layer produced the diagnosis.
+  6. Assemble. Count tokens exactly. Truncate lowest-priority slot if over budget.
+
+
+========================================================================
+GENERATION PARAMETERS FOR REPAIR LOOPS
+========================================================================
+
+Research grounding:
+  FixAudit (arXiv:2604.05560): temperature 1.0, top-p 1.0 for repair loops
+    prevents cyclic traps. Single 7B: zero-shot 11.93% -> FixAudit 30.40%.
+
+PARAMETER PROFILES:
+
+  Profile           Temperature  Top-p  Use Case
+  FIRST_ATTEMPT     0.3          0.9    Initial generation (focused)
+  MICRO_REFLECTION  0.3          0.9    Diagnosis (focused, precise)
+  INTERROGATION     0.1          0.9    Multiple choice (near-deterministic)
+  REPAIR_RETRY      1.0          1.0    After failure (explore, prevent cycles)
+  TREE_BRANCH_A     0.7          1.0    AB-MCTS branch (moderate diversity)
+  TREE_BRANCH_B     1.0          1.0    AB-MCTS branch (max diversity)
+  TREE_BRANCH_C     0.3          0.9    AB-MCTS branch (focused alternative)
+
+  Key insight: repair retries use HIGH temperature (1.0) to escape local minima.
+  This is counterintuitive but empirically validated by FixAudit.
+  First attempts use LOW temperature (0.3) for maximum pass@1.
+
+
+========================================================================
+VRAM-TIER CONFIGURATIONS
+========================================================================
+
+Not all layers are available on all hardware. The system adapts:
+
+  VRAM   Model       Layers Available          Notes
+  8GB    3B NF4+FA2  1,2,3,4(reduced),5,6     AB-MCTS max 5 branches (VRAM)
+  12GB   7B NF4+FA2  1,2,3,4,5,6              Full pipeline. TQ8 default.
+  12GB   3B NF4+FA2  1,2,3,4,5,6              Full pipeline. More branches (low KV).
+  16GB   7B NF4+FA2  1,2,3,4(extended),5,6    AB-MCTS max 20 branches
+  24GB   14B NF4+FA2 1,2,3,4(extended),5,6    Dual-model: 14B gen + 7B verify
+  48GB   32B NF4+FA2 1,2,3,4(full),5,6        Multi-model: 32B gen + 14B verify + 7B diagnose
+
+  8GB special handling:
+    Layer 2 (micro-reflection) uses the SAME model (no swap, just different prompt).
+    Layer 4 (AB-MCTS) limited to 5 branches (VRAM constraint on KV cache).
+    Layer 5 (cloud diagnostic) is MORE IMPORTANT on 8GB -- local diagnosis is weaker.
+
+  Offline mode (no API key):
+    Layers 5-6 replaced by:
+      Layer 5-offline: model swap for diagnosis (load different model temporarily).
+        On 8GB: swap 3B out -> load 7B -> diagnose -> swap back (~10-15s).
+        On 12GB+: swap to larger model if available.
+      Layer 6-offline: BubbleUp to human with diagnostic summary.
+        Present: "Failed after {N} attempts. Tried: {MistakeBook summary}.
+                  Hypothesis: {best diagnosis}. Options: (A) hint, (B) skip, (C) redecompose."
+
+
+========================================================================
+CLOUD BUDGET ECONOMICS
+========================================================================
+
+Assumption: user has a $20/month cloud API plan.
+
+COST PER ESCALATION CALL:
+  Tier 3A (Haiku diagnostic):   ~500 input + ~100 output = ~$0.002
+  Tier 3B (Sonnet diagnostic):  ~500 input + ~100 output = ~$0.01
+  Tier 3C (Opus diagnostic):    ~500 input + ~100 output = ~$0.05
+  Tier 4  (Sonnet generation):  ~2000 input + ~500 output = ~$0.05-$0.50
+  Tier 4  (Opus generation):    ~2000 input + ~500 output = ~$0.50-$2.00
+
+BUDGET PROJECTION (typical daily coding session, 4 hours, medium complexity):
+  Baby steps attempted:             ~40
+  Pass@1 (local 7B, 90%):          ~36 pass immediately
+  Layer 1 (deterministic fix):      ~2 resolve at Layer 1
+  Layer 2 (micro-reflection):       ~1 resolve at Layer 2
+  Layer 4 (AB-MCTS):               ~0.5 resolve at Layer 4
+  Layer 5 (cloud diagnostic):       ~0.3 calls (Haiku)
+  Layer 6 (cloud generation):       ~0.1 calls (Sonnet)
+  Daily cloud cost:                  ~$0.01-$0.05
+
+  Monthly cost (daily use):          ~$0.30-$1.50
+  Budget remaining:                  $18.50-$19.70
+
+  $20/month is MASSIVE when cloud is used as a scalpel.
+  10,000 Haiku diagnostic calls fit in a $20 budget.
+  Even heavy users (8 hours/day, hard tasks) project <$5/month cloud spend.
+
+CONFIGURATION (elai_cc.toml):
+  [cloud]
+  enabled = true                        # false = fully offline
+  monthly_budget_usd = 20.0
+  daily_soft_limit_usd = 0.70           # monthly / 30, WARN at 80%
+  per_task_max_generations = 3          # Layer 6 calls per task
+  diagnostic_model = "haiku"            # default Layer 5 model
+  generation_model = "sonnet"           # default Layer 6 model
+  opus_allowed = false                  # must opt-in to Opus (expensive)
+
+  [cloud.escalation]
+  haiku_max_per_baby_step = 2           # max Haiku diagnostic calls
+  sonnet_max_per_baby_step = 1          # max Sonnet diagnostic calls
+  opus_max_per_task = 1                 # max Opus calls per entire task
+
+
+========================================================================
+INTEGRATION WITH EXISTING PHASES
+========================================================================
+
+PHASE 3E (Context Budget Allocator):
+  Add REPAIR_CONTEXT profile to SlotWeights: different allocation for retry
+  context vs first-attempt context. Retry context prioritizes MistakeBook
+  and fix instructions over RepoMap and SSB history.
+
+PHASE 3F (Rules Engine):
+  Interrogation trees stored as rule data in rules.db.
+  Language-parameterized question nodes. Domain-tagged.
+  Self-discovery: when auditor identifies a recurring error pattern 3+ times,
+  auto-propose a new FailureTaxonomy category + fix template (Layer 1 expansion).
+
+PHASE 3J (Sidecar):
+  GG intrinsic signals: sidecar must expose mean_logprob and token_entropy
+  per generation in the response metadata. These are computed during generation
+  at zero additional cost (just logging what the model already computes).
+  Used by Layer 4 (AB-MCTS) for scoring without external verifier.
+
+PHASE 4B (Tools + Validation):
+  FailureTaxonomy expansion: add structured RootCause output to each category.
+  SVRepair-style CFG analysis: add to validation pipeline as optional deep
+  localization step (triggered only when regex classification is LOW confidence).
+
+PHASE 4D (Pipeline Factory):
+  Designer marks baby steps as COMPLEXITY_HIGH when: touching >3 files,
+  modifying core types, or changing public API. High-complexity steps get:
+  - Larger AB-MCTS budget (10 branches instead of 5)
+  - Automatic few-shot example injection
+  - Lower escalation threshold (2 retries instead of 3 before Layer 5)
+
+PHASE 4E (DecompositionTree):
+  BubbleUp integrates with reasoning layers:
+  - Baby step failure after Layer 4: BubbleUp to Step level (redecompose)
+  - Baby step failure after Layer 6: BubbleUp to Phase level (replan)
+  - Phase failure: BubbleUp to Concept level (research alternative approach)
+  BubbleUpAction gains: DiagnoseAndRetry (invoke reasoning pipeline) as a new
+  action before Redecompose.
+
+PHASE 4G (Autonomous Mode):
+  AutoAdvanceEvaluator checks reasoning pipeline exhaustion:
+  - Layers 1-4 exhausted: auto-escalate to Layer 5 (if cloud enabled)
+  - Layers 1-6 exhausted: escalate to human (INTERACTIVE gate)
+  CloudSpendTracker integrated into escalation policy:
+  - Budget remaining > 50%: auto-escalate freely
+  - Budget remaining 20-50%: escalate only for CRITICAL baby steps
+  - Budget remaining < 20%: WARN user, prefer offline fallback
+
+
+========================================================================
+GG INTRINSIC VERIFICATION DETAIL
+========================================================================
+
+Research grounding:
+  Guided by Gut (arXiv:2505.20325): replaces external PRM with intrinsic
+    signals. Sub-10B matches 32B-70B accuracy. 10x less GPU memory.
+    50% KV cache reduction vs Best-of-N. 8x faster inference.
+
+The sidecar already computes token logprobs during generation. GG extracts
+two signals from this data at ZERO additional inference cost:
+
+SIGNAL 1 -- TOKEN CONFIDENCE:
+  mean_logprob = mean(logprob[t] for t in generated_tokens)
+  Higher = model is more confident in its output.
+  Calibrated via GRPO fine-tuning (if model supports it) or raw logprobs.
+  Used for: scoring AB-MCTS branches, early detection of hallucination.
+
+SIGNAL 2 -- GENERATION NOVELTY:
+  novelty = 1.0 - cosine_similarity(
+    embed(new_output),
+    embed(last_failed_output)
+  )
+  Higher = output diverges more from previous failed attempt.
+  Embedding via existing GraphCodeBERT (Phase 1C, already loaded for search).
+  Used for: ensuring AB-MCTS branches are actually different, not cyclic.
+
+SIGNAL 3 -- ENTROPY TREND (optional, from anti-staleness-design ETC):
+  If entropy spikes mid-generation: model is uncertain, likely hallucinating.
+  Early termination signal. Prevents generating garbage that wastes a retry.
+
+SIDECAR RESPONSE EXTENSION:
+  Current response: {"text": "...", "tokens_generated": N, "time_ms": T}
+  Extended: {"text": "...", "tokens_generated": N, "time_ms": T,
+             "mean_logprob": -1.23, "min_logprob": -4.56,
+             "entropy_mean": 2.1, "entropy_max": 5.8}
+
+  Cost: ~0 (logging existing computation). No extra forward pass.
+
+
+========================================================================
+DESIGN PRINCIPLES (research-grounded, 12 rules)
+========================================================================
+
+1. STATELESS INVOCATION: wipe context between attempts, never show model its
+   own failed chain-of-thought. (Kimi-Dev, arXiv:2509.23045)
+
+2. MICRO-TASK DECOMPOSITION: one function, one edit, one command per LLM call.
+   (ClawsBench: scaffold dwarfs model variance)
+
+3. DETERMINISTIC FAULT LOCALIZATION FIRST: AST/CFG/linter/DKG before LLM sees
+   anything. (SVRepair, arXiv:2602.06090)
+
+4. SINGLE-SENTENCE JSON REFLECTION: never multi-paragraph. Long reflection
+   actively harms sub-10B models. (ARLCP, ICLR 2026, arXiv:2602.12113)
+
+5. FORBIDDEN DIFFS, NOT NARRATIVE MEMORY: structured constraints <150 tokens.
+   No episodic text. No variable names from failed attempts.
+   (CTIM-Rover: episodic memory degrades 42% -> 31-40%)
+
+6. 3-5 RETRY LIMIT WITH AB-MCTS BRANCHING: branch at failure point, not from
+   scratch. (AB-MCTS, arXiv:2503.04412; FixAudit, arXiv:2604.05560)
+
+7. TEMPERATURE 1.0 + TOP-P 1.0 FOR REPAIR LOOPS: prevents cyclic traps.
+   Low temperature for first attempts. (FixAudit, arXiv:2604.05560)
+
+8. GG INTRINSIC VERIFICATION: token confidence + generation novelty signals.
+   No external PRM needed. Saves VRAM. (GG, arXiv:2505.20325)
+
+9. CLOUD AS SCALPEL: diagnosis only at Tier 3, generation only at Tier 4.
+   ~95% compute local, >90% API spend reduction. (research summary section 8)
+
+10. RAW CODE > SUMMARIZED CODE > EMBEDDED CODE: structural context fidelity.
+    Never summarize code when you can show it directly.
+    (research summary principle 8)
+
+11. ASSERTIVE PROMPTING: "must" not "should". Explicit pre/post conditions.
+    Strict I/O formatting. (arXiv:2601.13118: prompt guidelines)
+
+12. AGENTIC MODEL SELECTION: prefer models pre-trained on tool-use trajectories
+    (SWE-Star, Youtu-LLM) over general instruction-tuned models.
+    (SWE-Star: Qwen2.5-Coder distilled from Devstral, 250K agentic trajectories)
+
+
+========================================================================
+TYPES SUMMARY (new types introduced by this design)
+========================================================================
+
+  // Layer 1
+  DiagnosticResult { category, location, root_cause, fix_instruction, confidence, escalate }
+  RootCause { kind, source_symbol, expected, actual }
+  RootCauseKind { MissingImport, WrongType, LogicError, WrongAlgorithm, MissingEdgeCase, ... }
+  DiagnosticConfidence { High, Low }
+
+  // Layer 2
+  MicroReflectionRequest { code, error, context_types }
+  MicroReflectionResponse { root_cause, faulty_line, action }  // JSON-constrained
+
+  // Layer 3
+  InterrogationTree { root, language, domain }
+  QuestionNode { question_template, choices, children, terminal }
+  Choice { id, label, confidence_hint }
+
+  // Layer 4
+  TreeSearchState { branch_point, alternatives, scores, depth, total_branches, forbidden_diffs }
+  BranchCandidate { code, temperature, token_confidence, novelty }
+  BranchScore { compile, tests_passed, tests_total, confidence, novelty, total }
+
+  // Layer 5-6
+  CloudDiagnosticRequest { baby_step_spec, failed_code, error, mistake_book, code_context, tier }
+  CloudDiagnosticResponse { root_cause, suggested_approach, confidence, cost_usd }
+  CloudGenerationRequest { baby_step_spec, code_context, mistake_book, cloud_diagnosis, tier }
+  CloudSpendTracker { monthly_budget, daily_limit, per_task_max, spent_today, spent_month, count }
+  CloudTier { Haiku, Sonnet, Opus }
+
+  // Mistake Book
+  MistakeEntry { attempt_number, diff_hash, failure_category, faulty_line, root_cause_json, action_taken, timestamp }
+  MistakeBook { entries: Vec<MistakeEntry>, max_entries: usize, baby_step_id: String }
+
+  // Generation parameters
+  GenerationProfile { temperature, top_p, max_tokens, profile_name }
+
+
+========================================================================
+OPEN QUESTIONS (for user review)
+========================================================================
+
+1. Should Interrogation Trees (Layer 3) be language-specific only, or also
+   domain-specific (web vs ML vs game vs CLI)? Domain trees add accuracy but
+   increase maintenance surface.
+
+2. Should GG intrinsic verification require GRPO fine-tuning of the local model,
+   or is raw logprob sufficient? GRPO calibration improves confidence estimates
+   but requires a fine-tuning step per model.
+
+3. For the offline mode model swap (Layer 5-offline), should the system swap
+   transparently or ask the user? Transparent swap is faster but may surprise
+   users who notice a 10-15s pause.
+
+4. Should the MistakeBook persist across baby steps within the same step/phase,
+   or strictly per baby step? Cross-baby-step persistence could help with
+   recurring patterns but risks the CTIM-Rover poisoning problem.
+
+5. AB-MCTS branch limit (5 on 8GB, 15 on 12GB+): should this be configurable
+   or auto-detected from available VRAM at runtime?
+
+
+========================================================================
+PAPER INDEX (citations used in this design)
+========================================================================
+
+arXiv:2604.05172 - ClawsBench scaffold multiplier (Li et al., Apr 2026)
+arXiv:2603.22404 - Computational Arbitrage mini-coder 4B (Mar 2026)
+arXiv:2602.12113 - ARLCP reflection penalty, ICLR 2026 (Feb 2026)
+arXiv:2510.08308 - First Try Matters, self-verification harm (Oct 2025)
+arXiv:2509.23045 - Kimi-Dev context wipe (Sep-Dec 2025)
+arXiv:2604.05560 - FixAudit repair loop parameters (Apr 2026)
+arXiv:2603.15611 - Code-A1 Mistake Book (Wang et al., Mar 2026)
+arXiv:2603.26845 - GISclaw JSON state machine (Mar 2026)
+arXiv:2602.16891 - OpenSage constraint injection (Feb 2026)
+arXiv:2505.20325 - Guided by Gut intrinsic verification (May 2025)
+arXiv:2503.04412 - AB-MCTS adaptive branching (Mar 2025)
+arXiv:2602.06090 - SVRepair CFG->SSG localization (Feb 2026)
+arXiv:2601.21714 - E-mem episodic context reconstruction (Jan 2026)
+arXiv:2603.05344 - OpenDev compound workflow routing (Mar 2026)
+arXiv:2510.21903 - ToM-SWE dual-agent separation (Oct 2025)
+arXiv:2601.13118 - Prompt guidelines for code gen (Jan 2026)
+arXiv:2602.21221 - Latent Context Compilation (Feb 2026)
+arXiv:2603.04759 - SharedLLM multi-scale compression (Mar 2026)
+arXiv:2505.17716 - AgentRR record & replay (May 2025)
+arXiv:2504.11536 - ReTool RL strategic tool use (Apr 2025)
+arXiv:2602.02361 - SWE-Universe agentic mid-training (Feb 2026)
+arXiv:2512.24618 - Youtu-LLM 1.96B (Dec 2025)
+arXiv:2604.03515 - Scaffold taxonomy (Rombaut, Apr 2026)
+logic-star-ai/swe-star - SWE-Star local model benchmarks (Feb 2026)
+Liqs-v2/ctim-rover - CTIM-Rover memory degradation warning (Jul 2025)

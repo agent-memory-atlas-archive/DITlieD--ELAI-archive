@@ -1,0 +1,382 @@
+PHASE 2A: GRC STATE MACHINE (basic)
+Prerequisites: Phase 0 complete (all contract tests pass, cargo check clean)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Implement the Grounded Reasoning Chain engine core. All reasoning must cite grounding
+sources. Budget system enforces per-topic call and character limits. State machine
+validates transition order. Rejected steps produce typed errors.
+
+This phase covers the GRC state machine, budget system, and grounding validation only.
+Grounding verification methods (FILE_CHECK, WEB_CHECK, etc.) are phase 2B.
+Per-agent configuration is phase 2C. CSQ is phase 2D.
+
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/reasoning.txt             Sections 1-3 (responsibilities, GRC state machine, budget)
+  docs/specs/crates/reasoning.txt             Section 10 (KEY TYPES: ThinkStep, GrcBudget, GrcError, etc.)
+  docs/specs/crates/reasoning.txt             Section 11 (TESTABLE INVARIANTS: items 1-3 are phase-2A scope)
+  docs/specs/architecture-overview.txt        Section 4 (GrcEngine trait: think, set_budget)
+  docs/specs/integration/prompt-architecture.txt  Section 1 (why code-driven, not prompt-driven)
+
+
+DESIGN DECISIONS (grounded)
+
+  D1. State transition validation via allowed_transitions map.
+      The GRC state machine (observe -> hypothesize -> plan_action -> act -> verify) must
+      reject invalid transitions (e.g., hypothesize -> verify skipping plan_action).
+      Implementation: GrcState enum with fn allowed_next(&self) -> &[GrcState].
+      Grounding: standard FSM practice. Guidance-ai uses similar FSM-from-schema
+      token masking (github.com/guidance-ai/guidance). Our version validates at the
+      step level, not token level.
+
+  D2. Typed error enum for all rejection modes.
+      GrcError { UngroundedStep, BudgetExhausted, InvalidTransition, MalformedGrounding }.
+      Each variant carries context (which step, what was missing, what was expected).
+      Grounding: standard Rust error handling (thiserror pattern).
+
+  D3. Budget tracking with forced convergence.
+      GrcBudget tracks remaining_calls and remaining_chars, decremented atomically per step.
+      When remaining_calls <= 1, the engine forces a convergence step (must produce conclusion).
+      Grounding: BudgetThinker (OpenReview 2025, openreview.net/forum?id=ahatk5qrmB) inserts
+      budget-remaining signals; Token-Budget-Aware LLM Reasoning (ACL 2025) adjusts tokens
+      by complexity. Our version enforces hard limits at the engine level.
+
+  D4. Grounding field validation decomposes content into claims.
+      Instead of just checking "grounding field present," validation parses the grounding
+      string into individual source citations and verifies each is well-formed
+      (format: "source_type:reference", e.g., "file:src/foo.rs:L42").
+      Phase 2B adds actual source verification; phase 2A validates format only.
+      Grounding: RARR (arxiv:2210.08726) decomposes LLM output into claims for per-claim
+      verification. SAFE (arxiv:2403.18802) does similar decomposition.
+
+  D5. GroundingLevel enum matching spec hierarchy.
+      VERIFIED > HIGH > UNCERTAIN. Steps with UNCERTAIN grounding are flagged (warn log)
+      but not rejected in phase 2A. Phase 2B adds resolution of UNCERTAIN claims.
+      Grounding: reasoning.txt section 4 defines these three levels.
+
+
+STEPS
+
+  2A.1 SKELETON: reasoning/ crate structure + types
+    PRE_GATE:
+      - cargo check succeeds (Phase 0 baseline clean)
+        Command: cd .elai_cc && cargo check 2>&1; [ $? -eq 0 ]
+      - reasoning/ crate does not exist yet (greenfield)
+        Command: test ! -d .elai_cc/crates/reasoning && echo PASS || echo "FAIL: crate already exists"
+    TASK:
+      - Create .elai_cc/crates/reasoning/ with Cargo.toml (deps: core/)
+      - Add reasoning crate to workspace Cargo.toml
+      - Define types in reasoning/src/types.rs:
+          GrcState enum { Observe, Hypothesize, PlanAction, Act, Verify, Converge, Status }
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            with fn allowed_next(&self) -> &[GrcState] returning valid transitions
+            Note: Converge allowed from any state. Status allowed from any state.
+            First non-Status/non-Converge step in a topic must be Observe.
+          ThinkStep { step_type: GrcState, content: String, topic: String,
+                      grounding: Option<String>, conclusion: Option<String>,
+                      scope: Option<Vec<String>> }
+            #[derive(Debug, Clone)]
+            scope: when AgentGrcConfig.require_scope_enumeration=true, the Observe
+            step must populate scope with all task components/modalities before proceeding.
+            Orchestrator validates: every scope item appears in subsequent plan_action.
+            Unaddressed items -> WARN injected into agent context.
+            Source: reasoning.txt section 10, technical-analysis-v3.txt Concern 3.
+          ThinkResult { step: ThinkStep, budget_remaining: GrcBudget,
+                        grounding_level: Option<GroundingLevel>, warnings: Vec<String> }
+            #[derive(Debug, Clone)]
+          GrcBudget { max_calls: u32, max_chars: u32, calls_used: u32, chars_used: u32 }
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            with fn remaining_calls(&self) -> u32, fn remaining_chars(&self) -> u32,
+            fn is_exhausted(&self) -> bool, fn must_converge(&self) -> bool (remaining_calls <= 1)
+            Default: max_calls=5, max_chars=800 (reasoning.txt section 3 "moderate" default)
+          GroundingLevel enum { Verified, High, Uncertain }
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+          GrcError enum { UngroundedStep{step_type,topic}, BudgetExhausted{topic,calls_used,max_calls},
+                          InvalidTransition{from: GrcState, to: GrcState, allowed: Vec<GrcState>},
+                          MalformedGrounding{raw,reason} }
+            #[derive(Debug, Clone)] implementing std::error::Error via thiserror
+            Note: InvalidTransition carries Vec<GrcState>, requires GrcState: Clone.
+      - Define GrcEngine trait in reasoning/src/engine.rs:
+          Phase 2A methods (implemented):
+            fn think(&mut self, step: ThinkStep) -> Result<ThinkResult, GrcError>
+            fn set_budget(&mut self, topic: &str, max_calls: u32, max_chars: u32)
+            fn get_budget(&self, topic: &str) -> Option<&GrcBudget>
+            fn reset_topic(&mut self, topic: &str)
+          Phase 2B stubs (unimplemented!(), present for trait stability):
+            fn verify_claim(&self, claim: &str, source: &str) -> Result<VerificationResult, GrcError>
+            fn ground_plan(&self, plan: &str) -> Vec<GroundingResult>
+          Rationale: defining the full 6-method trait now prevents breaking BasicGrcEngine
+          impls when phase 2B adds verify_claim/ground_plan. Stubs use unimplemented!()
+          with #[allow(unused)] until phase 2B.
+      - Define stub types for 2B forward references in reasoning/src/types.rs:
+          VerificationResult { claim: String, passes: bool, evidence: String, method_used: String }
+          GroundingResult { claim: String, method: String, level: GroundingLevel, source: String }
+          Both marked #[allow(dead_code)] until phase 2B.
+      - Stub implementation: BasicGrcEngine with HashMap<String, TopicState>
+        where TopicState { budget: GrcBudget, last_state: Option<GrcState>,
+                           steps: Vec<ThinkStep>, grounding_log: Vec<(String, GroundingLevel)> }
+        Default budget applied when think() is called on a topic with no prior set_budget().
+      - Re-export public API from reasoning/src/lib.rs
+    DETERMINISTIC_CHECK:
+      - cargo check on workspace succeeds with 0 errors
+        Command: cd .elai_cc && cargo check 2>&1 | grep -c "error\[" | grep -q "^0$"
+      - All types exist in source:
+        Command: grep -c "pub enum GrcState" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub struct ThinkStep" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub struct ThinkResult" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub struct GrcBudget" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub enum GrcError" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub enum GroundingLevel" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub trait GrcEngine" .elai_cc/crates/reasoning/src/engine.rs | grep -q "1"
+      - GrcState derives Clone (required for InvalidTransition variant):
+        Command: grep -B1 "pub enum GrcState" .elai_cc/crates/reasoning/src/types.rs | grep -q "Clone"
+    ADVERSARIAL:
+      - If GrcState::allowed_next() is wrong (e.g., allows Observe->Verify), invalid reasoning
+        chains pass silently. Test: unit test that Observe.allowed_next() does NOT contain Verify.
+      - If GrcBudget uses signed integers, underflow is possible. Test: assert remaining_calls()
+        returns 0 when calls_used >= max_calls, never wraps to u32::MAX.
+    ACCEPTANCE:
+      - cargo check succeeds with reasoning/ in workspace: exit code 0
+      - GrcEngine trait has exactly 6 methods (4 implemented + 2 phase-2B stubs)
+        Command: grep -A1 "pub trait GrcEngine" .elai_cc/crates/reasoning/src/engine.rs | head -50 | grep -c "fn "
+        (should be 6: think, set_budget, get_budget, reset_topic, verify_claim, ground_plan)
+
+  2A.2 VERIFY: compilation check
+    PRE_GATE:
+      - Step 2A.1 complete (reasoning/ crate exists and compiles)
+        Command: test -f .elai_cc/crates/reasoning/Cargo.toml && echo PASS
+    TASK:
+      - Run cargo check on full workspace. Fix any compile errors.
+      - Verify reasoning/ depends only on core/ (no other crate deps for phase 2A).
+    DETERMINISTIC_CHECK:
+      - cargo check returns 0 errors
+        Command: cd .elai_cc && cargo check 2>&1 | grep "error\[" | wc -l | grep -q "^0$"
+      - Dependency check:
+        Command: grep "^\[dependencies" .elai_cc/crates/reasoning/Cargo.toml -A 20 | grep -v "core" | grep -v "^\[" | grep -v "^$" | grep -v "thiserror" | grep -v "serde" | wc -l
+        (should be 0 — only core, thiserror, serde allowed)
+    ADVERSARIAL:
+      - If reasoning/ accidentally depends on providers/ or tools/, it creates a premature
+        coupling. Phase 2A is pure logic; no LLM calls. Test: parse Cargo.toml deps.
+    ACCEPTANCE:
+      - cargo check exit code 0
+      - reasoning/ depends only on core/, thiserror, serde (no providers/, tools/, knowledge/)
+
+  2A.3 TEST: write failing tests (TDD)
+    PRE_GATE:
+      - Step 2A.2 passes (workspace compiles clean)
+      - reasoning/src/engine.rs contains GrcEngine trait
+        Command: grep -q "pub trait GrcEngine" .elai_cc/crates/reasoning/src/engine.rs
+    TASK:
+      Write tests in reasoning/tests/ (all must FAIL against stub implementation):
+
+      T1. observe_requires_grounding:
+          Call think(ThinkStep{step_type:Observe, grounding:None, ...}).
+          Assert returns Err(GrcError::UngroundedStep).
+          Invariant: reasoning.txt section 11 item 1.
+
+      T2. budget_overflow_forces_convergence:
+          Set budget(topic="t", max_calls=3, max_chars=2000).
+          Call think() twice (non-Converge steps, uses 2 calls, remaining=1).
+          At this point must_converge()==true. Call think() with non-Converge step.
+          Assert returns Err(GrcError::BudgetExhausted) because must_converge forces
+          Converge-only. Then call think(Converge) — assert succeeds (uses call 3).
+          Then call think() again — assert Err(BudgetExhausted) (calls exhausted).
+          Invariant: reasoning.txt section 11 item 2.
+          Note: max_calls=3 (not 2) because must_converge fires at remaining<=1,
+          meaning with max_calls=2 only 1 non-Converge call is possible before forced
+          convergence, which would mask the overflow test.
+
+      T3. per_topic_budget_independence:
+          Set budget(topic="a", max_calls=2). Set budget(topic="b", max_calls=3).
+          Exhaust topic "a". Assert topic "b" still has remaining_calls == 3.
+
+      T4. invalid_transition_rejected:
+          Call think(Observe), then think(Verify) — skipping Hypothesize and PlanAction.
+          Assert returns Err(GrcError::InvalidTransition{from:Observe, to:Verify, allowed:[Hypothesize]}).
+
+      T5. must_converge_at_budget_limit:
+          Set budget(max_calls=3). Use 2 calls. Assert must_converge() == true.
+          Next think() must be step_type Converge or is rejected.
+
+      T6. malformed_grounding_rejected:
+          Call think(ThinkStep{step_type:Observe, grounding:Some("no_colon_no_type"), ...}).
+          Assert returns Err(GrcError::MalformedGrounding).
+
+      T7. status_step_free (does not consume budget):
+          Set budget(max_calls=2). Call think(Status). Assert calls_used == 0.
+          Reasoning.txt section 2 implies status is a free echo.
+
+      T8. default_budget_applied_on_first_think:
+          Do NOT call set_budget(). Call think(Observe) on new topic.
+          Assert it succeeds (default budget applied: max_calls=5, max_chars=800).
+          Assert get_budget(topic).unwrap().max_calls == 5.
+          Ensures engine does not crash or return BudgetExhausted on uninitialized topics.
+
+      T9. first_step_must_be_observe:
+          Call think(Hypothesize) as the first step on a new topic (no prior Observe).
+          Assert returns Err(GrcError::InvalidTransition) with from=None indication.
+          Exception: Status and Converge are allowed as first step (they bypass chain).
+
+      T10. scope_enumeration_present_when_required:
+           Configure AgentGrcConfig with require_scope_enumeration=true.
+           Call think(Observe) with scope=Some(vec!["ui", "api", "tests"]).
+           Assert succeeds. Then call think(PlanAction) addressing only "ui" and "api".
+           Assert ThinkResult.warnings contains WARN for unaddressed scope item "tests".
+           Invariant: reasoning.txt section 10, technical-analysis-v3.txt Concern 3.
+
+      T11. scope_enumeration_missing_when_required:
+           Configure AgentGrcConfig with require_scope_enumeration=true.
+           Call think(Observe) with scope=None.
+           Assert returns Err or ThinkResult with warning indicating scope is required.
+
+      T12. scope_enumeration_optional_when_not_required:
+           Configure AgentGrcConfig with require_scope_enumeration=false.
+           Call think(Observe) with scope=None.
+           Assert succeeds with no scope-related warnings.
+
+    DETERMINISTIC_CHECK:
+      - All 12 tests exist and FAIL (TDD: tests written before implementation)
+        Command: cd .elai_cc && cargo test -p reasoning --no-run 2>&1 | grep -q "error"
+        (compile errors expected since stubs return todo!())
+      - Test names match pattern:
+        Command: grep -c "#\[test\]" .elai_cc/crates/reasoning/tests/*.rs
+        (should be >= 12)
+    ADVERSARIAL:
+      - If tests pass against stubs, the stubs are too permissive (returning Ok for everything).
+        Test: stubs must use todo!() or unimplemented!(), not return placeholder Ok values.
+      - If budget test uses sleep or timing, it is non-deterministic. Test: grep for
+        "sleep\|Duration\|Instant" in test files — must return 0 matches.
+    ACCEPTANCE:
+      - >= 12 test functions exist in reasoning/tests/
+      - All tests fail to compile or fail at runtime (TDD contract)
+      - Zero timing-dependent tests (grep confirms)
+      - T10-T12 (scope enumeration) tests present and fail against stubs
+
+  2A.4 IMPLEMENT: GRC state machine logic
+    PRE_GATE:
+      - Step 2A.3 complete (tests written, all currently fail)
+      - No other session owns reasoning/ files
+        (checked by mcp_session_claim at EXECUTING entry)
+    TASK:
+      Implement BasicGrcEngine in reasoning/src/engine.rs:
+
+      I1. State transition validation:
+          Maintain last_state per topic. On think(), check step.step_type is in
+          last_state.allowed_next(). If not, return Err(InvalidTransition).
+          Special cases:
+            - First step in a topic: must be Observe (no last_state).
+            - Status step: allowed from any state, does not update last_state.
+            - Converge step: allowed from any state (forced convergence path).
+
+      I2. Grounding validation:
+          For steps requiring grounding (Observe, Hypothesize, Verify):
+            - If grounding is None: return Err(UngroundedStep).
+            - If grounding is Some(s): parse s as comma-separated "type:reference" pairs.
+              Valid types: "file", "grep", "test", "search", "tool", "training".
+              Malformed -> Err(MalformedGrounding).
+            - Classify each citation's GroundingLevel:
+              "test"/"search" -> Verified, "file"/"grep"/"tool" -> High, "training" -> Uncertain.
+              Rationale: "search" = web-verified (reasoning.txt s4: "searched" = VERIFIED).
+              "tool" = tool output read this session (equivalent to file/grep = HIGH).
+            - Log warning for Uncertain citations (do not reject in phase 2A).
+          For PlanAction, Act: grounding optional (these are action steps).
+          For Status: no grounding required, no budget consumed.
+
+      I3. Budget enforcement (check-then-increment pattern):
+          On each think() call (except Status):
+            - CHECK FIRST: if calls_used >= max_calls, return Err(BudgetExhausted) immediately.
+            - CHECK FIRST: if chars_used + step.content.len() > max_chars,
+              return Err(BudgetExhausted) immediately.
+            - CHECK FIRST: if must_converge() (remaining_calls <= 1) and step_type != Converge,
+              return Err(BudgetExhausted) with message indicating forced convergence needed.
+            - THEN INCREMENT: calls_used += 1, chars_used += step.content.len()
+              (use saturating_add to prevent u32 overflow).
+          Rationale: increment-before-check corrupts budget state on the error path.
+          After returning BudgetExhausted, calls_used would be max_calls+1, making
+          subsequent budget queries return incorrect remaining values.
+
+      I4. Topic isolation:
+          Each topic has independent TopicState { budget, last_state, steps, grounding_log }.
+          Default budget from global config (configurable via set_budget).
+          reset_topic() clears all state for a topic.
+
+      I5. ThinkResult construction:
+          Return ThinkResult { step: ThinkStep, budget_remaining: GrcBudget,
+            grounding_level: Option<GroundingLevel>, warnings: Vec<String> }.
+
+    DETERMINISTIC_CHECK:
+      - All 12 tests from step 2A.3 pass
+        Command: cd .elai_cc && cargo test -p reasoning -- --nocapture 2>&1 | grep -E "test result:" | grep -q "0 failed"
+      - No todo!() or unimplemented!() in engine.rs
+        Command: grep -c "todo!\|unimplemented!" .elai_cc/crates/reasoning/src/engine.rs | grep -q "^0$"
+      - No unwrap() in engine.rs (all errors must be typed)
+        Command: grep -c "\.unwrap()" .elai_cc/crates/reasoning/src/engine.rs | grep -q "^0$"
+    ADVERSARIAL:
+      - If allowed_next() returns empty for Verify (terminal state), valid chains cannot
+        complete. Test: Verify.allowed_next() must contain at least Observe (new chain start)
+        or be explicitly terminal with a documented reason.
+      - If chars_used overflows u32 at ~4GB, budget tracking breaks. Test: assert chars_used
+        is checked before increment (saturating_add or checked_add).
+      - If topic HashMap grows unbounded, memory leaks. Test: after reset_topic(), topic
+        entry is fully removed from map (not just zeroed).
+    ACCEPTANCE:
+      - cargo test -p reasoning: 0 failures, >= 12 tests pass
+      - cargo check --workspace: 0 errors
+      - grep for todo!/unimplemented!/unwrap() in engine.rs: 0 matches
+
+  2A.5 MEASURE: performance and correctness metrics
+    PRE_GATE:
+      - Step 2A.4 complete (all tests pass)
+    TASK:
+      - Measure per-step validation overhead (target: <5ms for pure logic, no I/O)
+      - Measure memory per topic (target: <1KB base + step history)
+      - Record: test count, LOC, compile time delta from Phase 0 baseline
+      - Write metrics to .elai_cc/metrics/phase_2A.toml
+    DETERMINISTIC_CHECK:
+      - Metrics file exists and contains required fields
+        Command: test -f .elai_cc/metrics/phase_2A.toml && grep -q "validation_overhead_us" .elai_cc/metrics/phase_2A.toml
+      - Validation overhead < 5ms (5000 microseconds)
+        Command: grep "validation_overhead_us" .elai_cc/metrics/phase_2A.toml
+        (value must be < 5000)
+    ADVERSARIAL:
+      - If measurement uses wall-clock time in CI, results are non-deterministic.
+        Test: use std::hint::black_box + std::time::Instant for local benchmarks only
+        (not in CI gate). Report median of 1000 iterations, not single-run.
+        Do NOT add criterion as a dependency without explicit user approval.
+        Note: std::time::Instant for benchmarks is acceptable even under entropy quarantine
+        because benchmark measurement is not part of deterministic output — it is metadata.
+        The quarantine applies to logic that affects output, not measurement tooling.
+    ACCEPTANCE:
+      - .elai_cc/metrics/phase_2A.toml exists with all required fields
+      - validation_overhead_us < 5000
+      - cargo test -p reasoning: 0 failures
+
+
+EXIT CRITERIA
+  GRC enforces grounding on every step that requires it (Observe, Hypothesize, Verify).
+  Budget overflow triggers convergence or returns BudgetExhausted error.
+  Invalid state transitions are rejected with InvalidTransition error.
+  Malformed grounding strings are rejected with MalformedGrounding error.
+  Status steps are free (no budget consumed, no grounding required).
+  Per-topic budgets are independent.
+  Scope enumeration validated when require_scope_enumeration=true (WARN on unaddressed items).
+  All 12+ tests pass. Zero todo!/unimplemented!/unwrap() in engine code.
+
+
+GROUNDING SUMMARY
+  "GRC state machine: observe->hypothesize->plan_action->act->verify" -> GROUNDED: reasoning.txt section 2
+  "Budget per-topic: max_calls 1-12, max_chars 200-1500" -> GROUNDED: reasoning.txt section 3
+  "Grounding required on every step" -> GROUNDED: reasoning.txt section 2, 11 item 1
+  "Budget overflow forces convergence" -> GROUNDED: reasoning.txt section 3, 11 item 2
+  "Status step is free echo" -> VERIFIED: current workflow uses mcp_think(step_type="status") for free trailing echoes (CLAUDE.md GRC tools section)
+  "<5ms validation overhead" -> UNGROUNDED: assumed reasonable for in-memory HashMap + string parsing. Will be verified empirically in step 2A.5.
+  "Forced convergence at remaining_calls<=1" -> GROUNDED: BudgetThinker (OpenReview 2025) demonstrates budget-aware forced convergence. Our version is simpler (hard limit vs control tokens).
+  "Claim decomposition in grounding validation" -> GROUNDED: RARR (arxiv:2210.08726) and SAFE (arxiv:2403.18802) decompose output into per-claim verification. Our version validates format only (phase 2A); actual verification is phase 2B.
+  "Hard/soft grounding: reject UngroundedStep but warn on Uncertain" -> GROUNDED: DSPy Assertions (arxiv:2312.13382) distinguish Assert (hard) vs Suggest (soft). Our GroundingLevel maps: VERIFIED/HIGH = proceed, UNCERTAIN = warn.
+  "State transition validation via allowed_transitions" -> GROUNDED: standard FSM pattern. guidance-ai uses FSM for token masking; our version validates at step level.
+  "thiserror for GrcError" -> VERIFIED: thiserror 2.x is standard Rust error derive (crates.io, 290M+ downloads).
+  "Memory per topic <1KB base" -> UNGROUNDED: assumed from struct sizes. Will verify in step 2A.5.
+  "ThinkStep.scope: Option<Vec<String>> for scope enumeration" -> GROUNDED: reasoning.txt section 10, technical-analysis-v3.txt Concern 3 Mechanism 1.
+  "Scope enumeration validated when require_scope_enumeration=true" -> GROUNDED: technical-analysis-v3.txt testable invariants (proactive thinking).

@@ -1,0 +1,147 @@
+CRATE: core/
+Purpose: config, paths, logging, serde, platform abstractions, token counting.
+Source: design_document.txt PART 1, PART 2, PART 3 (core/ entries).
+Depends on: (none — leaf crate, no internal deps)
+
+
+1. RESPONSIBILITIES
+
+  - elai_cc.toml configuration parsing and validation
+  - Cross-platform path handling (Windows + Linux, no path assumptions)
+  - Logging via tracing + tracing-subscriber (EVERY action logged for post-run analysis)
+  - Serialization: msgpack (rmp-serde) for storage, postcard for wire format
+  - Heapless stack-allocated structures replacing heap JSON parsing where applicable
+  - Platform detection and capability reporting
+
+
+2. CLAW-CODE MODULE MAPPING
+
+  From claw-code-rust-port runtime/:
+    session_control.rs (461 LOC)  -> core::session (session identity, handoff format)
+    (config handling spread across rusty-claude-cli/main.rs)
+
+  From claw-code-rust-port Cargo.toml deps:
+    serde, serde_json -> KEEP (json for human-readable config, msgpack for storage)
+    crossterm -> KEEP (terminal handling, shared with cli/)
+
+
+3. STRIP/REPLACE FROM BASE
+
+  FIND AND REMOVE:
+    - Any hardcoded system prompt that loads before user message (audit prompt.rs)
+      Known: SYSTEM_PROMPT_DYNAMIC_BOUNDARY (L39), "You are an interactive agent" (L451)
+    - Auto-compact / context compaction entirely (gut compact.rs + summary_compression.rs)
+    - Telemetry crate entirely (526 LOC, replaced by tracing)
+    - TokenUsage/UsageTracker/CompactionConfig/billing (structural: embedded in Session,
+      conversation.rs, main.rs — 61 occurrences across 5 files. Replace with minimal
+      core::TokenUsage { input_tokens, output_tokens }, not just delete.)
+    - compat-harness/ crate (TypeScript bridge, dead code in elai_cc context)
+    - lsp_client.rs (747 LOC, not in elai_cc design)
+    - NOTE: "sentinel", "anti_distill", "bias_inject" do NOT exist in claw-code (verified 2026-04-06)
+
+  REPLACE:
+    - JSON serialization for storage -> msgpack (rmp-serde)
+    - JSON wire format -> postcard where possible
+    - External telemetry -> tracing-based debug logging
+
+  ADD:
+    - Real-time token counting accuracy improvements
+    - Phase-aware tool/context loading (only load what current FSM state needs)
+    - elai_cc.toml config schema (agent roles, GRC budgets, rules, model assignments)
+
+
+4. KEY TYPES
+
+  Config (parsed from elai_cc.toml):
+    project settings, agent role configs, GRC budgets per role, rule sets,
+    model assignments, provider configs, hardware detection settings.
+
+  SessionId:
+    Format: {project_id}:{pid}:{timestamp_ms}
+    PID reuse on Windows eliminated by timestamp component.
+
+  Serialization traits:
+    MsgpackSerialize / MsgpackDeserialize (wrapper around rmp-serde)
+    PostcardSerialize / PostcardDeserialize (wrapper around postcard)
+
+  Deterministic entropy traits (Phase 0 — entropy quarantine):
+    trait ClockProvider {
+        fn now(&self) -> LogicalInstant;
+        fn elapsed_since(&self, mark: LogicalInstant) -> Duration;
+        fn system_now(&self) -> SystemTime;  // for cache expiry, HTTP headers
+    }
+    trait EntropySource {
+        fn next_u64(&mut self) -> u64;
+        fn fill_bytes(&mut self, buf: &mut [u8]);
+    }
+    Note: &self on ClockProvider (read-only), &mut self on EntropySource (stateful RNG).
+    Production: OsClock (delegates to Instant), OsRng (delegates to thread_rng).
+    Testing: SeededClock (logical, tick-based, monotonic), SeededRng (deterministic PRNG).
+    Bundled in RuntimeContext<C: ClockProvider, E: EntropySource> { clock: C, entropy: E }
+      with static dispatch (zero vtable overhead, no Mutex on entropy).
+      Type aliases: ProductionContext = RuntimeContext<OsClock, OsEntropy>,
+                    TestContext = RuntimeContext<SeededClock, SeededRng>.
+      Accessors: clock(&self) -> &C, entropy_mut(&mut self) -> &mut E.
+    All crates depend on core::ClockProvider and core::EntropySource, never on
+      std::time::Instant::now() or rand directly.
+    Production exception sites (ONLY these files contain raw time/entropy):
+      core/src/clock.rs: OsClock impl
+      core/src/entropy.rs: OsRng impl
+    Enforced by CI grep script (not clippy deny — custom lints require dylint/nightly).
+    Measured scope: 60 occurrences across 31 files pre-restructure. Key files:
+      providers/prompt_cache.rs (4 SystemTime::now), tools/lib.rs (14 Instant::now),
+      cli/main.rs (5), providers/anthropic.rs (2), orchestrator/session_control.rs (3).
+    Rationale: retrofitting deterministic entropy into an existing codebase is 10x
+      harder than injecting it at fork time. DST (Phase 3I) depends on this.
+
+  HashMap determinism quarantine (Phase 0.8 — entropy quarantine extension):
+    Ban std::collections::HashMap and std::collections::HashSet in all crates.
+    Replacements:
+      BTreeMap/BTreeSet: when iteration order matters (deterministic by key order).
+      indexmap::IndexMap/IndexSet: when insertion order matters (deterministic).
+      FxHashMap (rustc-hash crate): when O(1) lookup needed AND iteration
+        order does not matter AND determinism is not required for that usage.
+    Enforced by: clippy.toml disallowed-methods for HashMap::new, HashSet::new,
+      HashMap::with_capacity, HashSet::with_capacity.
+    Exception: third-party crate internals (cannot control, but madsim patches
+      entropy source for their SipHash seed).
+    Source: deterministic-simulation-testing.md section 8.1
+      "std::collections::HashMap/HashSet are fundamentally non-deterministic
+       (SipHash 1-3 with random OS seed). Iteration order changes every execution."
+      "HashMap, SystemTime, thread scheduling are the three primary entropy
+       sources in Rust that must be quarantined."
+
+  ONNX model storage:
+    Canonical path: .elai_cc/models/onnx/
+    Models: GraphCodeBERT, Granite, cross-encoder (ms-marco-MiniLM), optionally SPLADE.
+    Pre-staged via setup script (outside session), not auto-downloaded during execution.
+    Setup script: download model files + blake2 hash verify + write index_version.toml.
+    Missing models at startup -> DEGRADED mode (BM25_ONLY), not crash.
+    SPLADE storage conditional on Phase 1G/1H KEEP decision.
+    Path hidden from agents via visibility filter (.elai_cc/models/** in hidden_paths).
+
+  SandboxConfig and FilesystemIsolationMode:
+    Moved to core/ from runtime/sandbox.rs because config.rs imports them.
+    sandbox.rs has zero internal deps (only std + serde), so this is clean.
+    Remaining sandbox execution logic stays in orchestrator/.
+
+
+5. DEPENDENCIES
+
+  KEEP: serde, serde_json, crossterm
+  ADD: rmp-serde, postcard, heapless, tracing, tracing-subscriber, dirs, uuid, toml
+  ADD: rand (behind EntropySource trait only — direct use banned by clippy lint)
+
+
+6. TESTABLE INVARIANTS
+
+  - Config parsing round-trips: serialize -> deserialize -> serialize == original
+  - SessionId uniqueness: 10,000 IDs generated in tight loop, zero collisions
+  - Path handling: same logical path on Windows and Linux produces equivalent results
+  - Msgpack output is smaller than JSON for same data structure
+  - Tracing captures every tool call and file operation
+  - No direct std::time::Instant::now() or rand::thread_rng() in any crate (clippy enforced)
+  - SeededClock + SeededRng with same seed produce identical output across runs
+  - ClockProvider and EntropySource are the sole time/randomness entry points
+  - No std::collections::HashMap or HashSet in any crate (clippy enforced)
+  - All map iteration produces identical ordering given same input sequence

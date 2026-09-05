@@ -1,0 +1,77 @@
+Workflow to Cascade Migration
+
+Core Challenge: Migrating FSM-driven autonomous workflow from Claude Code (terminal-based) to Windsurf Cascade (IDE-native) while preserving strict state transitions and governance.
+
+Architectural Differences:
+Claude Code: Unified context window (1M tokens), background sub-agents, massive memory banks
+Windsurf Cascade: Persistent memory, RAG, deterministic tool gating, simultaneous panes
+
+FSM Workflow Mapping:
+- Context compilation → Rules hierarchy activation
+- Prompt engineering → SKILL.md definitions  
+- Plan creation → Multi-agent orchestration
+- Adversarial auditing → Simultaneous Cascades
+- Test-driven execution → MCP tool gating
+- Tiered validation → State snapshotting
+- Memory updating → Context pinning
+
+Implementation Mechanisms:
+
+hooks.json Interception:
+```json
+{
+  "hooks": {
+    "pre_run_command": [
+      {
+        "command": "python3 /path/to/fsm_orchestrator.py",
+        "show_output": false
+      }
+    ]
+  }
+}
+```
+- FSM orchestrator reads .fsm-state.json
+- Blocks invalid state transitions (PLANNING → TESTING_FIRST)
+- Exit code 2 rejects unauthorized actions
+
+Rules Activation Modes:
+- Always On: Baseline formatting, security constraints
+- Glob: File path regex patterns for phase-specific rules
+- Workspace: 12K characters, Global: 6K characters
+- Dynamic injection based on FSM state
+
+MCP Tool Gating:
+```json
+{
+  "mcpServers": {
+    "tiered-validator": {
+      "command": "python3",
+      "args": ["scripts/run_pipeline.py", "--tier", "all"],
+      "env": {
+        "FSM_STRICT_MODE": "true"
+      }
+    }
+  }
+}
+```
+- Centralized enterprise governance
+- Regex validation prevents command chaining
+- Blast radius containment
+
+Simultaneous Cascades for Auditing:
+- Pane A: Main model (Executor)
+- Pane B: Adversarial auditor
+- Replaces invisible background sub-agents
+- Side-by-side validation in real-time
+
+State Management:
+- State Vector: Runtime variables status
+- Active Context: Current path in CatRAG graph
+- Memory Buffer: Multi-agent swarm memory
+- Rollback capability on violations
+
+Key Constraints:
+- Instruction budget: 150-200 max per prompt
+- No magic words required for state transitions
+- Deterministic compilation failures for unauthorized actions
+- Context window optimization to prevent instruction overflow

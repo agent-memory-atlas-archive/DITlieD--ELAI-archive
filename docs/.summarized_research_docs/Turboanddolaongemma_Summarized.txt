@@ -1,0 +1,35 @@
+Turbo and DoLaongemma
+
+Optimization Strategy:
+- Research-focused backend (vLLM, Hugging Face Transformers)
+- Raw gemma4:31b weights loading
+- Custom TurboQuant wrapper for KV cache optimization
+- DoLa decoding implementation for generation loop
+
+Technical Implementation:
+Load raw model weights into research framework
+Apply quantization and optimization techniques
+Implement custom decoding algorithms
+Optimize memory usage and inference speed
+Integrate with existing toolchain and workflows
+
+Performance Optimizations:
+- KV cache quantization and compression
+- Custom attention mechanism implementation
+- Speculative decoding with verification model
+- Memory mapping and efficient batching
+- Hardware-specific optimizations (CUDA kernels)
+
+Requirements:
+- Research backend compatibility
+- Custom Python/CUDA implementation skills
+- Understanding of quantization trade-offs
+- Integration with existing ML pipelines
+- Performance benchmarking and validation
+
+Expected Benefits:
+- Improved inference speed over standard decoding
+- Reduced memory usage through quantization
+- Better utilization of hardware capabilities
+- Integration with advanced research frameworks
+- Flexibility for custom optimization techniques

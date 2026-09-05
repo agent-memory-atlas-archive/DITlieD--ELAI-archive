@@ -1,0 +1,1404 @@
+UPDATE IMPLEMENTATION ORDER
+Date: 2026-04-13
+Status: REFERENCE (read-only index for LLM sessions)
+
+Purpose: the ordered sequence for implementing all 5 update designs.
+Phases pre-0 through 3 (including 3J and all sub-phases) are COMPLETE.
+Phase 4 has NOT started.
+
+Source design files (all under docs/specs/guide/):
+  project-intelligence-design.txt     -> [PI]
+  anti-staleness-enforcement.txt      -> [AS]
+  token-efficiency-design.txt         -> [TE]
+  pipeline-modes-design.txt           -> [PM]
+  code-completeness-enforcement-design.txt -> [CC]
+  reasoning-architecture-design.txt   -> [RA]
+
+HOW TO USE: each step has a READ: block listing the exact files and sections
+the implementing LLM must read BEFORE writing any code. The design files
+contain full type definitions, formulas, schemas, audit resolutions, and
+constraints that are NOT repeated here. This file is an index — the design
+files are the source of truth.
+
+
+========================================================================
+GROUP A: FOUNDATIONS (before Phase 4, extends completed phases)
+========================================================================
+
+These can start immediately. They modify only completed phases (1-3)
+and create infrastructure that Phase 4 implementations will consume.
+Each step is one implementation session.
+
+ORDERING RATIONALE: A-1 (baseline harness) must come first because every
+other step depends on knowing the real model capabilities — attention
+ceiling, retry curve, few-shot delta. Without measured data, context
+budget adaptation (A-10), baby step sizing (B-5), and prompt strategy
+(B-5/B-6) are all built on guesses. The harness talks to the sidecar
+(HF model + TurboQuant), not ollama. Ollama is the fallback.
+
+
+STEP A-1: BASELINE MEASUREMENT HARNESS [TE new sub-phase 3J.BASELINE] — DONE
+  STATUS: COMPLETE (2026-04-14). Results in metrics/model_baseline.toml.
+  Key findings: FA2 critical (4x ceiling), 7B 90% pass@1, 3B 72% pass@1,
+  attention ceiling 16K+ with FA2, DoLa HARMFUL on 7B, steering NEUTRAL.
+
+STEP A-1 (original description preserved for reference):
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> BENCHMARK HARNESS DESIGN section (FULL: architecture, module layout,
+       bench_config.toml schema, all 7 measurement details with exact protocols,
+       fixtures format with example JSON, report format model_baseline.toml,
+       build instructions 10-step checklist)
+    -> Section 1 (three ceilings — understand what's being measured and why)
+    -> Section 13 (ModelCapabilityProfile type — output of the harness)
+  What: standalone binary that measures model capabilities on real hardware
+        7 measurements: attention curve, retry rate, few-shot delta, structured
+        output, template fill, TurboQuant impact, swap latency
+  Why FIRST: every number in token-efficiency-design.txt is UNGROUNDED until
+        measured. Context budget (A-10), baby step sizing (B-5), prompt strategy
+        (B-5/B-6), and retry economics (B-8) all depend on real attention ceiling
+        and capability data. Without this, all downstream decisions are guesses.
+        The harness targets the sidecar (HF model + TurboQuant), not ollama.
+  Touches: new directory .elai_cc/benches/model_capability/ (standalone)
+  Prerequisites: none (standalone binary, talks to sidecar HTTP API)
+  Estimated scope: ~800-1200 LOC, 50 task fixtures
+
+STEP A-2: T1/T2 HOOK FIX [AS Priority 0, CC Priority 0]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 3.1 (T1 hook VERSION_GATE, BLOCK-3 prerequisite steps 0/1/2)
+    -> AUDIT RESOLUTION LOG: BLOCK-3 (explains what's broken and why)
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> section 3 header (NOTE ON HOOK STATUS, verify current state)
+  READ: the current tiered_analysis.rs source code (find the stub code)
+  What: fix T1Hook to load rules from rules.db (currently loads nothing)
+        fix T2Hook to parse AST (currently returns Allow unconditionally)
+  Why now: every other hook-based enforcement depends on hooks actually working.
+  Touches: tiered_analysis.rs (3J.10), rules/ predicate evaluator
+  Prerequisites: none (all infrastructure exists)
+  Estimated scope: ~200-300 LOC
+
+STEP A-3: C-04 MODEL.GENERATE MIGRATION [AS Priority 0] [DONE 2026-04-14]
+  STATUS: COMPLETE. Migration was done during FastAPI rewrite (patch-1.18, 90860bc).
+    _generate_impl (server.py:1083-1166) uses model.generate() + LogitsProcessor.
+    generate_streaming (server.py:985-1041) uses model.generate() + TextIteratorStreamer.
+    torch.inference_mode(), orjson, DoLa LogitsProcessor all in place.
+    /v1/completions API contract preserved (Rust SidecarProvider verified compatible).
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 2.1 (full ETCLogitsProcessor design, but focus on the REVISED
+       ARCHITECTURE subsection explaining why manual loop must go first)
+    -> AUDIT RESOLUTION LOG: BLOCK-1 (ETC vs model.generate conflict)
+  READ: .elai_cc/python/elai_inference/server.py lines 391-436 (the manual loop)
+  What: replace manual Python token loop (server.py:391-436) with
+        model.generate() + LogitsProcessor for 10-50x speedup
+  Why now: ETC monitoring (A-9) requires this. Also standalone improvement.
+  Touches: python/elai_inference/server.py (sidecar)
+  Prerequisites: none
+  Estimated scope: ~150 LOC Python refactor
+
+STEP A-4: PROJECT INTELLIGENCE — TIER 1 [PI steps 3L.1-3L.4]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 1 (ProjectProfile struct, all fields, storage format)
+    -> section 2A-2G (FULL detection tables — build systems, languages, frameworks,
+       test runners, linters, entry points, CI systems. These tables ARE the spec.)
+    -> section 5 (BuildCommandRegistry types, scoped commands, validation tiers)
+    -> section 10 (step list 3L.1-3L.8, crate placement, test budget of 45)
+  What: ProjectProfile struct, BuildSystemDetector, language/framework/test/CI detection
+        build command registry, Tier 1 structural discovery
+  Why now: foundation for all other updates. Every prompt, decomposition, and
+           enforcement decision benefits from knowing the project automatically.
+  Touches: core/ (types), knowledge/ (detection logic), cli/ (orchestration)
+  Prerequisites: none (pure filesystem analysis, no DKG needed)
+  Estimated scope: ~600-800 LOC, 22+ tests
+
+STEP A-5: PROJECT INTELLIGENCE — TIER 2 + RULE SEEDING [PI steps 3L.5]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 3 header (CRITICAL LIMITATION: DKG Rust-only, FALLBACK PATH for non-Rust)
+    -> sections 3A-3E (naming conventions, error handling, module org, test patterns,
+       dependency analysis — each has DKG path + regex fallback path)
+    -> section 6 (rule seeding table: convention -> rule mapping)
+    -> section 10 (Phase 1A extension: extract_conventions(), ~250-350 LOC honest estimate)
+  READ: docs/specs/guide/steps/phase-1A.txt (current DKG implementation)
+  READ: docs/specs/guide/steps/phase-3F.txt (current rules engine, seed rules)
+  What: convention extraction (naming, error handling, module org, test patterns)
+        auto-seed project-specific rules from detected conventions
+  Touches: knowledge/ (DKG extension), rules/ (ProjectRuleSeeder), phase 1A, phase 3F
+  Prerequisites: A-4 (Tier 1 types), phase 1A DKG (exists)
+  Estimated scope: ~400-500 LOC
+
+STEP A-6: VERSION_GATE + DEPRECATED PATTERNS [AS Priority 1]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 1.2 (FULL: deprecated_patterns table schema, VERSION_GATE predicate
+       evaluation algorithm, language-parameterized regex sets for 7 languages,
+       ecosystem coverage for 8 package managers, self-discovery integration,
+       ViolationRecord extension with replacement_name)
+    -> AUDIT RESOLUTION LOG: WARN-3 (Cargo.toml coverage), WARN-4 (self-discovery)
+  READ: .elai_cc/outdated-tech-audit.md (seed data source for deprecated_patterns)
+  READ: docs/specs/guide/steps/phase-3F.txt (current rules engine, predicate types)
+  What: VERSION_GATE predicate type, deprecated_patterns table in rules.db
+        seed data from outdated-tech-audit.md, ViolationRecord extension
+  Why now: highest impact anti-staleness measure. Blocks 48% of audit findings.
+  Touches: rules/src/predicate.rs, rules/src/self_discovery.rs, phase 3F
+  Prerequisites: A-2 (hooks must work to evaluate VERSION_GATE)
+  Estimated scope: ~300 LOC
+
+STEP A-7: CONSTITUTIONAL INJECTION + T1 VERSION_GATE HOOK [AS Priority 1]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 1.3 (constitutional injection: format, token budget, truncation rule)
+    -> section 3.1 (T1 hook: Step 2 adds VERSION_GATE case after A-2 prerequisite fix)
+    -> AUDIT RESOLUTION LOG: WARN-7 (injection is INSIDE PhaseSpec content, not separate)
+  What: inject CONSTRAINTS block into PhaseSpec content at assembly time
+        wire VERSION_GATE evaluation into T1 hook
+  Touches: context_budget.rs (phase 3E), tiered_analysis.rs (3J.10)
+  Prerequisites: A-6 (VERSION_GATE predicate must exist)
+  Estimated scope: ~200 LOC
+
+STEP A-8: FRESHNESS STEERING VECTOR [AS Priority 2]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 2.2 (contrast pairs, equal-length templates, steering formula,
+       hidden state extraction at last shared token, alpha default 0.3,
+       auto-update trigger, storage path)
+    -> AUDIT RESOLUTION LOG: WARN-1 (equal token length requirement)
+  READ: metrics/compute_steering_vector.py (current single-pair implementation)
+  What: compute modern_api_preference steering vector from contrast pairs
+        extend compute_steering_vector.py for batch mode
+  Touches: metrics/compute_steering_vector.py, phase 3J.5
+  Prerequisites: A-6 (deprecated_patterns table for contrast pair generation)
+  Estimated scope: ~100 LOC Python
+
+STEP A-9: ETC ENTROPY MONITORING [AS Priority 2]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 2.1 (FULL: ETCLogitsProcessor class definition, __call__ method,
+       usage in model.generate(), threshold calibration procedure 5-step,
+       SearchTriggerPayload Rust type, import_pattern regex)
+    -> AUDIT RESOLUTION LOG: BLOCK-1 (why LogitsProcessor not manual loop),
+       BLOCK-7 (why threshold starts DISABLED, calibration mandatory)
+  What: ETCLogitsProcessor (observes entropy, triggers search between generations)
+        calibration script (metrics/calibrate_etc_threshold.py)
+  Touches: python/elai_inference/server.py, providers/src/sidecar_client.rs
+  Prerequisites: A-3 (model.generate migration must be done first)
+  Estimated scope: ~200 LOC (Python + Rust)
+  Note: ETC disabled by default until calibration run completes
+
+STEP A-10: CONTEXT BUDGET ADAPTATION [TE phase 3E enhancement]
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 2 (FULL: model tier table with attention ceilings, slot allocation
+       table for LARGE vs MICRO, key tradeoffs like dropping RepoMap for MICRO)
+    -> section 13 (ModelCapabilityProfile, SlotWeights, ModelFeatures types)
+  READ: docs/specs/guide/steps/phase-3E.txt (current context budget allocator)
+  What: ModelCapabilityProfile input, slot weights adapt per tier,
+        attention ceiling enforcement (fill to ceiling 3, not ceiling 2)
+  Touches: context_budget.rs (phase 3E)
+  Prerequisites: A-1 (baseline measurements provide real numbers for tiers)
+  Estimated scope: ~200-300 LOC
+
+STEP A-11: PROJECT INTELLIGENCE — TIER 3 + TELESCOPE [PI steps 3L.6-3L.7]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 4A (project vision: LLM prompt, 200-token constraint, template fallback)
+    -> section 4B (domain classification: signal table, 12 domains)
+    -> section 4C (architecture inference: pattern detection, advisory only)
+    -> section 8 (context telescope integration: 5 layers, prompt assembly,
+       few-shot examples, template generation — how PI feeds into everything)
+  What: LLM-assisted project vision, domain classification, architecture inference
+        context telescope integration, prompt assembly integration
+  Touches: knowledge/, cli/, context budget assembly
+  Prerequisites: A-4 + A-5 (Tier 1+2 must exist)
+  Estimated scope: ~300-400 LOC
+
+STEP A-12: DETERMINISTIC-FIRST AUDITOR [AS Priority 2, CC Layer 4]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 3.3 (deterministic-first auditor: 5 checks in order, language-
+       parameterized build/lint commands per language, config field)
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> Layer 4 section (4 deterministic auditor checks: FILE_SIZE_CENSUS,
+       LAZY_CODE_SCAN, COMPLETENESS vs DECOMPOSITION_TREE, MODULE_COHERENCE)
+  What: before LLM audit, run deterministic checks in 5-step order:
+    Step 1: BUILD CHECK — language-specific build command from ProjectProfile:
+      Rust: cargo check -p {crate} --message-format=json
+      Python: python -m py_compile + mypy (if configured)
+      Go: go vet ./...  |  TS: tsc --noEmit  |  Java: javac -Xlint / gradle
+      C#: dotnet build --no-restore  |  Ruby: ruby -c {file}
+    Step 2: VERSION_GATE — check modified files against deprecated_patterns
+    Step 3: FILE_SIZE_CENSUS — list all modified files, check current_lines vs
+      language-specific limit. Report BLOCK (over limit), WARN (>80%).
+    Step 4: LAZY_CODE_SCAN — run full lazy code pattern set (from A-21 section
+      3.1) on ALL modified files. Catches anything that slipped past hooks
+      (e.g., lazy code added by multi-line edit where hook checked individual edits).
+    Step 5: COMPLETENESS vs DECOMPOSITION_TREE — baby step spec says "write
+      function X in file Y". Check: does file contain function X? Non-trivial
+      body (>3 lines)? Signature matches FILE_PLAN? AST-based (tree-sitter).
+    Step 5b: MODULE_COHERENCE (per language) — Rust: every child in mod.rs
+      exists on disk + vice versa. Python: __init__.py imports resolve.
+      TS: index.ts exports resolve. Go: go vet. Orphan detection: files
+      with no bridge/parent reference.
+  Touches: phase 3C agent config, orchestrator/ (pre-audit pipeline)
+  Prerequisites: A-6 (VERSION_GATE), A-4 (ProjectProfile for build commands),
+                 A-21 (lazy code patterns in rules.db)
+  Estimated scope: ~300-400 LOC
+
+STEP A-13: RAG FRESHNESS SCORING [AS Priority 3]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 1.1 (FULL: exponential decay formula, freshness_meta.db schema,
+       FreshnessConfig type with 5 fields, implementation details — sidecar SQLite
+       NOT tantivy schema, pipeline.rs rerank JOIN, default values)
+    -> AUDIT RESOLUTION LOG: BLOCK-2 (access_boost cap), BLOCK-6 (separate SQLite),
+       WARN-2 (exponential not quadratic decay)
+  What: freshness_meta.db sidecar SQLite, recency_decay + access_boost in RRF scoring
+        FreshnessConfig type, separate doc half-life for specs/changelogs
+  Touches: knowledge/src/freshness.rs (new), knowledge/src/pipeline.rs (phase 1E)
+  Prerequisites: none (independent of other AS steps)
+  Estimated scope: ~300 LOC
+
+STEP A-14: T2 AST IMPORT EXTRACTION [AS Priority 3]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 3.2 (T2 hook: language-parameterized AST node extraction for 7
+       languages, manifest file limitation, performance budget <10ms)
+  What: T2 hook extracts imports via tree-sitter AST (language-parameterized)
+        cross-references against deprecated_patterns
+  Touches: tiered_analysis.rs (3J.10), knowledge/src/ast_adapter.rs
+  Prerequisites: A-2 (T2 hook fix), A-6 (deprecated_patterns table)
+  Estimated scope: ~200 LOC
+
+STEP A-15: NIGHTLY DEPENDENCY AUDIT [AS Priority 3]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 4.1 (FULL: 7 registry APIs with exact URLs, response JSON paths,
+       rate limits, per-ecosystem query format, auto-detection via manifest files,
+       DepAuditResult/DepAuditEntry types, severity classification)
+    -> AUDIT RESOLUTION LOG: BLOCK-5 (crates.io REST not cargo search),
+       WARN-6 (PyPI JSON API not pip index)
+  What: CLI subcommand (elai dep-audit), queries 7 registry APIs
+        auto-detects ecosystems, updates deprecated_patterns table
+  Touches: cli/ (new subcommand), rules/ (deprecated_patterns updates)
+  Prerequisites: A-6 (deprecated_patterns table must exist)
+  Estimated scope: ~400-500 LOC
+
+STEP A-16: PI LATENCY MEASUREMENT [PI step 3L.8]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 10 (step 3L.8: latency benchmark on 5+ projects, size targets)
+    -> section 1 (cost estimates labeled UNGROUNDED — this step grounds them)
+  What: profile latency on 5+ real projects (1K/10K/50K/100K/500K LOC)
+  Touches: metrics/
+  Prerequisites: A-4 + A-5 + A-11 (all PI tiers implemented)
+  Estimated scope: ~100 LOC benchmark script
+
+STEP A-17: GG SIDECAR RESPONSE EXTENSION [RA Layer 4 prerequisite]
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> GG INTRINSIC VERIFICATION section (signal definitions, sidecar extension)
+    -> LAYER 4 section (AB-MCTS scoring formula using GG signals)
+  What: extend sidecar response JSON with mean_logprob, min_logprob,
+        entropy_mean, entropy_max fields. Computed during generation at
+        zero additional inference cost (logging existing computation).
+  Why now: GG signals are prerequisites for AB-MCTS scoring (B-5/B-6/B-8)
+        and best-of-N selection (token-efficiency-design.txt section 5).
+        Without them, branch scoring falls back to compile+test only.
+  Touches: python/elai_inference/server.py (sidecar), providers/src/sidecar_client.rs
+  Prerequisites: A-3 (model.generate migration — logprobs come from generate())
+  Estimated scope: ~50 LOC (Python response extension + Rust client parsing)
+
+STEP A-18: REPAIR CONTEXT PROFILE [RA Compressed Context Replay]
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> COMPRESSED CONTEXT REPLAY section (full 1400-token slot allocation)
+    -> GENERATION PARAMETERS section (per-profile temperature/top-p)
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 5 REASONING PIPELINE INTEGRATION (REPAIR_CONTEXT profile)
+  What: add REPAIR_CONTEXT SlotWeights profile to context budget allocator.
+        Different allocation for retry context vs first-attempt context.
+        Retry context prioritizes MistakeBook and fix instructions over
+        RepoMap and SSB history. Add GenerationProfile type with per-use-case
+        temperature/top-p settings.
+  DETAIL (from RA design, gap audit):
+    8-slot REPAIR_CONTEXT allocation (total 1400 tokens):
+      System=50, BabyStepSpec=200, MistakeBook=150, CodeContext=500,
+      WorkingExample=300, FixInstruction=100, OutputReserve=100.
+    GenerationProfile type with 7 profiles:
+      FIRST_ATTEMPT:     T=0.3, top-p=0.9  (focused, first try)
+      MICRO_REFLECTION:  T=0.3, top-p=0.9  (diagnosis, precise)
+      INTERROGATION:     T=0.1, top-p=0.9  (multiple choice, near-deterministic)
+      REPAIR_RETRY:      T=1.0, top-p=1.0  (escape cycles, FixAudit research)
+      TREE_BRANCH_A:     T=0.7, top-p=1.0  (AB-MCTS moderate diversity)
+      TREE_BRANCH_B:     T=1.0, top-p=1.0  (AB-MCTS max diversity)
+      TREE_BRANCH_C:     T=0.3, top-p=0.9  (AB-MCTS focused alternative)
+    Key: repair retries use HIGH temperature (1.0) to prevent cyclic traps.
+    Research: FixAudit (arXiv:2604.05560) zero-shot 11.93% -> 30.40%.
+  Touches: context_budget.rs (phase 3E), core/ (GenerationProfile type)
+  Prerequisites: A-10 (context budget adaptation must exist first)
+  Estimated scope: ~200-250 LOC
+
+STEP A-19: INTERROGATION TREE STORAGE [RA Layer 3]
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> LAYER 3 section (full InterrogationTree design, QuestionNode, Choice types,
+       traversal protocol, question templates with choice labels, terminal nodes)
+    -> language-parameterized trees, rules.db storage
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 4B (domain classification feeds into tree selection)
+  What: InterrogationTree, QuestionNode, Choice types. Storage in rules.db
+        as structured data (language + domain tagged). Seed with initial
+        decision trees for Rust (lifetime/borrow/trait), Python (import/type),
+        Go (goroutine/error wrapping), TypeScript (type/import).
+  DETAIL (from RA design, gap audit):
+    Seed question templates (load-bearing content, not just types):
+      Q1 ERROR LOCATION: "(A) function signature, (B) function body logic,
+        (C) return value, (D) imported dependency, (E) test expectations"
+      Q2 ROOT CAUSE (conditional on Q1): e.g. if B: "(A) wrong algorithm,
+        (B) missing edge case, (C) wrong variable, (D) incorrect operator,
+        (E) off-by-one"
+      Q3 FIX APPROACH (conditional on Q1+Q2): "(A) modify existing logic,
+        (B) add new branch/case, (C) change type signature, (D) use different fn"
+    Traversal protocol: 3-7 questions x ~310 tokens each (question + choices
+      + minimal code context = ~300 tokens input, ~10 tokens output per Q).
+    Terminal nodes map to FixTemplate (Layer 1 link): leaf QuestionNode has
+      terminal: Option<FixTemplate> containing a structured fix instruction
+      template with {placeholders} for code context. This connects Layer 3
+      diagnosis output directly to Layer 1's fix instruction format.
+    Language parameterization: Rust trees reference lifetimes/borrows/traits;
+      Python trees reference type hints/imports; Go trees reference goroutines/
+      channels/error wrapping. Trees stored in rules.db, not hardcoded.
+  Touches: rules/ (new table schema, types), reasoning/ (tree traversal)
+  Prerequisites: A-6 (rules.db VERSION_GATE infrastructure established)
+  Estimated scope: ~400-500 LOC (types + storage + traversal + 4 language seed trees)
+
+STEP A-20: MISTAKE BOOK SSB SCHEMA [RA externalized error memory]
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> MISTAKE BOOK section (full MistakeEntry design, prompt injection format,
+       max 5 entries per baby step, oldest-evicted overflow, diff_hash)
+    -> DESIGN PRINCIPLES rules 5 and 6 (forbidden diffs, not narrative memory)
+  What: MistakeEntry type, SSB action_type "mistake_entry", per-baby-step
+        scoping, prompt injection format (max 150 tokens), blake3 diff hash
+        for forbidden_diffs deduplication.
+  DETAIL (from RA design, gap audit):
+    Max 5 entries per baby step. Oldest-evicted overflow policy (when 6th
+      entry added, entry with lowest attempt_number is removed).
+    Cleared on baby step success.
+    CTIM-Rover guardrail (CRITICAL): no variable names in constraints, only
+      structural patterns. Episodic natural language memory DEGRADES performance
+      (42% -> 31-40% per CTIM-Rover). Constraints are diff hashes + failure
+      categories + line numbers, NEVER code snippets or reasoning chains.
+    forbidden_diffs: Vec<DiffHash> as separate concept — list of blake3 hashes
+      of failed patches. Injected as "Do NOT produce patch {hash_short}" lines.
+      Prevents regenerating known-failed patches across retries.
+    Prompt injection format (max 150 tokens):
+      CONSTRAINTS (from previous attempts):
+      - Do NOT produce patch {diff_hash_short}. (failed: {failure_category})
+      - Line {faulty_line}: {root_cause_json.action} (from diagnosis)
+      - Forbidden patterns: {list of diff_hash_short values}
+  Why now: MistakeBook is consumed by ALL reasoning layers (Layers 2-6) and
+        by the structural retry strategy (token-efficiency-design.txt section 5).
+        Without it, retries regenerate known-failed patches.
+  Touches: orchestrator/ (SSB schema extension), core/ (MistakeEntry type)
+  Prerequisites: none (SSB infrastructure exists from Phase 3B)
+  Estimated scope: ~250-300 LOC
+
+STEP A-21: CC HOOK ENFORCEMENT [CC Layer 3, Priority 0]
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> Layer 3 sections 3.1-3.3 (T1 lazy code regex, T1 file size limits,
+       T2 AST completeness check, per-language patterns)
+    -> PRINCIPLE section (two-tier enforcement: responsibility metrics + line count)
+    -> PREDICATE CHANGES section (GREP_PATTERN extended fields)
+    -> IMPLEMENTATION PRIORITY section (Priority 0 items)
+  READ: docs/specs/guide/update-phase-map.txt
+    -> section 5: phase-3J.txt and phase-3F.txt CC entries
+  What: T1 lazy code detection (per-language regex), T1 file size enforcement
+        (language-specific limits), T2 AST completeness (empty bodies, function
+        count, imports), GREP_PATTERN language/file_context extension in rules
+        engine, file_discipline config in elai_cc.toml
+  DETAIL (from CC design, gap audit):
+    T2 Check 1: tree-sitter ERROR nodes detection — any ERROR node = BLOCK
+    T2 Check 5: magic number detection (moved from T1 per audit B-2) — AST
+      numeric literal nodes, ALLOW for const/static/0/1/2/-1/test, WARN else
+    T2 Check 6: responsibility metrics (BLOCK level):
+      6a. Cyclomatic complexity per function: max 10 (configurable). Count
+          if/else/for/while/loop/match-arm/&&/||/?/try-catch. BLOCK if exceeded.
+      6b. Coupling score per file: max 15 distinct external symbols (configurable).
+          Measured via tree-sitter import analysis or DKG edges. BLOCK if exceeded.
+    T1 file size: 11-language table (Rust 100/200, Python 120/250, Java 200/300,
+      TS 150/250, Go 100/200, C# 200/300, C/C++ 150/250, Kotlin 150/250,
+      Ruby 120/200, Elixir 120/200, Swift 150/250, DEFAULT 150/250).
+      Hard BLOCK at 4x WARN. INFO at 80% of WARN.
+    Test file detection per language: Rust (tests/ + _test.rs + #[cfg(test)]),
+      Python (test_ prefix + _test.py + tests/), Go (_test.go), TS (.test.ts +
+      .spec.ts + __tests__/), Java (src/test/ + *Test.java), C# (*.Tests +
+      *Test.cs), Ruby (spec/ + _spec.rb), DEFAULT (test in path/filename).
+    Exempt extensions: .toml/.json/.yaml/.yml/.xml/.lock/.sql/.proto/.graphql
+    Exempt paths: generated/, build/, vendor/, node_modules/, migrations/, target/
+    GREP_PATTERN extension: +language TEXT (nullable), +file_context TEXT (nullable).
+      Seed all lazy code patterns from section 3.1 with language + file_context.
+      FILE_SIZE_GATE as METRIC_GATE instance (language limit resolved at eval time).
+  Touches: tiered_analysis.rs (3J.10), rules/src/ (GREP_PATTERN extension),
+           elai_cc.toml ([file_discipline] config section)
+  Prerequisites: A-2 (hooks work), A-6 (rules.db infrastructure)
+  Estimated scope: ~400-500 LOC
+
+STEP A-22: RESEARCHING FSM STATE [PM, Phase 3A extension]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 2 (Oracle Mode FSM integration)
+    -> INTEGRATION section (RESEARCHING state tool permissions, transitions)
+  READ: docs/specs/guide/steps/phase-3A.txt (current FSM states)
+  What: RESEARCHING state (or sub-state of PLANNING) in FSM. Allows
+        WebSearch + KnowledgeEngine, blocks file edit/bash/git.
+        Transitions: IDLE->RESEARCHING, RESEARCHING->PLANNING,
+        RESEARCHING->RESEARCHING (follow-up queries).
+  Touches: orchestrator/ (FsmState enum, transition matrix, tool filtering)
+  Prerequisites: none (Phase 3A FSM exists)
+  Estimated scope: ~100-150 LOC
+
+STEP A-23: MICRO-REFLECTION TYPES + PROTOCOL [RA Layer 2]
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> LAYER 2 section (full: 500-token context, JSON-constrained output,
+       MicroReflectionRequest/Response types, temperature 0.3, integration)
+  What: MicroReflectionRequest/Response types. 500-token context assembly
+        (code + error + types). JSON output schema. Storage of reflection
+        results in MistakeBook. Layer 2 sits between deterministic error
+        taxonomy (L1) and interrogation trees (L3).
+  Touches: reasoning/ (types), core/ (types)
+  Prerequisites: A-20 (MistakeBook for storing results)
+  Estimated scope: ~150-200 LOC
+
+STEP A-24: SHORTCODER CONTEXT COMPRESSION [TE, Phase 3E extension]
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 4 Principle 4 (ShortCoder integration)
+    -> section 12 Integration (phase 3E ShortCoder changes)
+  READ: docs/specs/guide/steps/phase-3E.txt (context budget assembly)
+  What: ShortCoder AST-preserving simplification in context budget assembly.
+        10 tree-sitter rules (collapse bodies to signatures, strip comments,
+        elide obvious type annotations). Applied to CodeContext slot.
+  Touches: context_budget.rs (phase 3E), knowledge/ (tree-sitter reuse)
+  Prerequisites: A-10 (context budget adaptation)
+  Estimated scope: ~200-250 LOC
+
+STEP A-25: GG GENERATION NOVELTY SIGNAL [RA, GG extension]
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> GG INTRINSIC VERIFICATION section (generation_novelty signal definition)
+    -> LAYER 4 section (AB-MCTS scoring formula using novelty)
+  What: generation_novelty signal — cosine similarity between GraphCodeBERT
+        embeddings of current vs previous generation for same prompt. Returns
+        0.0-1.0. Requires tracking previous embedding in sidecar state.
+  Touches: python/elai_inference/server.py, providers/src/sidecar_client.rs
+  Prerequisites: A-17 (GG base signals exist)
+  Estimated scope: ~80-100 LOC
+
+
+========================================================================
+GROUP B: DESIGN ADDITIONS TO PHASE 4 (integrate when implementing each phase)
+========================================================================
+
+These are ONLY what the 6 design documents ADD to Phase 4 phases.
+They are NOT the Phase 4 implementation itself — that follows the
+individual phase files (phase-4A.txt through phase-4J.txt).
+
+Phases with ZERO design additions (implement from phase file only):
+  4A (no designs modify it), 4F (no designs modify it),
+  4I (no designs modify it), 4J (no designs modify it)
+
+
+STEP A-26: TOOL ROUTING LAYER [prompt-to-architecture, Phase 3J tools extension]
+  READ: docs/specs/guide/update-implementation-order.txt (this section)
+  READ: .elai_cc/crates/tools/src/lib.rs (tool dispatch, Bash tool handler)
+  READ: docs/claude-code-system-prompts-full.md
+    -> Tool section 7 "Using Your Tools" (the 6 rules being replaced)
+  What: intercept Bash tool calls matching dedicated-tool patterns (cat/head/tail
+        -> Read, sed/awk -> Edit, echo/heredoc -> Write, find/ls -> Glob,
+        grep/rg -> Grep). On match: reject with hint message naming the correct
+        tool + example usage. Regex-based pattern matching on the command string.
+        Configurable via tools.routing_rules in elai_cc.toml.
+  Why now: replaces ~375 prompt tokens ("Use Read not cat, Edit not sed...") with
+        a physical gate. The model cannot bypass it regardless of instruction following.
+        Zero prompt tokens. Critical for local models that ignore tool preference rules.
+  Touches: crates/tools/src/ (Bash tool handler, new routing_rules module)
+  Prerequisites: none (tools crate exists from Phase 3J)
+  Estimated scope: ~150-200 LOC
+
+STEP A-27: BASH SAFETY FILTER [prompt-to-architecture, Phase 3J tools extension]
+  READ: docs/specs/guide/update-implementation-order.txt (this section)
+  READ: .elai_cc/crates/tools/src/lib.rs (Bash tool validation pipeline)
+  READ: docs/claude-code-system-prompts-full.md
+    -> Bash tool prompt (git safety rules, dangerous command blocklist)
+    -> Section 6 "Executing Actions With Care" (reversibility framework)
+  What: blocklist filter in Bash tool handler. Patterns: push --force, reset --hard,
+        --no-verify, --no-gpg-sign, rm -rf, branch -D, checkout -- (destructive),
+        rebase -i, add -i (interactive, unsupported). On match: BLOCK with
+        explanation (why dangerous + safer alternative). Configurable severity
+        (BLOCK vs WARN_AND_CONFIRM) per pattern in elai_cc.toml.
+        Extends existing 5-tier validation pipeline.
+  Why now: replaces ~550 prompt tokens of safety rules + ~500 tokens of Bash git
+        workflow instructions. Physical prevention > probabilistic compliance.
+  Touches: crates/tools/src/ (Bash validation pipeline, new safety_filter module)
+  Prerequisites: none (tools crate, 5-tier validation pipeline exist)
+  Estimated scope: ~150-200 LOC
+
+STEP A-28: GIT COMMIT WORKFLOW TOOL [prompt-to-architecture, new tool]
+  READ: docs/specs/guide/update-implementation-order.txt (this section)
+  READ: .elai_cc/crates/tools/src/lib.rs (tool registration, existing tool patterns)
+  READ: docs/claude-code-system-prompts-full.md
+    -> Bash tool prompt "Committing changes with git" section (full 4-step workflow)
+    -> Bash tool prompt "Creating pull requests" section
+  What: new git_commit tool that internally executes the 4-step workflow:
+        (1) parallel git status + git diff + git log
+        (2) assemble commit message from diff analysis (model provides summary,
+            tool formats with test results template)
+        (3) stage specified files (never git add -A), create commit via HEREDOC
+        (4) verify with git status
+        Tool description: ~30 tokens ("Create a git commit with staged changes").
+        The 4,500-token Bash commit workflow becomes ~200 LOC of Rust.
+        Optional: git_pr tool for PR creation (same pattern, wraps gh).
+  Why now: single biggest token savings. 4,500 -> 30 tokens in tool description.
+        Deterministic commit format. No AI attribution trailers (enforced by code).
+        Model calls one tool instead of orchestrating 4 parallel Bash calls.
+  Touches: crates/tools/src/ (new git_commit tool, tool registration)
+  Prerequisites: none (git2 available, tools crate exists)
+  Estimated scope: ~250-350 LOC
+
+STEP A-29: AGENT PROMPT TEMPLATE [prompt-to-architecture, orchestrator extension]
+  READ: docs/specs/guide/update-implementation-order.txt (this section)
+  READ: .elai_cc/crates/tools/src/lib.rs (build_agent_system_prompt, Agent tool)
+  READ: .elai_cc/crates/orchestrator/src/prompt.rs (system prompt assembly)
+  READ: docs/claude-code-system-prompts-full.md
+    -> Agent tool prompt (3,875 tokens: agent types, prompt-writing guide,
+       foreground vs background, worktree, "brief like a smart colleague")
+  What: structured agent prompt template in orchestrator. When model spawns a
+        sub-agent, the orchestrator wraps the raw task in a template:
+        [CONTEXT: cwd, git branch, relevant files from SSB]
+        [TASK: model's raw instruction]
+        [CONSTRAINTS: from active rules, model tier limits]
+        [OUTPUT: expected format, length cap]
+        Model only provides TASK content (~1 sentence). Orchestrator adds the
+        briefing structure automatically. Agent tool description drops from
+        ~3,875 tokens to ~50 tokens ("Spawn a sub-agent for a delegated task").
+  Why now: second biggest token savings. Also improves sub-agent quality —
+        consistent briefing format regardless of how the model phrases it.
+  Touches: crates/tools/src/ (Agent tool), crates/orchestrator/src/ (template)
+  Prerequisites: none (agent system exists from Phase 3C)
+  Estimated scope: ~200-250 LOC
+
+STEP A-30: OUTPUT POSTPROCESSOR [prompt-to-architecture, orchestrator extension]
+  READ: docs/specs/guide/update-implementation-order.txt (this section)
+  READ: .elai_cc/crates/orchestrator/src/ (response handling, find output path)
+  READ: docs/claude-code-system-prompts-full.md
+    -> Section 8 "Tone and Style" (no emojis, concise, file ref format)
+    -> Section 9 "Output Efficiency" (brevity rules, word-count caps)
+    -> Section 15 "Numeric Length Anchors" (<=25 words between tools, <=100 final)
+  What: output postprocessor in orchestrator response pipeline. Three stages:
+        (1) emoji stripper (regex remove emoji unicode ranges)
+        (2) length enforcer (configurable max_response_tokens per model tier,
+            truncate with "[truncated]" marker if exceeded)
+        (3) format normalizer (strip leading "Sure!", "Of course!", "Great question!"
+            sycophancy prefixes — regex list)
+        Applied after model response, before display. Configurable in elai_cc.toml
+        [output] section with per-tier overrides.
+  Why now: replaces ~375 prompt tokens of tone/style/brevity rules. Deterministic
+        enforcement. Local models are especially prone to emoji spam and verbosity.
+  Touches: crates/orchestrator/src/ (new output_postprocessor module)
+  Prerequisites: none (orchestrator response pipeline exists)
+  Estimated scope: ~150-200 LOC
+
+STEP A-31: ACTION CLASSIFIER + CONFIRMATION GATE [prompt-to-architecture, tools extension]
+  READ: docs/specs/guide/update-implementation-order.txt (this section)
+  READ: .elai_cc/crates/tools/src/lib.rs (tool dispatch, PreToolUse hooks)
+  READ: .elai_cc/crates/orchestrator/src/ (find DAIRA trace system)
+  READ: docs/claude-code-system-prompts-full.md
+    -> Section 6 "Executing Actions With Care" (full reversibility framework:
+       destructive ops, hard-to-reverse ops, shared-state ops, categorization)
+  What: action classifier that tags every tool call with a risk level:
+        SAFE (read-only: Read, Glob, Grep, WebSearch)
+        REVERSIBLE (local mutation: Edit, Write, Bash non-git)
+        IRREVERSIBLE (git push, file delete, external API calls)
+        SHARED_STATE (PR create/comment, message send, deploy)
+        Classification via tool name + argument pattern matching.
+        IRREVERSIBLE and SHARED_STATE require confirmation gate (interactive mode)
+        or explicit policy override (autonomous mode). Extends DAIRA trace with
+        risk_level field. Configurable overrides in elai_cc.toml [actions] section.
+  Why now: replaces ~550 prompt tokens of safety categorization with a physical gate.
+        The model doesn't need to remember which actions are dangerous — the system
+        classifies and gates automatically.
+  Touches: crates/tools/src/ (new action_classifier module, PreToolUse integration)
+  Prerequisites: none (tools crate, PreToolUse hooks, DAIRA trace exist)
+  Estimated scope: ~200-250 LOC
+
+STEP A-32: PI TIER 1 COMPLETIONS [PI sections 1, 2A, 2C, 2D, 5]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 1 (project-profile-overrides.toml: separate file, NEVER auto-generated,
+       merged on load via field-by-field overlay, survives regeneration. Avoids TOML
+       comment preservation problem — standard serializers strip comments)
+    -> section 2A (build system priority ordering: language-native > package manager >
+       task runner > generic. Special case: Cargo workspace roots with [workspace] but
+       no [package] are still Cargo projects)
+    -> section 2C (framework detection: ~200 entry lookup table, NOT LLM inference.
+       FrameworkDetection type with name/version/category/confidence/detected_via.
+       Unknown frameworks detected as "custom" and logged)
+    -> section 2D (test runner location patterns: same-file, adjacent, separate dir,
+       mixed. Per-language naming patterns. Coverage tool detection from CI config,
+       Makefile targets, package.json scripts. TestProfile output type)
+    -> section 5 (command validation two-tier:
+       TIER A static — binary exists on PATH, config files exist, parse Makefile/
+       justfile/Taskfile targets, verify package.json script keys. <100ms, zero
+       side effects, always safe.
+       TIER B execution — opt-in, requires explicit user consent prompt. Commands
+       like cargo check/pytest --collect-only have side effects. Runs inside Tier C
+       sandbox when 4A available, unsandboxed with warning until then. User declines =
+       commands marked UNVERIFIED but still functional)
+  What: complete Tier 1 features missing from A-4 implementation:
+        (1) project-profile-overrides.toml: load, deserialize, merge overlay on top of
+            auto-detected profile. Override file is read-only by profiler.
+        (2) build system priority ordering (4-tier explicit list replaces old heuristic)
+        (3) framework detection expanded to ~200 entries (lookup table from section 2C)
+        (4) test runner location pattern detection (4 patterns) + coverage tool detection
+        (5) command validation TIER A (static filesystem checks) +
+            TIER B (execution with consent gate, sandbox when available)
+  Touches: core/ (types), knowledge/ (detection logic), cli/ (validation flow, consent)
+  Prerequisites: A-4 (base Tier 1 must exist)
+  Estimated scope: ~350-450 LOC
+
+STEP A-33: PI TIER 2 COMPLETIONS [PI sections 3A, 3B, 3C, 3E, 6]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 3C (CRITICAL: DKG stores absolute paths e.g. C:\Users\...\src\auth\mod.rs.
+       All path analysis MUST strip_prefix(project_root) before clustering. Clustering
+       on absolute paths produces meaningless "C:" cluster. Implementation:
+       PathBuf::strip_prefix(project_root). Regex fallback: use file walker relative
+       paths directly)
+    -> section 3A (naming convention thresholds: >80% one pattern = STRONG convention,
+       auto-seed as ACTIVE rule. 60-80% = MODERATE, auto-seed as WARN-level rule.
+       <60% = MIXED, no rule seeded, note in profile only)
+    -> section 3B (per-language error handling detection:
+       Rust: Result<T,E> vs Option vs raw T from DKG, thiserror/anyhow/eyre from
+         Cargo.toml, ? frequency vs .unwrap() frequency.
+       Python: try/except count via tree-sitter, custom exception classes, typing annotations.
+       TypeScript: try/catch count, Result/Either from fp-ts/neverthrow, error boundaries.
+       Go: if err != nil count, error wrapping fmt.Errorf with %w)
+    -> section 3E (DependencyProfile.classification_depth: enum declaration_only |
+       usage_based. Tier B usage-based requires DKG import edges, Rust-only initially.
+       Graph traversal proportional to |deps| * |files| — must be measured not assumed.
+       Non-Rust projects: skip Tier B, report DECLARED only)
+    -> section 6 (rule lifecycle: auto-seeded rules start SHADOW. After 5 successful
+       enforcements auto-promote to ACTIVE. After 3+ false positives auto-retire.
+       This is existing Phase 3F lifecycle — just needs new seed source wiring)
+  What: complete Tier 2 features missing from A-5 implementation:
+        (1) CRITICAL: strip_prefix(project_root) on all DKG paths before clustering
+        (2) naming convention thresholds: STRONG/MODERATE/MIXED with auto-seed rules
+        (3) per-language error handling detection (4 languages, DKG + grep fallback)
+        (4) DependencyProfile.classification_depth enum + Tier B Rust-only guard
+        (5) rule lifecycle wiring: auto-promotion (5 successes) + retirement (3 FPs)
+  Touches: knowledge/ (path handling, convention detection), rules/ (lifecycle, seeding)
+  Prerequisites: A-5 (base Tier 2 must exist)
+  Estimated scope: ~250-350 LOC
+
+STEP A-35: PI MULTI-LANGUAGE DKG GRAMMARS [PI section 10, 1A-MULTILANG]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 3 header (CRITICAL LIMITATION: DkgEngine::build_graph() only registers
+       RustGrammar. Python, TypeScript, Go files NOT parsed into DKG. Tier 2 falls
+       back to regex-based extraction — slower, less accurate but functional)
+    -> section 10 (1A-MULTILANG: separate work item. Add LanguageGrammar impls for
+       Python, TypeScript, Go, Java, C#. Required for Tier 2 DKG-based convention
+       extraction on non-Rust projects. HIGH priority for "any language" goal)
+    -> section 3A (regex fallback: parse-and-discard for stats via tree-sitter without
+       DKG storage. Language-specific AST queries: function_definition for Python,
+       function_declaration for TS/JS, func_declaration for Go)
+  READ: .elai_cc/crates/knowledge/src/ (DkgEngine, LanguageGrammar trait, RustGrammar impl)
+  What: implement LanguageGrammar for Python, TypeScript, Go, Java, C#.
+        Each grammar: tree-sitter parser + symbol extraction (functions, types,
+        constants, modules) + edge extraction (imports, calls).
+        Enables DKG-based Tier 2 for non-Rust projects (replaces regex fallback).
+  Touches: knowledge/src/ (5 new grammar impls, tree-sitter parser registration)
+  Prerequisites: A-5 (Tier 2 regex fallback works, provides baseline to compare against)
+  Estimated scope: ~500-700 LOC (5 grammars x ~100-140 LOC each)
+
+STEP A-36: PI TIER 3 + TELESCOPE COMPLETIONS [PI sections 4A, 8]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 8 (context telescope integration — FULL:
+       Layer 1: populated from ProjectProfile.project_vision or template fallback.
+         DKG concept annotations NOT used (concept column always NULL).
+       Prompt assembly: "{test_cmd} -p {affected_crate}" in every code baby step.
+       Few-shot examples: selected from SAME PROJECT via DKG similarity search.
+         "Here's how this codebase implements a similar function: [DKG result]"
+       Template generation: uses detected conventions — error types, naming, imports.
+         "fn {snake_case_name}(...) -> Result<T, {project_error_type}>"
+       Language-parameterized fix templates for reasoning Layer 1:
+         Rust: "use {crate}::{symbol};"
+         Python: "from {module} import {symbol}"
+         Go: "import \"{package}\""
+         TypeScript: "import {{ {symbol} }} from '{module}';")
+    -> section 4A (project vision: LLM prompt ~800 tokens input, constrained output
+       <= 200 tokens. Template fallback ~40 tokens when no LLM available)
+  What: complete Tier 3 + telescope features missing from A-11 implementation:
+        (1) language-specific fix templates for reasoning Layer 1 (4 languages)
+        (2) baby step prompt injection: "{test_cmd} -p {affected_crate}" in every step
+        (3) few-shot example selection algorithm via DKG similarity search
+        (4) decomposer receives ProjectProfile in context (convention constraints)
+        (5) convention-aware template generation (error types, naming, import style)
+  Touches: knowledge/ (DKG similarity query), context_budget.rs (prompt assembly),
+           reasoning/ (fix templates), orchestrator/ (decomposer context)
+  Prerequisites: A-11 (base Tier 3 + telescope), A-35 (multi-lang DKG for non-Rust
+                 few-shot — SOFT dep, works Rust-only without it)
+  Estimated scope: ~300-400 LOC
+
+STEP A-38: PI INCREMENTAL PROFILE UPDATES [PI section 9]
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 9 (FULL incremental update system:
+       Triggers: new dependency added (Cargo.toml/package.json changed), new source
+         directory created, build system config changed, CI config changed, every
+         N=50 baby steps (lightweight Tier 1 refresh).
+       Change detection: filesystem check at baby step boundaries and phase transitions.
+         NOT SSB event bus — event-driven re-indexing not wired in any existing phase.
+         If SSB event wiring added later, can replace polling approach.
+       Incremental strategy per tier:
+         Tier 1: re-scan only changed config files. UNGROUNDED <1s.
+         Tier 2: re-analyze only new/changed symbols in DKG. UNGROUNDED <5s.
+         Tier 3: re-generate vision only if Tier 1 or 2 changed significantly
+                 (new framework detected, language mix shifted >10%). UNGROUNDED <30s.
+       Schema versioning: schema_version field in project-profile.toml. When ELAI
+         updates and profile schema changes, full re-profiling triggered automatically)
+  What: incremental profile update system:
+        (1) change detection at baby step completion + phase transition boundaries
+            (filesystem mtime checks on config files vs last_profiled timestamp)
+        (2) per-tier incremental re-profiling (Tier 1: config files only, Tier 2:
+            changed DKG symbols only, Tier 3: only on significant Tier 1/2 change)
+        (3) schema_version tracking + full re-profile on version mismatch
+        (4) baby step counter (every N=50, lightweight Tier 1 refresh)
+  Touches: knowledge/ (incremental detection), cli/ (trigger wiring at boundaries),
+           core/ (schema_version in ProjectProfile)
+  Prerequisites: A-4 + A-5 + A-11 (all tiers must exist to refresh incrementally)
+  Estimated scope: ~200-300 LOC
+
+STEP A-39: AS DURING-GENERATION SAFETY DEFAULTS [AS sections 2.1, 2.2]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 2.2 (MEASURED STATUS 2026-04-14: steering on Qwen2.5-Coder-7B = NEUTRAL.
+       Infrastructure works — vectors compute, store, apply via forward hooks — but
+       generic contrast pairs have zero measurable effect on output quality.
+       Possible causes: coefficient=5.0 may need tuning for hidden_dim=3584, layer 9
+       may not be optimal, pairs too generic. Ship DISABLED by default. Enable after
+       domain-specific pair testing)
+    -> section 2.1 (threshold: UNCALIBRATED. Default DISABLED threshold=f64::INFINITY.
+       Calibration procedure mandatory before deployment (5-step, 100 completions).
+       CRITICAL: ETC and DoLa LogitsProcessors must NOT be stacked on models <32B.
+       DoLa HARMFUL on 7B: -15% code quality, -6% factuality, 4.7x slower, destroys
+       stop-token distribution. ETC should be ONLY LogitsProcessor on 7B/14B. DoLa
+       viable only on 32B+ (64 layers, untested). Target model: Qwen2.5-Coder-7B)
+  What: ensure safety defaults for during-generation features:
+        (1) steering vector: ship DISABLED (config: [inference.steering.modern_api]
+            enabled = false). Zero-coefficient passthrough when disabled.
+        (2) ETC: ship DISABLED (config: [inference.etc] enabled = false,
+            threshold = "uncalibrated"). f64::INFINITY until calibration run.
+        (3) DoLa/ETC incompatibility guard: runtime check prevents stacking both
+            LogitsProcessors on models with <64 layers. If both requested, ETC
+            wins and DoLa is silently disabled with warning log.
+        (4) Calibration script targets: assert Qwen2.5-Coder-7B (not Gemma)
+  Touches: python/elai_inference/server.py (guard logic, config loading),
+           elai_cc.toml schema (inference.steering, inference.etc sections)
+  Prerequisites: A-8 (steering vector impl), A-9 (ETC impl)
+  Estimated scope: ~100-150 LOC
+
+STEP A-41: AS DETERMINISTIC AUDITOR COMPLETIONS [AS section 3.3, CC Layer 4]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 3.3 (deterministic-first auditor mode — 5-step checking ORDER:
+       1. Build check from ProjectProfile.build_cmd, language-parameterized:
+          Rust: cargo check + cargo clippy
+          Python: python -m py_compile + ruff check
+          Go: go vet + golangci-lint
+          TypeScript: tsc --noEmit + eslint
+          Java: gradle compileJava + checkstyle
+          Other: ProjectProfile.build_cmd + ProjectProfile.lint_cmd
+       2. VERSION_GATE rules evaluation on all changed files (ecosystem-filtered)
+       3. Import cross-reference against deprecated_patterns (language-specific regex)
+       4. Lazy code pattern scan (from code-completeness-enforcement-design.txt 3.1)
+       5. Only after ALL deterministic checks pass: LLM auditor for logic/design
+       Config: [agents.auditor] deterministic_first = true in elai_cc.toml.
+       Agentless-inspired: deterministic scripts handle traversal, LLM only patches)
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> Layer 4 section (4 deterministic auditor checks:
+       FILE_SIZE_CENSUS on all modified files,
+       LAZY_CODE_SCAN full pattern set,
+       COMPLETENESS vs DECOMPOSITION_TREE check,
+       MODULE_COHERENCE per-language bridge/orphan detection)
+  What: complete deterministic-first auditor features missing from A-12:
+        (1) per-language build command registry (7 languages from ProjectProfile,
+            each with build_check + lint_check command pair)
+        (2) explicit 5-step checking order with early exit on BLOCK at any step
+        (3) 4 CC auditor checks wired into the deterministic pipeline:
+            FILE_SIZE_CENSUS, LAZY_CODE_SCAN, COMPLETENESS, MODULE_COHERENCE
+        (4) config field: [agents.auditor] deterministic_first = true
+  Touches: orchestrator/ (auditor agent config, check pipeline), rules/ (check wiring)
+  Prerequisites: A-12 (base deterministic auditor exists), A-4 (ProjectProfile for
+                 per-language build commands)
+  Estimated scope: ~250-350 LOC
+
+STEP A-40: MICRO PER-SLOT OPTIMIZATIONS [TE section 9]
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 9 (TOKEN AUDIT CHECKLIST: all 8 slots with MICRO vs LARGE
+       targets, rule priority filtering, SSB compression, GRC conclusion-only)
+    -> section 2 (effective context budget: 3B on 12GB gets MORE context than
+       7B — the tradeoff table)
+  READ: docs/specs/guide/steps/phase-3E.txt (current context budget allocator)
+  What: implement per-slot compression logic for MICRO tier in context
+        budget assembly. Each slot gets tier-specific assembly behavior:
+        Slot 1 (SystemPrompt): MICRO strips to role + output format + 3 rules
+          only. Removes "you are helpful" framing, moves examples to few-shot.
+          Target: 200 tokens for MICRO, 330 for LARGE.
+        Slot 2 (Rules): MICRO loads top 5 rules only, selected by recency
+          (last 3 baby steps), file relevance, and severity (CRITICAL first).
+          Compact DSL format, not natural language.
+          Target: 150 tokens for MICRO, 500 for LARGE.
+        Slot 3 (Telescope): MICRO skips Layers 1-2 (project vision, concept).
+          Target: 400 tokens for MICRO, 1000 for LARGE.
+        Slot 4 (RepoMap): MICRO OMITS entirely. Baby step already names exact
+          file and function. SMALL: top 10 symbols. MEDIUM+: full map.
+          Target: 0 for MICRO, 2000 for LARGE.
+        Slot 5 (CodeContext): MICRO max 3 snippets (edited function, one caller,
+          one similar). A-RAG compression more aggressive for MICRO.
+          Target: 1200 for MICRO, 6000 for LARGE.
+        Slot 6 (SSB): MICRO last 2 entries only, compressed format
+          ("prev_step: wrote fn X in file Y. Tests: 3/3 pass.").
+          Target: 200 for MICRO, 1500 for LARGE.
+        Slot 7 (GRC): MICRO last CONVERGE step only (conclusion, not chain).
+          Target: 100 for MICRO, 1000 for LARGE.
+        Slot 8 (OutputReserve): MICRO 750. LARGE 4000.
+  Touches: context_budget.rs (phase 3E), potentially rules/ (priority filtering)
+  Prerequisites: A-10 (context budget adaptation with ModelCapabilityProfile)
+  Estimated scope: ~300-400 LOC
+
+STEP A-42: TOKEN RECLAMATION TECHNIQUES [TE section 9]
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 9 (TOKEN RECLAMATION TECHNIQUES: 5 techniques, formatting removal
+       research grounding 24.5% savings, language-specific Python preservation)
+    -> section 9 (FORMATTING REMOVAL: 4 sub-points with implementation details,
+       output formatting restoration via tree-sitter)
+  READ: docs/specs/guide/steps/phase-3E.txt (context budget assembly pipeline)
+  What: implement 5 token reclamation techniques in context budget assembly:
+    1. FORMATTING REMOVAL (applied to CodeContext slot):
+       Strip leading/trailing whitespace per line, collapse multiple blank lines,
+       remove trailing comments that repeat the code.
+       PRESERVE: string literals, docstrings, significant indentation (Python).
+       Language-specific: Python preserves indentation. All others strip.
+       Research-grounded: 24.5% token reduction, zero accuracy degradation.
+    2. OUTPUT FORMATTING RESTORATION:
+       After LLM generates code, apply tree-sitter pretty-print to restore
+       proper indentation before writing to disk. Model generates minimally
+       formatted code, system restores deterministically.
+    3. PATH ABBREVIATION:
+       src/middleware/auth.rs -> middleware/auth.rs (strip common prefix).
+       Model can infer src/ from context.
+    4. IMPORT COLLAPSING:
+       Show as "// [12 imports]" with expand-on-request. Full imports waste
+       small model attention. Expand only if model requests specific import.
+    5. DEDUPLICATION:
+       If same type appears in 3 snippets, define it once with reference.
+       Use symbol names instead of full signatures when context is clear.
+  Touches: context_budget.rs (phase 3E assembly), orchestrator/ (output restoration)
+  Prerequisites: A-10 (context budget adaptation)
+  Estimated scope: ~250-350 LOC
+
+STEP A-43: ORACLE RESEARCH PIPELINE + TYPES [PM sections 3-6]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 3 (RESEARCH PIPELINE: all 7 phases A through G with full detail)
+    -> section 4 (what stops LLM from trusting bad sources: 5 enforcement levels)
+    -> section 5 (handling "I don't know": first-class output, user fallbacks)
+    -> section 6 (TYPES: ResearchQuery, SourceTier, SourceClassification,
+       ExtractedFact, VerificationLevel, VerifiedClaim, ResearchAnswer,
+       AnswerConfidence — all fields specified)
+  What: implement the Oracle Mode 7-phase research pipeline:
+    Phase A — QUERY FORMULATION (LLM): user question -> 2-4 search queries.
+      Structural rephrasing, not creative. Queries logged in SSB.
+    Phase B — SEARCH EXECUTION (deterministic): execute queries via WebSearch,
+      collect URLs + snippets, deduplicate by URL.
+    Phase C — SOURCE TIER CLASSIFICATION (deterministic, no LLM): classify
+      every URL against lookup table. LLM has ZERO input on tier assignment.
+      Uses source-tiers.toml from A-45.
+    Phase D — FACT EXTRACTION (LLM, constrained): extract ExtractedFact from
+      T1/T2 sources. EXACT QUOTE field is critical — prevents misrepresentation.
+      Facts without exact_quote = UNSUPPORTED (logged but not used).
+    Phase E — CROSS-VERIFICATION (deterministic): count supporting sources per
+      claim. VERIFIED (2+ T1/T2), SUPPORTED (1 T1/T2), WEAK (T3 only),
+      UNSUPPORTED (no exact quotes). Set intersection, not LLM reasoning.
+    Phase F — SYNTHESIS (LLM, constrained): receives ONLY ExtractedFacts,
+      not raw pages. Every sentence must cite a fact. Uncited sentences removed
+      by post-processing regex. Output: answer + evidence chain + confidence.
+    Phase G — POST-VERIFICATION (deterministic): 4 checks — citation completeness,
+      tier consistency, "I don't know" enforcement, hallucination guard.
+      Re-synthesis max 2 retries, then escalate with raw evidence chain.
+    Types: ResearchQuery, SourceTier (T1-T4), SourceClassification,
+      ExtractedFact (with exact_quote), VerificationLevel, VerifiedClaim,
+      ResearchAnswer (with confidence + caveats + unanswered_parts),
+      AnswerConfidence (HIGH/MEDIUM/LOW/UNKNOWN).
+    ~800-1200 LOC. Touches orchestrator/ and cli/.
+  Touches: orchestrator/ (research pipeline), cli/ (output formatting),
+    core/ (types)
+  Prerequisites: A-22 (RESEARCHING FSM state), A-45 (source-tiers.toml)
+  Estimated scope: ~800-1200 LOC
+
+STEP A-44: PROJECT INDEXING WIRING [PM section 1B]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 1B (PROJECT INDEXING: full flow from detection to indexing,
+       CURRENT IMPLEMENTATION GAP verification, 4 things that need to happen,
+       exclusion list, re-indexing, storage, incremental updates)
+  READ: docs/specs/guide/update-phase-map.txt
+    -> section 1: phase-3J.txt entry (IndexingService wiring)
+  READ: .elai_cc/crates/knowledge/src/lib.rs (DkgEngine, build_graph API)
+  READ: .elai_cc/crates/orchestrator/Cargo.toml (verify no knowledge dependency)
+  What: wire DKG + BM25 + vector indexing into the pipeline.
+    1. Add elai-knowledge dependency to orchestrator Cargo.toml
+    2. Create IndexingService that calls DkgEngine::new + build_graph +
+       BM25 indexing + vector embedding in sequence
+    3. On first /task in a directory with no .elai_cc/indexes/:
+       detect existing project (section 1 signals), ask user to confirm,
+       run IndexingService with progress output
+    4. Wire incremental updates: SSB file_write events trigger re-index
+       of only changed files via IndexingService
+    Exclusion list: node_modules/, target/, .git/, __pycache__/, dist/,
+      build/, .env, *.key, *.pem, credentials.*, secrets.*.
+      Binary detection: null bytes in first 8KB. .gitignore respected.
+      Configurable: elai_cc.toml [knowledge.exclude] patterns.
+    Storage: .elai_cc/indexes/ (DKG SQLite, tantivy dir, vector cache SQLite).
+    Re-indexing: schema version mismatch -> ask user, degrade to BM25_ONLY.
+  Touches: orchestrator/ (IndexingService, Cargo.toml), cli/ (first-run prompt)
+  Prerequisites: none (Phase 1A DKG exists, 3J.WIRE.E2E exists)
+  Estimated scope: ~200-300 LOC
+
+STEP A-45: SOURCE TIER CONFIG [PM section 3C]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 3C (SOURCE TIER CLASSIFICATION: 4-tier table with domain
+       examples, format of source-tiers.toml, lookup table design,
+       SourceTier enum, SourceClassification struct, classification_method)
+  What: create source-tiers.toml config file and SourceTier lookup system.
+    1. Config file: .elai_cc/config/source-tiers.toml with 4 sections:
+       [tier1] domains + patterns (official docs, standards, academic, source code)
+       [tier2] domains + patterns (MDN, StackOverflow score>20, established blogs)
+       [tier3] implicit default for unknown domains
+       [tier4_blocklist] domains + patterns (SEO spam, AI content farms)
+       Ship with ~200 classified domains as defaults.
+    2. SourceTier enum: T1_AUTHORITATIVE, T2_STRONG, T3_WEAK, T4_REJECTED.
+    3. SourceClassification struct: url, domain, tier, classification_method
+       (EXACT_DOMAIN / PATTERN / DEFAULT).
+    4. classify_source(url) -> SourceClassification function.
+       Domain extraction, exact match first, pattern match second, DEFAULT=T3.
+    5. Loaded at startup, cached in memory. Config reload without rebuild.
+  Touches: core/ (types), config/ (new file), orchestrator/ (config loading)
+  Prerequisites: none (standalone config + types)
+  Estimated scope: ~200-300 LOC
+
+STEP A-46: CONTEXT TELESCOPE TYPES [PM telescope section + TE section 9]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> CONTEXT TELESCOPE section (all 5 layers, vertical context, horizontal
+       context, surgical mode telescope, types section 6)
+    -> section 6 (ContextTelescope type, BoundedString<N> newtype)
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 9 Slot 3 (telescope sizing per tier)
+    -> STEP FILES REQUIRING UPDATES items 3-4 (phase-3E and phase-3G updates)
+  READ: docs/specs/guide/steps/phase-3G.txt (plan management, PhaseEntry, tree nodes)
+  READ: docs/specs/guide/steps/phase-3E.txt (context budget, Slot 3)
+  What: implement Context Telescope types and tree node summary fields.
+    1. BoundedString<const N: usize> newtype: wraps String, rejects inputs
+       exceeding N tokens at construction via TokenCounter trait.
+       TooLong error type.
+    2. ContextTelescope struct: project_vision (BoundedString<200>),
+       concept_summary (BoundedString<150>), phase_goal (BoundedString<100>),
+       step_context (BoundedString<100>).
+       Methods: from_tree(tree, baby_step_id) walks up DecompositionTree
+       collecting ancestor summaries. render() -> String for prompt injection.
+       token_estimate() -> usize for budget allocation.
+    3. Add summary: BoundedString<N> field on PhaseEntry, ConceptNode, StepNode
+       in plan management types (Phase 3G). Summary is written by decomposer
+       at node creation, frozen in tree struct, never regenerated.
+    4. Update Slot 3 sizing in context budget allocator from ~250-600 tokens
+       to ~550-1050 tokens (telescope content).
+    5. Surgical mode telescope: shallower (3 layers instead of 5). Layer 1
+       auto-generated from DKG concept annotations. Layer 2 from blast radius.
+       Layer 3 = step task. Total ~400-900 tokens.
+  Touches: core/ (BoundedString, ContextTelescope), orchestrator/ (plan types),
+    context_budget.rs (Slot 3 sizing)
+  Prerequisites: none (Phase 3G and 3E exist)
+  Estimated scope: ~300-400 LOC
+
+STEP A-47: /RESEARCH CLI COMMAND + FALLBACK CLASSIFIER [PM section 1]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 1 (TRIGGER/ROUTING: /research and /ask commands, fallback
+       classifier with HAS_PROJECT_REF / NO_CODE_INTENT rules, classification
+       regex, route table)
+    -> INTEGRATION section item 1 (CLI CHANGES)
+  What: implement /research CLI command and enhanced fallback classifier.
+    1. /research <question> command: routes to Oracle Mode (RESEARCHING state).
+       /ask <question> alias.
+    2. Fallback classifier enhancement (deterministic regex, no LLM):
+       HAS_PROJECT_REF = message references file/function/module in DKG index.
+       HAS_ACTION_VERB = implement/fix/add/create/modify/refactor/build/write.
+       HAS_QUESTION = contains ? or starts with how/what/why/when/does/is/can.
+       NO_CODE_INTENT = not "make it"/"change"/"update the code".
+       Route: action -> /task, project_ref+question -> /explore,
+         question+no_code+no_ref -> /research, default -> /task.
+    3. --surgical and --new flags on /task command.
+  Touches: cli/ (command routing, fallback classifier)
+  Prerequisites: A-22 (RESEARCHING FSM state), A-43 (Oracle research pipeline)
+  Estimated scope: ~150-250 LOC
+
+STEP A-48: DKG DATA FLOW EDGES [PM KNOWLEDGE ARCHITECTURE GAP 1]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> KNOWLEDGE ARCHITECTURE ASSESSMENT section GAP 1 (data flow tracking,
+       dkg_data_flow table schema, flow_type enum, tree-sitter extraction,
+       arxiv 2512.08492: 87% vs 56% resolution rate)
+    -> STEP FILES REQUIRING UPDATES item 1 (phase-1A.txt, HIGH priority)
+  READ: docs/specs/guide/steps/phase-1A.txt (current DKG implementation)
+  What: add data flow edges to DKG for surgical mode blast radius improvement.
+    1. New SQLite table: dkg_data_flow (source_node_id INTEGER REFERENCES
+       dkg_nodes, target_node_id INTEGER REFERENCES dkg_nodes,
+       variable_name TEXT, flow_type TEXT CHECK(flow_type IN
+       ('PARAMETER','RETURN','ASSIGNMENT','FIELD_ACCESS'))).
+    2. FlowType enum: PARAMETER, RETURN, ASSIGNMENT, FIELD_ACCESS.
+    3. Tree-sitter extraction during existing parse step:
+       - Parameter: fn foo(x) called with foo(my_var) -> edge
+       - Return: let result = foo() -> edge from foo return to result
+       - Assignment: x = y -> edge
+       - Field access: obj.field -> edge from obj to field
+    4. Edges are HEURISTIC enrichment, not hard gates. Cannot track closures,
+       dynamic dispatch, complex control flow, macros.
+    5. Optional: line-level def-ref edges behind cfg(feature="line_level").
+  Touches: knowledge/ (schema migration, DKG parsing extension, types)
+  Prerequisites: none (Phase 1A DKG exists)
+  Estimated scope: ~300-400 LOC
+
+STEP A-34: RA SELF-DISCOVERY — FAILURE TAXONOMY EXTENSION [RA Layer 1, CC related]
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> INTEGRATION section: Phase 3F ("Self-discovery: when auditor finds recurring
+       error pattern 3+ times, auto-propose new FailureTaxonomy category + fix template")
+    -> LAYER 1 section (FailureTaxonomy, fix template generation)
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> Layer 5 section (recovery strategies reference FailureTaxonomy)
+  READ: docs/specs/guide/steps/phase-3F.txt (rules engine, self-discovery mechanism)
+  What: extend the self-discovery mechanism in rules/ crate (Phase 3F) to detect
+        recurring error patterns and auto-propose new FailureTaxonomy categories.
+        When the auditor identifies the SAME error pattern (matched by regex +
+        failure category + affected symbol kind) 3+ times across baby steps:
+        (1) Auto-propose a new FailureTaxonomy category with:
+            - regex patterns matching the recurring error
+            - DKG query strategy for root cause localization
+            - fix template with {placeholders} for Layer 1 resolution
+        (2) Proposed category enters PROPOSED state (rules engine lifecycle),
+            requires compile-time validation (regex compiles, template parses).
+        (3) After independent approval, category enters CANDIDATE -> ACTIVE.
+        Trust boundary: auditor-sourced rules need independent approval
+        (already enforced by rules engine, reuse existing trust model).
+        New types: FailureCategoryProposal { pattern, category_name, fix_template,
+          source_violations: Vec<ViolationId>, confidence: f32 }.
+  Why now: Layer 1 deterministic reasoning (DESIGN ADDITIONS TO 4B) depends on
+        comprehensive FailureTaxonomy. Without self-discovery, new error patterns
+        require manual category creation. This makes the taxonomy self-expanding.
+  Touches: rules/src/self_discovery.rs (extend existing), reasoning/ (types)
+  Prerequisites: A-6 (rules.db + self-discovery infrastructure), A-2 (hooks work)
+  Estimated scope: ~200-300 LOC
+
+STEP A-37: RA VRAM-TIER LAYER CONFIGURATION [RA, runtime layer availability]
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> VRAM-TIER CONFIGURATIONS section (full table: 8/12/16/24/48GB tiers,
+       which layers available, branch limits, model assignments)
+    -> CLOUD BUDGET ECONOMICS section (cloud config in elai_cc.toml)
+    -> LAYER 4 section (AB-MCTS branch limits per VRAM tier)
+    -> DESIGN PRINCIPLES rule 9 (cloud as scalpel, ~95% local)
+  What: at startup, detect available VRAM via nvml-wrapper (or sysinfo fallback)
+        and configure which reasoning layers are available for this hardware tier.
+        VramTierConfig type:
+          vram_detected_gb: f32,
+          tier: VramTier (8GB | 12GB | 16GB | 24GB | 48GB),
+          available_layers: Vec<ReasoningLayer>,  // 1-6
+          ab_mcts_max_branches: usize,            // 5 on 8GB, 15 on 12GB+, 20 on 16GB+
+          cloud_importance: CloudImportance,       // Higher/Normal (higher on 8GB)
+          offline_swap_strategy: Option<SwapStrategy>,  // 8GB: swap 3B->7B for diagnosis
+        Layer availability per tier (from RA design):
+          8GB:  Layers 1,2,3,4(max 5 branches),5,6
+          12GB: Layers 1,2,3,4(max 15 branches),5,6 — full pipeline
+          16GB: Layers 1,2,3,4(max 20 branches),5,6
+          24GB: Layers 1,2,3,4,5,6 — dual-model (14B gen + 7B verify)
+          48GB: Layers 1,2,3,4(full),5,6 — multi-model
+        Offline mode: Layers 5-6 replaced by model swap (8GB: swap 3B out ->
+          load 7B -> diagnose -> swap back, ~10-15s) or human escalation.
+        Config in elai_cc.toml [cloud] section:
+          enabled, monthly_budget_usd, daily_soft_limit_usd, per_task_max_generations,
+          diagnostic_model, generation_model, opus_allowed.
+          [cloud.escalation]: haiku_max_per_baby_step=2, sonnet_max_per_baby_step=1,
+          opus_max_per_task=1.
+  Touches: core/ (VramTierConfig, VramTier types), reasoning/ (layer routing),
+           providers/ (VRAM detection at startup)
+  Prerequisites: A-17 (GG sidecar signals for Layer 4 scoring)
+  Estimated scope: ~250-350 LOC
+
+
+STEP B-1: CONSTRAINED DECODING [TE, extends Phase 3J providers]
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 4 Principle 4 (FULL: CRANE adaptive constraints, CodeFast early
+       stopping, LogitsProcessor chain, vLLM vs ollama fallback)
+    -> section 13 (ConstrainedDecodingConfig type, DecodingMode enum)
+  What: ConstrainedDecodingConfig, grammar-guided generation, JSON schema mode,
+        CRANE-style adaptive constraints, CodeFast early stopping.
+  Touches: providers/ (VllmProvider), phase 3J
+  Prerequisites: A-1 (done), A-10 (context budget knows model tier)
+  Note: vLLM features behind cfg(feature="vllm"). Ollama gets JSON schema only.
+
+STEP B-2: CONSTRAINED DECODING FOR IMPORTS [AS Priority 4, extends providers]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 2.3 (FULL: JSON Schema allowlist, EBNF grammar, auto-generation
+       from Cargo.toml + deprecated_patterns, import-context detection)
+    -> AUDIT RESOLUTION LOG: BLOCK-4 (why negative lookahead fails, FSM fix)
+  What: positive allowlist via JSON Schema or EBNF for import lines.
+  Touches: providers/src/vllm_client.rs
+  Prerequisites: B-1 (constrained decoding infra), A-6 (deprecated_patterns)
+  Note: vLLM-only, feature-gated. Lowest priority AS item.
+
+STEP B-3: MAINTENANCE AUTOMATION [AS Priority 4]
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 4.2 (freshness decay recalculation: schedule, actions, pruning)
+    -> section 4.3 (steering vector refresh: trigger, pair generation, compute)
+  What: freshness decay recalculation, steering vector refresh automation.
+  Touches: knowledge/src/freshness.rs, metrics/
+  Prerequisites: A-13 (freshness), A-8 (steering vector), A-15 (dep audit)
+
+DESIGN ADDITIONS TO 4B (integrate when implementing Phase 4B):
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> LAYER 1 section (FailureTaxonomy expansion, DiagnosticResult, RootCause)
+    -> LAYER 1 STEP 2 (SVRepair CFG analysis, DKG edge traversal)
+  Add to 4B:
+    [RA] FailureTaxonomy expansion: structured RootCause output per category
+    [RA] DiagnosticResult type with fix_instruction generation per category
+    [RA] 3 new categories: LAZY_CODE, EMPTY_BODY, FILE_SIZE_EXCEEDED
+    [RA] SVRepair-style CFG analysis as optional deep localization
+    [RA] DKG-based import resolution for UNDEFINED_SYMBOL/MISSING_IMPORT
+    [PM] DKG query tools exposed via IPC: dkg_callers(symbol),
+      dkg_dependents(symbol), dkg_data_flow(variable, direction),
+      dkg_subgraph(entry_point, depth)
+    [PM] Integration wiring check tool: DKG reachability from entry point,
+      grep fallback, import chain check. Orphaned code detection.
+
+DESIGN ADDITIONS TO 4C (integrate when implementing Phase 4C):
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> section 2.1 (ShortCoder in PostToolUse)
+  Add to 4C:
+    [CC] ShortCoder in PostToolUse (completeness verification after tool output)
+    [AS] VERSION_GATE + lazy code hooks already wired by A-2/A-6/A-21
+
+DESIGN ADDITIONS TO 4D (integrate when implementing Phase 4D):
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> MODE 1 sections 1-6 (surgical: detection, decomposition, types)
+    -> MODE 2 sections 1-6 (oracle: routing, research, source tiers)
+    -> INTEGRATION + PHASE PLACEMENT sections
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 3 (baby step sizing, decomposition depth per tier)
+    -> section 4 Principles 1-3 (literal prompts, few-shot, templates)
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> section 1.1 (FILE_PLAN block, replaces target_file, tier-gated limits)
+    -> section 1.3 (ModuleTree template per language)
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> INTEGRATION section: Phase 4D
+  Add to 4D:
+    [PM] SurgicalDecomposer, blast radius analysis, project detection, regression gates
+    [PM] Oracle mode research pipeline, source tier classification, /research command
+    [TE] decomposition depth adapts to ModelCapabilityProfile
+    [TE] baby step sizing per model tier table
+    [TE] template generation (fill-in-the-blank), few-shot from DKG
+    [CC] FILE_PLAN as 9th BabyStepSpec block (replaces target_file)
+    [CC] ModuleTree type definition (language-parameterized)
+    [CC] tier-gated file count limits per baby step
+    [RA] COMPLEXITY_HIGH marking, AB-MCTS budget, few-shot injection, escalation
+
+DESIGN ADDITIONS TO 4E (integrate when implementing Phase 4E):
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 3 (phase sizing, DecompositionTree validation)
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> section 2.1 (skeleton-first, fill protocol, mini-critic)
+    -> section 2.2 (bridge file templates, per-language)
+    -> section 1.2 (FileLineTracker, TOCTOU prevention)
+    -> section 5.3 (deterministic file splitter)
+    -> section 5.1 (lazy-code BubbleUp)
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> INTEGRATION section: Phase 4E
+  Add to 4E:
+    [TE] phase sizing uses model tier, DecompositionTree validation
+    [CC] skeleton-first generation + fill protocol + mini-critic
+    [CC] bridge file templates, FileLineTracker, file splitter, lazy-code BubbleUp
+    [RA] BubbleUpAction::DiagnoseAndRetry, escalation levels
+
+DESIGN ADDITIONS TO 4G (integrate when implementing Phase 4G):
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 5 (retry economics, temperature schedule, futility, best-of-N)
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> INTEGRATION section: Phase 4G
+    -> LAYER 4 (AB-MCTS budget, branch limits per VRAM tier)
+    -> LAYER 5-6 (cloud escalation, budget economics)
+    -> CLOUD BUDGET ECONOMICS section
+  Add to 4G:
+    [TE] retry strategy, futility detection, best-of-N, progressive escalation
+    [RA] AutoAdvanceEvaluator, Layer 1-6 exhaustion escalation
+    [RA] CloudSpendTracker budget tiers, AB-MCTS per VRAM tier
+    [RA] Cloud budget config in elai_cc.toml [cloud] section
+    [TE] Model swap protocol with 6 strategies (single model default for 12GB,
+      predictive preloading for 24GB+, overlap with deterministic work)
+    [TE] PredictiveLoader type (next_model, preload_state, mmap_handle)
+    [PM] Blast radius thresholds in EscalationPolicy:
+      autonomous_confirm_above_loc (default 1000),
+      autonomous_refuse_above_loc (default 5000)
+
+DESIGN ADDITIONS TO 4H (integrate when implementing Phase 4H):
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 4.1 (nightly dep audit trigger)
+    -> section 4.3 (steering vector refresh trigger)
+  Add to 4H:
+    [AS] nightly dep audit trigger from self-mod loop
+    [AS] steering vector refresh triggered by dep audit
+
+
+========================================================================
+DEPENDENCY GRAPH (visual)
+========================================================================
+
+  GROUP A (foundations, before Phase 4):
+
+  A-1 (baseline, DONE) ──> A-10 (context budget adapt) ──> A-18 (repair context)
+       │                                                 ──> A-24 (ShortCoder)
+       │                                                 ──> B-1 (constrained decode)
+       │
+  A-2 (hook fix) ──────────────> A-6 (VERSION_GATE) ──> A-7 (constitutional + T1 hook)
+       │                              │                       │
+       └──> A-14 (T2 AST imports)     └──> A-8 (steering vec) └──> A-15 (nightly audit)
+       │                              └──> A-19 (interrogation trees)
+       └──> A-21 (CC hooks,           └──> A-21 (CC hooks, needs A-2 + A-6)
+             needs A-6)               └──> B-2 (constrained decode for imports)
+
+  A-3 (model.generate, DONE) ──> A-9 (ETC monitoring)
+       │
+       └──> A-17 (GG sidecar signals) ──> A-25 (GG novelty signal)
+
+  A-4 (PI Tier 1) ──> A-5 (PI Tier 2) ──> A-11 (PI Tier 3) ──> A-16 (PI measure)
+       │                    │                    │
+       │                    │                    └──> A-36 (PI telescope completions)
+       │                    │                    └──> A-38 (PI incremental updates)
+       │                    └──> A-35 (PI multi-lang DKG)
+       │                    └──> A-33 (PI Tier 2 completions)
+       └──> A-32 (PI Tier 1 completions)
+       └──> A-12 (det auditor) ──> A-41 (AS det auditor completions)
+                                        │
+       A-12 <── A-11 ──────────────────┘
+
+  A-8 (steering vec) ──┐
+  A-9 (ETC)         ──┘──> A-39 (AS safety defaults)
+
+  A-13 (freshness scoring) ──> B-3 (maintenance automation)
+
+  A-20 (MistakeBook SSB) ──> A-23 (micro-reflection)
+
+  A-22 (RESEARCHING state) — independent, no prereqs
+
+  A-26 through A-31 (prompt-to-architecture) — all independent, no prereqs
+
+  A-32 (PI Tier 1 completions) — prereqs: A-4
+  A-33 (PI Tier 2 completions) — prereqs: A-5
+  A-34 (RA self-discovery) — prereqs: A-6 + A-2
+  A-35 (PI multi-lang DKG) — prereqs: A-5
+  A-36 (PI telescope completions) — prereqs: A-11, soft A-35
+  A-37 (RA VRAM-tier config) — prereqs: A-17
+  A-38 (PI incremental updates) — prereqs: A-4 + A-5 + A-11
+  A-39 (AS safety defaults) — prereqs: A-8 + A-9
+  A-41 (AS det auditor completions) — prereqs: A-12 + A-4
+
+  A-10 (done) ──> A-40 (MICRO per-slot)
+  A-10 (done) ──> A-42 (token reclamation)
+  A-22 (done) + A-45 ──> A-43 (Oracle pipeline)
+  A-22 (done) + A-43 ──> A-47 (/research CLI)
+
+  A-40 (MICRO per-slot) — prereqs: A-10
+  A-42 (token reclamation) — prereqs: A-10
+  A-43 (Oracle pipeline) — prereqs: A-22 + A-45
+  A-44 (indexing wiring) — independent (Phase 1A DKG + 3J.WIRE.E2E exist)
+  A-45 (source tier config) — independent (standalone config + types)
+  A-46 (telescope types) — independent (Phase 3G + 3E exist)
+  A-47 (/research CLI) — prereqs: A-22 + A-43
+  A-48 (DKG data flow) — independent (Phase 1A DKG exists)
+
+
+========================================================================
+PARALLELISM OPPORTUNITIES
+========================================================================
+
+  These steps can run in PARALLEL (no dependencies between them):
+
+  Parallel set 1: A-2 + A-4 + A-13 + A-20 + A-22 + A-26 + A-27 + A-28 + A-29 + A-30 + A-31
+                   + A-44 + A-45 + A-46 + A-48
+    (A-1 and A-3 are DONE. All listed steps are independent.)
+    A-26 through A-31 are prompt-to-architecture — no dependencies on other A-steps.
+    A-44, A-45, A-46, A-48 are TE/PM foundations — no dependencies.
+
+  Parallel set 2: A-5 + A-6 + A-17 (after A-2/A-4 done)
+    (PI Tier 2, VERSION_GATE, GG sidecar signals — independent of each other)
+
+  Parallel set 2b: A-32 + A-33 + A-35 (after A-4/A-5 done)
+    (PI Tier 1 completions, PI Tier 2 completions, PI multi-lang DKG — independent of each other)
+
+  Parallel set 3: A-8 + A-9 + A-7 + A-14 + A-19 + A-21 + A-23 + A-25 + A-34 (after their prereqs)
+    (steering vec, ETC, constitutional, T2 AST, interrogation trees, CC hooks,
+     micro-reflection, GG novelty, RA self-discovery — all have distinct prereqs, no conflicts)
+
+  Parallel set 3b: A-37 (after A-17 in set 2)
+    (VRAM-tier config — independent of set 3 steps, only needs A-17)
+
+  Parallel set 3c: A-36 + A-38 + A-41 (after A-11/A-12 done)
+    (PI telescope completions, PI incremental updates, AS det auditor completions —
+     independent of each other. A-36 soft-depends on A-35 for non-Rust few-shot.)
+
+  Parallel set 3d: A-39 (after A-8 + A-9 in set 3)
+    (AS safety defaults — only needs steering + ETC to exist)
+
+  Parallel set 4: A-10 ──> A-18 + A-24 (sequential, A-10 can run in parallel with set 3)
+
+  Parallel set 4b: A-40 + A-42 (after A-10 done, independent of each other)
+    (MICRO per-slot + token reclamation — both need A-10 context budget)
+
+  Parallel set 4c: A-43 (after A-45 done)
+    (Oracle pipeline — needs A-22 done + A-45 source tier config)
+
+  Sequential after A-43: A-47 (/research CLI — needs A-43 Oracle pipeline)
+
+  Parallel set 5: B-1 + B-2 + B-3 (after their A-step prereqs, before Phase 4)
+
+
+========================================================================
+ESTIMATED TOTAL SCOPE
+========================================================================
+
+  Group A (48 steps, A-1/A-3 DONE): ~11500-16100 LOC across ~25-35 sessions
+    A-2 through A-25: design document additions to completed phases (~5500-7500 LOC)
+    A-26 through A-31: prompt-to-architecture conversions (~1100-1400 LOC)
+    A-32 + A-33 + A-35 + A-36 + A-38: PI completions + multi-lang DKG (~1600-2200 LOC)
+    A-34 + A-37: RA self-discovery + VRAM-tier config (~450-650 LOC)
+    A-39 + A-41: AS safety defaults + det auditor completions (~350-500 LOC)
+    A-40 + A-42 through A-48: TE/PM foundations (~2500-3600 LOC)
+      A-40: ~300-400 (MICRO per-slot), A-42: ~250-350 (token reclamation),
+      A-43: ~800-1200 (Oracle pipeline), A-44: ~200-300 (indexing wiring),
+      A-45: ~200-300 (source tier config), A-46: ~300-400 (telescope types),
+      A-47: ~150-250 (CLI + classifier), A-48: ~300-400 (DKG data flow)
+  Group B (3 steps): standalone features extending Phase 3J/providers
+  Group 3K (5 steps): RAG production hardening, internal knowledge/ crate
+  Design additions to Phase 4: listed as integration checklists (not separate steps)
+
+  Completed phases to modify: 1A, 1E, 3C, 3E, 3F, 3J (including sub-phases)
+  New phases/sub-phases: 3L (Project Intelligence), 3J.BASELINE
+  New sub-phases of 4D: 4D-SURGICAL, 4D-ORACLE
+  Reasoning architecture: no new phase (integrates into 3E, 3F, 3J, 4B, 4D, 4E, 4G)
+
+
+========================================================================
+QUICK REFERENCE: WHAT TO GIVE THE LLM PER SESSION
+========================================================================
+
+  Every step above has a READ: block listing exact files and sections.
+  The implementing LLM session follows this protocol:
+
+    1. Read THIS file to understand where the step fits in the overall order
+    2. Read every file listed in the step's READ: block (these are mandatory)
+    3. Read update-phase-map.txt for the relevant section (shows which step
+       files to modify and cross-cutting changes)
+    4. Read the current source code files that will be modified
+    5. Implement the changes per the design file specs
+
+  The READ: blocks are self-contained — they point to exact sections with
+  parenthetical notes on what each section contains. The design files have
+  full type definitions, formulas, schemas, SQL DDL, audit resolutions,
+  and constraints that are NOT duplicated in this index.
+
+  Example: implementing step A-6 (VERSION_GATE)
+    1. Read this file -> understand A-6 position, prerequisites (A-2), dependents (A-7, A-8)
+    2. Read anti-staleness-enforcement.txt section 1.2 (full schema, regex sets, types)
+    3. Read anti-staleness AUDIT RESOLUTION LOG WARN-3, WARN-4 (design corrections)
+    4. Read .elai_cc/outdated-tech-audit.md (seed data)
+    5. Read steps/phase-3F.txt (current rules engine)
+    6. Read update-phase-map.txt section 2 -> phase-3F.txt entry (what to add)
+    7. Modify steps/phase-3F.txt (add VERSION_GATE sub-steps)
+    8. Implement the code changes per the design file specs

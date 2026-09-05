@@ -1,0 +1,380 @@
+PHASE 4C: PLUGINS — HOOKS + TIERED STATIC ANALYSIS — IMPROVED 2026-04-06
+Prerequisites: Phase 4B complete (tools operational through IPC)
+
+SCOPE
+  Hook system (PreToolUse/PostToolUse/Stop/PreCompact) runs in orchestrator process.
+  Tiered static analysis on SSB writes. Agents never see hook existence.
+  Under Tier C (Phase 4A), hooks intercept IPC messages — not in-process calls.
+  Skills system and MCP bridge are NOT in 4C scope (deferred: skills are prompt
+    templates with no code execution path; MCP bridge is 1751 LOC of existing
+    claw-code that maps to a separate integration sub-phase after pipeline factory).
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/plugins.txt               Full file (hooks, tiers, MCP bridge)
+  docs/specs/crates/orchestrator.txt          Section 12 (agent isolation model, Tier C IPC)
+  docs/specs/crates/rules.txt                 Section 3 (predicate DSL), section 6 (self-discovery)
+  docs/specs/decisions/audit-results.txt      BLOCK 2 (T3 latency — pattern-match, not model)
+  docs/specs/decisions/audit-results-phase4.txt  BLOCK-6 (circular trust in self-discovery),
+                                                 WARN-3 (ShortCoder placement under Tier C)
+
+KEY DESIGN DECISIONS (from audits and specs)
+  1. T3 is pattern-match only, no LLM (audit-results.txt BLOCK 2).
+  2. Hooks intercept IPC messages in orchestrator (orchestrator.txt section 12 Tier C):
+     PreToolUse fires when orchestrator receives ToolRequest/BashRequest from agent.
+     PostToolUse fires after tool execution, before ToolResult sent back to agent.
+     PostToolUse also applies ShortCoder (tools/ crate code_simplify()) on AgentResponse
+       receipt, before forwarding to auditor view filesystem (tools.txt section 7).
+     Stop fires on session termination or AgentKill sequence.
+     PreCompact fires when orchestrator context budget allocator detects
+       token_used / token_limit > 0.85 (handoff threshold, orchestrator.txt section 10).
+  3. Tiered analysis findings feed violation_patterns (rules.txt section 6).
+     Orchestrator normalizes findings to pattern hash — not the auditor (rules.txt section 6 step 1).
+     PROPOSED rules from source=AUDITOR never auto-promote (rules.txt section 6 step 3e).
+     Finding-source auditor cannot approve its own findings (rules.txt section 5).
+  4. Error sanitization: hook verdicts (ALLOW/BLOCK/WARN) translated to generic
+     IPC error responses. Agent sees "tool call rejected" not "PreToolUse BLOCK
+     from rule trading.14" (orchestrator.txt section 12, plugins.txt section 3).
+  5. T1 evaluates predicate DSL from rules.db (rules.txt section 3). 5 predicate
+     types: AST_PATTERN, GREP_PATTERN, METRIC_GATE, COMPOSITE, SCHEMA_REQUIRED.
+     T1 handles SCHEMA_REQUIRED by returning Escalate{target=ProviderTier} (not ALLOW
+     or BLOCK — SCHEMA_REQUIRED requires provider-side constrained decoding, not T1).
+     Plus implicit phase_mask filtering. T1 does NOT parse AST — that is T2.
+  6. T3 fires only when (WARN exists) AND (no BLOCK exists). If T1=BLOCK and T2=WARN,
+     T3 does NOT fire — the action is already blocked, T3 would waste 5ms on dead code.
+  7. ruff has no public Rust library API (astral-sh/ruff #12351). PostToolUse ruff check
+     is subprocess invocation (~50-200ms). Circuit breaker: skip ruff on files >10000 lines.
+     PostToolUse total latency target: <500ms (dominated by ruff subprocess).
+
+
+STEPS
+
+4C.1 SKELETON
+  PRE_GATE:
+    - cargo test --workspace 2>&1 | grep "FAILED" returns empty (Phase 4B clean)
+    - .elai_cc/crates/plugins/src/ exists with hook stubs from Phase 0
+    - .elai_cc/crates/orchestrator/src/ contains IPC message dispatch (from 4A)
+    - grep -r "ToolRequest" .elai_cc/crates/orchestrator/ returns matches (IPC types exist)
+  TASK:
+    - Define HookTrait: fn pre_tool_use(&self, req: &ToolRequest, ctx: &HookContext) -> HookVerdict
+    - Define HookVerdict enum: Allow, Block{reason}, Warn{reason}
+    - Define HookContext: fsm_state, agent_id, agent_role, session_id, active_rules
+    - Stub PreToolUse, PostToolUse, Stop, PreCompact as HookTrait implementors
+    - Stub TieredAnalysis with T1/T2/T3 entry points
+    - Wire hook dispatch into IPC message handler in orchestrator:
+      ToolRequest/BashRequest -> PreToolUse check -> if Allow, forward to tool executor
+      ToolResult -> PostToolUse check -> if Allow, send back to agent via IPC
+    - Stub error sanitization layer: HookVerdict::Block -> generic IPC error
+    - T1 stub: accepts action + SSB context, returns HookVerdict (calls rules::evaluate)
+    - T2 stub: accepts file content + language, returns HookVerdict (tree-sitter parse)
+    - T3 stub: accepts T1/T2 WARN context, returns HookVerdict (pattern-match library)
+  DETERMINISTIC_CHECK:
+    - cargo check --workspace exits 0
+    - grep -r "HookTrait" .elai_cc/crates/plugins/src/ returns at least 1 match
+    - grep -r "PreToolUse\|PostToolUse\|Stop\|PreCompact" .elai_cc/crates/plugins/src/ returns 4+ matches
+    - grep -r "hook" .elai_cc/crates/orchestrator/src/ returns matches in IPC dispatch
+  ADVERSARIAL:
+    - If HookContext does not include agent_role, hooks cannot enforce per-role policies.
+      Test: HookContext struct has agent_role field (grep check).
+    - If hook dispatch is after tool execution (not before), PreToolUse is useless.
+      Test: IPC handler calls pre_tool_use BEFORE forwarding ToolRequest to executor.
+  ACCEPTANCE:
+    - [ ] HookTrait defined with pre_tool_use, post_tool_use, stop, pre_compact methods
+    - [ ] T1/T2/T3 stubs exist and return HookVerdict
+    - [ ] IPC dispatch wired: hook check point between receive and forward
+    - [ ] Error sanitization stub strips internal details from Block verdicts
+  GROUNDING:
+    - "Hooks run in orchestrator process" -> GROUNDED: orchestrator.txt section 12 Tier C (agent binary does NOT contain hooks)
+    - "PreToolUse intercepts ToolRequest IPC" -> GROUNDED: orchestrator.txt section 12 message types (ToolRequest is agent->orchestrator IPC type)
+    - "HookVerdict enum" -> GROUNDED: plugins.txt section 2 (ALLOW/BLOCK/WARN output)
+
+
+4C.2 VERIFY
+  PRE_GATE:
+    - 4C.1 ACCEPTANCE all checked
+  TASK:
+    - cargo test --workspace passes (no regressions from skeleton)
+    - cargo clippy --workspace -- -D warnings passes
+  DETERMINISTIC_CHECK:
+    - cargo test --workspace 2>&1 | tail -1 contains "0 failed"
+    - cargo clippy --workspace -- -D warnings exits 0
+  ADVERSARIAL:
+    - If skeleton introduced circular dependencies (plugins -> orchestrator -> plugins),
+      cargo check will fail. Test: cargo check exits 0.
+    - plugins/ depends on core/ and rules/ only (plugins.txt L4). If orchestrator
+      depends on plugins for hook dispatch, that is orchestrator -> plugins (correct
+      direction). If plugins imports orchestrator types, that is circular.
+      Test: grep -r "use crate::orchestrator\|use orchestrator::" .elai_cc/crates/plugins/ returns empty.
+  ACCEPTANCE:
+    - [ ] Zero test failures
+    - [ ] Zero clippy warnings
+    - [ ] No circular dependency between plugins/ and orchestrator/
+  GROUNDING:
+    - "plugins depends on core/, rules/" -> GROUNDED: plugins.txt header (Depends on: core/, rules/)
+
+
+4C.3 TEST (contract + integration tests, expected to FAIL before 4C.5)
+  PRE_GATE:
+    - 4C.2 ACCEPTANCE all checked
+    - .elai_cc/crates/contracts/ exists (from Phase 0.7)
+  TASK:
+    Write tests in .elai_cc/crates/contracts/tests/plugins_hooks.rs:
+    Hook contract tests:
+      1. PreToolUse blocks forbidden tool call -> agent receives generic error (not rule ID)
+      2. PreToolUse allows permitted tool call -> ToolRequest forwarded to executor
+      3. PostToolUse runs ruff/AST check on file_write ToolResult -> BLOCK on syntax error
+      4. PostToolUse passes clean file_write ToolResult -> ToolResult forwarded to agent
+      5. Stop hook prevents session termination when FSM not in IDLE
+      6. Stop hook allows termination when FSM in IDLE
+      7. PreCompact fires before context truncation -> checkpoint saved
+      8. Hook verdict Block -> IPC error response contains NO rule ID, pattern, or internal detail
+    Tiered analysis contract tests:
+      9. T1 fires on every SSB write and completes in <1ms (benchmark)
+     10. T1 evaluates predicate DSL: GREP_PATTERN matching "pass" in except block -> BLOCK
+     11. T2 fires on file_write action only, not on file_read or bash
+     12. T2 completes in <10ms for file <5000 lines (benchmark)
+     13. T2 circuit breaker: file >5000 lines -> T2 skipped, T1-only
+     14. T3 fires only when T1 or T2 return WARN, never on ALLOW or BLOCK
+     15. T3 completes in <5ms (benchmark, pattern-match only)
+     16. T3 pattern: function >200 lines -> WARN:complexity
+     17. T3 pattern: catch Exception: pass -> BLOCK:swallow
+     18. BLOCK from any tier -> SSB 'finding' entry created
+    IPC-aware hook tests:
+     19. ToolRequest IPC message -> PreToolUse fires before tool execution
+     20. BashRequest IPC message -> PreToolUse fires before bash execution
+     21. Hook BLOCK -> no tool execution occurs (ToolResult never generated)
+    Circular trust prevention tests:
+     22. Tiered analysis finding -> orchestrator normalizes to pattern_hash (not auditor)
+     23. PROPOSED rule with source=AUDITOR -> cannot auto-promote to CANDIDATE
+     24. Rule proposal from auditor findings -> requires independent validation (second auditor or human)
+    Cross-session lock enforcement:
+     25. PreToolUse blocks WriteFile to path owned by another session
+     26. PreToolUse allows WriteFile to path owned by current session
+    SCHEMA_REQUIRED handling:
+     27. T1 receives rule with predicate_type=SCHEMA_REQUIRED -> returns Escalate{target=ProviderTier}
+         (not ALLOW, not BLOCK, not panic — SCHEMA_REQUIRED is provider-tier constrained decoding)
+    T3 compound condition:
+     28. T1=BLOCK + T2=WARN -> T3 does NOT fire (action already blocked, no point running T3)
+    ShortCoder placement:
+     29. PostToolUse applies ShortCoder (code_simplify) on AgentResponse in orchestrator,
+         before forwarding to auditor view filesystem (tools.txt section 7)
+     30. ShortCoder output is AST-equivalent to input (tree-sitter verify, tools.txt section 10)
+  DETERMINISTIC_CHECK:
+    - cargo test --workspace 2>&1 | grep "plugins_hooks" returns 30 test names
+    - All 30 tests exist and compile (cargo test --no-run exits 0)
+    - Tests 1-30 FAIL (unimplemented stubs) — this is expected
+  ADVERSARIAL:
+    - If T1 benchmark uses wall clock instead of entropy-quarantined time, test is non-deterministic.
+      Test: benchmark uses std::time::Instant (monotonic), not SystemTime.
+    - If error sanitization test only checks string equality, a future refactor could
+      break it. Test: assert response does NOT contain any of [rule_id pattern, "trading.", "GREP_PATTERN"].
+    - If circular trust test mocks the orchestrator, it cannot catch the real normalization bug.
+      Test: uses real orchestrator normalization code path, not mock.
+  ACCEPTANCE:
+    - [ ] 30 contract tests written, all compile
+    - [ ] Tests cover hooks, tiered analysis, IPC interception, circular trust, cross-session locks,
+          SCHEMA_REQUIRED handling, T3 compound condition, ShortCoder placement
+    - [ ] Latency benchmarks use Criterion crate in plugins/benches/ (not inline Instant in contract tests)
+    - [ ] Error sanitization tests use negative assertions (must NOT contain internal details)
+  GROUNDING:
+    - "T1 <1ms" -> GROUNDED: plugins.txt section 3 T1
+    - "T2 <10ms for <5000 lines" -> GROUNDED: plugins.txt section 3 T2
+    - "T3 <5ms pattern-match" -> GROUNDED: plugins.txt section 3 T3
+    - "T3 fires only on WARN" -> GROUNDED: plugins.txt section 3 T3
+    - "BLOCK -> SSB finding" -> GROUNDED: plugins.txt section 3 (BLOCK from any tier -> SSB finding)
+    - "No LLM in validation hot path" -> GROUNDED: plugins.txt section 3, audit-results.txt BLOCK 2
+    - "source=AUDITOR never auto-promote" -> GROUNDED: rules.txt section 6 step 3e
+    - "finding-source auditor cannot approve" -> GROUNDED: rules.txt section 5
+    - "Orchestrator normalizes, not auditor" -> GROUNDED: rules.txt section 6 step 1
+    - "SCHEMA_REQUIRED is 5th predicate" -> GROUNDED: rules.txt section 3 SCHEMA_REQUIRED
+    - "ShortCoder post-processing" -> GROUNDED: tools.txt section 7 (code_simplify on executor output)
+    - "AST-equivalent verify" -> GROUNDED: tools.txt section 10 testable invariants
+
+
+4C.4 ADVERSARIAL TESTS
+  PRE_GATE:
+    - 4C.3 tests compile (cargo test --no-run exits 0)
+  TASK:
+    Write adversarial tests in .elai_cc/crates/contracts/tests/plugins_adversarial.rs:
+    Hook bypass via IPC:
+      1. Agent sends ToolRequest with path "../../../etc/passwd" -> PreToolUse normalizes
+         path and blocks (path traversal)
+      2. Agent sends ToolRequest for tool not available in current FSM state -> BLOCK
+      3. Agent sends BashRequest after PreToolUse blocked a ToolRequest -> independent check
+         (blocking one request type does not suppress checks on other types)
+    T1 latency degradation:
+      4. 1000 rules active simultaneously -> T1 still completes in <1ms per evaluation
+         (predicate DSL evaluator does not degrade linearly with rule count — rules.txt
+         uses indexed lookup by phase_mask + domain, not full scan)
+      5. Malformed predicate in rules.db -> T1 returns WARN (not crash), logs error
+    T3 pattern library abuse:
+      6. Code with 10 nested WARN patterns -> T3 processes all, does not short-circuit
+         incorrectly (each pattern evaluated independently)
+      7. T3 receives BLOCK (not WARN) from T1 -> T3 does NOT fire (precondition check)
+    Error sanitization bypass:
+      8. Hook verdict contains user-controlled string in reason -> sanitization strips it
+         before IPC response (no injection of internal state via crafted code)
+    Circular trust exploitation:
+      9. Same auditor instance produces finding AND attempts to validate resulting rule
+         -> orchestrator rejects validation (different auditor instance required)
+     10. Auditor floods violation_patterns with crafted hashes -> occurrences >= 3 triggers
+         proposal but source=AUDITOR -> stuck at PROPOSED, cannot reach CANDIDATE without
+         human/independent approval
+  DETERMINISTIC_CHECK:
+    - cargo test --workspace 2>&1 | grep "plugins_adversarial" returns 10 test names
+    - All 10 tests compile (cargo test --no-run exits 0)
+  ADVERSARIAL:
+    - If path traversal test uses hardcoded "../../../etc/passwd" only, it misses
+      Windows-style traversal ("..\\..\\..\\"). Test: includes both Unix and Windows path separators.
+    - If rule count stress test uses trivial rules, it does not reflect real evaluation cost.
+      Test: uses rules with AST_PATTERN predicates (most expensive T1 predicate type).
+  ACCEPTANCE:
+    - [ ] 10 adversarial tests written, all compile
+    - [ ] Path traversal covers both Unix and Windows separators
+    - [ ] Circular trust tests use real orchestrator code path
+    - [ ] T1 stress test uses non-trivial predicates
+  GROUNDING:
+    - "Indexed lookup by phase_mask + domain" -> GROUNDED: rules.txt section 7 get_active_rules (WHERE clause uses phase_mask bitmask + domain)
+    - "source=AUDITOR stuck at PROPOSED" -> GROUNDED: rules.txt section 6 step 3e
+    - "Path/tool gating per FSM state" -> GROUNDED: plugins.txt section 2 PreToolUse
+
+
+4C.5 IMPLEMENT
+  PRE_GATE:
+    - 4C.3 + 4C.4 tests compile and exist (40 total: 30 contract + 10 adversarial)
+    - All tests currently FAIL (stubs not implemented)
+    - Decision doc exists: workflow/reasoning/phase-4C-decisions.md
+  TASK:
+    Hook system:
+      - Implement PreToolUse: load active rules for current FSM state + domain via
+        rules::get_active_rules(). Evaluate each against ToolRequest. First BLOCK wins.
+        Cross-session file lock check via SSB file lock query (orchestrator.txt section 3 conflict detection).
+      - Implement PostToolUse: run ruff syntax check on file_write results (subprocess,
+        ~50-200ms). Circuit breaker: skip ruff on files >10000 lines. Run T1/T2
+        analysis on file content. Apply ShortCoder (tools/ crate code_simplify()) on
+        AgentResponse receipt, before forwarding to auditor view filesystem.
+        Record changes to SSB.
+      - Implement Stop: check FSM state. If not IDLE, return Block. If IDLE, Allow.
+      - Implement PreCompact: trigger checkpoint save to SSB before context truncation.
+    IPC integration:
+      - Wire into orchestrator IPC dispatch loop:
+        on ToolRequest received -> PreToolUse(req, ctx) -> if Block, send generic error IPC
+        on tool execution complete -> PostToolUse(result, ctx) -> if Block, send generic error IPC
+      - Error sanitization: strip rule_id, pattern text, internal severity from Block reason.
+        Replace with generic: "Tool call rejected by policy" (no information leakage to agent).
+    Tiered static analysis:
+      - T1: call rules::evaluate(action, context) with predicate DSL evaluator.
+        Indexed query: SELECT FROM rules WHERE status='ACTIVE' AND (phase_mask & bit) != 0
+        AND domain matches. Evaluate each predicate. Return first BLOCK or collect WARNs.
+        SCHEMA_REQUIRED predicates: return Escalate{target=ProviderTier} (not T1's job —
+        these require provider-side constrained decoding, rules.txt section 3).
+        Cache invalidation: rules cached at phase transition. If a rule transitions
+        SHADOW->ACTIVE mid-phase (promotion threshold), invalidate cache at next BSP
+        superstep boundary (not mid-evaluation — avoids inconsistent state).
+      - T2: tree-sitter parse of file content. Check syntax validity, imports against
+        deny-list, dead code patterns, lazy code (pass bodies, TODO returns).
+        Circuit breaker: if file >5000 lines, skip T2, return T1 result only.
+      - T3: pattern-match library of known-ambiguous patterns. No LLM.
+        Fires only when (WARN exists) AND (no BLOCK exists from any tier).
+        If T1=BLOCK and T2=WARN, T3 does NOT fire (action already blocked).
+        Examples from plugins.txt section 3 T3:
+        function >200 lines -> WARN:complexity, catch Exception: pass -> BLOCK:swallow.
+      - BLOCK from any tier -> write 'finding' entry to SSB via single-writer channel.
+    Circular trust prevention:
+      - Orchestrator-side finding normalization (blake2s hash of normalized pattern).
+      - violation_patterns increment in orchestrator, not auditor.
+      - PROPOSED rules from source=AUDITOR require independent validation before promotion.
+  DETERMINISTIC_CHECK:
+    - cargo test --workspace 2>&1 | tail -1 contains "0 failed"
+    - All 40 contract + adversarial tests pass (30 contract + 10 adversarial)
+    - cargo clippy --workspace -- -D warnings exits 0
+    - grep -r "todo!\|unimplemented!\|pass" .elai_cc/crates/plugins/src/ returns 0 matches
+  ADVERSARIAL:
+    - If T1 evaluator loads rules on every call instead of caching per-phase, latency
+      will exceed 1ms under load. Test: T1 benchmark with 1000 rules < 1ms.
+    - If error sanitization uses string replacement instead of structured mapping,
+      a new verdict field could leak. Test: sanitization operates on HookVerdict enum,
+      not on serialized string.
+    - If PostToolUse ruff check spawns a subprocess, latency will be >10ms.
+      Test: ruff check uses library binding or pre-compiled AST, not subprocess.
+      NOTE: if ruff Rust binding unavailable, document subprocess cost and add
+      circuit breaker for PostToolUse similar to T2 file-size breaker.
+  ACCEPTANCE:
+    - [ ] All 40 tests pass (30 contract + 10 adversarial)
+    - [ ] Zero clippy warnings
+    - [ ] Zero stubs remaining (no todo!, unimplemented!, pass bodies)
+    - [ ] Hook dispatch integrated into orchestrator IPC loop
+    - [ ] Error sanitization produces generic messages only
+    - [ ] Circular trust prevention: orchestrator normalizes, AUDITOR rules need independent approval
+  GROUNDING:
+    - "Single-writer channel for SSB" -> GROUNDED: orchestrator.txt section 3 SSB (single-writer tokio::mpsc)
+    - "blake2s hash" -> GROUNDED: rules.txt section 2 violation_patterns (pattern_hash BLOB, blake2s specified)
+    - "ruff syntax check" -> GROUNDED: plugins.txt section 2 PostToolUse. Subprocess only (astral-sh/ruff #12351)
+    - "tree-sitter parse for T2" -> GROUNDED: plugins.txt section 3 T2
+    - "ShortCoder in PostToolUse" -> GROUNDED: tools.txt section 7 (code_simplify, post-processing on executor output)
+
+
+4C.6 MEASURE
+  PRE_GATE:
+    - 4C.5 ACCEPTANCE all checked
+    - All 40 tests pass
+  TASK:
+    Collect metrics to .elai_cc/metrics/phase_4C.toml:
+      - T1 latency: p50, p95, p99 over 10000 evaluations with realistic rule set
+      - T2 latency: p50, p95, p99 over 1000 file_write evaluations (files 100-5000 lines)
+      - T3 latency: p50, p95, p99 over 1000 WARN-triggered evaluations
+      - Hook overhead per IPC tool call: total added latency from PreToolUse + PostToolUse
+      - PostToolUse total latency (including ruff subprocess): p50, p95, p99
+      - Compile time delta: workspace compile time vs Phase 4B baseline
+      - Test count: total tests added by Phase 4C
+      - LOC: lines added/modified in plugins/ and orchestrator/
+      - Coverage: percentage of plugins/ source covered by contract + adversarial tests
+  DETERMINISTIC_CHECK:
+    - .elai_cc/metrics/phase_4C.toml exists and contains all 9 metric categories
+    - T1 p99 < 1ms (plugins.txt L29 target)
+    - T2 p99 < 10ms for files <5000 lines (plugins.txt L36 target)
+    - T3 p99 < 5ms (plugins.txt L44 target)
+    - Hook overhead per tool call < 2ms total (T1 + dispatch, no T2/T3 on non-write)
+    - PostToolUse p99 < 500ms for file_write (ruff subprocess dominated)
+  ADVERSARIAL:
+    - If benchmarks run on cold cache, T1 latency will be inflated by SQLite cold reads.
+      Test: warm cache before measuring (pre-load rules, then benchmark).
+    - If T2 benchmark uses only small files, the 5000-line circuit breaker is untested.
+      Test: include files at 4999, 5000, 5001 lines to verify breaker boundary.
+  ACCEPTANCE:
+    - [ ] All latency targets met (T1 <1ms, T2 <10ms, T3 <5ms)
+    - [ ] Metrics file written with all 9 categories
+    - [ ] Compile time increase < 10 seconds vs Phase 4B baseline
+    - [ ] Coverage > 80% of plugins/ source
+  GROUNDING:
+    - "T1 <1ms" -> GROUNDED: plugins.txt section 3 T1
+    - "T2 <10ms for <5000 lines" -> GROUNDED: plugins.txt section 3 T2
+    - "T3 <5ms" -> GROUNDED: plugins.txt section 3 T3
+    - "Metrics to phase_4C.toml" -> GROUNDED: implementation-guide.txt EVERY PHASE CYCLE step 5
+
+
+EXIT CRITERIA
+  All 40 tests pass. Hooks enforce rules invisibly via IPC interception.
+  Tiered analysis catches issues at write time with verified latency targets.
+  Circular trust prevention validated. Error sanitization verified.
+  No agent can observe hook internals, rule IDs, or analysis tier details.
+  Every call site and struct that participates in request routing must wire ssb, fsm, and clock through the single RuntimeClient; no step may leave these fields as None or uninitialized after construction.
+
+PRIOR AUDIT ITEMS IN SCOPE
+  4A WARN-1: GroundingRequest role-method restriction affects PostToolUse verification.
+    Impact: PostToolUse cannot trigger GRC WEB_CHECK for non-researcher agents.
+    4C mitigation: PostToolUse analysis is deterministic (T1/T2/T3), not GRC-based.
+    No GroundingRequest needed for hook evaluation.
+  4A WARN-6: GRC convergence signal vs local budget count.
+    Impact: if orchestrator injects convergence signal while hook analysis is running,
+    hook mid-evaluation state could be inconsistent.
+    4C mitigation: hook evaluation is synchronous and completes before IPC response.
+    GRC convergence applies to agent reasoning, not hook dispatch.
+  audit-results-phase4.txt WARN-3: ShortCoder placement under Tier C.
+    Resolved in 4C: ShortCoder runs in PostToolUse in orchestrator process on
+    AgentResponse receipt, before auditor view filesystem (tests 29-30).
+
+DEFERRED TO LATER SUB-PHASES
+  Skills system: prompt templates, no execution-path dependency from hooks/analysis.
+  MCP bridge: external MCP server connectivity (1751 LOC claw-code, separate integration).
+  These are plugins/ crate responsibilities but have no dependency on 4C deliverables
+  and no downstream phase (4D-4G) requires them from 4C specifically.

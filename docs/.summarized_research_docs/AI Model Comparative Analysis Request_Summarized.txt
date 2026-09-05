@@ -1,0 +1,165 @@
+AI Model Comparative Analysis 2026 - Technical Summary
+
+ARCHITECTURAL PARADIGMS:
+
+Frontier Models (>1T Parameters):
+DeepSeek V4: 700B MoE + Engram O(1) lookup
+- Specialized: O(1) attention for long contexts
+- Memory: 25% offload to CPU DRAM
+- VRAM: 230GB (4-bit) to 460GB (8-bit)
+- Hardware: Multi-node H200 array
+
+Llama 4 Maverick: 400B MoE
+- VRAM: 220GB (4-bit) to 410GB (8-bit)
+- Hardware: 10x RTX 4090 or 3x H200
+
+Qwen 3.5 397B: 397B MoE
+- VRAM: 215GB (4-bit) to 405GB (8-bit)
+- Hardware: 10x RTX 4090
+
+Mid-Tier Models (100-400B):
+GLM-4.7-Flash: 357B MoE, 32B active
+- Context: 200K tokens
+- Specialty: High-efficiency multi-step reasoning
+- VRAM: 195GB (4-bit) to 365GB (8-bit)
+
+GLM-4.5-Air: 106B MoE, 12B active
+- Context: 128K tokens
+- Specialty: Low latency enterprise scaling
+- VRAM: Significantly lower than full-size models
+
+Qwen 2.5 Coder 72B: Dense architecture
+- Context: 131K tokens
+- Specialty: High-capacity code synthesis
+- VRAM: 40GB (4-bit) to 75GB (8-bit)
+
+Edge Models (<30B):
+Liquid LFM2-24B-A2B: 24B MoE
+- VRAM: 14GB (4-bit) to 25GB (8-bit)
+- Hardware: RTX 4080 or Edge AI PC NPU
+
+Foundation-Sec-8B: 8B Dense
+- Specialty: Cybersecurity operations
+- Context: 32K tokens
+- VRAM: 5GB (4-bit) to 8.5GB (8-bit)
+
+VRAM CALCULATION FORMULA:
+VRAM = (P × B / 8) + (C × L × H × 2 / 1024)
+Where P=parameters, B=bit-depth, C=context, L=layers, H=hidden_dim
+
+QUANTIZATION DEPLOYMENT:
+
+4-bit (GGUF Q4_K_M / AWQ):
+- Best for edge deployment
+- Highest compression, acceptable quality loss
+- Foundation-Sec-8B: 5GB VRAM
+
+6-bit (GGUF Q6_K / EXL2):
+- Balance of compression and quality
+- Preferred for production workloads
+- Qwen 2.5 Coder 32B: 26GB VRAM
+
+8-bit (GGUF Q8_0 / FP8):
+- Maximum quality retention
+- Requires substantial VRAM
+- Llama 4 Maverick: 410GB VRAM
+
+SPECIALIZED DOMAINS:
+
+Quantitative Finance:
+antgroup/finix_s1_32b
+- Built on Qwen3 backbone
+- Multi-layered trustworthiness framework
+- Label-guided difficulty-aware optimization
+- Strict compliance adherence
+
+Binary Reverse Engineering:
+Foundation-Sec-8B-Reasoning
+- NL2GQL (Natural Language to Graph Query)
+- BinQL protocols for Neo4j integration
+- Offline operation within 32K context
+- Prevents offset hallucination
+
+FRAMEWORK ORCHESTRATION:
+
+Model-Native Agent Swarms:
+Kimi K2.5 approach:
+- Orchestration baked into training objective
+- Eliminates external framework latency
+- Native parallel processing capability
+- Direct model-to-model communication
+
+Speculative Decoding:
+Traditional approach:
+- External frameworks (CrewAI, LangGraph, AutoGen)
+- Sequential API calls
+- Higher latency but more control
+- Easier debugging and monitoring
+
+BENCHMARK PERFORMANCE:
+
+Coding Benchmarks:
+- HumanEval+ (extended): DeepSeek V4 leads
+- CodeContests: Qwen 2.5 Coder 72B excels
+- MBPP++: GLM-4.7-Flash strong in multi-step
+
+Reasoning Benchmarks:
+- MMLU-Pro: Frontier models dominate
+- GSM8K-Advanced: All models >95% accuracy
+- ARC-Challenge: Saturated at 100%
+
+Specialized Domains:
+- Financial reasoning: antgroup/finix_s1_32b specialized
+- Binary analysis: Foundation-Sec-8B dominates
+- Multimodal: Gemma 3 27B native capability
+
+HARDWARE RECOMMENDATIONS:
+
+Enterprise Deployment:
+- DeepSeek V4: Multi-node H200 cluster
+- Llama 4 Maverick: 3x H200 or 10x RTX 4090
+- Qwen 3.5 397B: 10x RTX 4090
+
+Mid-Range Production:
+- GLM-4.7-Flash: 9x RTX 4090
+- Qwen 2.5 Coder 72B: 2x RTX 4090
+- MiMo-V2-Flash: 8x RTX 4090
+
+Edge/Local Deployment:
+- Qwen 2.5 Coder 32B: 1x RTX 4090
+- Gemma 3 27B: 1x RTX 4090
+- Foundation-Sec-8B: 1x RTX 4060
+
+CRITICAL THRESHOLDS:
+
+Context Windows:
+- Frontier: 1M+ tokens (DeepSeek V4)
+- Mid-tier: 128K-200K tokens
+- Edge: 32K-131K tokens
+
+Memory Requirements:
+- MoE models require full parameter loading
+- Context overhead: 20-30% additional VRAM
+- 4-bit quantization: 75% memory reduction
+
+Performance Targets:
+- Time-to-first-token: <500ms (real-time)
+- Throughput: >100 tokens/second (production)
+- Accuracy: >90% on domain-specific tasks
+
+DEPLOYMENT STRATEGIES:
+
+Cloud-Native:
+- Use frontier models for complex reasoning
+- Implement speculative decoding for latency
+- Leverage model-native swarms for orchestration
+
+Hybrid Approach:
+- Edge models for preprocessing
+- Mid-tier for core logic
+- Frontier models for final validation
+
+On-Premise:
+- Focus on mid-tier dense models
+- Implement aggressive quantization
+- Use specialized models for domains

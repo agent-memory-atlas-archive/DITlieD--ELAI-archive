@@ -1,0 +1,171 @@
+Claude Source Code Leak Discoveries 1 - Technical Summary
+
+LEAK OVERVIEW:
+Date: March 31, 2026
+Package: @anthropic-ai/claude-code v2.1.88
+Artifact: cli.js.map (59.8 MB source map)
+Exposure: 1,900 files, 512,000 lines TypeScript
+Root Cause: Bun runtime generates source maps by default, *.map files bypassed .npmignore
+
+ARCHITECTURE DISCOVERIES:
+
+Context Engineering Hierarchy:
+1. Global Rules (.claude/rules/*.md)
+   - Conditional glob matching in YAML frontmatter
+   - Progressive disclosure context injection
+   - Token-efficient modular rules
+
+2. Project Context (.claude/projects/*/PROJECT.md)
+   - Repository-specific architectural guidelines
+   - Build system integration patterns
+   - Technology stack specifications
+
+3. User Context (.claude/user/USER.md)
+   - Personal coding style preferences
+   - Tool access permissions
+   - Historical interaction patterns
+
+4. Session Context (MEMORY.md)
+   - Dynamic state tracking
+   - Cross-session learning persistence
+   - Variable decay over long sessions
+
+Token Optimization:
+- 50-line user + 80-line project + modular rules = ~2,000 tokens
+- <1% of 1M token window consumption
+- Solves attention dilution problem
+
+MEMORY ARCHITECTURE:
+
+Self-Healing Indexes:
+- MEMORY.md pointer index system
+- Strict write discipline enforcement
+- Defeats "context rot" in long sessions
+
+Cache Management:
+- Prompt caching for cost efficiency
+- Prefix-based cache validation
+- 10x-20x cost increase on cache invalidation
+
+Critical Bug: Sentinel Replacement
+- Standalone binary injects cch=00000 sentinel
+- Hardcoded in Bun fork (228MB ELF binary)
+- Breaks cache prefix, invalidates entire context
+- Solution: Use Node.js instead of binary
+
+MEMORY LEAK CRISIS:
+Version 2.1.49 with Sonnet 4.6:
+- RSS accumulation to 71-75GB
+- 7GB swap entries/second during intensive ops
+- System lockups requiring hard reboots
+- V8 heap exhaustion in Bun runtime
+
+Workarounds:
+- Pin to v2.1.52: export CLAUDE_CODE_DISABLE_AUTOUPDATE=1
+- Disable TUI status line components
+- Disconnect external MCP servers
+- Force session restarts every 1-2 hours
+- Enable zswap with lz4 compression
+
+UNDERCOVER MODE:
+Corporate security wrapper for open-source contributions:
+- Strips Anthropic-specific terminology
+- Removes unreleased model codenames (Mythos/Capybara)
+- Filters AI-generated formatting quirks
+- Automatic safety layer for public repos
+
+BUDDY SYSTEM:
+Internal Tamagotchi-style AI pet:
+- 18 ASCII species (ducks, axolotls)
+- Tracks "CHAOS" and "SNARK" stats
+- Scheduled for April 1st release
+- Lives beside user prompt
+
+PRIVILEGED VARIABLES (120+ discovered):
+
+High-Impact Variables:
+- USER_TYPE=ant: Bypasses licensing, unlocks internal modules
+- CLAUDE_CODE_ABLATION_BASELINE: Research override mode
+- CLAUDE_CODE_COORDINATOR_MODE=1: Multi-agent orchestration
+- CLAUDE_CODE_DISABLE_AUTOUPDATE=1: Pin version
+- CLAUDE_CODE_ENABLE_EXPERIMENTAL_FEATURES: Beta access
+
+UNDOCUMENTED SLASH COMMANDS (26 discovered):
+
+Internal Commands:
+/buddy: Initialize ASCII pet interface
+/teleport: Apply remote architectures
+/dream: Override AutoDream temporal gate
+/bughunter: Vulnerability detection mode
+/autofix-pr: Remote CI/CD resolution
+/good-claude: Reinforcement signal
+/discover_skills: Dynamic capability integration
+/skillify: Internal skill management
+/agents-platform: Developer tool access
+
+SECURITY IMPLICATIONS:
+
+Anti-Distillation:
+- ANTI_DISTILLATION_CC feature flag
+- Injects fake tool definitions
+- Poisons competitor training datasets
+- Protects intellectual property
+
+Access Control:
+- db8 allowlist system for tool permissions
+- Wildcard exclusions: **/.env*, **/*.key, **/secrets/**
+- MCP server integration controls
+- Cryptographic validation
+
+Cache Vulnerabilities:
+- Sentinel injection breaks caching
+- Hardcoded billing telemetry
+- Runtime fork incompatibility
+- Memory leak in context buffering
+
+PERFORMANCE OPTIMIZATIONS:
+
+Context Compaction:
+- Multi-tier memory management
+- Session serialization with prefix caching
+- Deferred tools delta preservation
+- Token pressure monitoring
+
+Caching Efficiency:
+- 99% efficiency with patches
+- Prefix-based request deduplication
+- Aggressive context compaction
+- Background processing
+
+MITIGATION STRATEGIES:
+
+Stability:
+1. Use Node.js instead of Bun binary
+2. Apply delta preservation patches
+3. Monitor RSS accumulation
+4. Implement session cleanup
+
+Security:
+1. Environment variable access control
+2. Command permission matrix
+3. MCP server validation
+4. Cache integrity verification
+
+Performance:
+1. Modular context rules
+2. Progressive disclosure
+3. Memory index management
+4. Cache optimization
+
+CRITICAL THRESHOLDS:
+- Memory leak: 71GB RSS triggers system freeze
+- Cache invalidation: Single character change breaks prefix
+- Session length: 1-2 hours before manual restart
+- Token efficiency: <1% window consumption target
+
+FUTURE ARCHITECTURE INSIGHTS:
+- Multi-agent orchestration primitives
+- Asynchronous daemon patterns
+- Memory consolidation systems
+- Remote capability integration
+- Swarm-based task distribution

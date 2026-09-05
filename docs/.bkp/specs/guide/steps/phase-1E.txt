@@ -1,0 +1,443 @@
+PHASE 1E: CatRAG + A-RAG (query pipeline assembly)
+Prerequisites: Phase 1D complete (PageRank operational, DKG graph available)
+Dependencies: Phase 1B (BM25), Phase 1C (vectors), Phase 1D (PageRank)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Assemble the full retrieval pipeline: query -> BM25 -> vector -> PageRank -> CatRAG -> A-RAG.
+CatRAG provides query-aware graph traversal over the DKG to expand evidence chains.
+A-RAG provides hierarchical retrieval orchestration with snippet-based progressive disclosure.
+Target: 55-87% token savings vs naive full-chunk retrieval, sub-second query latency.
+
+GROUNDING SOURCES
+  Paper: CatRAG (arXiv 2602.01965) — Context-Aware Traversal for Robust RAG
+    Interface map: workflow/papers/catrag-interface.md
+    Key algorithms: Symbolic Anchoring, Query-Aware Dynamic Edge Weighting, Key-Fact Enhancement
+    All applied as query-time overlays on PPR (Phase 1D), modifying reset vector and transition matrix.
+
+  Paper: A-RAG (arXiv 2602.03442) — Scaling Agentic RAG via Hierarchical Retrieval Interfaces
+    Interface map: workflow/papers/arag-interface.md
+    Key algorithms: three-tool hierarchy (keyword/semantic/chunk_read), ReAct agent loop,
+    snippet-based progressive disclosure, context tracker deduplication.
+
+  Spec: docs/specs/crates/knowledge.txt — Layers 4-5 (CatRAG, A-RAG), Section 3 (Query Pipeline)
+
+ADAPTATION NOTES (paper -> ELAI)
+  CatRAG paper uses HippoRAG 2 knowledge graph (OpenIE triples, entity nodes, passage nodes).
+  ELAI uses DKG (tree-sitter AST graph). Mapping:
+    Paper entity nodes (V_E) -> DkgNode (functions, structs, traits, modules)
+    Paper passage nodes (V_P) -> source file chunks (from BM25 chunking)
+    Paper relation edges (E_rel) -> DKG edges (calls, references, imports, implements)
+    Paper synonym edges (E_syn) -> DKG nodes with high embedding similarity (>0.8 cosine)
+    Paper context edges (E_ctx) -> DKG node-to-file mapping (which file contains which symbol)
+    Paper OpenIE triple extraction -> NOT NEEDED (tree-sitter already extracts structured relations)
+    Paper NER -> symbol name extraction from query (regex + fuzzy match against DKG node names)
+
+  A-RAG paper uses no graph, no BM25 index for keyword search.
+  ELAI adaptation:
+    keyword_search -> BM25 (Phase 1B) + snippet extraction from matched chunks
+    semantic_search -> dual-vector search (Phase 1C) + snippet extraction
+    chunk_read -> read full file content or specific line ranges from disk
+    Agent loop -> ReAct loop using local LLM (ollama) or external LLM
+    No parallel tool calling (one tool per step, per paper design)
+
+  Pipeline order (knowledge.txt L104-105):
+    query -> BM25+SPLADE(RRF) -> dual-vector rerank -> PageRank importance filter
+      -> CatRAG expand -> A-RAG filter -> cross-encoder rerank -> token-budget fit -> context
+  Cross-encoder reranker is Phase 1G. Token-budget fit is Phase 3E.
+  This phase implements CatRAG + A-RAG + pipeline wiring. Stubs for 1G and 3E interfaces.
+
+RISKS TO WATCH
+  R30: CatRAG LLM calls at query time add latency. Mitigate: limit to N_seed=5 seeds,
+       K_edge=15 neighbors. Cache LLM scores for repeated query patterns.
+  R31: DKG graph may be too sparse for CatRAG (code graphs are sparser than NLP knowledge graphs).
+       Mitigate: add synonym edges between semantically similar symbols (embedding similarity > 0.8).
+       If graph density < 0.01, skip CatRAG and pass PageRank output directly to A-RAG.
+  R32: A-RAG agent loop may not converge (infinite retrieval cycles).
+       Mitigate: max_loops=15, max_token_budget from context allocator, context tracker prevents re-reads.
+  R33: Snippet extraction from BM25/vector results may lose critical context.
+       Mitigate: snippets include surrounding lines (context window of +/- 2 lines for code).
+  R34: Pipeline latency budget. All layers must fit within 2 seconds total for interactive use.
+       Measure per-layer latency independently, identify bottleneck.
+
+
+STEPS
+
+  1E.1 SKELETON — CatRAG MODULE + A-RAG ORCHESTRATOR STUBS
+    PRE_GATE:
+      - Phase 1D complete: cargo test -p knowledge --lib 2>&1 | grep -q "test result: ok"
+      - DKG graph accessible: grep -q "DkgSnapshot" .elai_cc/crates/knowledge/src/lib.rs
+      - BM25 operational: grep -q "Bm25Index" .elai_cc/crates/knowledge/src/bm25.rs
+      - PageRank operational: grep -q "pagerank" .elai_cc/crates/knowledge/src/lib.rs
+    TASK:
+      - Create catrag.rs module in .elai_cc/crates/knowledge/src/
+      - Define CatRAG types:
+          pub struct CatRagConfig {
+              pub damping: f64,           // 0.5 (paper default)
+              pub epsilon: f64,           // 0.2 (symbolic anchor weight)
+              pub beta: f64,              // 2.5 (key-fact boost factor)
+              pub n_seed: usize,          // 5 (max seeds for scoring)
+              pub k_edge: usize,          // 15 (max edges per seed)
+              pub min_graph_density: f64,  // 0.01 (below this, skip CatRAG)
+          }
+          pub struct CatRagOverlay {
+              pub reset_distribution: Vec<(usize, f64)>,  // (node_id, reset_prob)
+              pub edge_weight_deltas: Vec<(usize, usize, f64)>,  // (src, dst, new_weight)
+          }
+      - Define CatRag struct with methods:
+          pub fn new(config: CatRagConfig) -> Self
+          pub fn compute_overlay(
+              &self,
+              query: &str,
+              snapshot: &DkgSnapshot,
+              pagerank_scores: &[(usize, f64)],
+          ) -> Result<CatRagOverlay>
+          // Applies symbolic anchoring + dynamic edge weighting + key-fact enhancement
+          // Returns overlay that modifies PPR inputs without mutating the base graph
+      - Create arag.rs module in .elai_cc/crates/knowledge/src/
+      - Define A-RAG types:
+          pub struct AragConfig {
+              pub max_loops: usize,       // 15
+              pub max_token_budget: usize, // 128000
+              pub top_k: usize,           // 5
+          }
+          pub enum RetrievalTool {
+              KeywordSearch { keywords: Vec<String>, top_k: usize },
+              SemanticSearch { query: String, top_k: usize },
+              ChunkRead { chunk_ids: Vec<String> },
+          }
+          pub struct RetrievalResult {
+              pub chunk_id: String,
+              pub snippet: String,        // matched sentences only (not full chunk)
+              pub score: f64,
+              pub tool_used: String,       // "keyword", "semantic", "chunk_read"
+          }
+          pub struct AragOrchestrator {
+              // Holds references to BM25, vector index, file reader
+          }
+          pub struct ContextTracker {
+              read_chunks: HashSet<String>,  // deduplication per A-RAG paper
+          }
+      - Define AragOrchestrator methods:
+          pub fn new(config: AragConfig) -> Self
+          pub fn execute_tool(
+              &self,
+              tool: &RetrievalTool,
+              tracker: &mut ContextTracker,
+          ) -> Result<Vec<RetrievalResult>>
+          pub fn query_pipeline(
+              &self,
+              query: &str,
+              snapshot: &DkgSnapshot,
+          ) -> Result<Vec<RetrievalResult>>
+          // Full pipeline: BM25 -> vectors -> PageRank -> CatRAG -> A-RAG orchestration
+      - Create pipeline.rs module in .elai_cc/crates/knowledge/src/
+      - Define QueryPipeline struct:
+          pub struct QueryPipeline {
+              bm25: Bm25Index,
+              // vector_index: VectorIndex,  // from Phase 1C
+              // pagerank: PageRank,         // from Phase 1D
+              catrag: CatRag,
+              arag: AragOrchestrator,
+          }
+          pub struct PipelineStage {
+              pub stage: String,  // matches knowledge.txt L305
+              pub results: Vec<RetrievalResult>,
+              pub latency_ms: u64,
+          }
+          pub fn query(&self, q: &str) -> Result<Vec<PipelineStage>>
+      - Wire modules in lib.rs: pub mod catrag; pub mod arag; pub mod pipeline;
+      - All methods return Result with typed errors, bodies can be todo!() stubs
+    DETERMINISTIC_CHECK:
+      - cargo check -p knowledge compiles with 0 errors
+      - grep -q "pub mod catrag" .elai_cc/crates/knowledge/src/lib.rs
+      - grep -q "pub mod arag" .elai_cc/crates/knowledge/src/lib.rs
+      - grep -q "pub mod pipeline" .elai_cc/crates/knowledge/src/lib.rs
+    ADVERSARIAL:
+      - If CatRagOverlay stores full matrix copies, memory usage explodes on large graphs.
+        Test: overlay stores only deltas (sparse representation), not full adjacency matrix.
+      - If ContextTracker is not thread-safe, concurrent queries corrupt state.
+        Test: ContextTracker is per-query (not shared), created fresh for each query_pipeline call.
+    ACCEPTANCE:
+      - knowledge crate compiles with catrag, arag, pipeline modules: cargo check -p knowledge exits 0
+
+  1E.2 VERIFY — COMPILATION CHECK
+    PRE_GATE:
+      - Step 1E.1 complete: grep -q "pub mod catrag" .elai_cc/crates/knowledge/src/lib.rs
+    TASK:
+      - cargo check -p knowledge
+      - cargo check --workspace (ensure no cross-crate breakage)
+      - Verify no new warnings introduced
+    DETERMINISTIC_CHECK:
+      - cargo check -p knowledge exits 0
+      - cargo check --workspace exits 0
+    ACCEPTANCE:
+      - Full workspace compiles clean
+
+  1E.3 TEST — WRITE FAILING TESTS (TDD)
+    PRE_GATE:
+      - Step 1E.2 complete: cargo check -p knowledge exits 0
+    TASK:
+      Write tests BEFORE implementation. All must FAIL (calling todo!() stubs).
+
+      CatRAG tests (in catrag.rs or tests/catrag_tests.rs):
+        a. Symbolic anchoring: given query with known symbol names, verify reset_distribution
+           contains matching DKG nodes with weight = epsilon * |files_containing|^(-1)
+        b. Dynamic edge weighting: given a DKG snapshot with known edges, verify overlay
+           contains modified weights for edges from seed nodes. Edges from non-seeds unchanged.
+        c. Key-fact enhancement: given verified code references (T_seed equivalent), verify
+           context edges to files containing those references get weight *= (1 + beta).
+        d. Density guard: if DKG graph density < min_graph_density, compute_overlay returns
+           empty overlay (skip CatRAG, passthrough to A-RAG).
+        e. Score-to-weight mapping: test phi() function for all discrete tiers:
+           0-3 -> 0.0, 4 -> 0.2, 5 -> 0.25, 6 -> 0.3, 7 -> 2.0, 8 -> 2.5, 9 -> 3.0, 10 -> 5.0
+
+      A-RAG tests (in arag.rs or tests/arag_tests.rs):
+        f. Keyword search tool: given BM25 index with known content, KeywordSearch returns
+           snippets (matched sentences only, not full chunks). Score = sum(count * |keyword|).
+        g. Semantic search tool: given vector index, SemanticSearch returns top-k chunks
+           with snippets. Oversample 3x at sentence level, aggregate to chunks by max score.
+        h. Chunk read tool: first read returns full content, second read of same chunk returns
+           "(previously read)" via ContextTracker. Deduplication works.
+        i. Context tracker: read_chunks grows monotonically, is_read() returns correct bool.
+        j. Token budget enforcement: if accumulated tokens exceed max_token_budget,
+           orchestrator stops and returns what it has.
+
+      Pipeline tests (in pipeline.rs or tests/pipeline_tests.rs):
+        k. Full pipeline smoke test: query_pipeline returns Vec<PipelineStage> with stages
+           in correct order: ["bm25", "vector", "pagerank", "catrag", "arag"].
+        l. Pipeline latency tracking: each PipelineStage has latency_ms > 0.
+        m. Empty query: returns empty results without panic.
+
+      Contract tests (in tests/contracts/):
+        n. CatRagOverlay round-trip: overlay can be applied and reverted (base graph unchanged).
+        o. RetrievalResult has all required fields populated (no empty chunk_id or snippet).
+    DETERMINISTIC_CHECK:
+      - cargo test -p knowledge --lib 2>&1 | grep "test result:"
+      - All new tests FAIL (calling todo!() stubs), existing tests PASS
+    ADVERSARIAL:
+      - If tests pass on stubs, they're testing nothing. Verify each test actually calls
+        the stub method and would panic with "not yet implemented".
+    ACCEPTANCE:
+      - All new tests fail with todo!() panic, all existing tests pass
+
+  1E.4 IMPLEMENT CatRAG — QUERY-AWARE GRAPH TRAVERSAL
+    PRE_GATE:
+      - Step 1E.3 complete: new tests exist and fail
+      - CatRAG paper ingested: test -f workflow/papers/catrag-interface.md
+    TASK:
+      Implement CatRag::compute_overlay following the paper algorithm (catrag-interface.md Section 8):
+
+      a. Symbolic Anchoring:
+         - Extract symbol names from query (split on whitespace, camelCase, snake_case)
+         - Fuzzy-match against DKG node names (case-insensitive, substring match)
+         - For each matched node e_i: reset_weight = epsilon * |files_containing(e_i)|^(-1)
+         - Combine with PageRank seed nodes (PageRank seeds get higher base weight)
+         - Normalize combined distribution to sum=1.0
+         NOTE: no LLM call needed here (unlike paper's NER). Symbol extraction is deterministic.
+
+      b. Query-Aware Dynamic Edge Weighting (simplified for code graphs):
+         - Select top-N_seed nodes by reset probability
+         - For each seed u, get outgoing DKG edges
+         - If |neighbors| > K_edge: coarse prune by embedding similarity between
+           query and edge label/target node name. Keep top-K_edge.
+         - Fine-grained scoring: for code, use heuristic scoring instead of LLM:
+           Score based on: (1) edge type weight (calls=8, implements=7, references=5, imports=3),
+           (2) target node type relevance to query, (3) file proximity to query-mentioned files.
+           Map combined score to phi() tiers (0-10 scale).
+           NOTE: LLM scoring (paper approach) available as optional upgrade path via circuit breaker.
+                 Start with deterministic heuristic scoring. No LLM dependency in hot path.
+         - Apply score_to_weight mapping (phi function, paper Table 7)
+         - Store as edge_weight_deltas in overlay (sparse, not full matrix)
+
+      c. Key-Fact Passage Weight Enhancement:
+         - For each DKG edge from symbol to file: if the symbol was referenced in the query
+           context (T_seed equivalent = symbols mentioned in query + their direct callees),
+           boost context edge weight *= (1 + beta).
+         - Pure algorithmic, zero LLM cost.
+
+      d. Density Guard:
+         - Compute graph density = |edges| / (|nodes| * (|nodes| - 1))
+         - If density < min_graph_density (0.01): return empty overlay
+         - Log warning: "CatRAG skipped: graph density {d} below threshold {t}"
+
+      e. Apply overlay to PPR:
+         - Modify PageRank's reset vector with symbolic anchoring distribution
+         - Modify PageRank's transition matrix with edge weight deltas
+         - Run PPR with modified inputs (reuse Phase 1D PageRank implementation)
+         - Return ranked results
+
+    DETERMINISTIC_CHECK:
+      - CatRAG tests (a-e from 1E.3) pass: cargo test -p knowledge catrag
+      - cargo clippy -p knowledge -- -D warnings exits 0
+    ADVERSARIAL:
+      - If edge_weight_deltas modifies base graph instead of overlay, concurrent queries corrupt state.
+        Test: run compute_overlay twice with different queries, verify base graph unchanged.
+      - If phi() mapping has off-by-one (e.g., score 3 maps to 0.2 instead of 0.0):
+        Test: explicit assertion for every boundary value (3->0.0, 4->0.2, 6->0.3, 7->2.0, 10->5.0).
+      - If symbolic anchoring matches too many nodes (common names like "new", "get", "set"):
+        Test: cap matched nodes at 2*N_seed. Log warning if >50% of DKG nodes matched.
+    ACCEPTANCE:
+      - All CatRAG tests pass, overlay is sparse and query-local, base graph never mutated
+
+  1E.5 IMPLEMENT A-RAG — HIERARCHICAL RETRIEVAL ORCHESTRATOR
+    PRE_GATE:
+      - Step 1E.4 complete: cargo test -p knowledge catrag passes
+    TASK:
+      Implement AragOrchestrator following the paper algorithm (arag-interface.md Section 4):
+
+      a. Keyword Search tool (wraps BM25):
+         - Input: keywords Vec<String>, top_k usize
+         - Call Bm25Index::query for each keyword, merge results
+         - Score per chunk: sum(count(keyword, chunk_text) * keyword.len())
+         - Extract snippets: sentences containing at least one keyword (+/- 2 lines for code context)
+         - Return top_k RetrievalResults with snippets (NOT full chunks)
+
+      b. Semantic Search tool (wraps vector index):
+         - Input: query String, top_k usize
+         - Call vector index (Phase 1C) for query embedding
+         - Oversample 3x at sentence/chunk level, aggregate by max score per file
+         - Extract snippets: matched sentences with surrounding context
+         - Return top_k RetrievalResults with snippets
+
+      c. Chunk Read tool:
+         - Input: chunk_ids Vec<String>
+         - For each chunk_id: if ContextTracker.is_read(id), return "(previously read)"
+         - Otherwise: read full file content (or line range), mark as read in tracker
+         - Return full content for new chunks, placeholder for already-read
+
+      d. Context Tracker:
+         - HashSet<String> of read chunk IDs
+         - Per-query instance (not shared across queries)
+         - is_read(&str) -> bool, mark_read(&str), token_count() -> usize
+
+      e. Execute Tool dispatch:
+         - Match on RetrievalTool enum variant, dispatch to a/b/c above
+         - Track tokens consumed per tool call
+         - Enforce max_token_budget: if exceeded, return partial results
+
+      f. Query Pipeline orchestration (simplified, no LLM agent loop):
+         - For Phase 1E: deterministic pipeline, not full ReAct agent loop
+         - Pipeline: keyword_search(query_keywords) -> semantic_search(query) -> chunk_read(top hits)
+         - The full ReAct agent loop (LLM decides which tool) is Phase 2+ (requires reasoning crate)
+         - This phase implements the TOOLS and PIPELINE WIRING, not the agent decision-making
+    DETERMINISTIC_CHECK:
+      - A-RAG tests (f-j from 1E.3) pass: cargo test -p knowledge arag
+      - cargo clippy -p knowledge -- -D warnings exits 0
+    ADVERSARIAL:
+      - If snippet extraction returns empty strings for code files (regex mismatch on code syntax):
+        Test: snippet extraction on .rs files returns non-empty content with line numbers.
+      - If token counting is wrong, budget enforcement fails silently:
+        Test: inject large content, verify budget enforcement triggers and returns partial results.
+      - If ContextTracker leaks across queries (shared mutable state):
+        Test: two sequential query_pipeline calls have independent ContextTrackers.
+    ACCEPTANCE:
+      - All A-RAG tests pass, snippet extraction works for code, budget enforcement triggers correctly
+
+  1E.6 IMPLEMENT PIPELINE — FULL QUERY PIPELINE ASSEMBLY
+    PRE_GATE:
+      - Step 1E.5 complete: cargo test -p knowledge arag passes
+      - CatRAG operational: cargo test -p knowledge catrag passes
+    TASK:
+      Wire all layers into QueryPipeline::query():
+
+      a. Stage 1 — BM25 retrieval:
+         - Extract keywords from query (split, dedup, filter stopwords)
+         - Call Bm25Index::query(query, top_k=20)
+         - Record as PipelineStage { stage: "bm25", results, latency_ms }
+
+      b. Stage 2 — Vector retrieval:
+         - Call vector index with query embedding (Phase 1C)
+         - Merge with BM25 results via RRF (reciprocal rank fusion):
+           RRF_score(d) = sum over r in rankings of: 1 / (k + rank_r(d)), k=60
+         - Record as PipelineStage { stage: "vector", results, latency_ms }
+         - If vector index unavailable (circuit breaker): skip, use BM25 only
+
+      c. Stage 3 — PageRank importance filter:
+         - Build DkgSnapshot, run PageRank (Phase 1D)
+         - Filter/rerank results by PageRank score (boost files containing high-PageRank symbols)
+         - Record as PipelineStage { stage: "pagerank", results, latency_ms }
+
+      d. Stage 4 — CatRAG expansion:
+         - Compute CatRagOverlay for the query
+         - Apply overlay to PageRank, re-run PPR with modified inputs
+         - Expand result set: add files reachable via high-weight overlay edges
+         - Record as PipelineStage { stage: "catrag", results, latency_ms }
+         - If density guard triggers: passthrough (no expansion)
+
+      e. Stage 5 — A-RAG filtering:
+         - Use AragOrchestrator to filter and refine results
+         - Snippet-based progressive disclosure: return snippets, not full files
+         - Context tracker prevents redundant reads
+         - Record as PipelineStage { stage: "arag", results, latency_ms }
+
+      f. Stage 6-7 — Stubs for future phases:
+         - PipelineStage { stage: "rerank", .. } — stub, passthrough (Phase 1G implements)
+         - PipelineStage { stage: "token_fit", .. } — stub, passthrough (Phase 3E implements)
+
+      g. Return Vec<PipelineStage> with full trace of all stages
+
+    DETERMINISTIC_CHECK:
+      - Pipeline tests (k-m from 1E.3) pass: cargo test -p knowledge pipeline
+      - All existing tests still pass: cargo test -p knowledge --lib
+      - cargo clippy -p knowledge -- -D warnings exits 0
+    ADVERSARIAL:
+      - If one stage panics, entire pipeline crashes with no diagnostic:
+        Test: each stage wrapped in Result, failure logs stage name and falls through to next.
+      - If RRF fusion produces NaN (division by zero when rank=0):
+        Test: RRF with k=60 prevents division by zero (rank starts at 1, not 0).
+      - If pipeline order is wrong (e.g., CatRAG before PageRank), results are nonsensical:
+        Test: verify PipelineStage order matches knowledge.txt L104-105 exactly.
+    ACCEPTANCE:
+      - Full pipeline returns stages in correct order
+      - Each stage has latency_ms and results populated
+      - Graceful degradation when optional stages unavailable (vector, reranker)
+
+  1E.7 MEASURE — END-TO-END LATENCY AND TOKEN SAVINGS
+    PRE_GATE:
+      - Step 1E.6 complete: cargo test -p knowledge pipeline passes
+      - Test corpus available: .elai_cc/crates/ (source code to index)
+    TASK:
+      - Create measure_1e.rs binary in .elai_cc/crates/knowledge/src/bin/
+      - Index the .elai_cc codebase (reuse BM25 + vector indexes from prior phases)
+      - Run 5 representative queries through the full pipeline:
+          Q1: "How does the FSM handle state transitions?" (multi-hop, crosses crates)
+          Q2: "BM25 query latency" (keyword-heavy, direct lookup)
+          Q3: "What implements the LlmProvider trait?" (symbol search, PageRank relevant)
+          Q4: "Error handling in the orchestrator" (broad semantic query)
+          Q5: "How are tools registered and dispatched?" (relationship traversal)
+      - Measure per query:
+          total_pipeline_latency_ms (target: < 2000ms)
+          per_stage_latency_ms (identify bottleneck)
+          tokens_retrieved (full chunks vs snippets)
+          token_savings_pct = 1 - (snippet_tokens / full_chunk_tokens)
+          stages_active (which stages contributed vs skipped)
+      - Write metrics to .elai_cc/metrics/phase_1E.toml:
+          pipeline_p50_ms, pipeline_p99_ms
+          token_savings_mean_pct (target: > 50%)
+          catrag_overlay_size (avg number of modified edges)
+          arag_tools_per_query (avg tool invocations)
+          stages_skipped (list of stages that hit circuit breaker/density guard)
+    DETERMINISTIC_CHECK:
+      - test -f .elai_cc/metrics/phase_1E.toml
+      - grep -q "pipeline_p50_ms" .elai_cc/metrics/phase_1E.toml
+      - grep -q "token_savings_mean_pct" .elai_cc/metrics/phase_1E.toml
+    ADVERSARIAL:
+      - If pipeline is >2s, identify which stage is the bottleneck and log it.
+        Do NOT silently accept slow queries — measure and report.
+      - If token savings < 50%, snippet extraction may be too aggressive (returning too little context)
+        or too conservative (returning full chunks). Log per-query snippet vs full comparison.
+    ACCEPTANCE:
+      - All 5 queries produce non-empty results
+      - pipeline_p50_ms < 2000ms (interactive target)
+      - token_savings_mean_pct > 50% (A-RAG paper claims 55-87%)
+      - Metrics file populated with all fields
+      - All tests pass: cargo test -p knowledge --lib (21+ tests green)
+
+EXIT CRITERIA
+  Full retrieval pipeline operational: query -> BM25 -> vector -> PageRank -> CatRAG -> A-RAG -> context.
+  Token savings > 50% vs naive full-chunk retrieval.
+  Pipeline latency < 2 seconds for interactive use.
+  Graceful degradation when optional layers unavailable (circuit breaker passthrough).
+  All tests green, no regressions in prior phases.

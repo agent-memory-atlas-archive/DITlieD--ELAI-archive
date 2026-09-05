@@ -1,0 +1,1205 @@
+POST-PHASE-4 IMPLEMENTATION ORDER
+Date: 2026-04-16
+Status: REFERENCE (read-only index for LLM sessions)
+
+Purpose: the ordered sequence for implementing all work AFTER Phase 4
+(4A-4J) and Group A/B steps are complete. This file supersedes
+update-implementation-order.txt for post-Phase-4 work.
+
+ASSUMPTIONS:
+  - Phases pre-0 through 3K: COMPLETE
+  - Phase 4A through 4J: COMPLETE (including all B-group design additions)
+  - Group A steps A-1 through A-48: COMPLETE
+  - Group B steps B-1 through B-3: COMPLETE
+  - Dashboard steps through A-49 (ACTIVITY + PLAN windows): COMPLETE
+
+Source design files (all under docs/specs/guide/):
+  dashboard-design.txt                      -> [DASH]
+  focus-tunnel-design.txt                   -> [FT]
+  cloud-mode-design.txt                     -> [CM]
+  development-stones-analysis.txt           -> [DS]
+  compiled-pipeline-design.txt              -> [CP]
+  testing-trust-design.txt                  -> [TT]
+  (plus existing design files where cross-referenced)
+
+HOW TO USE: each step has a READ: block listing exact files and sections
+the implementing LLM must read BEFORE writing any code. The design files
+contain full type definitions, schemas, and constraints NOT repeated here.
+This file is an index — the design files are the source of truth.
+
+
+========================================================================
+GROUP C: DASHBOARD COMPLETION (Phase 4K remaining)
+========================================================================
+
+Dashboard infrastructure (4K.1-4K.8) and core windows (COMMAND, REVIEW,
+ACTIVITY, PLAN) are complete through A-49. Remaining: MONITOR, EXPLORE,
+intervention system, window management, and visual polish.
+
+Phase step file: docs/specs/guide/steps/phase-4K.txt (full TDD step detail)
+
+Mapping to 4K sub-steps:
+  C-1 = 4K.9 + 4K.10  (MONITOR + EXPLORE windows)
+  C-2 = 4K.11          (Intervention controls + notification system)
+  C-3 = 4K.12          (Window management: tabs, history, recovery)
+  C-4 = 4K.13          (Visual polish: animations, transitions, responsive)
+
+ORDERING RATIONALE: MONITOR window (C-1) must come before intervention
+controls (C-2) because interventions appear inside MONITOR. Window
+management (C-3) needs all windows to exist. Visual polish (C-4) is last —
+everything must work before it looks good.
+
+
+STEP C-1: MONITOR + EXPLORE WINDOWS [DASH 4K.9-4K.10]
+  READ: docs/specs/guide/steps/phase-4K.txt
+    -> 4K.9 (MONITOR: full TASK, DETERMINISTIC_CHECK, ADVERSARIAL, ACCEPTANCE)
+    -> 4K.10 (EXPLORE: full TASK, DETERMINISTIC_CHECK, ADVERSARIAL, ACCEPTANCE)
+  READ: docs/specs/guide/dashboard-design.txt
+    -> WINDOW: MONITOR section (FULL: layout sections 1-5, phase dots
+       encoding, status snapshot format, intervention card layout,
+       timeline format, notification triggers)
+    -> WINDOW: EXPLORE section (Q&A format, source citations, file
+       reference linking, independent queries)
+    -> TECHNOLOGY STACK section (SSB as sole data source, WebSocket push,
+       1s polling fallback)
+  READ: docs/specs/crates/orchestrator.txt
+    -> S3 (SSB action types — verify HEALTH_SNAPSHOT, INTERVENTION_REQUEST,
+       INTERVENTION_RESPONSE exist from Phase 4 implementation)
+  What: implement MONITOR window (autonomous mode dashboard) and EXPLORE
+        window (read-only codebase Q&A interface).
+    MONITOR:
+      (1) Progress section: progress bar + phase dots (visual encoding:
+          . filled teal = done, * pulsing teal = active, - dim = pending,
+          ! red = intervention needed. Hover shows phase name + step count)
+      (2) Status snapshot: 3-4 prose-like lines (currently, health, model,
+          spend). NOT a metric grid. Reads from SSB HEALTH_SNAPSHOT.
+      (3) Intervention queue: cards with fail-color left border, only shown
+          when INTERVENTION_REQUEST exists in SSB. Action buttons:
+          [Approve] (purple solid), [Reject], [Take Over] (ghost).
+      (4) Timeline: last ~15 events, reverse chronological. Each line:
+          time + step + result. Color: teal=pass, fail=fail, warn=retry.
+          Click opens detail in ACTIVITY window.
+      (5) Browser notifications: task complete, intervention needed.
+          Optional webhook to Discord/Slack (configured in settings).
+    EXPLORE:
+      (1) Simple Q&A format. Each query independent (no chat history).
+      (2) Routes through Oracle Mode pipeline (RESEARCHING FSM state).
+      (3) File references clickable (opens REVIEW as read-only).
+      (4) Code blocks with syntax highlighting.
+      (5) Source citations in text-ghost after each section.
+  Touches: frontend/ (SolidJS components), backend/ (Axum WebSocket handlers)
+  Prerequisites: 4K.1-4K.4 complete (workspace shell, SSB viewer library)
+  Estimated scope: ~600-800 LOC (frontend + backend)
+
+
+STEP C-2: INTERVENTION CONTROLS + NOTIFICATION SYSTEM [DASH 4K.11]
+  READ: docs/specs/guide/steps/phase-4K.txt
+    -> 4K.11 (full TASK, DETERMINISTIC_CHECK, ADVERSARIAL, ACCEPTANCE)
+  READ: docs/specs/guide/dashboard-design.txt
+    -> WINDOW: COMMAND section (intervention card layout: what changed,
+       collapsed diff preview, action buttons [Accept][Decline][View Full][Retry])
+    -> WINDOW: MONITOR section (intervention queue, browser notifications)
+    -> ANIMATIONS section (intervention alert: sidebar badge, status bar color)
+    -> KEYBOARD SHORTCUTS section (Ctrl+Shift+A accept, Ctrl+Shift+R reject)
+  READ: docs/specs/crates/orchestrator.txt
+    -> S13 (InteractiveGate, evidence gates — how interventions are triggered)
+    -> S7 (agent system — how agent pauses for intervention)
+  What: implement the intervention pipeline end-to-end.
+    (1) Intervention card component: renders INTERVENTION_REQUEST from SSB.
+        Shows: file path, +N -M lines, collapsed diff (2-3 context lines).
+        Buttons: Accept (purple solid), Decline (ghost), View Full (opens
+        REVIEW), Retry (with optional note input).
+    (2) User response: writes INTERVENTION_RESPONSE to SSB. Orchestrator
+        reads response at next superstep boundary and unblocks agent.
+    (3) Steering acknowledgment: inline teal text "Noted: [constraint]".
+        Attaches constraint to current task context via SSB.
+    (4) Browser Notification API: requestPermission on first intervention,
+        show notification with task name + intervention type.
+    (5) Optional: webhook POST to configured URL (Discord/Slack format).
+        Config: [dashboard.notifications] webhook_url in elai_cc.toml.
+    (6) Keyboard shortcuts: Ctrl+Shift+A (accept all in REVIEW),
+        Ctrl+Shift+R (reject all).
+  Touches: frontend/ (intervention components, notification API),
+    backend/ (SSB write endpoint for INTERVENTION_RESPONSE),
+    elai_cc.toml (notification config schema)
+  Prerequisites: C-1 (MONITOR window exists to display interventions)
+  Estimated scope: ~400-500 LOC
+
+
+STEP C-3: WINDOW MANAGEMENT + SESSION RECOVERY [DASH 4K.12]
+  READ: docs/specs/guide/steps/phase-4K.txt
+    -> 4K.12 (full TASK, DETERMINISTIC_CHECK, ADVERSARIAL, ACCEPTANCE)
+  READ: docs/specs/guide/dashboard-design.txt
+    -> FLOW 3: WINDOWS section (window types, creation, history, arrangement)
+    -> KEYBOARD SHORTCUTS section (Ctrl+N, Ctrl+W, Ctrl+Shift+H, Ctrl+D)
+    -> TECHNOLOGY STACK section (WINDOW_STATE SSB action type for persistence)
+  What: implement window lifecycle management.
+    (1) Tab system: tab bar per panel (single row, scrollable). Active tab
+        has teal bottom border. Inactive: text-secondary. Close on hover [x].
+        Middle-click close. Drag between panels.
+    (2) Window history: Ctrl+Shift+H shows last 20 closed windows with
+        type, title, timestamp. Click to restore.
+    (3) Session recovery: persist open windows/tabs via WINDOW_STATE in SSB.
+        On reconnect/refresh, restore exact window layout.
+    (4) Panel arrangement: draggable divider (2px, teal on drag). Double-click
+        resets to 50/50. Min panel width 320px. Ctrl+D toggles secondary.
+    (5) Responsive: below 1000px sidebar becomes hamburger. Below 800px
+        secondary panel auto-collapses.
+  Touches: frontend/ (tab system, drag-and-drop, layout persistence)
+  Prerequisites: C-1 (all window types exist to manage)
+  Estimated scope: ~400-500 LOC
+
+
+STEP C-4: VISUAL POLISH + ANIMATIONS [DASH 4K.13]
+  READ: docs/specs/guide/steps/phase-4K.txt
+    -> 4K.13 (full TASK with all animation specs, DETERMINISTIC_CHECK, ADVERSARIAL, ACCEPTANCE)
+  READ: docs/specs/guide/dashboard-design.txt
+    -> VISUAL IDENTITY section (FULL: color system with exact hex values,
+       typography scale, layout language rules)
+    -> ANIMATIONS section (FULL: thinking pulse, step completion flash,
+       step failure border, panel transitions, progress pulse, scroll behavior)
+    -> RESPONSIVE BEHAVIOR section (breakpoints, panel resize, min widths)
+  What: apply visual identity and micro-interactions across all windows.
+    (1) Color system audit: verify all components use the defined palette.
+        bg-void through bg-input backgrounds. Teal/purple accents. Semantic
+        colors (pass/warn/fail/info) used ONLY for actual status.
+    (2) Typography: JetBrains Mono primary, Segoe UI thin for display titles.
+        Scale: xs(10px) through xl(18px). Line height 1.6 text, 1.4 code.
+    (3) Thinking pulse: 2px teal line, opacity 20%->50%->20%, 2s cycle.
+    (4) Step completion: brief teal-ghost flash (100ms).
+    (5) Step failure: 2px fail-color left border, fade in 200ms.
+    (6) Panel transitions: content fade out 80ms, fade in 120ms.
+    (7) Progress dots: active dot scale pulse 100%->110%->100%, 3s cycle.
+    (8) Scrollbars: 4px wide, bg-hover track, teal-soft thumb, hidden until hover.
+    (9) Icons: Lucide icon set, 16px standard, monochrome (text-secondary),
+        teal only when active.
+  Touches: frontend/ (global styles, animation CSS, component refinement)
+  Prerequisites: C-1 through C-3 (all functional components exist)
+  Estimated scope: ~300-400 LOC (CSS/style focused)
+
+
+========================================================================
+GROUP D: CLOUD MODE
+========================================================================
+
+Cloud mode elevates API-backed execution to first-class. The deterministic
+harness (rules, AST, tests, evidence gates) still runs locally. Cloud is
+"use Claude INSIDE ELAI's validation pipeline."
+
+ORDERING RATIONALE: config + routing (D-1) first because everything else
+depends on provider selection working. Context budget (D-2) next because
+baby step sizing affects the entire pipeline. Privacy (D-3) before
+escalation (D-4) because HYBRID mode sends code to cloud and privacy
+controls must exist first. Cost estimation (D-5) last — it's a display
+feature, not a functional requirement.
+
+
+STEP D-1: CLOUD MODE CONFIG + PROVIDER ROUTING + COST TRACKING [CM]
+  READ: docs/specs/guide/cloud-mode-design.txt
+    -> MODE SELECTION section (3 modes: LOCAL/CLOUD/HYBRID, CLI flags,
+       config schema, per-task recommendation by complexity)
+    -> PROVIDER ROUTING section (FULL: [cloud] config schema with all fields,
+       provider selection logic 5-step, cost tracking per-task and per-day,
+       CLOUD_SPEND SSB action type, ceiling enforcement)
+    -> FSM CHANGES section (no new states, mode is session metadata,
+       ESCALATE_TO_CLOUD SSB action)
+  READ: docs/specs/crates/providers.txt
+    -> S1 (LlmProvider trait — verify Anthropic + OpenAI adapters exist)
+    -> S4 (ModelPool — model lifecycle, swap protocol)
+  What: implement cloud mode infrastructure.
+    (1) Config schema: [cloud] section in elai_cc.toml with provider,
+        model, escalation_model, api_key_env, max_spend_per_task_usd,
+        max_spend_per_day_usd, warn_at_percent. [execution] section
+        with default_mode = "local" | "cloud" | "hybrid".
+    (2) Provider routing: read [cloud] config, verify API key,
+        probe model availability (<100ms tokenize call), fallback logic.
+    (3) Cost tracking: CLOUD_SPEND SSB action type. Per-task and per-day
+        accumulation. Ceiling check BEFORE each cloud call. At ceiling:
+        HYBRID degrades to LOCAL, CLOUD fails with user message.
+    (4) CLI: /task --mode cloud|hybrid|local flag. /config command to
+        change default_mode at runtime.
+    (5) Session metadata: execution_mode field on session config.
+  Touches: orchestrator/ (config, session, cost tracking), cli/ (flags),
+    providers/ (probe logic), elai_cc.toml (schema)
+  Prerequisites: Phase 4 complete (providers crate, FSM, SSB all exist)
+  Estimated scope: ~400-500 LOC
+
+
+STEP D-2: CLOUD CONTEXT BUDGET + BABY STEP SIZING [CM]
+  READ: docs/specs/guide/cloud-mode-design.txt
+    -> CONTEXT BUDGET CHANGES section (FULL: LOCAL vs CLOUD comparison
+       table, [context_budget.cloud] slot allocation with all 8 values,
+       [baby_step] per-mode LOC sizing table)
+    -> REASONING LAYER COLLAPSE section (which layers run in each mode,
+       retry strategy on cloud failure, escalation_model logic)
+  READ: docs/specs/guide/steps/phase-3E.txt (context budget allocator)
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 3 (baby step sizing per model tier — extend with cloud tiers)
+  What: add cloud-specific profiles to context budget and decomposer.
+    (1) New context budget profile [context_budget.cloud]: SystemPrompt=500,
+        Rules=200, PhaseSpec=2000, RepoMap=4000, CodeContext=150000,
+        SsbEntries=2000, GrcHistory=1000, OutputReserve=8000.
+    (2) Baby step sizing per mode: local_3b=25, local_7b=40, local_32b=100,
+        cloud_sonnet=300, cloud_opus=500 LOC per step.
+    (3) Decomposition depth: LOCAL max 4, CLOUD max 2. Phase split
+        threshold: LOCAL 3K tokens, CLOUD 50K tokens.
+    (4) Reasoning layer collapse: CLOUD mode skips Layers 2-5, uses
+        Layer 1 deterministic + Layer 6 cloud generation as default.
+        On Layer 1 failure: inject findings, retry (max 3), then
+        escalate to escalation_model, then human.
+    (5) HYBRID: Layers 1-4 local, Layer 3+ failure triggers single
+        cloud call for that step. Cloud result validated by Layer 1.
+  Touches: context_budget.rs (new profile), orchestrator/ (decomposer,
+    reasoning layer routing), elai_cc.toml (baby_step config)
+  Prerequisites: D-1 (cloud config exists)
+  Estimated scope: ~300-400 LOC
+
+
+STEP D-3: PRIVACY REDACTION PIPELINE [CM]
+  READ: docs/specs/guide/cloud-mode-design.txt
+    -> PRIVACY CONTROLS section (FULL: [cloud.privacy] config schema,
+       redact_patterns regex list, blocked_paths list, redaction
+       placeholder format, audit trail fields)
+  READ: docs/specs/guide/development-stones-analysis.txt
+    -> STONE F (cloud trust gap: BYOE, redaction-as-default, air-gapped mode)
+  What: implement privacy controls for cloud mode.
+    (1) Config: [cloud.privacy] with allow_source_upload, allow_test_upload,
+        redact_env_vars, redact_patterns (regex list), blocked_paths (glob list).
+    (2) Redaction pipeline: runs BEFORE context assembly. Regex-based
+        replacement of matched patterns with [REDACTED:type] placeholder.
+        Blocked paths excluded from knowledge engine queries in cloud mode.
+    (3) Audit trail: every cloud API call logged in SSB with timestamp,
+        provider/model, token count (input/output), cost, file paths
+        included (paths only, not content), redaction count.
+    (4) BYOE (Bring Your Own Endpoint): [cloud] provider = "custom",
+        custom_endpoint = "https://my-vllm-server:8000/v1". Uses
+        existing OpenAI-compatible provider adapter. Data never leaves
+        user's network. This is the enterprise killer feature.
+    (5) Air-gapped mode: [execution] air_gapped = true. Disables ALL
+        external network calls (cloud, registry checks, web search).
+        Some features disabled (nightly dep audit, cloud escalation,
+        Oracle Mode web search) but core pipeline works.
+  Touches: orchestrator/ (redaction pipeline, audit logging),
+    providers/ (custom endpoint support), elai_cc.toml (privacy config)
+  Prerequisites: D-1 (cloud config exists)
+  Estimated scope: ~350-450 LOC
+
+
+STEP D-4: HYBRID ESCALATION + COST ESTIMATION [CM]
+  READ: docs/specs/guide/cloud-mode-design.txt
+    -> REASONING LAYER COLLAPSE section (HYBRID escalation trigger,
+       ESCALATE_TO_CLOUD SSB action)
+    -> PROVIDER ROUTING section (cost estimation formula: phase_count *
+       avg_tokens_per_phase * model_pricing)
+  READ: docs/specs/guide/reasoning-architecture-design.txt
+    -> LAYER 5-6 sections (cloud diagnostic + cloud generation)
+    -> CLOUD BUDGET ECONOMICS section (per-task and per-day ceilings)
+  What: implement HYBRID auto-escalation and pre-task cost estimation.
+    (1) HYBRID escalation: when reasoning Layer 3+ failure occurs in
+        LOCAL mode, emit ESCALATE_TO_CLOUD SSB action. Orchestrator
+        switches provider for current step only, continues.
+        Privacy redaction (D-3) applies to escalated calls.
+    (2) Cost estimation before task start: orchestrator estimates total
+        token count from plan skeleton. Formula: sum over phases of
+        (estimated_steps * avg_tokens_per_step * model_input_price +
+        estimated_output_tokens * model_output_price). Display to user:
+        "Estimated cost: $0.12-$0.35. Proceed? [y/n]"
+    (3) Per-task cost display in dashboard: update MONITOR window status
+        snapshot with running spend total. Show "$0.00" only when spend > 0.
+    (4) Ceiling warnings: at warn_at_percent (default 80%), inject warning
+        into COMMAND window. At 100%: HYBRID degrades, CLOUD fails step.
+  Touches: orchestrator/ (escalation logic, cost estimation),
+    reasoning/ (Layer 3+ failure detection), frontend/ (cost display)
+  Prerequisites: D-1 (cost tracking), D-2 (reasoning layer routing),
+    D-3 (privacy redaction for escalated calls)
+  Estimated scope: ~250-350 LOC
+
+
+========================================================================
+GROUP E: FOCUS TUNNEL
+========================================================================
+
+Zero-overhead LLM execution. The model outputs ONLY code. The system
+handles file routing, writes, validation, dependency installation.
+
+ORDERING RATIONALE: FIM assembly (E-1) is the core mechanism — everything
+else builds on it. Diff parser (E-2) is the second generation mode.
+Mode selection (E-3) ties them together. Streaming validation (E-4) and
+pipeline parallelism (E-5) are optimizations that require the base modes
+working. Dependency resolution (E-6) and file routing (E-7) are
+convenience features that enhance focus tunnel but aren't required.
+
+
+STEP E-1: FIM PROMPT ASSEMBLY + MODEL CAPABILITY DETECTION [FT]
+  READ: docs/specs/guide/focus-tunnel-design.txt
+    -> MODE 1: FILL-IN-MIDDLE section (FULL: prompt structure with
+       <|fim_prefix|>/<|fim_suffix|>/<|fim_middle|> tokens, context
+       assembly for prefix/suffix, token savings calculation)
+    -> Model support section (Qwen2.5-Coder native FIM, StarCoder,
+       DeepSeek-Coder support. Cloud models do NOT support FIM.)
+  READ: docs/specs/crates/providers.txt
+    -> S1 (LlmProvider trait — add supports_fim() capability query)
+  What: implement FIM generation mode.
+    (1) ModelCapabilities: add supports_fim: bool field. Set true for
+        Qwen2.5-Coder, StarCoder, DeepSeek-Coder. False for cloud models.
+        Queried from model metadata at registration.
+    (2) FimPromptAssembler: takes (file_content, start_line, end_line,
+        task_description, dependencies) and produces FIM prompt.
+        PREFIX: file header comment + imports + referenced symbols +
+        code from line 1 to start_line.
+        SUFFIX: code from end_line to EOF (or next 50 lines if large).
+        Token budget: prefix + suffix + max_gen must fit context window.
+    (3) FIM output handler: model output is raw code. Orchestrator inserts
+        at edit region. PostToolUse hooks validate (rules, AST, linter).
+    (4) Fallback: if model doesn't support FIM, fall back to STRUCTURED.
+  Touches: providers/ (ModelCapabilities), orchestrator/ (FimPromptAssembler,
+    output handler)
+  Prerequisites: Phase 4 complete (providers, tools, orchestrator exist)
+  Estimated scope: ~300-400 LOC
+
+
+STEP E-2: DIFF OUTPUT PARSER + EDIT MATCHING INTEGRATION [FT]
+  READ: docs/specs/guide/focus-tunnel-design.txt
+    -> MODE 2: DIFF PATCH section (prompt structure, unified diff format,
+       multi-region support, limitations)
+  READ: docs/specs/crates/tools.txt
+    -> S2 (edit matching: 3-tier exact -> whitespace-normalized -> ellipsis)
+  What: implement DIFF generation mode.
+    (1) Unified diff parser: parse model output as unified diff format.
+        Extract hunks with file path, line numbers, added/removed lines.
+        Handle malformed diffs gracefully (missing headers, wrong line
+        numbers, mixed tabs/spaces).
+    (2) Wire parsed hunks through existing 3-tier edit matching in tools
+        crate. Each hunk becomes an edit operation.
+    (3) Multi-region support: single diff output can contain multiple
+        hunks for different regions of the same file.
+    (4) Fallback: if diff parsing fails completely (not a valid unified
+        diff), fall back to STRUCTURED mode. Track fallback rate in SSB.
+  Touches: tools/ (diff parser module), orchestrator/ (diff mode handler)
+  Prerequisites: E-1 (generation mode infrastructure exists)
+  Estimated scope: ~250-350 LOC
+
+
+STEP E-3: GENERATION MODE SELECTION LOGIC [FT]
+  READ: docs/specs/guide/focus-tunnel-design.txt
+    -> Selection logic section (deterministic rules: edit_existing +
+       single region = FIM, edit_existing + multi region = DIFF,
+       create_file = STRUCTURED, else STRUCTURED)
+    -> INTERACTION WITH OTHER DESIGNS section (cloud mode uses STRUCTURED,
+       pipeline factory specifies preferred mode per step)
+  What: deterministic mode selector per baby step.
+    (1) ModeSelector function: takes (step_spec, model_capabilities,
+        execution_mode) -> GenerationMode (FIM | DIFF | STRUCTURED).
+    (2) Rules:
+        - execution_mode == CLOUD -> STRUCTURED (always)
+        - step.type == "create_file" -> STRUCTURED
+        - step.type == "edit_existing" AND step.edit_region.is_some()
+          AND model.supports_fim -> FIM
+        - step.type == "edit_existing" AND step.changes > 1 -> DIFF
+        - else -> STRUCTURED
+    (3) PipelineSpec step gains optional preferred_mode: Option<GenerationMode>
+        field. Designer can suggest mode, orchestrator has final say.
+    (4) Metrics: track mode_distribution per task in SSB. Report FIM/DIFF/
+        STRUCTURED percentages.
+  Touches: orchestrator/ (mode selector), pipeline types (preferred_mode field)
+  Prerequisites: E-1 (FIM exists), E-2 (DIFF exists)
+  Estimated scope: ~150-200 LOC
+
+
+STEP E-4: STREAMING VALIDATION FRAMEWORK [FT]
+  READ: docs/specs/guide/focus-tunnel-design.txt
+    -> STREAMING VALIDATION section (FULL: token-level checks during
+       generation, chunk-level AST parse every ~50 tokens, early
+       termination savings calculation)
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> section 3.1 (lazy code patterns — used for token-level detection)
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 2.3 (import validation during generation)
+  What: validate model output AS it streams, not just after.
+    (1) Token-level checks (during generation):
+        - Import validation: as use/import statements stream in, check
+          against VERSION_GATE deprecated_patterns. Block if deprecated.
+        - Lazy code detection: detect todo!(), pass, unimplemented!(),
+          "// TODO" in code positions (not comments/strings — use
+          tree-sitter partial parse to distinguish).
+        - On detection: stop generation, inject constraint, re-prompt.
+    (2) Chunk-level checks (every ~50 tokens):
+        - Running tree-sitter parse attempt. If AST shows structural
+          impossibility (unclosed brace count growing unbounded),
+          early-terminate and retry.
+        - Token budget tracking: if output exceeds expected length by 2x,
+          stop (likely degenerate generation).
+    (3) Early termination: catching bad generation at token 50 instead of
+        500 saves ~90% of generation time for that attempt.
+    (4) Metrics: early_termination_rate, tokens_saved_by_early_term.
+  Touches: providers/ (streaming callback hooks), orchestrator/ (validation
+    pipeline integration), rules/ (deprecated_patterns lookup)
+  Prerequisites: E-3 (mode selection determines when streaming validation runs)
+  Estimated scope: ~350-450 LOC
+
+
+STEP E-5: PIPELINE PARALLELISM FOR CONTEXT PRE-ASSEMBLY [FT]
+  READ: docs/specs/guide/focus-tunnel-design.txt
+    -> PIPELINE PARALLELISM section (FULL: while step N validates,
+       pre-assemble context for step N+1. Depth limited to 1. Discard
+       on validation failure. Adaptive depth control.)
+  READ: docs/specs/crates/orchestrator.txt
+    -> S4 (BSP supersteps — pipeline parallelism must respect superstep
+       boundaries)
+  What: overlap context assembly with validation.
+    (1) While step N runs post-generation validation (rules, AST, linter):
+        read plan for step N+1, query knowledge engine, assemble
+        FIM/DIFF/STRUCTURED prompt for N+1.
+    (2) If step N passes: step N+1 generation starts immediately with
+        pre-assembled context. Saves 100-500ms per step.
+    (3) If step N fails: discard pre-assembled N+1 context (it may depend
+        on N's output). Cost: ~10-50ms wasted context assembly.
+    (4) Adaptive depth: start with depth=1. If validation pass rate drops
+        below 80%, disable pre-assembly until rate recovers.
+    (5) NOT speculative execution of LLM. Only context assembly is pipelined.
+  Touches: orchestrator/ (superstep loop, context pre-assembly)
+  Prerequisites: E-3 (mode selection working), Phase 3D (BSP supersteps)
+  Estimated scope: ~200-300 LOC
+
+
+STEP E-6: AUTOMATED DEPENDENCY DETECTION + RESOLUTION [FT]
+  READ: docs/specs/guide/focus-tunnel-design.txt
+    -> DEPENDENCY MANAGEMENT section (FULL: detection per language,
+       resolution pipeline 7-step, approval gate, auto-approve conditions)
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 1.2 (deprecated_patterns for dependency substitution)
+  What: when model writes code with new imports, system handles deps.
+    (1) Detection (deterministic): compare import statements in new code
+        against manifest file (Cargo.toml / pyproject.toml / package.json).
+        Missing package = dependency needed. Per-language import parser.
+    (2) Resolution pipeline: identify dep name -> check deprecated_patterns
+        for substitution -> query registry for latest compatible version ->
+        conflict check -> add to manifest -> install.
+    (3) Approval gate: new deps require user confirmation (existing rule).
+        In autonomous mode: auto-approve if dep is in pre-approved
+        allowlist (elai_cc.toml [dependencies.allowlist]) OR is already
+        a transitive dep. Otherwise: queue for intervention.
+    (4) The model NEVER runs cargo add / pip install / npm install. It
+        writes code with imports. System figures out the rest.
+  Touches: tools/ (dependency detection), orchestrator/ (resolution pipeline),
+    elai_cc.toml (dependencies.allowlist)
+  Prerequisites: Phase 4B (tools crate complete)
+  Estimated scope: ~350-450 LOC
+
+
+STEP E-7: SPECULATIVE FILE ROUTING + MICRO-STEP CREATION [FT]
+  READ: docs/specs/guide/focus-tunnel-design.txt
+    -> SPECULATIVE FILE ROUTING section (plan specifies target_file per
+       step, model never specifies path, mismatch detection via AST,
+       micro-step creation for new files)
+  What: model outputs only code; system routes to correct file.
+    (1) Plan step specifies target_file + edit_region. Orchestrator reads
+        file, sets up FIM/DIFF context, writes output to that file.
+    (2) Mismatch detection: if model's output references unresolved imports
+        (AST analysis shows undefined symbols), check if a new file/module
+        is needed.
+    (3) Micro-step creation: orchestrator creates a MINOR ReplanRequest
+        with a single step "create {path} with {type}". Runs in STRUCTURED
+        mode (new file). Then retries original step with updated context.
+    (4) Max 2 micro-steps per baby step (prevent infinite creation loops).
+  Touches: orchestrator/ (file routing, micro-step creation)
+  Prerequisites: E-3 (mode selection), Phase 4D (ReplanRequest exists)
+  Estimated scope: ~200-250 LOC
+
+
+========================================================================
+GROUP F: DEVELOPMENT STONES (adoption + production hardening)
+========================================================================
+
+Mitigations for the 12 identified risks from development-stones-analysis.txt.
+Ordered by kill-risk ranking (HIGH first).
+
+ORDERING RATIONALE: Stone B (7B default) is the #1 risk and a config change
+— do it first. Stone A (cold start) is #3 risk and affects first-run UX.
+Stone D (testing bootstrap) is #2 risk but more complex. Stone 3 (DKG
+dynamic langs) is #4 risk and large scope. Stone C (SQLite contention) and
+Stone F (BYOE) are MEDIUM and partially addressed by earlier groups.
+Stone 1 (distribution) is deployment-stage work.
+
+
+STEP F-1: 7B DEFAULT + ADAPTIVE MODEL SELECTION [DS Stone B]
+  READ: docs/specs/guide/development-stones-analysis.txt
+    -> STONE B section (FULL: 72% vs 90% pass@1 data, context tradeoff,
+       recommended approach, 6 solution directions)
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 2 (model tier table, attention ceilings)
+    -> section 3 (baby step sizing per model)
+  What: make 7B the default on 12GB, implement adaptive model selection.
+    (1) Change default model in elai_cc.toml: 12GB tier default = 7B NF4+FA2
+        (was 3B). 3B becomes long-context fallback and background utility.
+    (2) Per-task model selection (deterministic): classify task complexity
+        by token count + file count + DKG edge count.
+        TRIVIAL (rename, typo, add import) -> 3B (saves swap time)
+        SMALL/MEDIUM/LARGE -> 7B (quality matters)
+    (3) Dual-model on 12GB: keep 3B always loaded (1.92GB) alongside 7B
+        (5.18GB). Total 7.1GB weights, ~5GB for KV cache. 3B handles
+        embeddings, classifications. 7B handles generation.
+    (4) Update ModelPool config for 12GB tier to reflect dual-model default.
+  Touches: elai_cc.toml (default model config), orchestrator/ (task
+    complexity classifier), providers/ (ModelPool 12GB config)
+  Prerequisites: Phase 4 complete (ModelPool, providers exist)
+  Estimated scope: ~200-300 LOC
+
+
+STEP F-2: PROGRESSIVE INDEXING (COLD START) [DS Stone A]
+  READ: docs/specs/guide/development-stones-analysis.txt
+    -> STONE A section (FULL: 6 solution directions, progressive indexing
+       4-phase strategy, git-aware prioritization, on-demand indexing)
+  READ: docs/specs/crates/knowledge.txt
+    -> S1-S5 (knowledge engine layers — understand initialization order)
+  What: make ELAI usable within 5 seconds of opening a new project.
+    (1) Phase 1 (<5s): BM25 only. Tantivy indexes 100K LOC in seconds.
+        ELAI is usable with keyword search. DKG/vectors/PageRank start
+        in background.
+    (2) Phase 2 (<30s): DKG for imports only (not function bodies).
+        Gives dependency edges at module level. Context Telescope works.
+    (3) Phase 3 (<5min): full DKG + vectors for hot files (changed in
+        last 7 days via git log --diff-filter).
+    (4) Phase 4 (background): everything else. User never waits.
+    (5) Progress indicator: status bar shows "Indexing: BM25 ready,
+        DKG 45%..." User can start working immediately.
+    (6) On-demand indexing: when user gives a task, index mentioned files
+        + DKG neighbors FIRST, then proceed. Full index continues async.
+  Touches: knowledge/ (progressive init), orchestrator/ (startup sequence),
+    cli/ (progress display)
+  Prerequisites: Phase 4 complete (knowledge engine exists)
+  Estimated scope: ~400-500 LOC
+
+
+STEP F-3: WEAKER EVIDENCE GATES FOR LEGACY CODE [DS Stone D]
+  READ: docs/specs/guide/development-stones-analysis.txt
+    -> STONE D section (FULL: testing bootstrap problem, 7 solution
+       directions, observation-based test gen, weaker gates)
+  READ: docs/specs/crates/orchestrator.txt
+    -> S13 (evidence gate protocol — current artifact requirements)
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 1 (surgical mode — designed for existing codebases)
+  What: handle zero-test codebases without blocking the pipeline.
+    (1) Project Intelligence detects test coverage level: ZERO (no test
+        files), LOW (<20% files have tests), ADEQUATE (>20%).
+    (2) Relaxed evidence gates for ZERO/LOW coverage:
+        TESTING_FIRST -> EXECUTING: "compilation succeeds" (not "tests
+        fail for right reasons"). Rationale: no tests exist to fail.
+        EXECUTING -> AUDITING: "new tests pass AND existing behavior
+        unchanged" (not "test flipped from fail to pass").
+    (3) Incremental test adoption: write tests ONLY for code ELAI
+        modifies (blast radius from DKG). Don't require full coverage.
+    (4) Type-driven test generation for typed languages: generate
+        property-based tests from type signatures alone. "This function
+        takes Vec<i32> and returns i32 — test with empty, single, large,
+        negative." Less precise but zero behavioral understanding needed.
+    (5) Observation-based test generation (future, complex): run existing
+        code, capture I/O pairs, generate characterization tests.
+        Deferred to separate step if needed.
+  Touches: orchestrator/ (evidence gates, coverage detection),
+    knowledge/ (test file detection from Project Intelligence)
+  Prerequisites: Phase 4 complete (FSM, evidence gates exist)
+  Estimated scope: ~300-400 LOC
+
+
+STEP F-4: LSP-BACKED DKG FOR DYNAMIC LANGUAGES [DS Stone 3]
+  READ: docs/specs/guide/development-stones-analysis.txt
+    -> STONE 3 section (DKG on dynamic languages: LSP solution, convention
+       heuristics, uncertain edges, 6 solution directions)
+    -> STONE E section (language tax: LSP as universal backend, tiered
+       language support, shared toolchain parser)
+  READ: docs/specs/guide/project-intelligence-design.txt
+    -> section 3 header (CRITICAL LIMITATION: DKG Rust-only currently)
+  READ: docs/specs/crates/knowledge.txt
+    -> S1 (DKG layer, LanguageGrammar trait)
+  What: use Language Server Protocol for DKG edges on dynamic languages.
+    (1) LSP client: connect to Pyright (Python), tsserver (TypeScript),
+        gopls (Go) if installed. Auto-detect from ProjectProfile.
+    (2) LspDkgProvider trait: find_references(symbol) -> Vec<DkgEdge>,
+        goto_definition(location) -> DkgNode. Converts LSP responses
+        to DKG graph edges. Falls back to tree-sitter if LSP unavailable.
+    (3) Uncertain edges: when static analysis suspects but can't confirm
+        a dependency, add MAYBE edge with low confidence. Context
+        Telescope includes MAYBE edges when token budget allows.
+    (4) Framework heuristics: for Django (apps, views, urls), Flask
+        (blueprints, routes), React (components, hooks), detect
+        framework-specific import patterns and add DKG edges.
+    (5) Tiered language support:
+        Tier 1 (full DKG): Rust (tree-sitter), Python (LSP+tree-sitter),
+          TypeScript (LSP+tree-sitter)
+        Tier 2 (LSP only): Go, Java
+        Tier 3 (BM25 + grep): everything else
+  Touches: knowledge/ (LspDkgProvider, framework heuristics),
+    core/ (DkgEdge confidence field)
+  Prerequisites: A-35 (multi-lang tree-sitter grammars exist)
+  Estimated scope: ~600-800 LOC
+
+
+STEP F-5: CONNECTION POOL SEPARATION + BATCH SSB WRITES [DS Stone C]
+  READ: docs/specs/guide/development-stones-analysis.txt
+    -> STONE C section (SQLite contention: 5 databases, connection pools,
+       batch writes, in-memory caching, redb consideration)
+  READ: docs/specs/crates/orchestrator.txt
+    -> S3 (SSB WAL mode, single writer, broadcast)
+  What: eliminate SQLite contention across databases.
+    (1) Connection pool separation: each database (SSB, DKG, rules.db,
+        vectors) gets its own connection pool. SSB writes never block
+        DKG reads. Explicit pool per database in orchestrator init.
+    (2) Batch SSB writes: buffer 10-50ms of action inserts into single
+        transactions. 50ms batching at 1000 actions/sec = 50 per tx =
+        20 tx/sec (comfortable for SQLite WAL).
+    (3) In-memory rule cache: active rules loaded into BTreeMap at phase
+        start. Invalidated only when rules.db changes (rare during
+        execution). Eliminates per-tool-use SQLite query.
+    (4) Read-only dashboard connection: dashboard opens its own read-only
+        WAL connection to SSB. Never contends with orchestrator writes.
+    (5) Disk type detection: at startup, detect SSD vs HDD. If HDD:
+        log warning, increase batch window to 100ms, recommend SSD.
+  Touches: orchestrator/ (connection pools, batch writer),
+    rules/ (in-memory cache), providers/ (disk detection)
+  Prerequisites: Phase 4 complete (SSB, rules engine exist)
+  Estimated scope: ~300-400 LOC
+
+
+STEP F-6: HARDWARE DETECTION + AUTO-MODE SELECTION [DS Stones 1, B]
+  READ: docs/specs/guide/development-stones-analysis.txt
+    -> STONE 1 section (distribution: Docker sidecar, hardware detection,
+       auto-mode selection, 6 solution directions)
+    -> STONE B section (model selection based on detected hardware)
+  READ: docs/specs/guide/cloud-mode-design.txt
+    -> MODE SELECTION section (per-task recommendation by complexity)
+  What: on first launch, probe hardware and auto-configure.
+    (1) Hardware probe: GPU model (nvml-wrapper), VRAM total/available,
+        CUDA version, CPU cores, RAM, disk type (SSD/HDD).
+    (2) Auto-mode selection:
+        No GPU -> CLOUD mode default, LOCAL disabled
+        GPU <8GB VRAM -> CLOUD default, LOCAL with 3B only
+        GPU 8-11GB -> LOCAL with 3B, HYBRID recommended
+        GPU 12-15GB -> LOCAL with 7B (default), HYBRID available
+        GPU 16-23GB -> LOCAL with 7B + larger KV cache
+        GPU 24-47GB -> LOCAL with 14B or 32B
+        GPU 48GB+ -> LOCAL with 32B, full pipeline
+    (3) Sidecar health check: attempt to start sidecar, run canary
+        inference. If fails: offer Ollama fallback or CLOUD mode.
+        Clear error message with fix instructions.
+    (4) First-run wizard (CLI): display detected hardware, recommended
+        mode, confirm or override. Store in elai_cc.toml.
+    (5) Docker sidecar option: if Docker detected and GPU not working,
+        offer to pull pre-built sidecar image with CUDA+FA2.
+  Touches: cli/ (first-run wizard), core/ (hardware detection types),
+    providers/ (sidecar health check), elai_cc.toml (auto-config)
+  Prerequisites: D-1 (cloud mode config exists for CLOUD recommendation)
+  Estimated scope: ~400-500 LOC
+
+
+========================================================================
+GROUP H: WIRING ENFORCEMENT (Layer 0 of testing-trust stack)
+========================================================================
+
+Prevents the "built but not wired" failure class documented in
+.elai_cc/docs/mvp-wiring-audit-2026-04-18.md. Deterministic callgraph
+(DKG) + config stub-ban + optional runtime smoke observability.
+Complements (does not replace) the 6-layer testing trust stack in
+testing-trust-design.txt.
+
+ORDERING RATIONALE: H-1 (harness + types + deterministic auditor) is
+load-bearing — nothing else can land without it. H-2 (decomposer
+emission) is what makes the LLM produce WiringContract blocks per
+baby step. H-3 (runtime smoke) is the 10-30s E2E layer for user-facing
+steps only. H-4 (retrofit audit) runs the completed harness against
+the existing .elai_cc codebase to close the 10 MVP wiring gaps as
+the first regression corpus.
+
+Group H should run FIRST in the post-Phase-4 queue. Every other group
+(C/D/E/F/G) benefits from its baby steps being wiring-gated. TIER 0
+in the priority ranking below.
+
+
+STEP H-1: WIRING HARNESS + TYPES + DETERMINISTIC AUDITOR [TT Layer 0 A]
+  READ: docs/specs/guide/testing-trust-design.txt
+    -> LAYER 0 — WIRING CONTRACT section (FULL: Approach A structural
+       types, reachable_from, stub_ban, frontend_pair, entrypoint set,
+       reverse check, LLM-safety rationale, new types list)
+    -> PROBLEMS FOUND AND SOLUTIONS MATRIX section (P13/P14/P15 —
+       the three sub-manifestations Layer 0 addresses)
+    -> IMPLEMENTATION INTEGRATION section — Phase 4B / 4E / 4H
+       additions for Layer 0
+  READ: .elai_cc/docs/mvp-wiring-audit-2026-04-18.md
+    -> section 4 (top 10 wiring gaps — seed corpus for stub_ban patterns)
+  READ: docs/specs/crates/knowledge.txt
+    -> S1 (DKG schema, dkg_edges table — required by DkgReachabilityAuditor)
+  READ: docs/specs/crates/orchestrator.txt
+    -> S3 (SSB action types — adding 19/20 for wiring evidence/violation)
+  What: build the deterministic wiring harness.
+    (1) Types: WiringContract, StubBanEntry, ObservableEffect,
+        EntrypointSet, WiringEvidence, WiringViolation,
+        UserFacingClassification. Live in tools/ crate for sharing
+        across orchestrator + CLI subcommand.
+    (2) EntrypointSetLoader: parses [wiring.entrypoints] from
+        elai_cc.toml. Validates each entry resolves to a DKG node
+        at load time (typo-catch).
+    (3) DkgReachabilityAuditor: queries existing DkgEngine for
+        path existence from each entrypoint to each produces_symbol.
+        Uses SQL over dkg_edges transitive closure. <10ms p99.
+    (4) StubBanAuditor: given config_field_path + regex, resolves
+        the field site in the AST via tree-sitter, greps its RHS
+        for the pattern. Skips #[cfg(test)] / tests/ / fixtures/ /
+        examples/ / benches/ directories. Configurable exemption
+        list in elai_cc.toml [wiring.exempt_paths].
+    (5) WiringContractValidator: reverse check — every contract
+        must reference at least one symbol introduced by the same
+        baby step's diff (git diff --name-only + tree-sitter symbol
+        extraction). Bogus / copy-pasted contracts auto-rejected.
+    (6) SSB wiring: action_types 19 (WiringEvidence) and 20
+        (WiringViolation). Written by auditor, read by dashboard
+        and by `elai wiring audit` subcommand (H-4).
+    (7) Seed stub_ban patterns (from MVP audit):
+          baby_step_executor   forbid   None
+          anti_spiral_enabled  forbid   false
+          dkg_querier          forbid   EmptyDkgQuerier
+          integration_runner   forbid   NoOpIntegrationRunner
+          grounding_client     warn     SyntheticGroundingClient
+        Store in rules.db as VERSION_GATE-style data-table rows
+        so Layer 1A self-mod can grow the set.
+  Touches: tools/ (wiring types, auditors), knowledge/ (DKG path
+    query API surface), orchestrator/ (SSB action types 19/20),
+    rules/ (stub_ban seed table), elai_cc.toml (entrypoints schema)
+  Prerequisites: Phase 1A (DKG), Phase 3B (SSB), Phase 4B (BashSandbox)
+  Estimated scope: ~500-700 LOC
+
+
+STEP H-2: DESIGNER + PIPELINEBUILDER WIRING CONTRACT INTEGRATION [TT Layer 0 A]
+  READ: docs/specs/guide/testing-trust-design.txt
+    -> LAYER 0 — WIRING CONTRACT section (Designer emission rules,
+       USER_FACING classification, frontend_pair sibling rule)
+    -> IMPLEMENTATION INTEGRATION section — Phase 4D + 4E Layer 0
+       additions
+  READ: docs/specs/crates/orchestrator.txt
+    -> S2 + S13 (FSM + evidence gates — new WIRING_CHECK stage)
+  READ: docs/specs/guide/steps/phase-4D.txt
+    -> 4D.9 (BabyStepSpec current 8 blocks — adding 9th)
+  READ: docs/specs/guide/steps/phase-4E.txt
+    -> 4E.10 (DepthFirstNavigator baby-step cycle — inserting
+       WIRING_CHECK stage)
+  What: make the Designer produce WiringContracts and the builder
+        enforce them structurally.
+    (1) BabyStepSpec gets a 9th block: WIRING_CONTRACT (WiringContract
+        type from H-1). Designer emits it during 4D decomposition.
+        Empty produces_symbols is valid only for steps tagged
+        "library" or "test-only"; otherwise required.
+    (2) Designer USER_FACING classifier (deterministic):
+          path matches crates/dashboard/src/commands/      -> USER_FACING
+          path matches crates/cli/src/.*slash_commands.*   -> USER_FACING
+          step introduces new SsbPayload variant + declared
+            frontend consumer in another step                -> USER_FACING
+          step introduces public API endpoint                -> USER_FACING
+          else                                               -> not user-facing
+        USER_FACING steps MUST set observable_effect.
+    (3) Designer frontend_pair enforcement at decomposition time:
+        if a step introduces an SsbPayload variant or HTTP endpoint,
+        decomposer rejects the plan unless a sibling step in the
+        same step-level node introduces a consumer (frontend
+        ActivityEntry formatter, CLI reader, or downstream consumer).
+    (4) PipelineBuilder structural validation steps 4.5 and 4.6:
+        4.5: every baby step with USER_FACING = true has
+             observable_effect.trigger / expect_ssb present.
+        4.6: every new SSB action_type has a paired consumer.
+        Failures: REJECT plan, emit MAJOR ReplanRequest.
+    (5) Baby step cycle gets a new stage: WIRING_CHECK, runs between
+        pre_gate and INTENT_CONFIRM. Calls H-1 auditors. On fail:
+        BLOCK, bubble-up as WIRING_FAIL (HIGH risk, routes to human
+        in AutonomousGate).
+  Touches: orchestrator/ (Designer, PipelineBuilder, baby-step cycle,
+    ReplanRequest), pipeline types (BabyStepSpec 9th block)
+  Prerequisites: H-1 (wiring types + auditors exist)
+  Estimated scope: ~400-500 LOC
+
+
+STEP H-3: OBSERVABLE-EFFECT SMOKE RUNNER [TT Layer 0 B]
+  READ: docs/specs/guide/testing-trust-design.txt
+    -> LAYER 0 — WIRING CONTRACT section Approach B (FULL:
+       observable_effect schema, expect_ssb predicate, time budget,
+       trigger format, runtime cost)
+    -> OPEN QUESTIONS Q7 (per-baby-step vs per-step granularity)
+  READ: docs/specs/crates/tools.txt
+    -> S3 (BashSandbox — reused for trigger execution)
+  READ: docs/specs/crates/orchestrator.txt
+    -> S3 (SSB read-only connection pool — reused for predicate polling)
+  What: runtime smoke gate for user-facing baby steps.
+    (1) ObservableEffectRunner: takes (ObservableEffect, ssb_read_pool,
+        bash_sandbox). Boots the trigger inside BashSandbox (existing
+        Tier B/C isolation). Opens SSB read-only handle. Polls
+        (exponential backoff 50ms -> 1s) until predicate fires or
+        within_ms budget elapses.
+    (2) Predicate language: action_type + optional file-overlap
+        filter + optional JSON-path payload match. Deterministic,
+        no LLM. Seeded grammar in rules.db.
+    (3) Timeout => BLOCK with captured SSB tail (last 20 rows) as
+        finding evidence. User sees exactly what DID fire.
+    (4) Granularity (per Q7 default): per-baby-step for NEW user-facing
+        emitters, per-step for MODIFICATIONS to existing ones. Config:
+        elai_cc.toml [wiring.smoke] granularity.
+    (5) Opt-out: [wiring.smoke] enabled = false disables Approach B
+        entirely (Approach A still runs). For hermetic CI without
+        ability to boot the binary.
+    (6) Parallelism: max 2 concurrent smoke runs (VRAM + port
+        collision avoidance). Queue excess.
+  Touches: orchestrator/ (ObservableEffectRunner, smoke integration
+    into AUDITING), tools/ (BashSandbox trigger shim),
+    elai_cc.toml ([wiring.smoke] schema)
+  Prerequisites: H-1 (types), H-2 (Designer emits observable_effect),
+    Phase 4B (BashSandbox)
+  Estimated scope: ~350-450 LOC
+
+
+STEP H-4: RETROFIT AUDIT — CLOSE MVP WIRING GAPS [TT Layer 0 dogfood]
+  READ: .elai_cc/docs/mvp-wiring-audit-2026-04-18.md (FULL)
+  READ: docs/mvp-wiring-gaps.md (FULL — rolling gap log)
+  READ: docs/specs/guide/testing-trust-design.txt
+    -> OPEN QUESTIONS Q9 (dogfooding approach)
+  What: run H-1/H-2/H-3 against current .elai_cc as first regression
+        corpus; close the 10 P0/P1 wiring gaps from the MVP audit.
+    (1) `elai wiring audit` CLI subcommand: runs DkgReachabilityAuditor
+        + StubBanAuditor across the whole workspace against the
+        declared entrypoints in elai_cc.toml. Output compatible with
+        mvp-wiring-audit-2026-04-18.md format (section 2 / 3 / 4
+        categories).
+    (2) Declare [wiring.entrypoints] in .elai_cc/elai_cc.toml:
+          production = [
+            "crates/cli/src/main.rs::main",
+            "crates/dashboard/src/lib.rs::run",
+            "crates/dashboard/src/commands.rs::submit_task",
+            "crates/orchestrator/src/task_runner.rs::drive_task",
+          ]
+    (3) Seed stub_ban with the 10 concrete patterns from MVP audit
+        (baby_step_executor None, anti_spiral_enabled false, etc).
+    (4) Close P0 items by flipping or wiring (not by exempting):
+          wire-4A: real baby-step executor (removes None)
+          wire-antispiral: flip to true (removes false)
+          wire-a12: DeterministicAuditor invocation in task_runner
+          patch-1.32: SidecarProvider into TaskRunnerConfig
+          A-44: IndexingService in task_runner
+          A-11: PI Tier 3 on first task
+          Frontend action-type coverage (item 8)
+          Rule evaluator real source text (item 9)
+    (5) Regression: the 10 closed items become permanent test cases
+        for the wiring auditor itself — if anyone re-introduces
+        `baby_step_executor: None` in dashboard/src/lib.rs, H-1's
+        auditor catches it deterministically.
+    (6) Dashboard `WIRING_VIOLATION` action_type renderer: red left
+        border, "Dead wiring detected: <symbol> not reachable from
+        <entrypoint>".
+  Touches: .elai_cc/elai_cc.toml (entrypoints), cli/ (wiring audit
+    subcommand), dashboard frontend (WIRING_VIOLATION formatter),
+    .elai_cc/crates/dashboard/src/lib.rs (close the 10 gaps),
+    task_runner.rs (DeterministicAuditor wire, IndexingService wire)
+  Prerequisites: H-1, H-2, H-3
+  Estimated scope: ~400-600 LOC harness + ~600-900 LOC closing gaps
+    (the gap-closing LOC was already projected by the MVP audit
+    section 4)
+
+
+========================================================================
+GROUP G: COMPILED PIPELINE + EXTERNAL IDEAS
+========================================================================
+
+Features derived from competitive analysis (Compiled AI paper,
+Sema Code paper). These require Phase 4D/4E (pipeline factory) as
+foundation.
+
+ORDERING RATIONALE: cumulative token tracking (G-1) is simplest and
+improves accuracy of everything else. Compiled pipeline (G-2, G-3) is
+the highest-value steal. Background takeover (G-4) improves autonomous
+mode. Safety sandwich (G-5) enhances Oracle Mode extraction quality.
+
+
+STEP G-1: CUMULATIVE TOKEN TRACKING [CP Design 3]
+  READ: docs/specs/guide/compiled-pipeline-design.txt
+    -> DESIGN 3 section (FULL: CumulativeTokenTracker type, current state
+       analysis, calibration logic, token savings)
+  READ: docs/specs/crates/providers.txt
+    -> S1 (LlmProvider response format — verify usage fields exist)
+  READ: docs/specs/guide/steps/phase-3E.txt (context budget allocator)
+  What: replace estimated token counting with actual API counts.
+    (1) CumulativeTokenTracker type: prompt_tokens_total, completion_tokens_total,
+        cache_read_tokens, cache_write_tokens, last_response_prompt,
+        last_response_completion.
+    (2) Provider wiring: after each LLM response, update tracker from
+        response.usage fields (already parsed, just not forwarded).
+    (3) Context budget recalibration: if actual > estimated * 1.1,
+        adjust scaling factor for this model's token_count_estimate().
+    (4) SSB integration: include actual token counts in HEALTH_SNAPSHOT
+        action for dashboard display.
+  Touches: orchestrator/ (CumulativeTokenTracker), providers/ (usage forwarding),
+    context_budget.rs (recalibration)
+  Prerequisites: Phase 3E (context budget), Phase 3J (providers)
+  Estimated scope: ~150-200 LOC
+
+
+STEP G-2: COMPILED PIPELINE TYPES + TEMPLATE CRYSTALLIZER [CP Design 1]
+  READ: docs/specs/guide/compiled-pipeline-design.txt
+    -> DESIGN 1 section (FULL: CompiledPipeline struct, CompiledStep,
+       TemplateVariable, TemplateCrystallizer, compilation eligibility
+       criteria, decompilation triggers)
+  READ: docs/specs/integration/pipeline-factory.txt
+    -> S10 (pipeline templates, outcome ranking, first_try_ratio)
+  What: implement template crystallization — learning from successful runs.
+    (1) CompiledPipeline, CompiledStep, TemplateVariable types.
+    (2) TemplateCrystallizer: monitors pipeline template outcomes. When
+        N=3 consecutive successes with identical structure:
+        - Extract deterministic skeleton
+        - Identify VARIABLE regions (change per invocation) vs FIXED
+          regions (identical across all N runs)
+        - Produce CompiledPipeline
+    (3) Compilation eligibility check: all_source_L1_only AND
+        variable_region_ratio < 0.3 AND no_replan AND first_try_ratio == 1.0.
+    (4) Storage: compiled pipelines in SSB as COMPILED_PIPELINE action type.
+  Touches: orchestrator/ (types, crystallizer), pipeline factory types
+  Prerequisites: Phase 4D + 4E (pipeline factory, template system exist)
+  Estimated scope: ~350-450 LOC
+
+
+STEP G-3: COMPILED EXECUTOR + DECOMPILATION [CP Design 1]
+  READ: docs/specs/guide/compiled-pipeline-design.txt
+    -> DESIGN 1 section (CompiledExecutor, decompilation trigger,
+       token and latency impact analysis)
+  What: execute compiled pipelines with zero LLM calls.
+    (1) CompiledExecutor: resolve TemplateVariables (prompt user, query
+        ProjectProfile, DKG). For each CompiledStep: substitute variables,
+        write file, validate (build, lint, test — same harness).
+    (2) If ANY validation fails: mark DECOMPILED, fall back to normal
+        LLM execution. Decrement confidence.
+    (3) Decompilation trigger: 2 consecutive failures OR confidence < 0.7.
+    (4) CLI integration: when user runs /task and a compiled pipeline
+        matches, offer: "Compiled pipeline available (3 successful runs).
+        Use it? [y/n]". In autonomous mode: auto-use if confidence > 0.9.
+    (5) Metrics: compiled_execution_count, decompilation_count,
+        compiled_vs_llm_latency_ratio.
+  Touches: orchestrator/ (executor, decompilation), cli/ (compiled offer)
+  Prerequisites: G-2 (compiled types and crystallizer exist)
+  Estimated scope: ~300-400 LOC
+
+
+STEP G-4: REACTIVE BACKGROUND TAKEOVER [CP Design 2]
+  READ: docs/specs/guide/compiled-pipeline-design.txt
+    -> DESIGN 2 section (FULL: BackgroundTaskManager, BackgroundTask type,
+       detach protocol, adaptive polling, constraints, interaction with
+       BSP supersteps)
+  READ: docs/specs/crates/orchestrator.txt
+    -> S4 (BSP supersteps — background results at boundaries)
+    -> S7 (agent system — tool call timeout handling)
+  READ: docs/specs/crates/tools.txt
+    -> S3 (BashSandbox — current timeout/kill behavior)
+  What: detach long-running tool calls instead of killing them.
+    (1) BackgroundTaskManager: manages detached processes. Max 3 concurrent.
+    (2) Soft timeout (configurable: 30s build, 60s test): BashSandbox
+        detaches process, returns BackgroundTaskId.
+    (3) Hard timeout = 5x soft: kill if exceeded.
+    (4) Adaptive polling: 5s -> 10s -> 30s intervals.
+    (5) SSB integration: BACKGROUND_TASK_STARTED and BACKGROUND_TASK_COMPLETE
+        action types. Results injected at next superstep boundary.
+    (6) Autonomous mode only: in interactive mode, show progress to user
+        instead of backgrounding (user expects to see output).
+    (7) Background tasks inherit BashSandbox isolation (Tier B/C).
+  Touches: orchestrator/ (BackgroundTaskManager, superstep integration),
+    tools/ (BashSandbox detach capability)
+  Prerequisites: Phase 4B (BashSandbox), Phase 4G (autonomous mode)
+  Estimated scope: ~350-450 LOC
+
+
+STEP G-5: SAFETY SANDWICH FOR EXTRACTION [CP Design 4]
+  READ: docs/specs/guide/compiled-pipeline-design.txt
+    -> DESIGN 4 section (FULL: 3-phase extraction, constrained JSON schema,
+       quote verification, source content caching, fabrication_rate metric)
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 3 Phase D (current fact extraction)
+    -> section 3 Phase G (current post-verification)
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 4 Principle 4 (constrained decoding — JSON schema mode)
+  What: enforce structural guarantees on Oracle Mode fact extraction.
+    (1) Wire constrained decoding (JSON schema mode) into Oracle Mode
+        Phase D. ExtractedFact schema enforced at generation time.
+        Model CANNOT produce facts missing exact_quote field.
+    (2) Quote verification in Phase G: for each ExtractedFact, check
+        exact_quote appears as substring in source page content.
+        Normalize whitespace before match. Fuzzy fallback (Levenshtein
+        < 5% of quote length). FABRICATED facts excluded from synthesis.
+    (3) Source content cache: LRU cache of 100 pages (max 50KB each).
+        Populated during Phase B (search execution). Phase G reads from
+        cache — no re-fetch.
+    (4) Fabrication rate metric: per-model tracking. If > 20%, escalate
+        to cloud model for extraction.
+  Touches: orchestrator/ (Oracle pipeline Phase D + G), providers/
+    (constrained decoding wiring)
+  Prerequisites: Phase 4D (Oracle pipeline exists), B-1 (constrained decoding)
+  Estimated scope: ~250-350 LOC
+
+
+========================================================================
+DEPENDENCY GRAPH
+========================================================================
+
+  GROUP C (dashboard completion):
+  C-1 (MONITOR+EXPLORE) ──> C-2 (interventions) ──> C-3 (window mgmt)
+                                                  ──> C-4 (visual polish)
+
+  GROUP D (cloud mode):
+  D-1 (config+routing) ──> D-2 (context budget)
+                       ──> D-3 (privacy) ──> D-4 (HYBRID+cost)
+
+  GROUP E (focus tunnel):
+  E-1 (FIM) ──> E-2 (DIFF) ──> E-3 (mode select) ──> E-4 (streaming val)
+                                                   ──> E-5 (parallelism)
+                                                   ──> E-6 (dep resolve)
+                                                   ──> E-7 (file routing)
+
+  GROUP F (stones):
+  F-1 (7B default)       — independent
+  F-2 (progressive idx)  — independent
+  F-3 (weak gates)       — independent
+  F-4 (LSP DKG)          — prereq: A-35 (multi-lang grammars)
+  F-5 (SQLite pools)     — independent
+  F-6 (hw detection)     — prereq: D-1 (cloud mode config)
+
+  GROUP G (compiled pipeline):
+  G-1 (token tracking)   — independent
+  G-2 (compiled types) ──> G-3 (compiled executor)
+  G-4 (background)       — independent
+  G-5 (safety sandwich)  — prereq: B-1 (constrained decoding)
+
+  GROUP H (wiring enforcement):
+  H-1 (harness) ──> H-2 (designer) ──> H-3 (smoke) ──> H-4 (retrofit)
+  H-1 is linear bottleneck for H-2/H-3/H-4.
+
+  CROSS-GROUP DEPENDENCIES:
+  F-6 depends on D-1 (cloud mode config for CLOUD recommendation)
+  D-4 depends on D-3 (privacy before escalation)
+  G-5 depends on E-4 is nice-to-have (streaming val for extraction)
+  ALL groups benefit from H-1/H-2 landing first (wiring contracts
+    apply to every subsequent baby step). H-4 retrofit can defer to
+    any time after H-3 but pays dividends sooner.
+
+
+========================================================================
+PARALLELISM OPPORTUNITIES
+========================================================================
+
+  All 8 groups are largely independent. Maximum parallelism:
+
+  Parallel set 0 (run FIRST, blocks nothing else yet enriches everything):
+    H-1 (wiring harness)
+    (1 step, linear, ships the foundation other groups benefit from)
+
+  Parallel set 1 (immediate after H-1, no inter-group deps):
+    C-1 + D-1 + E-1 + F-1 + F-2 + F-3 + F-5 + G-1 + H-2
+    (9 steps, all independent, can run simultaneously)
+
+  Parallel set 2 (after set 1 completes):
+    C-2 + D-2 + D-3 + E-2 + F-4 + F-6 + G-2 + G-4 + H-3
+    (9 steps, each depends only on its group's set 1 step)
+
+  Parallel set 3 (after set 2):
+    C-3 + D-4 + E-3 + G-3 + G-5 + H-4
+    (6 steps)
+
+  Parallel set 4 (after set 3):
+    C-4 + E-4 + E-5 + E-6 + E-7
+    (5 steps)
+
+  Total: ~30 steps across ~5 parallel waves.
+  With single-session execution: ~30 sessions.
+  With 3-way parallelism: ~10 sessions.
+  H-1 is the single load-bearing prep step — allocate one dedicated
+    session to it before starting parallelism.
+
+
+========================================================================
+ESTIMATED TOTAL SCOPE
+========================================================================
+
+  Group C (dashboard):  4 steps,  ~1700-2200 LOC,  ~4 sessions
+  Group D (cloud mode): 4 steps,  ~1300-1700 LOC,  ~4 sessions
+  Group E (focus tunnel): 7 steps, ~1850-2450 LOC,  ~5 sessions
+  Group F (stones):     6 steps,  ~2200-2900 LOC,  ~6 sessions
+  Group G (compiled):   5 steps,  ~1400-1850 LOC,  ~5 sessions
+  Group H (wiring):     4 steps,  ~1650-2250 LOC,  ~4 sessions
+
+  TOTAL: 30 steps, ~10100-13350 LOC, ~28-30 sequential sessions
+         or ~10 sessions with 3-way parallelism (add 1 for H-1 prep)
+
+
+========================================================================
+PRIORITY RANKING (recommended execution order for single-session work)
+========================================================================
+
+If executing sequentially (one session at a time), recommended order:
+
+  TIER 0 — WIRING FOUNDATION (blocks nothing else but enriches every
+    subsequent step; H-4 also closes 10 known MVP wiring gaps):
+    H-1  Wiring harness + types + deterministic auditor
+    H-2  Designer + PipelineBuilder WiringContract integration
+    H-3  Observable-effect smoke runner
+    H-4  Retrofit audit (close MVP wiring gaps; dogfood the harness)
+
+  TIER 1 — USER EXPERIENCE (do first, biggest impact on first impression):
+    F-1  7B default (config change, instant quality improvement)
+    F-2  Progressive indexing (cold start fix, <5s to usable)
+    F-3  Weaker evidence gates (legacy code unblocked)
+
+  TIER 2 — CLOUD MODE (enables paid-fast path):
+    D-1  Cloud config + routing
+    D-2  Cloud context budget
+    D-3  Privacy redaction
+    D-4  HYBRID escalation + cost
+
+  TIER 3 — FOCUS TUNNEL (token efficiency for local mode):
+    E-1  FIM assembly
+    E-2  Diff parser
+    E-3  Mode selection
+    E-4  Streaming validation
+
+  TIER 4 — DASHBOARD COMPLETION:
+    C-1  MONITOR + EXPLORE windows
+    C-2  Intervention controls
+    C-3  Window management
+    C-4  Visual polish
+
+  TIER 5 — PRODUCTION HARDENING:
+    F-5  SQLite connection pools
+    F-6  Hardware detection + auto-mode
+    F-4  LSP-backed DKG
+    G-1  Cumulative token tracking
+    E-5  Pipeline parallelism
+    E-6  Dependency resolution
+    E-7  File routing
+
+  TIER 6 — ADVANCED (highest value but requires everything else):
+    G-2  Compiled pipeline types
+    G-3  Compiled executor
+    G-4  Background takeover
+    G-5  Safety sandwich
+
+
+========================================================================
+QUICK REFERENCE: WHAT TO GIVE THE LLM PER SESSION
+========================================================================
+
+  Every step above has a READ: block listing exact files and sections.
+  The implementing LLM session follows this protocol:
+
+    1. Read THIS file to understand where the step fits in the overall order
+    2. Read every file listed in the step's READ: block (mandatory)
+    3. Read the current source code files that will be modified
+    4. Implement the changes per the design file specs
+    5. Run tests for affected crates only (not full workspace)
+
+  For cross-references to completed Phase 4 work, the implementing LLM
+  should grep for the relevant types/functions rather than reading entire
+  phase files. The codebase IS the spec for completed phases.
+
+  Example: implementing step D-1 (cloud mode config)
+    1. Read this file -> understand D-1 position, dependencies (none), dependents (D-2, D-3, F-6)
+    2. Read cloud-mode-design.txt MODE SELECTION + PROVIDER ROUTING + FSM CHANGES sections
+    3. Grep for LlmProvider trait, ModelPool, elai_cc.toml parsing in codebase
+    4. Implement cloud config schema, provider routing, cost tracking
+    5. Run tests: cargo test -p elai-orchestrator -p elai-providers

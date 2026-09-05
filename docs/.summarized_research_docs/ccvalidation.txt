@@ -1,0 +1,3 @@
+Requirement-to-Code Cross-Validation
+The Concept: Use the adversial LLM agent to compare the original user request against the implemented code and identify mismatches.
+

@@ -1,0 +1,45 @@
+Claude Code Source
+
+Architecture Analysis:
+- TypeScript/Bun runtime with Anthropic SDK integration
+- Modular plugin system with hooks.json interception
+- FSM orchestration via .fsm-state.json
+- Multi-agent support with isolated context windows
+- Git-governed workflow enforcement
+
+Core Components:
+- QueryEngine.ts: Main orchestration loop
+- PluginLoader.ts: Dynamic tool loading system
+- Context management with session isolation
+- TopologicalIngestorTool: AST-based codebase understanding
+- AgentTool framework for specialized sub-agents
+
+Leaked Integration Points:
+- onQueryStart: Evidence-based research gate triggering
+- onToolUse: FSM state validation and blocking
+- onQueryEnd: Memory bank updates and session tracking
+- executeTool: Git governance integration
+
+FSM Workflow Mapping:
+- IDLE → PLANNING → TESTING_FIRST → EXECUTING → AUDITING → MEMORIZING
+- State transitions enforced via JSON file
+- Tool filtering based on current phase
+- Automated quality gates between phases
+
+Customization Capabilities:
+- System prompt modification via src/context.ts
+- Tool description filtering in QueryEngine.ts
+- Per-session directory isolation (/sessions/{id}/)
+- Sub-agent registration with specialized prompts
+
+API Integration:
+- Standard Anthropic SDK calls (claudeAPI.messages.create)
+- REST/streaming architecture
+- Session persistence and context management
+- Key-based authentication (compatible with modifications)
+
+Token Optimization Strategy:
+- Dynamic prompt assembly based on FSM state
+- Tool filtering to reduce instruction budget
+- Context compression for large codebases
+- Elimination of default "slop" prompts

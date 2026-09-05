@@ -1,0 +1,1468 @@
+PIPELINE MODES DESIGN: SURGICAL MODE + ORACLE MODE
+Date: 2026-04-10
+Status: PROPOSAL — needs user review
+Author: Claude Opus (session design, not implementation)
+
+
+CONTEXT
+
+The current elai_cc architecture (Phases 4D/4E) defines a Fractal Decomposition Engine:
+Idea -> Concepts -> Phases -> Steps -> BabySteps. This is designed for GREENFIELD projects
+where the tech stack, architecture, and frameworks are all decisions to be made.
+
+Two scenarios are NOT covered:
+
+  1. EXISTING CODEBASE: user already has a project, wants changes (features, fixes, refactors).
+     Fractal decomposition is overkill — the tech stack exists, patterns are established,
+     the codebase itself is the primary grounding source.
+
+  2. PURE RESEARCH/QUESTIONS: user wants an answer, not code. Current /explore only queries
+     the local knowledge engine. There's no pipeline for grounded research with verified
+     external sources and structured evidence.
+
+This document proposes two new pipeline modes that reuse existing infrastructure.
+
+
+========================================================================
+MODE 1: SURGICAL MODE (Existing Codebase Operations)
+========================================================================
+
+Purpose: handle feature additions, bug fixes, refactors, and modifications to an existing
+codebase. The pipeline constrains itself to what already exists.
+
+CORE PRINCIPLE: the codebase is the ground truth. The DKG, existing tests, existing
+patterns, and existing dependencies are the PRIMARY grounding sources. External research
+is secondary and targeted ("does library X version Y support feature Z?"), never
+exploratory ("what library should we use?").
+
+
+1. PROJECT DETECTION (deterministic, no LLM)
+
+  The CLI determines whether the target is an existing project via signals:
+
+  Signal                                          Weight
+  Build system file exists (Cargo.toml, etc.)     REQUIRED (any 1)
+  src/ or lib/ has >10 source files               STRONG
+  Test files exist (tests/, *_test.*, test_*.*)    STRONG
+  Git history has >5 commits                       MODERATE
+  Dependencies declared (>3 external deps)         MODERATE
+
+  Detection logic: REQUIRED signal present + at least 1 STRONG signal = existing project.
+  This is a pure filesystem check. No LLM involved.
+
+  When detected: PLANNING phase switches to Surgical Decomposition (see section 3).
+  When not detected: PLANNING phase uses Fractal Decomposition (4D/4E, greenfield).
+
+  Override: user can force mode via /task --new (greenfield) or /task --surgical (existing).
+  Also: /fix always implies surgical mode. /task on existing project defaults to surgical.
+
+
+1B. PROJECT INDEXING (first-time codebase ingestion)
+
+  Trigger: first /task or /fix in a directory where no .elai_cc/indexes/ exists.
+  The system detects the existing project (section 1 signals), then ASKS:
+
+    "Detected existing project: Cargo.toml, 47 source files, 12 test files,
+     git history (83 commits). Index this codebase before proceeding? (Y/n)"
+
+  On confirmation, the indexing pipeline runs (all deterministic, no LLM):
+    1. DKG build: tree-sitter parses all source files -> SQLite graph (<15s)
+    2. BM25 index: tantivy indexes all non-binary text files
+    3. Vector embedding: dual-model (GraphCodeBERT + Granite) embeds all chunks
+    4. PageRank: computed from DKG graph
+    Total time estimate: 15-60s depending on codebase size.
+    Progress bar shown to user during indexing.
+
+  After initial indexing: incremental updates. File changes (detected via SSB
+  file_write events or filesystem watcher) trigger re-index of only changed files.
+  DKG re-parses the file. BM25 re-indexes. Vector cache entries invalidated.
+  No full rebuild needed after the initial ingestion.
+
+  Exclusion list (never indexed):
+    Default: node_modules/, target/, .git/, __pycache__/, dist/, build/,
+             .env, *.key, *.pem, credentials.*, secrets.*
+    Binary detection: null bytes in first 8KB -> skip.
+    Configurable: elai_cc.toml [knowledge.exclude] patterns.
+    .gitignore respected by default (override with [knowledge.include_gitignored] = true).
+
+  For GREENFIELD projects (no existing source detected):
+    No indexing step. DKG starts empty. Indexes grow incrementally as the
+    pipeline creates files during EXECUTING phases.
+
+  Re-indexing: if indexes exist but are stale (schema version mismatch after
+  elai update), system asks: "Index schema changed. Re-index? (Y/n)".
+  If user declines: DEGRADED mode (BM25_ONLY), not crash.
+
+  Storage: all indexes live in .elai_cc/indexes/ (DKG SQLite, tantivy dir,
+  vector cache SQLite). Typical size: 50-200MB for a medium project.
+  Gitignored by default (.elai_cc/ is in .gitignore).
+
+  CURRENT IMPLEMENTATION GAP (verified 2026-04-10):
+    DKG build is NOT wired into the pipeline. Confirmed by grep:
+      - DkgEngine::new: only in knowledge/examples/measure.rs and tests. ZERO calls
+        in CLI, orchestrator, or any pipeline code.
+      - build_graph: same — only in knowledge crate internals and examples.
+      - CLI imports only DkgQuerierAdapter (read-only query adapter, main.rs:64).
+        Falls back to EmptyDkgQuerier when no database file exists.
+      - Orchestrator crate does NOT depend on elai-knowledge at all.
+    Status: DKG engine implementation is complete and tested (27 tests pass,
+      metrics recorded in phase_1A.toml). But nobody in the pipeline ever
+      calls DkgEngine::new or build_graph. The database only exists if the
+      user manually runs the examples/measure.rs binary.
+    What needs to happen for section 1B to work:
+      1. Orchestrator must depend on elai-knowledge (Cargo.toml)
+      2. An IndexingService (or similar) must be created that calls
+         DkgEngine::new + build_graph + BM25 indexing + vector embedding
+      3. CLI or orchestrator must call IndexingService on first /task when
+         no indexes detected (the flow described above in this section)
+      4. Incremental updates must be wired: SSB file_write events trigger
+         re-index of changed files via IndexingService
+    This is a prerequisite for both Surgical Mode and the context flow
+    described in the "CONTEXT FLOW" section below. Without it, the entire
+    knowledge pipeline operates in DEGRADED mode (EmptyDkgQuerier, no
+    blast radius analysis, no PageRank personalization).
+
+
+2. FSM PATH (unchanged — reuses existing states)
+
+  IDLE -> PLANNING -> [FEASIBILITY_PROBE] -> TESTING_FIRST -> EXECUTING
+    -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE
+
+  No new FSM states needed. The difference is entirely in what PLANNING produces:
+  - Greenfield: ConceptDecomposition tree (4-level fractal)
+  - Surgical: SurgicalPlan (1-2 level flat list with regression gates)
+
+  FEASIBILITY_PROBE: often skipped in surgical mode (existing project = known-feasible
+  environment). Only triggered when: new dependency added, or change touches unfamiliar
+  subsystem (no existing tests for affected files).
+
+
+3. SURGICAL DECOMPOSITION (replaces fractal decomposition)
+
+  Input: user request + DKG graph of existing codebase.
+
+  Step 1 — BLAST RADIUS ANALYSIS (deterministic, no LLM)
+    Query DKG for all symbols/files directly mentioned or implied by the request.
+    Traverse dependency graph outward: find all callers, all dependents, all test files.
+    Output: AffectedSet { direct_files, dependent_files, test_files, total_loc_estimate }
+
+  Step 2 — COMPLEXITY CLASSIFICATION (deterministic, from AffectedSet metrics)
+
+    Classification          Criteria                        Decomposition Depth
+    TRIVIAL                 1 file, <50 LOC estimated       0 (direct to TESTING_FIRST)
+    SMALL                   2-5 files, <200 LOC             1 level (Steps only)
+    MEDIUM                  5-15 files, multi-module        2 levels (Phases + Steps)
+    LARGE                   >15 files, cross-module         2 levels + integration phases
+    NEVER 4-level.          Max depth = 2 for surgical.
+
+  Step 3 — STEP GENERATION (LLM, but constrained)
+    The LLM generates steps, but constrained by:
+    - Must reference existing files from AffectedSet (no inventing new modules)
+    - Must reference existing patterns (DKG provides function signatures, types)
+    - If adding new files: must justify why existing structure doesn't accommodate
+    - Each step includes a FILE_PLAN (see code-completeness-enforcement-design.txt
+      section 1.1) specifying exactly which files are created/modified
+    - Each step has the same 8-block structure as BabySteps (GROUNDING, PRE_GATE, etc.)
+      plus FILE_PLAN (9th block). GROUNDING primarily cites DKG nodes and existing code
+    - File size limits are language-specific (from ProjectProfile.language):
+      if a modification would push a file over the language limit, the step must
+      first extract a sub-module before modifying
+
+  Step 4 — REGRESSION GATE INJECTION (deterministic, no LLM)
+    After each step, the pipeline automatically adds:
+    - Run ALL existing tests in blast radius (not just new tests)
+    - If existing tests break: STOP. This is a regression, not progress.
+    - Regression = re-analyze the step, possibly re-decompose
+    Unlike greenfield where only new tests matter, surgical mode treats existing test
+    failure as a BLOCK-level finding.
+
+
+4. RESEARCH IN SURGICAL MODE
+
+  Research focus is INWARD (codebase) before OUTWARD (web):
+
+  Priority 1: Search the project's own code via DKG + BM25
+    "How is authentication done in this project?"
+    "What patterns does this codebase use for error handling?"
+    "What type does this function expect?"
+
+  Priority 2: Search existing dependencies' docs
+    "Does the version of reqwest in Cargo.lock support HTTP/2?"
+    "What API does sqlx expose for transactions?"
+
+  Priority 3: External research (only when P1 and P2 insufficient)
+    Same FlashResearch pipeline (4D) but with a SCOPE CONSTRAINT:
+    research must be relevant to the specific step, not exploratory.
+
+  The ResearchCache from 4D is shared — if greenfield mode already researched
+  a topic, surgical mode benefits from the cache.
+
+
+5. INTEGRATION IN SURGICAL MODE
+
+  Simpler than greenfield because the integration point already exists.
+  But RISKIER because changes must not break existing behavior.
+
+  Integration check per step (language-parameterized via ProjectProfile):
+  1. Build check (language-specific, from ProjectProfile.build_cmd):
+     Rust: cargo check --workspace
+     Python: python -m py_compile + mypy (if configured)
+     Go: go vet ./...
+     TypeScript: tsc --noEmit
+     Java: gradle compileJava / mvn compile
+     Other: ProjectProfile.build_cmd from project-intelligence-design.txt
+  2. Run tests in blast radius (ProjectProfile.test_cmd scoped to affected files)
+  3. Run full test suite only at Phase completion (CONCEPT level in fractal terms)
+  4. DKG update after each step — dependency graph stays current
+
+  Key difference: in greenfield, integration is about "does new code connect?"
+  In surgical, integration is about "does changed code still fit?"
+
+
+6. TYPES (new Rust types for surgical mode)
+
+  SurgicalPlan {
+    request: String,                    // original user request
+    affected_set: AffectedSet,          // blast radius analysis result
+    complexity: ComplexityClass,        // TRIVIAL/SMALL/MEDIUM/LARGE
+    phases: Vec<SurgicalPhase>,         // 0-N phases (0 for TRIVIAL)
+    regression_baseline: TestBaseline,  // existing test state before changes
+  }
+
+  AffectedSet {
+    direct_files: Vec<FilePath>,        // files directly mentioned/implied
+    dependent_files: Vec<FilePath>,     // files that depend on direct_files
+    test_files: Vec<FilePath>,          // test files covering the blast radius
+    total_loc_estimate: usize,          // from DKG line counts
+    dependency_depth: usize,            // max depth in DKG from entry point
+  }
+
+  ComplexityClass { TRIVIAL, SMALL, MEDIUM, LARGE }
+
+  SurgicalPhase {
+    goal: String,
+    steps: Vec<SurgicalStep>,           // max 1 level of nesting
+    regression_gate: RegressionGate,    // tests to run after phase
+  }
+
+  SurgicalStep {
+    // Same 8-block structure as BabyStepSpec but GROUNDING references
+    // DKG nodes and existing code patterns instead of papers
+    grounding: StepGrounding,
+    pre_gate: PreGate,
+    task: TaskSpec,
+    tdd: TddSpec,
+    deterministic_check: DeterministicCheck,
+    acceptance: AcceptanceCriteria,
+    integration: IntegrationCheck,
+    exit_criteria: ExitCriteria,
+  }
+
+  TestBaseline {
+    total_tests: usize,
+    passing: usize,
+    failing: usize,                     // pre-existing failures (known)
+    snapshot_hash: Blake2sHash,         // hash of test output for comparison
+  }
+
+  RegressionGate {
+    test_scope: Vec<TestTarget>,        // crates/modules to test
+    must_pass: Vec<String>,             // specific tests that MUST pass
+    baseline: TestBaseline,             // comparison point
+    allow_new_failures: bool,           // false by default
+  }
+
+
+========================================================================
+MODE 2: ORACLE MODE (Grounded Research / Question Answering)
+========================================================================
+
+Purpose: answer user questions with grounded, verified information. Not planning,
+not coding. Pure research with deterministic source quality enforcement.
+
+CORE PRINCIPLE: the LLM synthesizes, but SOURCE QUALITY is enforced by code.
+The LLM cannot upgrade a source's trust tier. Domain classification is a lookup
+table, not a judgment call. "I don't know" is a valid and preferred output over
+an uncertain answer.
+
+
+1. TRIGGER / ROUTING
+
+  New CLI command: /research <question>
+  Also: /ask <question> (alias)
+
+  Fallback classifier enhancement (for bare messages):
+    Current: contains "?" + no action verbs -> /explore
+    New: TWO question types detected:
+
+    /explore — question about THIS PROJECT's code
+      Triggers: question + references to files/functions/modules in current project
+      Example: "How does the authentication middleware work?"
+      Uses: DKG + BM25 + knowledge engine only. No external search.
+
+    /research — question about EXTERNAL knowledge
+      Triggers: question + NO project-specific references + conceptual/factual intent
+      Examples: "What is the difference between B-trees and LSM trees?"
+               "Does PostgreSQL 16 support JSON path queries?"
+               "How does the Raft consensus algorithm handle split brain?"
+      Uses: external search + source tier verification + structured answer
+
+  Classification rules (deterministic regex, no LLM):
+    HAS_PROJECT_REF = message references a file path, function name, or module in DKG
+    HAS_ACTION_VERB = contains implement/fix/add/create/modify/refactor/build/write
+    HAS_QUESTION = contains ? OR starts with how/what/why/when/does/is/can/compare/explain
+    NO_CODE_INTENT = does NOT contain "make it", "change", "update the code"
+
+    Route:
+      HAS_ACTION_VERB -> /task (or /fix)
+      HAS_PROJECT_REF + HAS_QUESTION -> /explore
+      HAS_QUESTION + NO_CODE_INTENT + !HAS_PROJECT_REF -> /research
+      Default -> /task
+
+  Override: user can always prefix with /research to force the mode.
+
+
+2. FSM PATH
+
+  Minimal FSM: IDLE -> RESEARCHING -> IDLE
+
+  RESEARCHING is a new FSM state (or sub-state of PLANNING — either works).
+  Characteristics:
+  - No file edit tools available
+  - No bash tools available (except curl/web fetch via proxy)
+  - WebSearch tool available (via IPC, same as researcher agent in 4D)
+  - Knowledge engine available for project-local context
+  - GRC budget: 5/1000 per research topic
+
+  The pipeline does NOT proceed to TESTING_FIRST/EXECUTING/etc. It produces
+  an answer and returns to IDLE.
+
+
+3. RESEARCH PIPELINE (the core of Oracle Mode)
+
+  Phase A — QUERY FORMULATION (LLM)
+    User's question -> 2-4 search queries (rephrased for search engines).
+    Queries logged in SSB for traceability.
+    Not "creative" rephrasing — structural: add context terms, remove ambiguity,
+    try both question and statement forms.
+
+  Phase B — SEARCH EXECUTION (deterministic)
+    Execute each query via WebSearch tool.
+    Collect URLs + snippets + page content.
+    Deduplicate by URL.
+
+  Phase C — SOURCE TIER CLASSIFICATION (deterministic, no LLM)
+
+    Every URL is classified by its domain against a LOOKUP TABLE.
+    The LLM has ZERO input on tier assignment.
+
+    TIER 1 — AUTHORITATIVE (presented as fact if consistent)
+      Official language docs: docs.python.org, doc.rust-lang.org, docs.oracle.com/javase
+      Standards bodies: rfc-editor.org, w3.org/TR, ecma-international.org
+      Academic: arxiv.org, doi.org, dl.acm.org, ieee.org
+      Official project docs: postgresql.org/docs, docs.docker.com, kubernetes.io/docs
+      Source code: github.com/{org}/{repo} where org is the official maintainer
+
+    TIER 2 — STRONG (presented with "well-established" qualifier)
+      Reference sites: developer.mozilla.org (MDN), learn.microsoft.com, wiki.archlinux.org
+      Curated Q&A: stackoverflow.com (answers with score >20), serverfault.com (score >10)
+      Established blogs: blog.rust-lang.org, engineering blogs of known companies
+      Database docs: dev.mysql.com, redis.io/docs, mongodb.com/docs
+      Textbook publishers: oreilly.com, manning.com (if freely accessible content)
+
+    TIER 3 — WEAK (presented with "unverified source" label, never as fact)
+      Personal blogs, Medium, Dev.to, Hashnode
+      Tutorial sites: tutorialspoint, geeksforgeeks, w3schools
+      Stack Overflow answers with score <20
+      Random GitHub repos (not official)
+      YouTube transcripts
+      Forum posts (Reddit, HN comments)
+
+    TIER 4 — REJECTED (silently dropped, never shown to user)
+      Known SEO spam domains (maintained blocklist)
+      AI-generated content farms (detected by domain pattern, not content analysis)
+      Paywalled content where the actual text is inaccessible
+      Sites returning 403/404/captcha
+
+    The domain lookup table is a static Rust data structure (HashMap or phf).
+    Unknown domains default to TIER 3.
+    The table is versioned and updatable via config (not hardcoded, loaded from
+    .elai_cc/config/source-tiers.toml).
+
+    Format of source-tiers.toml:
+      [tier1]
+      domains = ["docs.python.org", "doc.rust-lang.org", ...]
+      patterns = ["*.gov", "*.edu", "rfc-editor.org/*"]
+
+      [tier2]
+      domains = ["developer.mozilla.org", "stackoverflow.com", ...]
+      min_so_score = 20
+
+      [tier4_blocklist]
+      domains = ["spam-domain.com", ...]
+      patterns = ["*seo-farm*", "*ai-content*"]
+
+
+  Phase D — FACT EXTRACTION (LLM, but structured and constrained)
+
+    For each T1/T2 source: extract specific facts as structured data.
+    For each T3 source: extract with WARNING label.
+
+    Extraction format:
+      ExtractedFact {
+        claim: String,          // the factual claim, one sentence
+        source_url: String,     // where it came from
+        source_tier: Tier,      // T1/T2/T3 (assigned by code, not LLM)
+        exact_quote: String,    // verbatim text from source supporting the claim
+        page_section: String,   // heading or context within the page
+      }
+
+    The EXACT QUOTE field is critical. It prevents the LLM from
+    misrepresenting what a source says. If the LLM cannot extract a direct
+    quote that supports the claim, the fact is downgraded to UNSUPPORTED.
+
+    Quality gate: ExtractedFact without an exact_quote = UNSUPPORTED.
+    UNSUPPORTED facts are logged but not used in synthesis.
+
+
+  Phase E — CROSS-VERIFICATION (deterministic)
+
+    For each claim, count supporting sources:
+      VERIFIED: claim supported by 2+ independent T1/T2 sources
+      SUPPORTED: claim supported by 1 T1/T2 source
+      WEAK: claim supported only by T3 sources
+      UNSUPPORTED: no sources with exact quotes
+
+    Cross-verification is a set intersection operation on claims, not LLM reasoning.
+    Two facts are "about the same claim" if they reference the same entity + property.
+    This matching CAN use the LLM (it's semantic similarity), but the TIER and COUNT
+    logic is deterministic.
+
+
+  Phase F — SYNTHESIS (LLM, but constrained)
+
+    The synthesis agent receives ONLY the ExtractedFacts.
+    It does NOT see the raw web pages. It cannot introduce new claims.
+
+    Constraint: every sentence in the output must cite at least one ExtractedFact.
+    Sentences without citations are flagged by a post-processing regex check
+    and either removed or sent back for re-synthesis.
+
+    Output format (presented to user):
+
+      ANSWER:
+        [Paragraph synthesized from extracted facts, with inline citations]
+
+      EVIDENCE CHAIN:
+        [1] claim — "exact quote" (source_url, TIER X) [VERIFIED/SUPPORTED/WEAK]
+        [2] claim — "exact quote" (source_url, TIER X) [VERIFIED/SUPPORTED/WEAK]
+        ...
+
+      CONFIDENCE:
+        HIGH — majority of claims VERIFIED (2+ T1/T2 sources)
+        MEDIUM — majority of claims SUPPORTED (1 T1/T2 source)
+        LOW — claims only from T3 sources
+        UNKNOWN — insufficient evidence found
+
+      CAVEATS:
+        [Any limitations, conflicting sources, or gaps in evidence]
+
+      UNANSWERED:
+        [Parts of the question that could not be answered from available sources]
+
+
+  Phase G — POST-VERIFICATION (deterministic checks)
+
+    1. Citation check: every output sentence has a citation? (regex)
+    2. Tier consistency: no T3 fact presented without "unverified" qualifier? (regex)
+    3. "I don't know" check: if 0 VERIFIED/SUPPORTED facts, output must say so
+    4. Hallucination guard: output claims not in ExtractedFacts list? -> BLOCK
+
+    If any check fails: re-synthesis (max 2 retries), then escalate to user
+    with raw evidence chain and "synthesis failed quality checks."
+
+
+4. WHAT STOPS THE LLM FROM TRUSTING BAD SOURCES?
+
+  The architecture prevents this at multiple levels:
+
+  Level 1 — Source tier is assigned by CODE, not LLM.
+    The LLM never sees "this is a trustworthy source." It sees
+    ExtractedFacts with tier labels already assigned. It cannot change them.
+
+  Level 2 — Exact quote requirement.
+    The LLM must extract a verbatim quote from each source. If the quote
+    doesn't exist in the source text, the fact is UNSUPPORTED. This prevents
+    the LLM from "reading between the lines" of a bad source.
+
+  Level 3 — Cross-verification.
+    A claim needs 2+ independent sources to be VERIFIED. A single blog post
+    claiming "Redis is faster than PostgreSQL for JSON" is WEAK. The same
+    claim from Redis official benchmarks + PostgreSQL docs = VERIFIED.
+
+  Level 4 — Synthesis constraint.
+    The synthesis agent only sees ExtractedFacts, not raw pages. It cannot
+    introduce claims not in the evidence set.
+
+  Level 5 — Post-verification regex.
+    Every sentence must cite a fact. Uncited sentences are removed.
+
+  Result: the LLM is a SYNTHESIS ENGINE, not a JUDGMENT ENGINE.
+  Source quality judgment is deterministic code. The LLM's only role is
+  to formulate queries, extract facts (with quotes), and write readable prose
+  from verified facts.
+
+
+5. HANDLING "I DON'T KNOW"
+
+  If the research pipeline produces:
+  - 0 VERIFIED facts AND 0 SUPPORTED facts -> answer is "I don't know"
+  - Only WEAK facts -> answer is "I found some information but cannot verify it"
+    followed by the evidence chain with clear WEAK labels
+
+  The pipeline NEVER fabricates an answer from insufficient evidence.
+  "I don't know" is a first-class output, not a failure state.
+
+  If the user is unsatisfied with "I don't know," they can:
+  - Rephrase the question (/research with different terms)
+  - Add domain hints (/research --domain=databases "question")
+  - Provide a starting URL (/research --seed=https://... "question")
+  - Ask for T3 sources explicitly (/research --include-weak "question")
+
+
+6. TYPES (new Rust types for Oracle Mode)
+
+  ResearchQuery {
+    original_question: String,
+    formulated_queries: Vec<String>,
+    domain_hints: Vec<String>,
+    seed_urls: Vec<Url>,
+    include_weak: bool,
+  }
+
+  SourceTier { T1_AUTHORITATIVE, T2_STRONG, T3_WEAK, T4_REJECTED }
+
+  SourceClassification {
+    url: Url,
+    domain: String,
+    tier: SourceTier,                   // assigned by lookup table
+    classification_method: ClassMethod, // EXACT_DOMAIN / PATTERN / DEFAULT
+  }
+
+  ExtractedFact {
+    id: FactId,
+    claim: String,
+    source_url: Url,
+    source_tier: SourceTier,
+    exact_quote: String,
+    page_section: String,
+    extraction_confidence: f32,         // LLM self-assessed (not used for tier)
+  }
+
+  VerificationLevel { VERIFIED, SUPPORTED, WEAK, UNSUPPORTED }
+
+  VerifiedClaim {
+    claim: String,
+    supporting_facts: Vec<FactId>,
+    verification_level: VerificationLevel,
+    independent_source_count: usize,
+  }
+
+  ResearchAnswer {
+    question: String,
+    answer_text: String,                // synthesized prose with citations
+    evidence_chain: Vec<VerifiedClaim>,
+    confidence: AnswerConfidence,       // HIGH/MEDIUM/LOW/UNKNOWN
+    caveats: Vec<String>,
+    unanswered_parts: Vec<String>,
+    sources_consulted: usize,
+    sources_rejected: usize,            // T4 count (transparency)
+  }
+
+  AnswerConfidence { HIGH, MEDIUM, LOW, UNKNOWN }
+
+
+========================================================================
+INTEGRATION WITH EXISTING ARCHITECTURE
+========================================================================
+
+1. CLI CHANGES (cli.txt)
+  - Add /research command (and /ask alias)
+  - Enhance fallback classifier with HAS_PROJECT_REF / NO_CODE_INTENT rules
+  - Add --surgical and --new flags to /task
+
+2. FSM CHANGES (orchestrator.txt)
+  - Add RESEARCHING state (or sub-state of PLANNING)
+  - RESEARCHING allows: WebSearch, KnowledgeEngine query, GRC
+  - RESEARCHING blocks: file edit, bash, git, all mutation tools
+  - Transition: IDLE -> RESEARCHING -> IDLE (no further states)
+
+3. PIPELINE FACTORY CHANGES (pipeline-factory.txt)
+  - SurgicalDecomposer (new) alongside ConceptDecomposer (existing)
+  - Selection: project detection result determines which decomposer runs
+  - Both produce executable plans consumable by TreeNavigator (4E)
+  - SurgicalPlan maps to a shallow DecompositionTree (depth <= 2)
+
+4. KNOWLEDGE ENGINE USAGE
+  - Surgical mode: DKG is PRIMARY grounding source
+  - Oracle mode: DKG is optional (only if question is about current project)
+  - Both: BM25 + vectors for local code search when relevant
+  - NOTE: DKG currently supports Rust only (Phase 1A). Non-Rust projects
+    use regex-based fallback for blast radius analysis and convention
+    detection (see project-intelligence-design.txt section 3, FALLBACK PATH).
+    Full multi-language DKG support is a prerequisite tracked there.
+
+5B. LANGUAGE-PARAMETERIZED ENFORCEMENT
+  - Surgical mode applies code-completeness-enforcement-design.txt:
+    file size limits, lazy code detection, and template generation are
+    all parameterized by the project's detected language (ProjectProfile).
+  - Build/test/lint commands come from ProjectProfile (not hardcoded).
+  - Module structure conventions are language-specific (Rust mod.rs,
+    Python __init__.py, TypeScript index.ts, Go package dirs, etc.).
+
+5. RESEARCH AGENT REUSE
+  - Oracle mode reuses the Research Agent from Phase 4D
+  - Same FlashResearch pipeline, same source quality tiers
+  - Difference: Oracle mode stops after synthesis (no pipeline/plan generation)
+  - Surgical mode: research agent used sparingly (only for external API questions)
+
+6. SOURCE TIER CONFIG
+  - New config file: .elai_cc/config/source-tiers.toml
+  - Loaded at startup, cached in memory
+  - Updatable without rebuild (config reload)
+  - Ships with sensible defaults (~200 classified domains)
+
+
+========================================================================
+PHASE PLACEMENT
+========================================================================
+
+Where do these modes fit in the implementation plan?
+
+SURGICAL MODE:
+  - Depends on: Phase 1A (DKG), Phase 3A (FSM), Phase 4D (research, partially)
+  - Does NOT depend on: full 4D/4E fractal decomposition
+  - Suggested phase: 4D-SURGICAL (sub-phase of 4D, after core FlashResearch)
+  - Can be implemented incrementally: TRIVIAL first (direct TESTING_FIRST),
+    then SMALL/MEDIUM, then LARGE with integration phases
+
+ORACLE MODE:
+  - Depends on: Phase 4D (FlashResearch, source quality tiers)
+  - Does NOT depend on: 4E (builder), 4F (feasibility), anything code-execution related
+  - Suggested phase: 4D-ORACLE (sub-phase of 4D, after FlashResearch core)
+  - Simpler than surgical mode — no code execution, no tests, just research
+
+Both modes are EXTENSIONS of Phase 4D, not new top-level phases.
+They reuse FlashResearch infrastructure but with different entry/exit points.
+
+
+========================================================================
+SURGICAL MODE — CONTEXT FLOW (how the system understands the codebase)
+========================================================================
+
+The system does NOT "read the entire codebase." It understands it through
+layered retrieval, each layer adding precision. Here is the exact flow
+from user request to LLM context assembly:
+
+  User: "add rate limiting to the API endpoints"
+    |
+  Step 1 — DKG GRAPH (already built, incremental updates on file changes)
+    DKG provides the structural skeleton: every function, struct, trait,
+    module, and their call/dependency relationships. Stored in SQLite.
+    Cost: 0 LLM tokens (pure tree-sitter parsing, already indexed).
+    This is the MAP. It answers: "what exists?" and "what calls what?"
+    |
+  Step 2 — BLAST RADIUS via DKG GRAPH TRAVERSAL (deterministic)
+    Query DKG for symbols matching "rate limit", "API", "endpoint", "handler."
+    From those entry points, traverse dependency edges outward:
+      - Direct: functions that handle API requests
+      - 1-hop: middleware, auth, database calls those handlers make
+      - 2-hop: shared utilities, config, types used by the 1-hop set
+      - Test files: any test that imports/references the affected symbols
+    Output: AffectedSet with file paths, line ranges, dependency depth.
+    Cost: <10ms. Pure graph traversal, no LLM.
+    |
+  Step 3 — PAGERANK REPO MAP (personalized, token-fitted)
+    Generate a repo map that fits the context budget (~2-4K tokens).
+    Personalization: symbols in AffectedSet get 10x PageRank boost.
+    Binary search fits the most important symbols into the budget.
+    This goes into context Slot 3 (PhaseSpec slot) — the LLM sees
+    "here are the most important parts of the codebase for this task."
+    |
+  Step 4 — TARGETED CODE RETRIEVAL (BM25 + vectors + CatRAG + A-RAG)
+    Query the knowledge engine with task-derived queries:
+      BM25: keyword match for "rate_limit", "middleware", "handler"
+      Vectors: semantic match (GraphCodeBERT for code, Granite for docs)
+      CatRAG: graph-aware traversal follows DKG edges from BM25/vector hits
+      A-RAG: hierarchical filtering compresses results (55-87% token savings)
+    Cross-encoder reranks the final candidate set.
+    Token-budget fitting selects top results that fit context Slot 5.
+    |
+  Step 5 — CONTEXT ASSEMBLY (Phase 3E budget allocator)
+    8 slots assembled in fixed order:
+      Slot 1: SystemPrompt (~330 tokens, meta-instructions only)
+      Slot 2: Rules (active rules for current FSM state)
+      Slot 3: PhaseSpec (personalized repo map + task description)
+      Slot 4: RepoMap (broader codebase overview if budget allows)
+      Slot 5: CodeContext (retrieved code from Step 4)
+      Slot 6: SSB entries (filtered by file overlap with AffectedSet)
+      Slot 7: GRC history (reasoning trace)
+      Slot 8: OutputReserve (tokens reserved for LLM response)
+    Assembly target: <50ms. Two cache breakpoints for provider prefix caching.
+    |
+  Step 6 — LLM RECEIVES FOCUSED CONTEXT
+    The LLM sees: task description + personalized repo map + relevant code
+    snippets + dependency context + active rules. NOT the entire codebase.
+    Typically 4K-12K tokens of context for a surgical task.
+    |
+  Step 7 — DECOMPOSITION (constrained by AffectedSet)
+    LLM generates steps, but constrained:
+      - Must reference files from AffectedSet
+      - Must reference existing patterns visible in CodeContext
+      - Each step has regression gates (existing tests must still pass)
+
+  The key insight: understanding happens BEFORE the LLM sees anything.
+  The knowledge engine (DKG + retrieval pipeline) does the heavy lifting.
+  The LLM receives a curated, relevant, token-efficient view.
+
+
+========================================================================
+CONTEXT TELESCOPE (how baby steps maintain the "full vision")
+========================================================================
+
+Problem: a human can keep the entire project plan in their head while
+coding a small function. An LLM at baby-step level only sees its narrow
+task. Without architectural context, it makes locally correct but
+globally incoherent decisions (wrong naming conventions, incompatible
+return types, duplicate functionality).
+
+Solution: the Context Telescope — a compressed chain of ancestor
+summaries that ALWAYS travels with every baby step. Generated during
+decomposition, frozen in the DecompositionTree struct, never regenerated.
+
+
+1. VERTICAL CONTEXT (ancestry chain)
+
+  Every node in the DecompositionTree stores a summary field, written by
+  the decomposer LLM at the moment it creates that node. The summary is
+  constrained: max tokens enforced by the orchestrator, not optional.
+
+  When a baby step is assembled for execution, the system walks UP the
+  tree and collects all ancestor summaries:
+
+  LAYER 1 — PROJECT VISION (~200 tokens, written once at plan creation)
+    What is this project? Core constraints? Key architecture decisions?
+    Example: "SaaS invoicing app. Rust/Axum backend, React frontend,
+    PostgreSQL. 1000 concurrent users. GDPR compliant. Stripe payments.
+    All endpoints return JSON. Auth via JWT with refresh rotation."
+
+  LAYER 2 — CONCEPT SUMMARY (~150 tokens per concept, written during decomposition)
+    What is this concept's role? What does it connect to?
+    Example: "Concept 2/4: Core API Backend. Handles all REST endpoints.
+    Receives schema types from Concept 1 (Database). Serves JSON to
+    Concept 4 (Frontend). Auth middleware shared with Concept 3 (Worker)."
+
+  LAYER 3 — PHASE GOAL (~100 tokens per phase)
+    What does this phase achieve within its concept?
+    Example: "Phase 2.3: JWT Authentication middleware. Validate tokens
+    on all protected routes. Refresh token rotation. Rate limit per user.
+    Output: AuthMiddleware struct implementing axum::middleware::FromFn."
+
+  LAYER 4 — STEP CONTEXT (~100 tokens per step)
+    What is this step's role in the phase?
+    Example: "Step 2.3.A: Token validation function. Input: raw Bearer
+    string. Output: Result<Claims, AuthError>. Must check signature
+    (RS256), expiry, issuer. Uses jsonwebtoken crate (already in deps)."
+
+  LAYER 5 — BABY STEP TASK (~200-500 tokens)
+    The actual task with its 8 blocks (GROUNDING, PRE_GATE, TASK, etc.)
+
+  Total ancestry overhead: ~550-1050 tokens. Fixed cost per baby step.
+  This fits easily in the context budget — the Context Budget Allocator
+  (Phase 3E) assigns this to Slot 3 (PhaseSpec), which has 15% of the
+  dynamic budget (~2-4K tokens for a 16K context window).
+
+  The summaries are NOT regenerated per baby step. They're written ONCE
+  during decomposition and stored in the tree struct:
+
+  struct ConceptNode {
+      summary: BoundedString<150>,   // enforced at creation
+      // ... other fields
+  }
+  struct PhaseNode {
+      summary: BoundedString<100>,
+      // ... other fields
+  }
+
+  BoundedString<N> rejects inputs exceeding N tokens at construction.
+  The decomposer LLM MUST produce a summary that fits. If it doesn't,
+  the orchestrator truncates and warns (this is a quality signal —
+  a decomposer that can't summarize its own output is suspect).
+
+
+2. HORIZONTAL CONTEXT (sibling/predecessor awareness)
+
+  A baby step needs to know what its siblings already did. But NOT by
+  "remembering" — by OBSERVING ARTIFACTS.
+
+  Three mechanisms (all existing infrastructure, no new code needed):
+
+  A. SSB HISTORY — Shared State Board records every agent action.
+    Baby step A.2's context assembly queries SSB for recent entries
+    with file_overlap_score > threshold (Phase 3E filtering).
+    A.2 sees: "A.1 wrote validate_token() in auth/jwt.rs, tests passed."
+    NOT the full code — just the action summary from SSB records.
+
+  B. DKG INCREMENTAL UPDATES — after A.1 completes, DKG re-indexes
+    the changed files. When A.2's knowledge engine queries run, they
+    see A.1's code in the search results. A.2 can find validate_token()
+    via BM25/vector search because it's NOW in the index.
+    The code A.1 wrote becomes GROUNDING for A.2 automatically.
+
+  C. PRE_GATE CHECKS — each baby step's PRE_GATE verifies that
+    predecessor EXIT_CRITERIA were met. This is deterministic:
+    "Does validate_token() exist? Does it return Result<Claims, AuthError>?
+    Do its tests pass?" If not, the baby step doesn't start.
+    The PRE_GATE is checked by CODE (grep, AST check, test run), not
+    by asking the LLM "did the previous step work?"
+
+  Result: the baby step doesn't "remember" previous steps. It OBSERVES
+  their artifacts through indexes and checks. This is MORE reliable than
+  human memory — humans forget details, indexes don't.
+
+
+3. STRUCTURAL CONTEXT (full plan during decomposition)
+
+  When the system is DECOMPOSING (breaking concepts into phases into
+  steps into baby steps), the decomposer LLM needs broader awareness.
+  It's not executing code — it's planning. It needs to see the full tree.
+
+  PlanSkeleton (Phase 3G) serves this role:
+  - TOML format, fits in 2-4K tokens
+  - Contains ALL phases with goals, input/output contracts, dependencies
+  - Always loaded in Slot 3 during PLANNING state
+  - The decomposer sees: "here's the full project plan. You are breaking
+    down Phase 2.3. Phase 2.2 outputs X. Phase 2.4 expects Y."
+
+  Contract interfaces are the critical piece:
+  - Each phase declares input_contracts (what it needs from dependencies)
+  - Each phase declares output_contracts (what it provides to dependents)
+  - The decomposer knows: "my baby steps must ultimately produce an output
+    that satisfies output_contract: AuthMiddleware implementing FromFn"
+
+  This prevents the decomposer from creating baby steps that build
+  something internally consistent but incompatible with adjacent phases.
+
+
+4. CONTEXT TELESCOPE IN SURGICAL MODE
+
+  Surgical mode uses a shallower tree (max depth 2), so the telescope
+  is shorter but denser:
+
+  LAYER 1 — PROJECT VISION (~200 tokens, from DKG concept annotations +
+    README/Cargo.toml analysis, auto-generated on first indexing)
+  LAYER 2 — CHANGE CONTEXT (~200 tokens, from blast radius analysis)
+    "Changing rate limiting in API handlers. Blast radius: 12 files,
+    3 modules (api/, middleware/, config/). 8 existing tests cover this area."
+  LAYER 3 — STEP TASK (~200-500 tokens)
+
+  Total: ~400-900 tokens. Even lighter than greenfield.
+
+  For surgical mode, the PROJECT VISION layer can be auto-generated from
+  DKG concept annotations (Phase 1A feature: each node has a concept TEXT
+  column, ~3-5 tokens per node). Aggregated top-level annotations form
+  a project description without any LLM call.
+
+
+5. CONTEXT ASSEMBLY — COMPLETE PICTURE
+
+  Baby step prompt (greenfield, worst case ~16K context window):
+
+  Slot 1: SystemPrompt           ~330 tokens  (meta-instructions)
+  Slot 2: Rules                  ~500 tokens  (active rules for EXECUTING)
+  Slot 3: Context Telescope      ~1000 tokens (Layers 1-4 ancestor chain)
+  Slot 4: RepoMap               ~2000 tokens  (PageRank, personalized)
+  Slot 5: CodeContext            ~6000 tokens  (knowledge engine results)
+  Slot 6: SSB entries            ~1500 tokens  (predecessor outputs, filtered)
+  Slot 7: GRC history            ~1000 tokens  (reasoning trace)
+  Slot 8: OutputReserve          ~2000 tokens  (for LLM response)
+  ---
+  Total:                        ~14330 tokens
+
+  The telescope (Slot 3) costs ~1000 tokens — 6% of a 16K window.
+  In exchange, the LLM knows: what the project is, what this concept does,
+  what this phase aims for, what this step should produce, and exactly
+  what narrow task to execute. No architectural drift.
+
+
+6. TYPES
+
+  ContextTelescope {
+    project_vision: BoundedString<200>,
+    concept_summary: BoundedString<150>,
+    phase_goal: BoundedString<100>,
+    step_context: BoundedString<100>,
+  }
+
+  impl ContextTelescope {
+    // Walk up DecompositionTree from baby step to root,
+    // collect each ancestor's summary field
+    fn from_tree(tree: &DecompositionTree, baby_step_id: NodeId) -> Self;
+
+    // Render as a single string for prompt injection
+    fn render(&self) -> String;
+
+    // Total token count (for budget allocation)
+    fn token_estimate(&self) -> usize;
+  }
+
+  // Each tree node has a bounded summary
+  BoundedString<const N: usize>(String);
+  impl BoundedString<N> {
+    fn new(s: &str, tokenizer: &dyn TokenCounter) -> Result<Self, TooLong>;
+  }
+
+
+========================================================================
+GROUNDING ENFORCEMENT (every choice, every level — no exceptions)
+========================================================================
+
+Problem: a local model trained before blake3 was released will confidently
+choose blake2 — not because it evaluated both, but because it doesn't KNOW
+blake3 exists. If this happens across an entire plan (wrong framework, outdated
+API, deprecated package), the project is built on hallucinated foundations.
+
+Solution: research and execution move SIDE BY SIDE. Every technology choice
+at every decomposition level is a GATE, not a suggestion.
+
+
+1. GROUNDING AS A GATE (enforced by orchestrator, not by LLM discipline)
+
+  When the decomposer LLM picks ANY technology (package, framework,
+  algorithm, protocol, data format), it MUST produce a TechStackDecision:
+
+  TechStackDecision {
+    choice: String,              // "blake3"
+    alternatives_considered: Vec<String>,  // ["blake2", "sha256", "xxhash"]
+    source: DecisionSource,      // RESEARCH | EXISTING_PROJECT | USER_SPECIFIED | FALLBACK
+    evidence: Vec<ResearchRef>,  // links to FlashResearch results
+    rationale: String,           // "blake3 is 2-4x faster, same security, broader adoption"
+  }
+
+  DecisionSource rules (enforced by orchestrator, not LLM):
+    EXISTING_PROJECT — the codebase already uses this. DKG confirms it exists
+      in Cargo.toml/package.json. No research needed. (Surgical mode default.)
+    USER_SPECIFIED — user explicitly said "use X." No research needed.
+    RESEARCH — FlashResearch was run, sources found, tier classified.
+      REQUIRED for any new technology not already in the project.
+    FALLBACK — research found nothing definitive. ONLY allowed for
+      non-critical choices (logging format, test helper library).
+      BLOCKED for critical choices (crypto, auth, database, serialization).
+
+  The orchestrator REJECTS decomposition nodes where:
+    - A technology choice has no TechStackDecision at all
+    - A critical choice has DecisionSource::FALLBACK
+    - A RESEARCH decision has zero T1/T2 sources (only training knowledge)
+
+  This means: the LLM literally CANNOT proceed with an ungrounded choice.
+  The pipeline stops and either runs research or asks the user.
+
+
+2. RESEARCH AT EVERY DECOMPOSITION LEVEL (not just top-level)
+
+  Current design (Phase 4D extension): "Each tree level triggers grounded
+  FlashResearch (not just top-level)." But HOW is this enforced?
+
+  Enforcement: the decomposer's output schema REQUIRES TechStackDecision
+  for every technology reference. The orchestrator validates the schema
+  before accepting the decomposition. Missing decisions = schema rejection
+  = decomposer must retry.
+
+  Example flow for a concept decomposition:
+
+  Concept: "Core API Backend"
+    Decomposer proposes Phase 2.1: "REST framework using Axum"
+    -> Orchestrator checks: TechStackDecision for "Axum"?
+    -> Decomposer must provide: RESEARCH with evidence showing Axum vs
+       Actix vs Warp comparison, with T1/T2 sources (official benchmarks,
+       docs, crates.io download stats).
+    -> If decomposer says "use Axum" with DecisionSource::FALLBACK
+       (no research), orchestrator REJECTS and triggers FlashResearch.
+
+  The decomposer never "decides" unilaterally. It PROPOSES, and the
+  orchestrator validates the grounding. The LLM is a cog, not a brain.
+
+
+3. RESEARCH CACHE + STALENESS PREVENTION
+
+  ResearchCache (from Phase 4D) prevents redundant research:
+  - If concept 1 already researched "best Rust hash function" and chose blake3,
+    concept 2 gets that from cache. No duplicate web searches.
+  - Cache key: normalized topic (lowercase, sorted terms).
+
+  Staleness prevention:
+  - Cache entries have TTL based on topic volatility:
+    STABLE (algorithms, data structures): 90 days
+    MODERATE (frameworks, libraries): 30 days
+    VOLATILE (APIs, cloud services, versions): 7 days
+  - Volatility classified by domain of source URLs, not by LLM judgment.
+  - Expired cache entries trigger re-research, but the old result is
+    available as a BASELINE ("last time we checked, blake3 was preferred").
+
+  This means: even if the pipeline runs for hours decomposing a large
+  project, research stays fresh. A choice made in concept 1 isn't blindly
+  inherited by concept 4 if the cache has expired.
+
+
+4. PACKAGE VERIFICATION (anti-hallucination, already in Phase 4D)
+
+  PackageRef has API_REGISTRY_CHECK:
+  - Before any package is accepted in a baby step, the system queries
+    the actual package registry (crates.io, npm, PyPI).
+  - Verified: package exists, version is valid, not deprecated/yanked.
+  - This catches the classic LLM failure: "use the crate `tokio-magic`"
+    which doesn't exist. The system checks. It doesn't exist. REJECTED.
+
+  Extended for this design:
+  - Also verify: does the package's API actually support the claimed usage?
+  - If the decomposer says "use reqwest for WebSocket connections" but
+    reqwest doesn't support WebSockets, the registry check + docs search
+    catches this before any code is written.
+
+
+========================================================================
+POST-EDIT FEEDBACK LOOP (what happens after every tool use)
+========================================================================
+
+Problem: the Context Telescope tells the LLM WHAT to do. But during
+execution, the LLM makes multiple edits. What happens BETWEEN edits?
+How does the system prevent the LLM from writing 200 lines of broken
+code before anyone checks?
+
+Solution: a tight, deterministic feedback loop fires after EVERY
+Edit/Write/Bash tool use. The LLM gets immediate feedback, not
+delayed batch review.
+
+
+1. PER-EDIT CHECKS (fire after every Edit/Write, within EXECUTING)
+
+  AFTER EVERY EDIT/WRITE:
+    T1 (<1ms): predicate DSL rules from rules.db
+      - Naming conventions, forbidden patterns, banned functions
+      - Example: .unwrap() in non-test code -> WARN
+    T2 (<10ms): tree-sitter parse
+      - Does the file still have valid syntax?
+      - If parse fails: IMMEDIATE error back to LLM. Don't let it continue.
+    T3 (<5s): cargo check --package X (incremental compilation)
+      - Does the crate compile?
+      - If not: compiler error fed back to LLM immediately.
+      - Incremental = only recompiles changed files. Fast after first build.
+
+  These are the Phase 4C PostToolUse hooks, running in the orchestrator.
+  The LLM sees the result before making its next edit. This prevents
+  cascading errors — if edit 1 breaks syntax, the LLM fixes it before
+  making edit 2 (which would be based on broken assumptions).
+
+  AFTER EVERY BASH (test execution):
+    - Parse test output via FailureTaxonomy (Phase 4B: 9 categories)
+    - Classify: is this a compile error, logic error, missing import, etc.?
+    - Feed classified error back to LLM (not raw output — structured diagnosis)
+
+
+2. BABY STEP COMPLETION CHECKS (fire when LLM signals "done")
+
+  When the LLM finishes all edits for a baby step:
+
+  CHECK 1 — TEST FLIP
+    Run the baby step's tests (written during TESTING_FIRST).
+    Expected: tests that were FAILING should now PASS.
+    If they don't flip: LLM gets another attempt (max 3 retries).
+
+  CHECK 2 — REGRESSION
+    Run all existing tests in the blast radius.
+    Expected: everything that was passing BEFORE should still pass.
+    If regressions detected: BLOCK. LLM must fix regressions before
+    proceeding. Regressions count toward the retry limit.
+
+  CHECK 3 — INTEGRATION WIRING (the new piece)
+    Verify that the new code is REACHABLE from the entry point.
+    Not just "does it compile" but "is it actually connected?"
+
+    Method A — DKG reachability query:
+      After DKG re-indexes the changed files, query:
+      "Is there a path from main() to the new function/struct?"
+      If no path exists: the code is orphaned. It compiles but nobody
+      calls it. The baby step hasn't actually INTEGRATED anything.
+
+    Method B — grep for usage:
+      Search the codebase for references to the new public symbols.
+      If a new pub fn validate_token() exists but nothing calls it,
+      it's not wired in.
+
+    Method C — import chain check:
+      From the entry point (main.rs), follow use/mod statements.
+      Can you reach the file containing the new code?
+
+    If not wired: two outcomes depending on the baby step type:
+      - If this baby step's task INCLUDES wiring (INTEGRATION block says so):
+        -> FAIL, LLM must add the wiring (use statement, function call, etc.)
+      - If wiring is a SEPARATE baby step (common for multi-step phases):
+        -> OK, flag as "pending integration" for the wiring baby step's PRE_GATE
+
+
+3. THE FULL PICTURE — BABY STEP EXECUTION TIMELINE
+
+  CONTEXT ASSEMBLY (telescope + code context + SSB history)
+    |
+  PRE_GATE CHECK (predecessor exit criteria met?)
+    |
+  TESTING_FIRST (write failing tests for this baby step)
+    |
+  EXECUTING:
+    |-- LLM Edit #1
+    |     PostToolUse: T1 rules -> T2 syntax -> T3 compile
+    |     If fail: immediate feedback, LLM fixes
+    |-- LLM Edit #2
+    |     PostToolUse: T1 -> T2 -> T3
+    |     If fail: immediate feedback
+    |-- ... (N edits)
+    |-- LLM signals "done"
+    |
+  COMPLETION CHECKS:
+    |-- Test flip (baby step tests pass?)
+    |-- Regression (blast radius tests still pass?)
+    |-- Integration wiring (reachable from entry point?)
+    |
+  If ALL pass:
+    |-- AUDITING (adversarial review, deterministic validation)
+    |-- ACCEPTANCE (meets criteria?)
+    |-- DKG re-index (update graph with new code)
+    |-- SSB record (log what was done for next baby step's awareness)
+    |-- EXIT CRITERIA check
+    |-- -> Next baby step
+    |
+  If FAIL (max 3 retries):
+    |-- BubbleUpHandler escalates to step level
+    |-- Step level may re-decompose or try alternative approach
+
+
+4. INTEGRATION WIRING IN SURGICAL MODE
+
+  For surgical mode, integration wiring is SIMPLER but MORE CRITICAL:
+  - The entry point already exists (main.rs, lib.rs, etc.)
+  - The code being modified is already wired in
+  - The check becomes: "is it STILL wired in after the change?"
+  - Plus: "do the NEW pieces connect to the existing wiring?"
+
+  Example: user asks "add rate limiting to API endpoints"
+  - Baby step 1: write RateLimiter struct -> NOT wired yet (standalone)
+  - Baby step 2: add RateLimiter to middleware chain -> NOW wired
+  - Baby step 1's integration check: "pending integration" (expected)
+  - Baby step 2's integration check: DKG shows path from main() through
+    middleware chain to RateLimiter. PASS.
+  - Baby step 2's regression check: existing API tests still pass,
+    but now rate-limited. New rate limit tests also pass.
+
+
+========================================================================
+RESPONSE TO GEMINI 3.1 PRO FEEDBACK
+========================================================================
+
+Gemini raised three engineering traps. Addressing each:
+
+TRAP 1 — "Data flow tracking via tree-sitter is brittle"
+  Gemini is correct that tree-sitter is syntactic, not semantic. It cannot
+  do true data flow analysis like a compiler (rustc, mypy).
+  Our response: the data flow edges proposed in GAP 1 (below) are
+  HEURISTIC, not exhaustive. They track what tree-sitter CAN see:
+    - Parameter passing: fn foo(x: T) called with foo(my_var) -> edge
+    - Return values: let result = foo() -> edge from foo's return to result
+    - Direct assignment: x = y -> edge
+    - Field access: obj.field -> edge from obj to field
+  What it CANNOT track: closures capturing variables, trait dynamic
+  dispatch, complex control flow (if/match branching), macro expansion.
+  Mitigation: data flow edges are ENRICHMENT for retrieval, NOT hard
+  gates. The blast radius still uses the call graph (which tree-sitter
+  handles well) as the primary deterministic gate. Data flow edges
+  improve context retrieval ("also show me functions that touch this
+  variable") but never BLOCK or GATE decisions.
+
+TRAP 2 — "Oracle I don't know loop for bleeding-edge topics"
+  Gemini is correct that bleeding-edge topics may have zero T1/T2 sources.
+  Our response: already handled in Oracle Mode section 5. The system
+  outputs the WEAK evidence chain with clear labels. The UX should make
+  it explicit: "Found information from unverified sources only. No
+  official documentation covers this yet." This is not a broken search —
+  it's an honest one.
+
+TRAP 3 — "Test suite execution time for surgical mode"
+  Gemini is correct that enterprise test suites can take minutes.
+  Our response: already addressed in the regression gate design.
+  Baby step level: cargo check only (<5s). Step level: module tests (<30s).
+  Phase level: crate tests (<60s). Concept level: workspace tests (<120s).
+  We never run the full workspace suite after a baby step — only cargo
+  check (does it compile?) and the specific tests in the blast radius.
+  Full suite runs at CONCEPT completion only.
+
+
+========================================================================
+KNOWLEDGE ARCHITECTURE ASSESSMENT (vs SOTA, grounded)
+========================================================================
+
+Our current architecture (DKG + BM25 + vectors + CatRAG + A-RAG + PageRank
++ cross-encoder) was assessed against recent SOTA papers.
+
+WHAT WE ALREADY DO WELL:
+
+  1. Semantic compression: CatRAG + A-RAG provide 55-87% token savings,
+     comparable to LLMxCPG's 67-91% CPG-driven slicing.
+     Source: arxiv 2507.16585 (verified)
+
+  2. Multi-modal retrieval: BM25 + dual vectors + reranker is a solid
+     hybrid pipeline. Most systems use only one retrieval method.
+
+  3. PageRank personalization: task-aware importance ranking is similar
+     to RepoGraph's ego-graph retrieval pattern.
+     Source: arxiv 2410.14684 (verified)
+
+WHAT WE ARE MISSING (three gaps identified):
+
+  GAP 1 — DATA FLOW TRACKING (critical, highest priority)
+    Paper: AIR/DTG (arxiv 2512.08492, verified)
+    Finding: DTG (Data Transformation Graph) represents data states as nodes
+    and functions as edges. On SWE-bench Verified, AIR achieved 87.1%.
+    Removing the DTG dropped performance to 56.2%.
+    Our gap: DKG tracks "fn A calls fn B" (call graph) but NOT "variable X
+    is assigned in fn A, passed to fn B, returned from fn C" (data flow).
+    For surgical mode (issue resolution, bug fixing), data flow tracking
+    is the difference between 87% and 56% resolution rate.
+    Recommendation: add DATA FLOW EDGES to DKG. Not full PDG, but
+    tree-sitter-based tracking of assignments, parameters, and returns
+    across function boundaries. Lightweight addition to existing DKG schema:
+      dkg_data_flow(source_node_id, target_node_id, variable_name, flow_type)
+      flow_type: PARAMETER, RETURN, ASSIGNMENT, FIELD_ACCESS
+    This gives DTG-like benefits without CPG bloat.
+    Phase placement: Phase 1A extension (DKG enhancement) or new sub-phase.
+
+  GAP 2 — GRAPH QUERIES AS AGENT TOOLS (medium priority)
+    Paper: codebadger (arxiv 2603.24837, verified)
+    Finding: MCP server wrapping Joern CPG. Agents can invoke graph operations
+    (program slicing, taint tracking, call graph extraction) as tools.
+    Discovered zero-days in libtiff, patched CVE in libxml2.
+    Our gap: agents receive pre-selected context from the knowledge engine.
+    They cannot query the DKG directly ("show me all callers of this function",
+    "trace data flow from this input to any database call").
+    Recommendation: expose DKG queries as tools available to agents:
+      dkg_callers(symbol) -> Vec<DkgNode>
+      dkg_dependents(symbol) -> Vec<DkgNode>
+      dkg_data_flow(variable, direction) -> Vec<FlowPath>
+      dkg_subgraph(entry_point, depth) -> SubGraph
+    These are lightweight wrappers around existing SQLite queries.
+    Phase placement: Phase 4B (tools) extension.
+
+  GAP 3 — LINE-LEVEL GRANULARITY (lower priority, optional)
+    Paper: RepoGraph (arxiv 2410.14684, verified)
+    Finding: line-level nodes with def-ref edges give more precise localization
+    than function-level nodes. Boosted SWE-bench across multiple systems.
+    Our gap: DKG operates at function/struct level. For precise bug
+    localization ("which LINE causes the issue?"), function-level is coarse.
+    Recommendation: optional line-level view. Store def-ref edges during
+    tree-sitter parsing (variable definitions -> usage sites). Query only
+    when surgical mode needs precise localization (TRIVIAL/SMALL complexity).
+    Phase placement: Phase 1A extension, behind feature gate.
+
+WHAT TO SKIP:
+
+  Full CPG (AST+CFG+PDG): too bloated. Our use case is context loading
+    and task decomposition, not vulnerability detection at scale.
+  VCSG: vulnerability-specific enrichment. Wrong domain.
+  CLeVeR contrastive training: requires training custom embedding models.
+    Our dual-vector approach (GraphCodeBERT + Granite) is sufficient.
+  LLMxCPG CPGQL: vulnerability-specific query language. Our DKG queries
+    via SQL are simpler and fit our use case.
+
+3K ENHANCEMENT — DATA-FLOW-AWARE RETRIEVAL:
+
+  Current 3K plan has: adaptive chunking, query expansion, HyDE, routing.
+  Proposed addition (3K.6 or separate sub-phase):
+    Use DKG data flow edges to enhance retrieval:
+    When a query mentions a variable/type, follow data flow edges to find
+    all functions that touch that data. Include those in retrieval results
+    even if BM25/vector similarity is low.
+    Example: query "fix the user authentication bug"
+      BM25 finds: auth_handler(), validate_token()
+      Data flow from auth_handler: user_input -> parse_request() ->
+        validate_token() -> db_query() -> session_store()
+      Data flow adds: parse_request() and db_query() to results,
+        even though they don't mention "auth" in their names.
+    This is the "semantic compression" the research says is the future:
+    structurally relevant code, not just textually similar code.
+
+
+========================================================================
+OPEN QUESTIONS (for user decision) + RECOMMENDATIONS
+========================================================================
+
+1. Should RESEARCHING be a full FSM state or a sub-state of PLANNING?
+
+   RECOMMENDATION: Full FSM state.
+   Reason: RESEARCHING has completely different tool permissions (no file
+   edits, no bash) and a different exit condition (produces answer, not plan).
+   A sub-state would need special-case logic in every tool gate check.
+   A full state is one row in the transition matrix — cleaner, more auditable.
+   The FSM already has 9 states; 10 is not meaningfully more complex.
+   CONFIGURING was added as a full state for similar reasons (different tool set).
+
+2. Should Oracle mode cache answers for reuse across sessions?
+
+   RECOMMENDATION: Yes, with tier-based TTL.
+   T1 sources (official docs, RFCs): cache 30 days. These change rarely.
+   T2 sources (MDN, SO): cache 7 days. Updated more frequently.
+   T3 sources (blogs): cache 1 day. Least reliable, most volatile.
+   Cache key: normalized query (lowercase, stop words removed, sorted terms).
+   Cache invalidation: manual via /research --no-cache, or automatic on TTL.
+   Storage: SQLite table in .elai_cc/ (lightweight, queryable).
+   Why: avoids redundant web searches. A question asked yesterday about
+   "Rust async runtime" doesn't need fresh search today — the docs haven't changed.
+
+3. Should Surgical mode always run DKG analysis first, even for /fix?
+
+   RECOMMENDATION: Yes, always run blast radius analysis. Skip decomposition for TRIVIAL.
+   Reason: blast radius analysis is <10ms (pure graph traversal). The cost is
+   negligible. The value is enormous: even a "simple fix" might touch a function
+   called by 50 others. Knowing the blast radius BEFORE touching code prevents
+   the LLM from making a change that breaks half the codebase.
+   For /fix TRIVIAL cases: blast radius -> direct TESTING_FIRST (no decomposition).
+   For /fix that turns out to be MEDIUM+: blast radius reveals this, triggers
+   proper decomposition before the LLM starts coding.
+
+4. How many domains should ship in the default source-tiers.toml?
+
+   RECOMMENDATION: Start with ~150 curated, high-confidence domains.
+   Better to have 150 well-classified domains than 500 questionable ones.
+   Structure:
+     T1: ~30 domains (language docs, standards bodies, arxiv, official project docs)
+     T2: ~50 domains (MDN, established references, major DB docs, SO)
+     T4 blocklist: ~20 known spam patterns
+     Everything else: T3 by default (safe fallback)
+   Community contributions via PR to source-tiers.toml. Each addition needs
+   justification (why this tier?). Reviewed like code changes.
+
+5. Should Oracle mode support follow-up questions in the same session?
+
+   RECOMMENDATION: Yes, but with constraints.
+   Allow RESEARCHING -> RESEARCHING transitions for follow-ups.
+   Context carried: previous ExtractedFacts + VerifiedClaims stay in scope.
+   New search: only for the NEW part of the question.
+   "Tell me more about [claim 3]" -> expand that specific claim's sources.
+   "What about X instead?" -> new research, but previous context informs query formulation.
+   Max follow-ups: 5 per session (prevent infinite research loops).
+   Each follow-up inherits the evidence chain, so the LLM doesn't re-research
+   already-verified claims.
+
+6. For surgical mode, should there be a maximum blast radius threshold?
+
+   RECOMMENDATION: Yes, tiered thresholds.
+   AUTONOMOUS mode:
+     >1000 LOC affected: require human confirmation
+     >5000 LOC affected: refuse and suggest breaking the task into smaller pieces
+   INTERACTIVE mode:
+     >5000 LOC affected: warn and show blast radius visualization
+     >10000 LOC affected: suggest breaking the task down
+     No hard refusal (human is in the loop and can judge)
+   Reason: a change affecting >5000 LOC is likely a large refactor that needs
+   architectural discussion, not autonomous execution. The system should surface
+   the scope, not silently attempt it.
+   The thresholds are configurable in elai_cc.toml [surgical.max_blast_radius].
+
+
+========================================================================
+REASONING ARCHITECTURE INTEGRATION (reasoning-architecture-design.txt)
+========================================================================
+
+The 6-layer externalized reasoning pipeline (reasoning-architecture-design.txt)
+deeply integrates with both Surgical and Oracle modes.
+
+SURGICAL MODE + REASONING PIPELINE:
+
+  When a baby step fails in surgical mode, the reasoning pipeline activates:
+
+  Layer 1 (deterministic, 60-70% of errors):
+    Surgical mode's DKG blast radius analysis (section 3, Step 1) feeds directly
+    into Layer 1 root cause localization. DKG edge traversal resolves
+    UNDEFINED_SYMBOL errors by finding the symbol's definition across the
+    codebase. TYPE_MISMATCH errors get the expected type from callee signatures.
+    Fix templates reference existing code patterns from AffectedSet.
+
+  Layer 2 (micro-reflection, 20-25%):
+    Compressed Context Replay (reasoning-architecture-design.txt) uses surgical
+    mode's AffectedSet to select relevant code for the retry prompt. Only
+    functions/types within the blast radius are included. This is MORE precise
+    than greenfield mode (which uses DKG similarity search).
+
+  Layer 3 (interrogation tree):
+    Decision trees are language-parameterized via ProjectProfile.language
+    (project-intelligence-design.txt). Surgical mode provides richer context:
+    the model answers questions about code IT JUST WROTE in an EXISTING codebase,
+    not hypothetical greenfield code.
+
+  Layer 4 (AB-MCTS):
+    Branch point is identified from blast radius. Alternatives explore different
+    approaches within the EXISTING codebase constraints (not arbitrary solutions).
+    GG intrinsic signals (token confidence, generation novelty) score branches.
+    MistakeBook forbidden_diffs prevent regenerating known-failed patches.
+
+  Layers 5-6 (cloud):
+    Cloud diagnostic receives surgical context: AffectedSet, TestBaseline,
+    regression gate results. Cloud model can see WHAT BROKE relative to the
+    existing test suite, not just the error message.
+
+  REGRESSION GATE INTERACTION:
+    Surgical mode's regression gates (section 3, Step 4) are the PRIMARY
+    verification signal for all reasoning layers. If a fix passes the regression
+    gate (all existing tests still pass + new tests pass), the reasoning pipeline
+    stops regardless of which layer produced the fix.
+
+ORACLE MODE + REASONING PIPELINE:
+
+  Oracle mode does NOT use the reasoning pipeline (no code generation = no errors
+  to diagnose). However, Oracle mode's source tier classification (section 3,
+  Phase C) shares infrastructure with Layer 5 cloud diagnostic routing —
+  both use tiered model selection (Haiku/Sonnet/Opus) based on task complexity.
+
+TYPES AFFECTED:
+  SurgicalStep gains: reasoning_budget: Option<ReasoningBudget>
+    Allows per-step override of AB-MCTS branch limits and cloud escalation
+    thresholds based on complexity classification.
+
+  ReasoningBudget {
+    max_ab_mcts_branches: usize,    // default 15, reduced for TRIVIAL
+    cloud_escalation_tier: CloudTier, // default Haiku, Sonnet for LARGE
+    micro_reflection_enabled: bool,  // false for TRIVIAL (Layer 1 sufficient)
+  }
+
+CONTEXT FLOW UPDATE (surgical mode):
+  The context flow in the "CONTEXT FLOW" section above describes the FIRST
+  ATTEMPT path. On RETRY, the flow changes:
+
+  Step 6 (retry) — COMPRESSED CONTEXT REPLAY
+    Context is WIPED. Fresh assembly from:
+    - Baby step spec (200 tokens)
+    - MistakeBook constraints (150 tokens, forbidden diffs + diagnosis)
+    - Relevant code from AffectedSet (500 tokens, from blast radius only)
+    - Working example from same codebase via DKG (300 tokens)
+    - Fix instruction from reasoning Layer 1/2/3/5 (100 tokens)
+    Total: ~1400 tokens. The model sees ONLY what matters for THIS retry.
+    Previous conversation/failed output is NEVER shown (Kimi-Dev principle).
+
+  Step 7 (repair generation parameters) — FIXAUDIT TEMPERATURES
+    Repair retries use temperature 1.0 + top-p 1.0 (FixAudit, arXiv:2604.05560).
+    First attempts use temperature 0.3. This prevents cyclic traps where the
+    model regenerates the same failed code.
+
+CROSS-REFERENCES:
+  - reasoning-architecture-design.txt: full 6-layer pipeline spec
+  - token-efficiency-design.txt section 5: retry economics (structural retries
+    happen AFTER reasoning pipeline exhaustion at Layer 4)
+  - code-completeness-enforcement-design.txt Layer 5: BubbleUp integrates with
+    reasoning layers (DiagnoseAndRetry before Redecompose)

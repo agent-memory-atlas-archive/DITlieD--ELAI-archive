@@ -1,0 +1,366 @@
+PHASE 3E: CONTEXT BUDGET ALLOCATOR
+Prerequisites: Phase 3D complete (BSP supersteps + channels operational)
+Depends on: providers::token_count, providers::token_count_estimate, orchestrator::SSB, orchestrator::BSP
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Fixed-slot context budget distribution ensuring model context window is never exceeded.
+Adaptive reduction with floors for critical slots.
+Cache breakpoints aligned with provider prefix caching for token savings.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          Section 6 (slots, floors, adaptive, cache breakpoints)
+  docs/specs/crates/providers.txt             Section 1 (token_count vs token_count_estimate), Section 10 (15% accuracy invariant)
+  docs/specs/architecture-overview.txt        Section 8 (latency budget: context assembly <50ms)
+  docs/specs/integration/prompt-architecture.txt  Section 3 (assembled prompt structure, slot-to-prompt mapping)
+
+
+TYPES (from orchestrator.txt section 6, design PART 21 + 31.10)
+
+  enum ContextSlot {
+      SystemPrompt,   // slot 1: GRC structured prompt per agent role
+      Rules,          // slot 2: active Tier 3 rules for current phase + file context
+      PhaseSpec,      // slot 3: from PipelineSpec
+      RepoMap,        // slot 4: PageRank DKG output, fitted to budget
+      CodeContext,    // slot 5: BM25 + vector chunks, cross-encoder reranked
+      SsbEntries,     // slot 6: filtered by file overlap score
+      GrcHistory,     // slot 7: prior reasoning for current topic
+      OutputReserve,  // slot 8: minimum 2000 tokens, never allocated to content
+  }
+
+  struct SlotAllocation {
+      slot: ContextSlot,
+      allocated_tokens: usize,
+      floor_tokens: usize,       // 0 for slots 1-3 (fixed size, no floor enforcement)
+      actual_tokens: usize,      // after content is fitted
+      source_truncated: bool,    // true if content was cut to fit allocation
+  }
+
+  struct ContextBudget {
+      model_max_context: usize,  // from ModelCapabilityRegistry (pipeline-factory.txt section 11)
+      slots: [SlotAllocation; 8],
+      cache_breakpoints: [CacheBreakpoint; 2],
+      total_allocated: usize,    // sum of all allocated_tokens (== model_max_context)
+      total_used: usize,         // sum of all actual_tokens (<= total_allocated)
+      adaptive_level: AdaptiveLevel,
+  }
+
+  struct CacheBreakpoint {
+      after_slot: ContextSlot,   // BP1: after PhaseSpec, BP2: after CodeContext
+      prefix_hash: u64,          // deterministic hash (use FxHash or xxhash, NOT DefaultHasher)
+      valid: bool,               // false when any upstream slot content changed
+  }
+
+  enum AdaptiveLevel {
+      Normal,                    // all slots at computed allocation
+      FilteredByRelevance,       // attempt 1: SSB/GRC filtered by relevance score
+      ReducedGranularity,        // attempt 2: repo_map density reduced, code chunks coarsened
+      ReducedScope,              // attempt 3: scope narrowed to current file set only
+      Terminal,                  // INTERACTIVE -> ESCALATE, AUTONOMOUS -> SPLIT_TASK (Phase 4G)
+  }
+
+
+TOKEN COUNTING STRATEGY (from providers.txt section 1, design 31.9)
+
+  Budget allocation uses token_count_estimate (sampling-based, O(lines/N)).
+  Final validation uses token_count (exact, real tokenizer).
+  Rationale: allocation runs per-slot (8 calls minimum), estimate avoids 8x tokenizer cost.
+  Final validation catches estimate drift (95%+ accurate within 15% for files >100 lines;
+  rare 5% tail may exceed — providers.txt section 10).
+  If exact count exceeds model_max_context after allocation: trigger adaptive reduction.
+  Hard truncation fallback: if adaptive reduction also fails after exact count, terminal condition.
+  Latency target: full budget computation <50ms (architecture-overview.txt section 8).
+
+
+SLOT ORDERING AND CACHE BREAKPOINTS (from orchestrator.txt section 6, design 31.10)
+
+  Fixed order every invocation (never reordered):
+    Slot 1: SystemPrompt
+    Slot 2: Rules
+    Slot 3: PhaseSpec
+    --- cache breakpoint 1 (slots 1-3 stable within a phase) ---
+    Slot 4: RepoMap
+    Slot 5: CodeContext
+    --- cache breakpoint 2 (slots 4-5 stable within same file set) ---
+    Slot 6: SsbEntries
+    Slot 7: GrcHistory
+    Slot 8: OutputReserve
+
+  Cache breakpoint invalidation triggers:
+    BP1 invalidated by: phase transition, role change, rule set change.
+    BP2 invalidated by: file set change (agent switches to different files).
+    Slots after BP2 (6-8) recomputed every invocation (SSB/GRC change each turn).
+
+  Integration with provider prefix caching (providers.txt prompt_cache.rs):
+    When BP1 valid: provider can reuse cached KV for slots 1-3 prefix.
+    When BP2 valid: provider can reuse cached KV for slots 1-5 prefix.
+    Budget allocator reports breakpoint validity to provider via CacheBreakpoint.valid.
+
+
+BUDGET DISTRIBUTION (from orchestrator.txt section 6)
+
+  Fixed slots (1-3): measured exactly, subtracted from model_max_context first.
+  Remaining budget distributed to dynamic slots (4-7) by percentage:
+    RepoMap:     15%
+    CodeContext:  40%
+    SsbEntries:   25%
+    GrcHistory:   20%
+  OutputReserve (slot 8): subtracted before percentage split (minimum 2000 tokens).
+
+  Formula:
+    dynamic_budget = model_max_context - sum(slots 1-3 exact) - output_reserve
+    slot_N_budget = dynamic_budget * slot_N_percentage
+
+  Floors (minimum allocations, never violated):
+    SsbEntries >= 200 tokens
+    GrcHistory >= 500 tokens
+    OutputReserve >= 2000 tokens
+  If dynamic_budget < sum(floors): terminal condition (cannot satisfy invariants).
+
+
+SSB ENTRY FILTERING (from orchestrator.txt section 6, line 125)
+
+  File overlap score for SSB entry selection (slot 6):
+    score = |intersection(entry.files, agent.files)| / |agent.files|
+  Entries sorted by score descending, then by SSB seq descending (recency).
+  Entries with score = 0.0 excluded entirely (no file overlap = irrelevant).
+  Filtered entries fitted to SsbEntries allocation via token_count_estimate.
+
+
+BSP INTERACTION (from orchestrator.txt section 4, phase 3D dependency)
+
+  Context budget is recomputed for each agent invocation within a BSP superstep.
+  Channel state from previous superstep feeds into slot 6 (SsbEntries):
+    - LastValue channels: latest value included if file overlap > 0.
+    - Topic channels: accumulated entries included, filtered by overlap score.
+    - EphemeralValue: included only if written in current superstep.
+    - UntrackedValue: excluded (never in context, by design).
+  Budget allocator called by orchestrator after prepare_next_tasks(), before execute_tasks().
+
+
+ADAPTIVE REDUCTION (from orchestrator.txt section 6, lines 127-130)
+
+  Triggered when: exact token_count(assembled_prompt) > model_max_context.
+  3 attempts maximum, each logged to SSB as action_type='context_reduction':
+
+  Attempt 1 (FilteredByRelevance):
+    - SSB entries: raise minimum overlap score threshold (configurable, e.g. 0.3).
+    - GRC history: keep only entries for current topic, drop cross-topic.
+    - Recount. If fits: done.
+
+  Attempt 2 (ReducedGranularity):
+    - RepoMap: increase PageRank density guard (fewer nodes, higher-rank only).
+    - CodeContext: switch from full chunks to function signatures + doc comments.
+    - Recount. If fits: done.
+
+  Attempt 3 (ReducedScope):
+    - RepoMap: current file + direct dependencies only.
+    - CodeContext: current file only.
+    - SSB entries: current agent's own entries only.
+    - Recount. If fits: done.
+
+  Terminal (all 3 failed):
+    INTERACTIVE mode: ESCALATE to user with budget breakdown showing what overflows.
+    AUTONOMOUS mode: SPLIT_TASK via PipelineSpec decomposition (Phase 4G).
+  Never silently truncate. Every reduction logged to SSB with before/after token counts.
+
+
+PROMPT ASSEMBLY MAPPING (from prompt-architecture.txt section 3)
+
+  Budget slots map to assembled prompt as follows:
+    Slot 1 (SystemPrompt) -> [role_prompt]           ~50-100 tokens
+    Slot 2 (Rules)        -> [tier_3_rules]           ~100-300 tokens
+    Slot 5 (CodeContext) + Slot 4 (RepoMap) -> [code_context]  ~2000-8000 tokens
+    Slot 3 (PhaseSpec)    -> [task_spec + output_format + constraints]  ~250-600 tokens
+    Slots 6-7 not in base prompt (injected as structured context after task_spec).
+    Slot 8 (OutputReserve) not in prompt (reserved for model output).
+
+  Note: [output_format + constraints] (~50-100 tokens, prompt-architecture.txt L123) is
+  included in slot 3 (PhaseSpec) budget, not a separate slot. Slot 3 sizing must account
+  for both task_spec and output_format content. Implementers: measure slot 3 inclusive.
+
+  Note: prompt-architecture.txt shows the MODEL's view. Budget allocator tracks the
+  ALLOCATOR's view (8 separate slots). The prompt assembler merges slots 4+5 into
+  a single [code_context] block for the model. Budget allocator does not need to
+  know about this merge — it allocates independently, assembler concatenates.
+
+
+SESSION HANDOFF INTERACTION (from orchestrator.txt section 9, lines 269-277)
+
+  Structurally lossless trimming (CMV-derived) preserves cache breakpoints:
+    Trimming preserves prefix tokens in slots 1-3 (BP1 alignment).
+    Stubs replace large tool results (>500 tokens) but slot content is intact.
+    New session inherits BP1 validity if phase/role/rules unchanged.
+    BP2 validity: spec only mentions slots 1-3 preservation in handoff context
+    (orchestrator.txt L277). BP2 should be recomputed on new session start.
+    Do not assume BP2 survives handoff without explicit verification.
+
+
+STEPS
+
+  3E.1 TYPES AND BUDGET STRUCT
+    PRE_GATE:
+      - Phase 3D tests pass: cargo test -p orchestrator --lib bsp -- --exact
+      - BSP superstep loop compiles and runs (prepare_next_tasks exists)
+      - providers::token_count and providers::token_count_estimate callable
+    TASK:
+      - Define ContextSlot enum, SlotAllocation, ContextBudget, CacheBreakpoint, AdaptiveLevel
+      - ContextBudget::new(model_max_context) initializes all slots with zero allocation
+      - Implement Display for ContextBudget (debug-friendly budget breakdown)
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib context_budget -- --exact (compiles, struct sizes correct)
+      - ContextSlot has exactly 8 variants (static_assert or const test)
+      - ContextBudget::new(131072).total_allocated == 0
+    ADVERSARIAL:
+      - If ContextSlot ordering is wrong (not matching orchestrator.txt L111-121), cache breakpoints will reference wrong slots. Test: assert ContextSlot::SystemPrompt as u8 == 0, OutputReserve as u8 == 7.
+      - If SlotAllocation.floor_tokens is ignored during distribution, small models will get zero SSB/GRC. Test: covered in 3E.3.
+    ACCEPTANCE:
+      - All types compile, unit tests pass, no warnings
+
+  3E.2 BUDGET COMPUTATION
+    PRE_GATE:
+      - 3E.1 types exist and compile
+      - token_count_estimate available (providers crate dependency wired)
+    TASK:
+      - Implement ContextBudget::compute(model_max_context, fixed_slot_sizes, output_reserve)
+      - Fixed slots (1-3): exact sizes passed in, subtracted first
+      - Dynamic slots (4-7): distributed by percentage (15/40/25/20) from remaining budget
+      - OutputReserve: max(output_reserve, 2000) subtracted before percentage split
+    DETERMINISTIC_CHECK:
+      - compute(8192, [100, 200, 300], 2000) -> dynamic = 8192 - 600 - 2000 = 5592
+        RepoMap = floor(5592*0.15) = 838
+        CodeContext = floor(5592*0.40) = 2236
+        SsbEntries = floor(5592*0.25) = 1398
+        GrcHistory = floor(5592*0.20) = 1118
+        subtotal = 5590, remainder = 2. Assign remainder to largest slot (CodeContext += 2 = 2238).
+        final: 838 + 2238 + 1398 + 1118 = 5592 = dynamic_budget. Correct.
+      - sum(all_slots) == model_max_context (no tokens wasted, no overflow)
+    ADVERSARIAL:
+      - If percentage split has rounding errors, sum may exceed or waste tokens. Test: assert sum == dynamic_budget for 100 different model_max_context values (fuzz-like).
+      - If output_reserve < 2000 is accepted, model output will truncate. Test: compute(X, Y, 500).output_reserve == 2000.
+    ACCEPTANCE:
+      - Budget computation deterministic: same inputs -> same outputs (run 1000x, compare)
+      - sum(all_slots) == model_max_context for all tested configurations
+
+  3E.3 FLOOR ENFORCEMENT
+    PRE_GATE:
+      - 3E.2 computation works for normal cases
+    TASK:
+      - After percentage split, enforce floors: SsbEntries >= 200, GrcHistory >= 500, OutputReserve >= 2000
+      - If a slot is below floor: steal from CodeContext first, then RepoMap
+        (CodeContext is largest by percentage, so has most headroom to donate)
+      - If both donors insufficient to cover deficit: return Err(BudgetInfeasible)
+      - If dynamic_budget < sum(all_floors) = 700: return Err(BudgetInfeasible)
+    DETERMINISTIC_CHECK:
+      - compute(4000, [100, 200, 300], 2000) -> dynamic = 1400. GrcHistory floor 500 forces steal from CodeContext.
+        Verify: GrcHistory >= 500, SsbEntries >= 200, remaining to RepoMap + CodeContext.
+      - compute(3000, [100, 200, 300], 2000) -> dynamic = 400 < 700 = Err(BudgetInfeasible)
+      - compute(100000, [100, 200, 300], 2000) -> all slots well above floors, no stealing
+    ADVERSARIAL:
+      - If floor stealing reduces CodeContext below usefulness threshold (~200 tokens), model gets no code. Test: if CodeContext < 200 after stealing, log warning to SSB. Not an error — small models may operate on task_spec alone.
+      - If BudgetInfeasible is silently swallowed, system proceeds with impossible budget. Test: assert compute returns Result, caller handles Err.
+    ACCEPTANCE:
+      - Floors never violated in any test configuration
+      - BudgetInfeasible returned when mathematically impossible
+
+  3E.4 CACHE BREAKPOINT TRACKING
+    PRE_GATE:
+      - 3E.2 budget computation works
+      - Provider prefix caching exists (prompt_cache.rs in providers crate)
+    TASK:
+      - Track 2 cache breakpoints: BP1 after slot 3, BP2 after slot 5
+      - Compute prefix_hash = hash(concatenated content of slots up to breakpoint)
+      - Compare with previous invocation's hash to determine validity
+      - Report CacheBreakpoint.valid to provider for prefix cache decisions
+    DETERMINISTIC_CHECK:
+      - Same slots 1-3 content -> BP1.valid == true on second invocation
+      - Changed slot 2 (rules) -> BP1.valid == false
+      - Same slots 1-5, changed slot 6 -> BP2.valid == true (slot 6 is after BP2)
+    ADVERSARIAL:
+      - If prefix_hash uses a non-deterministic hasher (HashMap default), validity checks will be unreliable. Test: use a deterministic hasher (e.g. xxhash, FxHash). Verify: same content -> same hash across process restarts.
+      - If breakpoint validity is not reported to provider, prefix cache is never hit. Test: mock provider, verify cache_breakpoint_valid() called with correct values.
+    ACCEPTANCE:
+      - Cache breakpoints correctly detect content stability
+      - Deterministic hashing: same content -> same hash (tested across 1000 invocations)
+
+  3E.5 SSB ENTRY FILTERING BY FILE OVERLAP
+    PRE_GATE:
+      - 3E.1 types exist
+      - SSB operational (Phase 3B)
+      - SSB entries have file associations (ssb_files table: seq FK, file_path TEXT)
+    TASK:
+      - Build entry.files set from ssb_files rows: SELECT file_path FROM ssb_files WHERE seq = ?
+        GROUP BY seq to construct per-entry file sets (ssb_files stores one row per file per entry)
+      - Implement file_overlap_score(entry_files, agent_files) -> f64
+      - Filter SSB entries: score > 0.0, sorted by (score DESC, seq DESC)
+      - Fit filtered entries to SsbEntries token allocation
+    DETERMINISTIC_CHECK:
+      - overlap({a,b,c}, {b,c,d}) == 2/3 = 0.666...
+      - overlap({x}, {a,b,c}) == 0/3 = 0.0 (excluded)
+      - overlap({a,b}, {a,b}) == 1.0 (full overlap, highest priority)
+      - Empty agent_files -> score = 0.0 (no division by zero)
+    ADVERSARIAL:
+      - If agent.files is empty (new agent, no files yet), division by zero. Test: explicit guard, return 0.0.
+      - If SSB has thousands of entries, filtering is O(n). Test: with 10,000 entries, filtering completes in <10ms.
+    ACCEPTANCE:
+      - File overlap formula matches orchestrator.txt L125 exactly
+      - No division by zero for any input combination
+
+  3E.6 ADAPTIVE REDUCTION
+    PRE_GATE:
+      - 3E.2 + 3E.3 (budget computation with floors)
+      - 3E.5 (SSB filtering, needed for attempt 1 threshold change)
+      - ESCALATE handler exists in FSM (Phase 3A INTERACTIVE mode)
+      - SPLIT_TASK path can return Err without handler (Phase 4G implements receiver)
+    TASK:
+      - Implement 3-level adaptive reduction (see ADAPTIVE REDUCTION section above)
+      - Each level logged to SSB with before/after token counts
+      - Terminal condition branches on execution mode (INTERACTIVE vs AUTONOMOUS)
+    DETERMINISTIC_CHECK:
+      - Force overflow (model_max_context = 2000, content requiring 3000):
+        Level 1 applied, recount. If still over: Level 2. If still over: Level 3.
+      - Verify each level's SSB log entry contains: level, before_tokens, after_tokens, slots_affected
+      - Terminal reached: INTERACTIVE returns Err(Escalate(breakdown)), AUTONOMOUS returns Err(SplitTask)
+    ADVERSARIAL:
+      - If level 2 reduces CodeContext to signatures but signatures alone exceed budget, level 3 is the only escape. Test: model_max_context so small that even signatures overflow -> level 3 triggered.
+      - If SSB logging during reduction itself adds tokens to context (circular), infinite loop. Test: reduction logging writes to SSB but does NOT add to current invocation's context budget (entries only visible next invocation).
+    ACCEPTANCE:
+      - Adaptive reduction terminates in <= 3 attempts for any configuration
+      - Every reduction logged, never silent truncation
+      - Terminal condition matches execution mode
+
+  3E.7 INTEGRATION TEST: END-TO-END BUDGET ASSEMBLY
+    PRE_GATE:
+      - All prior steps (3E.1-3E.6) pass
+    TASK:
+      - Integration test: assemble full context budget for a realistic scenario
+      - Test with model context from ModelCapabilityRegistry (do not hardcode)
+      - Gemma 4 E2B actual context: 128K tokens. Test with both small (4096) and large (131072).
+      - Verify: budget computed, slots filled, cache breakpoints tracked, SSB filtered
+      - Verify: <50ms assembly latency (architecture-overview.txt section 8)
+    DETERMINISTIC_CHECK:
+      - budget = compute(model_registry.max_context, measured_fixed_slots, 2000)
+      - assert sum(all_slots) == model_registry.max_context
+      - assert all floors respected
+      - assert cache breakpoints have valid hash values
+      - assert assembly_time < 50ms (measured via ClockProvider, not wall clock)
+      - Run identical assembly 100x: all outputs byte-identical (determinism proof)
+    ADVERSARIAL:
+      - If token_count_estimate drift causes exact count to exceed budget after assembly, adaptive reduction was not triggered. Test: inject estimate that underestimates by 20% (beyond 15% guarantee), verify adaptive reduction fires.
+      - If ClockProvider is not used for latency measurement, DST cannot reproduce timing. Test: grep for Instant::now in context budget module, assert zero occurrences.
+    ACCEPTANCE:
+      - Full assembly completes in <50ms
+      - Deterministic: 100 identical runs produce identical output
+      - No raw time access (entropy quarantine respected)
+
+
+EXIT CRITERIA
+  - sum(all_context_slots) <= model.max_context for every invocation (invariant from orchestrator.txt L593)
+  - output_reserve >= 2000 always (invariant from orchestrator.txt L594)
+  - Floors (ssb >= 200, grc >= 500) never violated
+  - Cache breakpoints correctly track prefix stability
+  - Adaptive reduction terminates, logs, never silently truncates
+  - Assembly latency <50ms
+  - Deterministic: same inputs -> same budget (entropy quarantine compatible)
+  - File overlap scoring matches orchestrator.txt formula exactly

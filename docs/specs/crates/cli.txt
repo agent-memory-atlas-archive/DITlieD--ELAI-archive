@@ -1,0 +1,70 @@
+CRATE: cli/
+Purpose: REPL, rendering, input handling, argument parsing.
+Source: design_document.txt PART 3 (cli/ entry).
+Depends on: core/, orchestrator/, tools/, providers/
+
+Thin crate — most logic lives in other crates.
+
+
+1. RESPONSIBILITIES
+
+  - REPL loop: read user input, route to orchestrator
+  - First-message routing: slash-command dispatch + fallback classifier
+  - Output rendering: syntax highlighting, progress display
+  - Argument parsing: CLI flags, config overrides
+  - Mode switching: INTERACTIVE (default, Phase 3) <-> AUTONOMOUS (Phase 4G)
+
+
+2. FIRST-MESSAGE ROUTING (slash-command dispatch)
+
+  User's first message determines FSM entry point and context loading.
+  Primary mechanism: slash-command prefixes (deterministic, zero classification cost).
+  Fallback: regex classifier for bare messages (defaults to /task).
+
+  Commands (parsed by CLI before orchestrator sees the message):
+    /task <prompt>       Normal workflow. IDLE -> PLANNING -> ... -> IDLE.
+    /config <prompt>     Edit .elai_cc/ config. IDLE -> CONFIGURING. Targets elai_cc.toml, rules/, templates/.
+    /workflow <prompt>   Edit workflow tooling. IDLE -> CONFIGURING. Targets CLAUDE.md, .claude/, hooks.
+    /fix <prompt>        Debugging. IDLE -> TESTING_FIRST (skip PLANNING for known-broken state).
+    /continue            Resume from handoff.msgpack. Loads FSM state, continues from last checkpoint.
+    /explore <prompt>    Read-only query. Knowledge engine answers, no FSM state change.
+    /status              Show current FSM state, active sessions, GPU status, plan progress.
+
+  Fallback classifier (bare messages without slash prefix):
+    Pattern: contains file paths + fix/bug/error keywords -> /fix
+    Pattern: contains "change/modify/update" + config/workflow/rule paths -> /config
+    Pattern: contains "?" + no action verbs -> /explore
+    Default: /task
+
+  CLI strips the prefix, sets initial_route in TaskPacket, passes to orchestrator.
+  Orchestrator reads initial_route to determine FSM entry state and tool/rule loading.
+
+  Extensible: /register-command <name> <fsm_target> <description> adds project-specific commands.
+  Stored in .elai_cc/commands.toml. Loaded at REPL startup.
+
+
+3. CLAW-CODE MODULE MAPPING
+
+  rusty-claude-cli/main.rs (7,749 LOC) -> cli/ (strip to essentials)
+  Most of main.rs is orchestration logic that belongs in orchestrator/.
+  cli/ should be a thin shell: read input, call orchestrator, render output.
+
+
+4. DEPENDENCIES
+
+  KEEP: rustyline (line editing), pulldown-cmark (markdown render),
+    syntect (syntax highlighting), crossterm (terminal control)
+
+
+5. TESTABLE INVARIANTS
+
+  - Slash-command prefix parsed before orchestrator dispatch
+  - /task is default route when no prefix and classifier has no strong match
+  - /continue loads handoff.msgpack and resumes exact FSM state
+  - /config and /workflow restrict tool access to config-target paths only
+  - /explore never triggers FSM state change (read-only)
+  - Custom commands from commands.toml load correctly at startup
+  - CLI passes input to orchestrator without modification (after prefix stripping)
+  - INTERACTIVE is the default mode; AUTONOMOUS requires explicit switch (Phase 4G)
+  - Mode switch takes effect on next phase boundary (not mid-phase)
+  - Rendering handles all output formats (code, markdown, progress, errors)

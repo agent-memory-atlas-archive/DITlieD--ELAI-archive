@@ -1,3 +1,7 @@
+> [!WARNING]
+> Historical documentation for an abandoned experiment. This text is not evidence
+> that the described behavior works. Read the [archive warning](../README.md) first.
+
 # ELAI core (`.elai_cc/`)
 
 This is the project root for the ELAI deterministic development engine. The

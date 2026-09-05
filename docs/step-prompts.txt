@@ -1,0 +1,1991 @@
+STEP PROMPTS
+Date: 2026-04-14
+Purpose: copy-paste prompts for each implementation step. Each prompt is
+self-contained — the implementing LLM gets all file paths, sections, tech
+rules, and integration/commit instructions it needs.
+
+A-1 is DONE. Prompts start at A-2.
+
+
+========================================================================
+COMMON FOOTER (appended to every prompt below)
+========================================================================
+
+Technology choices (HARD RULE — override training defaults):
+
+Hashing: blake3 only. Never blake2, never sha2 for non-RFC uses.
+Logging: tracing only. Never the log crate. Never println!/eprintln!.
+Error handling: thiserror for library crates, anyhow for binaries. Never Box<dyn Error>.
+Async mutex: tokio::sync::Mutex when lock held across .await.
+Async traits: native async fn in traits (Rust 1.75+). Never async-trait crate.
+ONNX: ort stable releases only. Never -rc / pre-release.
+Python HTTP: FastAPI + uvicorn. Never http.server.
+Python inference: model.generate() with LogitsProcessor. Never manual token loops.
+Python torch: torch.inference_mode() not torch.no_grad(). torch_dtype= not dtype=.
+Python JSON: orjson over stdlib json for hot paths.
+Connection pooling: deadpool (async) or bb8. Never r2d2 unless provably sync-only.
+Glob: globset or ignore crate. Never glob 0.3.
+No .unwrap()/.expect() in production code. Use ?/.ok_or()/.map()/Result propagation.
+  Acceptable ONLY in: test code, main() entrypoint, const/static init with provably valid literals.
+No as casts for numeric narrowing. Use .try_into().
+No magic numbers. Named constants for all limits/thresholds/dimensions.
+
+After implementation:
+  - verify new code is wired into the call chain (grep callers, not dead code)
+  - run tests for affected crate(s) only (cargo test -p <crate>) or pytest for Python
+  - run cargo check --workspace to verify no compilation breakage
+  - check git log --oneline -10 for commit naming pattern
+  - commit as "A-N: <description>" (or "3K.N:" or "B-N:") with test results in message
+  - push after commit
+  - do NOT add Co-Authored-By lines or AI attribution to commits
+
+
+========================================================================
+GROUP A: FOUNDATIONS
+========================================================================
+
+
+------------------------------------------------------------------------
+STEP A-2: T1/T2 HOOK FIX
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-2 section only — positioning, prereqs, dependents)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 3.1 (T1 hook VERSION_GATE, BLOCK-3 prerequisite steps 0/1/2)
+  AUDIT RESOLUTION LOG: BLOCK-3 (what's broken and why)
+
+F:\.ELAI_workflow\docs\specs\guide\code-completeness-enforcement-design.txt
+  section 3 header (NOTE ON HOOK STATUS, verify current state)
+
+then find and read the current source:
+  - tiered_analysis.rs in .elai_cc/crates/ (the T1/T2 hook stubs)
+  - the rules/ predicate evaluator (where rules.db is loaded/queried)
+  - any existing tests for tiered_analysis
+
+then find and read how tiered_analysis is wired into the pipeline:
+  - grep for where T1Hook/T2Hook/tiered_analysis is called from
+  - read the callers — understand the integration points
+  - after implementing, make sure the hooks are actually invoked
+    in the existing pipeline, not just defined but orphaned
+
+task: implement step A-2 — fix T1Hook to load and evaluate rules from
+rules.db (currently loads nothing), fix T2Hook to actually parse AST
+(currently returns Allow unconditionally). ~200-300 LOC.
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-3: MODEL.GENERATE MIGRATION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-3 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 2.1 (ETCLogitsProcessor design, focus on REVISED ARCHITECTURE
+  subsection explaining why manual loop must go first)
+  AUDIT RESOLUTION LOG: BLOCK-1 (ETC vs model.generate conflict)
+
+then read the current source:
+  - F:\.ELAI_workflow\.elai_cc\python\elai_inference\server.py
+    lines 391-436 (the manual token loop to replace)
+  - read the full server.py to understand the generate endpoint
+  - grep for any callers of the generate endpoint in .elai_cc/
+
+then find and read how the sidecar is called from Rust:
+  - grep for sidecar_client or /v1/completions in .elai_cc/crates/
+  - understand what response format the Rust side expects
+
+task: replace the manual Python token-by-token loop (server.py:391-436)
+with model.generate() + LogitsProcessor. This is a 10-50x speedup.
+Preserve the existing HTTP API contract — Rust callers must not break.
+~150 LOC Python refactor.
+
+CRITICAL: use model.generate() with LogitsProcessor, NOT a manual loop.
+Use torch.inference_mode(), NOT torch.no_grad().
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-4: PROJECT INTELLIGENCE — TIER 1
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-4 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\project-intelligence-design.txt
+  section 1 (ProjectProfile struct, all fields, storage format)
+  section 2A-2G (FULL detection tables — build systems, languages,
+    frameworks, test runners, linters, entry points, CI systems.
+    These tables ARE the spec.)
+  section 5 (BuildCommandRegistry types, scoped commands, validation tiers)
+  section 10 (step list 3L.1-3L.8, crate placement, test budget of 45)
+
+then read the current source:
+  - .elai_cc/crates/core/ (where types go — find existing type patterns)
+  - .elai_cc/crates/knowledge/ (where detection logic would go)
+  - .elai_cc/crates/cli/ (where orchestration lives)
+
+task: implement step A-4 — ProjectProfile struct, BuildSystemDetector,
+language/framework/test/CI detection, build command registry. Tier 1
+structural discovery (pure filesystem analysis, no DKG needed).
+~600-800 LOC, 22+ tests.
+
+wire it in: the detection should be callable from the CLI crate.
+Verify types are exported from core/ and detection logic from knowledge/.
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-5: PROJECT INTELLIGENCE — TIER 2 + RULE SEEDING
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-5 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\project-intelligence-design.txt
+  section 3 header (CRITICAL LIMITATION: DKG Rust-only, FALLBACK PATH)
+  sections 3A-3E (naming conventions, error handling, module org, test
+    patterns, dependency analysis — each has DKG path + regex fallback)
+  section 6 (rule seeding table: convention -> rule mapping)
+  section 10 (Phase 1A extension: extract_conventions(), ~250-350 LOC)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-1A.txt
+  (current DKG implementation — understand what exists)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3F.txt
+  (current rules engine, seed rules — understand where to add seeder)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/src/ (DKG engine, find extract methods)
+  - .elai_cc/crates/rules/src/ (rules engine, find seed infrastructure)
+
+task: implement step A-5 — convention extraction (naming, error handling,
+module org, test patterns) via DKG + regex fallback. Auto-seed project-
+specific rules from detected conventions (ProjectRuleSeeder).
+~400-500 LOC. Extends Phase 1A DKG and Phase 3F rules engine.
+
+wire it in: ProjectRuleSeeder must be called during rule engine init.
+extract_conventions() must be a public method on DkgEngine.
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-6: VERSION_GATE + DEPRECATED PATTERNS
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-6 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 1.2 (FULL: deprecated_patterns table schema, VERSION_GATE
+    predicate evaluation algorithm, language-parameterized regex sets
+    for 7 languages, ecosystem coverage for 8 package managers,
+    self-discovery integration, ViolationRecord extension)
+  AUDIT RESOLUTION LOG: WARN-3 (Cargo.toml coverage), WARN-4 (self-discovery)
+
+F:\.ELAI_workflow\.elai_cc\outdated-tech-audit.md
+  (seed data source for deprecated_patterns)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3F.txt
+  (current rules engine, predicate types — understand existing predicates)
+
+then read the current source:
+  - .elai_cc/crates/rules/src/predicate.rs (existing predicate types)
+  - .elai_cc/crates/rules/src/self_discovery.rs (if exists)
+  - .elai_cc/crates/rules/src/ (understand rules.db schema)
+
+task: implement step A-6 — VERSION_GATE predicate type, deprecated_patterns
+table in rules.db, seed data from outdated-tech-audit.md, ViolationRecord
+extension with replacement_name. ~300 LOC.
+
+wire it in: VERSION_GATE must be a new variant in PredicateType enum.
+deprecated_patterns must be a real table in rules.db with seed data loaded.
+ViolationRecord must gain replacement_name field.
+
+prerequisite: A-2 must be done (hooks must work to evaluate VERSION_GATE).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-7: CONSTITUTIONAL INJECTION + T1 VERSION_GATE HOOK
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-7 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 1.3 (constitutional injection: format, token budget, truncation)
+  section 3.1 (T1 hook: Step 2 adds VERSION_GATE case after A-2 fix)
+  AUDIT RESOLUTION LOG: WARN-7 (injection is INSIDE PhaseSpec, not separate)
+
+then read the current source:
+  - context_budget.rs in .elai_cc/crates/ (find it — Phase 3E implementation)
+  - tiered_analysis.rs (now fixed by A-2 — read the working T1Hook)
+  - grep for PhaseSpec assembly to find where content is built
+
+task: implement step A-7 — inject CONSTRAINTS block into PhaseSpec content
+at assembly time (auto-generated from deprecated_patterns WHERE severity=BLOCK).
+Wire VERSION_GATE evaluation into the T1 hook. ~200 LOC.
+
+wire it in: CONSTRAINTS block must appear in assembled PhaseSpec content.
+VERSION_GATE must be evaluated by T1Hook alongside existing predicates.
+
+prerequisite: A-6 must be done (VERSION_GATE predicate must exist).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-8: FRESHNESS STEERING VECTOR
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-8 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 2.2 (contrast pairs, equal-length templates, steering formula,
+    hidden state extraction at last shared token, alpha default 0.3,
+    auto-update trigger, storage path)
+  AUDIT RESOLUTION LOG: WARN-1 (equal token length requirement)
+
+then read the current source:
+  - find compute_steering_vector.py in .elai_cc/ (current single-pair impl)
+  - read the sidecar server.py steering vector injection code (if any)
+  - grep for "steering" in .elai_cc/ to find all related code
+
+task: implement step A-8 — compute modern_api_preference steering vector
+from contrast pairs generated from deprecated_patterns. Extend
+compute_steering_vector.py for batch mode (currently single pair).
+~100 LOC Python.
+
+CRITICAL: contrast pairs MUST have equal token length (WARN-1 resolution).
+
+prerequisite: A-6 must be done (deprecated_patterns table for pair generation).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-9: ETC ENTROPY MONITORING
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-9 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 2.1 (FULL: ETCLogitsProcessor class definition, __call__ method,
+    usage in model.generate(), threshold calibration 5-step procedure,
+    SearchTriggerPayload Rust type, import_pattern regex)
+  AUDIT RESOLUTION LOG: BLOCK-1 (why LogitsProcessor not manual loop),
+    BLOCK-7 (why threshold starts DISABLED, calibration mandatory)
+
+then read the current source:
+  - F:\.ELAI_workflow\.elai_cc\python\elai_inference\server.py
+    (now using model.generate() after A-3 — read the generate endpoint)
+  - .elai_cc/crates/providers/src/sidecar_client.rs (Rust client)
+  - grep for SearchTriggerPayload or search_trigger in .elai_cc/
+
+task: implement step A-9 — ETCLogitsProcessor (observes entropy during
+generation, triggers search between generations). Add calibration script
+metrics/calibrate_etc_threshold.py. ~200 LOC (Python + Rust).
+
+CRITICAL: ETC must be DISABLED by default (threshold = infinity) until
+calibration run completes. This is a hard requirement from BLOCK-7.
+
+CRITICAL: use LogitsProcessor inside model.generate(), not a manual loop.
+
+prerequisite: A-3 must be done (model.generate migration).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-10: CONTEXT BUDGET ADAPTATION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-10 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 2 (FULL: model tier table with attention ceilings, slot
+    allocation table for LARGE vs MICRO, key tradeoffs)
+  section 13 (ModelCapabilityProfile, SlotWeights, ModelFeatures types)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3E.txt
+  (current context budget allocator implementation)
+
+then read the current source:
+  - find context_budget.rs in .elai_cc/crates/ (Phase 3E implementation)
+  - read existing SlotWeights / budget allocation logic
+  - grep for ModelCapabilityProfile in .elai_cc/ (may not exist yet)
+
+then read the baseline measurements:
+  - .elai_cc/metrics/model_baseline.toml (A-1 output — real numbers)
+
+task: implement step A-10 — ModelCapabilityProfile as input to context
+budget allocator, slot weights adapt per model tier (not fixed percentages),
+attention ceiling enforcement (fill to quality limit, not VRAM limit).
+~200-300 LOC.
+
+wire it in: context budget assembly must read ModelCapabilityProfile
+and adjust slot weights accordingly. Not a dead type definition.
+
+prerequisite: A-1 done (baseline measurements provide real tier data).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-11: PROJECT INTELLIGENCE — TIER 3 + TELESCOPE
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-11 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\project-intelligence-design.txt
+  section 4A (project vision: LLM prompt, 200-token constraint, template fallback)
+  section 4B (domain classification: signal table, 12 domains)
+  section 4C (architecture inference: pattern detection, advisory only)
+  section 8 (context telescope integration: 5 layers, prompt assembly,
+    few-shot examples, template generation)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/ (where Tier 1+2 from A-4/A-5 live)
+  - .elai_cc/crates/cli/ (orchestration)
+  - context_budget.rs (where telescope data feeds into prompt assembly)
+
+task: implement step A-11 — LLM-assisted project vision extraction,
+domain classification (12 domains from signal table), architecture
+inference (advisory only). Context telescope integration: wire PI
+data into prompt assembly across 5 layers. ~300-400 LOC.
+
+wire it in: telescope data must flow into context budget assembly.
+ProjectProfile must be accessible from the prompt assembly path.
+
+prerequisite: A-4 + A-5 must be done (Tier 1+2 exist).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-12: DETERMINISTIC-FIRST AUDITOR
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-12 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 3.3 (deterministic-first auditor: 5 checks in order,
+    language-parameterized build/lint commands per language, config field)
+
+F:\.ELAI_workflow\docs\specs\guide\code-completeness-enforcement-design.txt
+  Layer 4 section (deterministic auditor checks: lazy code scan + build)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/ (find agent config, auditor config)
+  - grep for "auditor" or "AgentRole" in .elai_cc/crates/
+  - find Phase 3C agent system implementation
+
+task: implement step A-12 — before LLM audit, run deterministic checks
+in strict 5-step order:
+  Step 1: BUILD CHECK — language-specific build command from ProjectProfile:
+    Rust: cargo check -p {crate} --message-format=json
+    Python: python -m py_compile + mypy (if configured)
+    Go: go vet ./...  |  TS: tsc --noEmit  |  Java: javac -Xlint / gradle
+    C#: dotnet build --no-restore  |  Ruby: ruby -c {file}
+  Step 2: VERSION_GATE — check modified files against deprecated_patterns
+  Step 3: FILE_SIZE_CENSUS — list all modified files, check current_lines
+    vs language-specific limit. Report BLOCK (over limit), WARN (>80%).
+  Step 4: LAZY_CODE_SCAN — run full lazy code pattern set (from A-21)
+    on ALL modified files. Catches anything that slipped past hooks.
+  Step 5: COMPLETENESS vs DECOMPOSITION_TREE — baby step spec said "write
+    function X in file Y". Check: file contains function X? Non-trivial
+    body (>3 lines)? Signature matches FILE_PLAN? AST-based (tree-sitter).
+  Step 5b: MODULE_COHERENCE — Rust: mod.rs matches disk. Python: __init__.py
+    imports resolve. TS: index.ts exports resolve. Orphan detection.
+~300-400 LOC.
+
+wire it in: deterministic checks must run BEFORE the LLM auditor agent.
+Per-language build commands from ProjectProfile (A-4). 5-step order is strict.
+Steps 3-5b use infrastructure from A-21 (CC hooks).
+
+prerequisite: A-6 (VERSION_GATE), A-4 (ProjectProfile for build commands),
+  A-21 (lazy code patterns in rules.db).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-13: RAG FRESHNESS SCORING
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-13 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 1.1 (FULL: exponential decay formula, freshness_meta.db schema,
+    FreshnessConfig type with 5 fields, implementation details — sidecar
+    SQLite NOT tantivy schema, pipeline.rs rerank JOIN, default values)
+  AUDIT RESOLUTION LOG: BLOCK-2 (access_boost cap), BLOCK-6 (separate SQLite),
+    WARN-2 (exponential not quadratic decay)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/src/pipeline.rs (reranking logic)
+  - .elai_cc/crates/knowledge/src/ (check if freshness.rs already exists)
+  - grep for "freshness" or "recency" in .elai_cc/crates/knowledge/
+
+task: implement step A-13 — freshness_meta.db sidecar SQLite (NOT in
+tantivy schema), recency_decay + access_boost multiplier in RRF scoring,
+FreshnessConfig type, separate doc half-life for specs/changelogs.
+New file: knowledge/src/freshness.rs. ~300 LOC.
+
+CRITICAL: use exponential decay, NOT quadratic (WARN-2).
+CRITICAL: access_boost must be capped (BLOCK-2).
+CRITICAL: separate SQLite file, NOT modification to tantivy schema (BLOCK-6).
+
+wire it in: freshness scoring must be integrated into pipeline.rs rerank.
+Not a standalone module — must affect actual retrieval results.
+
+prerequisite: none (independent of other A-steps).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-14: T2 AST IMPORT EXTRACTION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-14 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 3.2 (T2 hook: language-parameterized AST node extraction
+    for 7 languages, manifest file limitation, performance budget <10ms)
+
+then read the current source:
+  - tiered_analysis.rs (now fixed by A-2 — read the working T2Hook)
+  - .elai_cc/crates/knowledge/src/ (find ast_adapter or tree-sitter usage)
+  - grep for "tree_sitter" or "ast" in .elai_cc/crates/
+
+task: implement step A-14 — T2 hook extracts imports via tree-sitter
+AST (language-parameterized for 7 languages). Cross-references extracted
+imports against deprecated_patterns table. Performance budget <10ms. ~200 LOC.
+
+wire it in: T2Hook must call the AST import extractor and check results
+against deprecated_patterns. Must be in the hook execution path.
+
+prerequisite: A-2 (T2 hook fix), A-6 (deprecated_patterns table).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-15: NIGHTLY DEPENDENCY AUDIT
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-15 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 4.1 (FULL: 7 registry APIs with exact URLs, response JSON paths,
+    rate limits, per-ecosystem query format, auto-detection via manifest,
+    DepAuditResult/DepAuditEntry types, severity classification)
+  AUDIT RESOLUTION LOG: BLOCK-5 (crates.io REST not cargo search),
+    WARN-6 (PyPI JSON API not pip index)
+
+then read the current source:
+  - .elai_cc/crates/cli/src/ (find existing subcommands)
+  - .elai_cc/crates/rules/src/ (deprecated_patterns table from A-6)
+
+task: implement step A-15 — CLI subcommand (elai dep-audit), queries
+7 registry APIs, auto-detects ecosystems from manifest files, updates
+deprecated_patterns table. ~400-500 LOC.
+
+CRITICAL: use crates.io REST API, NOT cargo search (BLOCK-5).
+CRITICAL: use PyPI JSON API, NOT pip index (WARN-6).
+
+wire it in: subcommand must be registered in CLI. Must actually write
+to the deprecated_patterns table in rules.db.
+
+prerequisite: A-6 (deprecated_patterns table must exist).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-16: PI LATENCY MEASUREMENT
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-16 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\project-intelligence-design.txt
+  section 10 (step 3L.8: latency benchmark on 5+ projects, size targets)
+  section 1 (cost estimates labeled UNGROUNDED — this step grounds them)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/ (PI detection from A-4/A-5/A-11)
+  - .elai_cc/metrics/ (existing benchmark patterns)
+
+task: implement step A-16 — profile PI detection latency on 5+ real
+projects (1K/10K/50K/100K/500K LOC). Record results to ground the
+cost estimates from the design doc. ~100 LOC benchmark script.
+
+prerequisite: A-4 + A-5 + A-11 (all PI tiers implemented).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-17: GG SIDECAR RESPONSE EXTENSION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-17 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  GG INTRINSIC VERIFICATION section (signal definitions, sidecar extension)
+  LAYER 4 section (AB-MCTS scoring formula using GG signals)
+
+then read the current source:
+  - F:\.ELAI_workflow\.elai_cc\python\elai_inference\server.py
+    (now using model.generate() after A-3 — find where response is built)
+  - .elai_cc/crates/providers/src/sidecar_client.rs (Rust response parsing)
+  - grep for "logprob" or "entropy" in .elai_cc/
+
+task: implement step A-17 — extend sidecar response JSON with
+mean_logprob, min_logprob, entropy_mean, entropy_max fields. Computed
+during generation at zero additional inference cost (logging existing
+computation). Update Rust client to parse the new fields. ~50 LOC.
+
+wire it in: Python server must include new fields in response JSON.
+Rust SidecarClient must deserialize them. End-to-end: generate request
+returns GG signals.
+
+prerequisite: A-3 (model.generate migration — logprobs come from generate()).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-18: REPAIR CONTEXT PROFILE
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-18 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  COMPRESSED CONTEXT REPLAY section (full 1400-token slot allocation)
+  GENERATION PARAMETERS section (per-profile temperature/top-p)
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 5 REASONING PIPELINE INTEGRATION (REPAIR_CONTEXT profile)
+
+then read the current source:
+  - context_budget.rs in .elai_cc/crates/ (Phase 3E, now adapted by A-10)
+  - grep for SlotWeights in .elai_cc/ (find existing profiles)
+  - .elai_cc/crates/core/ (where GenerationProfile type would go)
+
+task: implement step A-18 — REPAIR_CONTEXT SlotWeights profile for retry
+context. Different allocation vs first-attempt: prioritizes MistakeBook
+and fix instructions over RepoMap and SSB history.
+
+8-slot REPAIR_CONTEXT allocation (total 1400 tokens):
+  System=50, BabyStepSpec=200, MistakeBook=150, CodeContext=500,
+  WorkingExample=300, FixInstruction=100, OutputReserve=100.
+
+Add GenerationProfile type with 7 profiles:
+  FIRST_ATTEMPT:     T=0.3, top-p=0.9  (focused, first try)
+  MICRO_REFLECTION:  T=0.3, top-p=0.9  (diagnosis, precise)
+  INTERROGATION:     T=0.1, top-p=0.9  (multiple choice, near-deterministic)
+  REPAIR_RETRY:      T=1.0, top-p=1.0  (escape cycles, FixAudit grounded)
+  TREE_BRANCH_A:     T=0.7, top-p=1.0  (AB-MCTS moderate diversity)
+  TREE_BRANCH_B:     T=1.0, top-p=1.0  (AB-MCTS max diversity)
+  TREE_BRANCH_C:     T=0.3, top-p=0.9  (AB-MCTS focused alternative)
+
+Key: repair retries use T=1.0 to prevent cyclic traps (FixAudit research).
+~200-250 LOC.
+
+wire it in: context budget must support selecting REPAIR_CONTEXT profile.
+GenerationProfile must be usable by the provider layer (temperature/top-p
+propagated to sidecar or vLLM request).
+
+prerequisite: A-10 (context budget adaptation must exist first).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-19: INTERROGATION TREE STORAGE
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-19 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  LAYER 3 section (full InterrogationTree design, QuestionNode, Choice types)
+  language-parameterized trees, rules.db storage
+
+F:\.ELAI_workflow\docs\specs\guide\project-intelligence-design.txt
+  section 4B (domain classification feeds into tree selection)
+
+then read the current source:
+  - .elai_cc/crates/rules/src/ (rules.db schema, find table patterns)
+  - .elai_cc/crates/reasoning/src/ (if exists — tree traversal logic)
+  - .elai_cc/crates/core/ (type definitions)
+
+task: implement step A-19 — InterrogationTree, QuestionNode, Choice types.
+Storage in rules.db as structured data (language + domain tagged). Seed
+with initial decision trees for Rust (lifetime/borrow/trait), Python
+(import/type), Go (goroutine/error wrapping), TypeScript (type/import).
+
+Seed question templates (load-bearing content):
+  Q1 ERROR LOCATION: "(A) function signature, (B) function body logic,
+    (C) return value, (D) imported dependency, (E) test expectations"
+  Q2 ROOT CAUSE (conditional on Q1): e.g. if B: "(A) wrong algorithm,
+    (B) missing edge case, (C) wrong variable, (D) incorrect operator,
+    (E) off-by-one"
+  Q3 FIX APPROACH (conditional on Q1+Q2): "(A) modify existing logic,
+    (B) add new branch/case, (C) change type signature, (D) use different fn"
+
+Traversal protocol: 3-7 questions x ~310 tokens each (question + choices
+  + minimal code context = ~300 input, ~10 output per question).
+
+Terminal nodes: QuestionNode.terminal = Option<FixTemplate> — leaf nodes
+  contain fix instruction template with {placeholders} for code context.
+  This connects Layer 3 output directly to Layer 1's fix instruction format.
+
+Language parameterization: Rust trees reference lifetimes/borrows/traits;
+Python trees reference type hints/imports; Go trees reference goroutines/
+channels/error wrapping. Trees stored in rules.db, not hardcoded.
+~400-500 LOC.
+
+wire it in: trees must be stored in rules.db and retrievable by
+language + domain. Traversal logic must be callable from reasoning crate.
+Terminal FixTemplate output must be compatible with Layer 1 fix injection.
+
+prerequisite: A-6 (rules.db VERSION_GATE infrastructure established).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-20: MISTAKE BOOK SSB SCHEMA
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-20 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  MISTAKE BOOK section (full MistakeEntry design, prompt injection format,
+    max 5 entries per baby step, oldest-evicted overflow, diff_hash)
+  DESIGN PRINCIPLES rules 5 and 6 (forbidden diffs, not narrative memory)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/ (SSB schema, find action_types)
+  - .elai_cc/crates/core/ (type patterns)
+  - grep for "action_type" or "ssb" in .elai_cc/crates/
+
+task: implement step A-20 — MistakeEntry type, SSB action_type
+"mistake_entry", per-baby-step scoping, prompt injection format
+(max 150 tokens), blake3 diff hash for forbidden_diffs deduplication.
+
+CRITICAL: use blake3 for diff hashing, not blake2 or sha2.
+
+Max 5 entries per baby step. Oldest-evicted overflow: when 6th entry
+added, entry with lowest attempt_number is removed. Cleared on success.
+
+CTIM-Rover guardrail (CRITICAL): no variable names in constraints,
+only structural patterns. Episodic natural language memory DEGRADES
+performance (42% -> 31-40%). Constraints are diff hashes + failure
+categories + line numbers, NEVER code snippets or reasoning chains.
+
+forbidden_diffs: Vec<DiffHash> as separate concept — blake3 hashes of
+failed patches. Prevents regenerating known-failed patches across retries.
+
+Prompt injection format (max 150 tokens):
+  CONSTRAINTS (from previous attempts):
+  - Do NOT produce patch {diff_hash_short}. (failed: {failure_category})
+  - Line {faulty_line}: {root_cause_json.action} (from diagnosis)
+  - Forbidden patterns: {list of diff_hash_short values}
+
+~250-300 LOC.
+
+wire it in: MistakeEntry must be a valid SSB action_type. Must be
+writable and queryable through existing SSB infrastructure. Prompt
+injection must be callable from context assembly (consumed by A-18
+REPAIR_CONTEXT profile).
+
+prerequisite: none (SSB infrastructure exists from Phase 3B).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-21: CC HOOK ENFORCEMENT (LAZY CODE + FILE SIZE + COMPLETENESS)
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\code-completeness-enforcement-design.txt
+  Layer 3 sections 3.1-3.3:
+    section 3.1 (T1 lazy code detection: per-language regex patterns)
+    section 3.2 (T1 file size enforcement: language-specific line limits table)
+    section 3.3 (T2 AST completeness check: empty bodies, function count, imports)
+  IMPLEMENTATION PRIORITY section (Priority 0 items)
+  AUDIT RESOLUTION LOG (any BLOCKs/WARNs related to Layer 3)
+
+F:\.ELAI_workflow\docs\specs\guide\update-phase-map.txt
+  section 5: phase-3J.txt (3J.10 hooks) and phase-3F.txt entries
+
+then read the current source:
+  - tiered_analysis.rs in .elai_cc/crates/ (T1/T2 hooks fixed by A-2)
+  - .elai_cc/crates/rules/src/ (GREP_PATTERN predicate type)
+  - grep for "GREP_PATTERN" in .elai_cc/crates/
+
+task: implement step A-21:
+  (a) T1 lazy code detection patterns in hooks — per-language regex for
+      pass bodies, TODO returns, placeholder values, except:pass, "# ... rest".
+      Full pattern registry from CC design section 3.1: UNIVERSAL (9 patterns),
+      RUST (3), PYTHON (3), TS/JS (2+test exemption), GO (3), JAVA (3), C# (2).
+      T1 verdicts are WARN (not BLOCK). T2 determines final based on AST context.
+  (b) T1 file size enforcement — 11-language line limit table:
+      Rust 100/200, Python 120/250, Java 200/300, TS 150/250, Go 100/200,
+      C# 200/300, C/C++ 150/250, Kotlin 150/250, Ruby 120/200, Elixir 120/200,
+      Swift 150/250, DEFAULT 150/250.
+      Hard BLOCK at 4x WARN. INFO at 80% of WARN.
+      Test file detection per language: Rust (tests/ + _test.rs + #[cfg(test)]),
+      Python (test_ + _test.py + tests/), Go (_test.go), TS (.test.ts + .spec.ts
+      + __tests__/), Java (src/test/ + *Test.java), C# (*.Tests + *Test.cs),
+      Ruby (spec/ + _spec.rb), DEFAULT (test in path/filename).
+      Exempt extensions: .toml/.json/.yaml/.yml/.xml/.lock/.sql/.proto/.graphql
+      Exempt paths: generated/, build/, vendor/, node_modules/, migrations/, target/
+  (c) T2 AST completeness — 6 checks:
+      Check 1: tree-sitter ERROR nodes = BLOCK
+      Check 2: empty function bodies (block-level test detection, not file-level)
+      Check 3: function count vs FILE_PLAN (Optional<&FilePlan> param)
+      Check 4: import completeness (language-specific import node extraction)
+      Check 5: magic number detection (AST numeric literals, ALLOW const/0/1/test)
+      Check 6: responsibility metrics:
+        6a. Cyclomatic complexity per function: max 10, BLOCK if exceeded
+        6b. Coupling score per file: max 15 external symbols, BLOCK if exceeded
+  (d) GREP_PATTERN extended with +language TEXT, +file_context TEXT (nullable)
+      Seed all lazy code patterns with language + file_context populated.
+      FILE_SIZE_GATE as METRIC_GATE instance.
+  (e) [file_discipline] config section in elai_cc.toml:
+      max_cyclomatic_complexity = 10, max_coupling_score = 15, per-language limits
+~400-500 LOC.
+
+wire it in: lazy code patterns must fire in T1Hook evaluation path.
+File size check must fire in T1Hook. AST completeness must fire in T2Hook.
+GREP_PATTERN extension must be backward-compatible (new fields nullable).
+
+prerequisite: A-2 (hooks work), A-6 (rules.db infrastructure).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-22: RESEARCHING FSM STATE
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  section 2 (Oracle Mode FSM integration)
+  INTEGRATION section (CLI/FSM changes, RESEARCHING state spec)
+
+F:\.ELAI_workflow\docs\specs\guide\update-phase-map.txt
+  section 4: phase-3A.txt entry (RESEARCHING state requirements)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3A.txt
+  (current FSM implementation — understand existing states and transitions)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/src/ (find FSM state machine, FsmState enum)
+  - grep for "FsmState" or "PLANNING" or "transition" in .elai_cc/crates/
+
+task: implement step A-22 — add RESEARCHING state (or sub-state of
+PLANNING) to the FSM.
+  Tool permissions: RESEARCHING allows WebSearch + KnowledgeEngine query +
+    GRC reasoning. Blocks file edit, bash, git, all mutation tools.
+  Transitions: IDLE -> RESEARCHING, RESEARCHING -> PLANNING,
+    RESEARCHING -> RESEARCHING (follow-up queries allowed).
+~100-150 LOC.
+
+wire it in: RESEARCHING must be a real FsmState variant with transition
+validation. Tool filtering must respect RESEARCHING permissions.
+Must integrate with existing phase-aware tool loading from Phase 3A.
+
+prerequisite: none (Phase 3A FSM exists).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-23: MICRO-REFLECTION TYPES + PROTOCOL (RA LAYER 2)
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  LAYER 2 section (FULL: 500-token context assembly, JSON-constrained
+    output, MicroReflectionRequest/Response types, temperature 0.3,
+    integration with constrained decoding and MistakeBook)
+
+then read the current source:
+  - .elai_cc/crates/reasoning/src/ (existing reasoning types)
+  - .elai_cc/crates/core/ (type patterns)
+  - grep for "MicroReflection" or "reflection" in .elai_cc/
+
+task: implement step A-23 — MicroReflectionRequest and MicroReflectionResponse
+types. 500-token context assembly protocol (code snippet + error + relevant
+types). JSON-constrained output schema for reflection result. Storage of
+reflection output in MistakeBook (from A-20). ~150-200 LOC.
+
+This is Layer 2 of the reasoning architecture — sits between Layer 1
+(deterministic error taxonomy) and Layer 3 (interrogation trees).
+Invoked when Layer 1 identifies the error category but the fix template
+doesn't resolve it on first retry.
+
+wire it in: types must be in reasoning/ or core/. Must be invocable
+from the retry pipeline. JSON output schema must be compatible with
+constrained decoding (B-4, future — define schema now).
+
+prerequisite: A-20 (MistakeBook for storing reflection results).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-24: SHORTCODER CONTEXT COMPRESSION IN BUDGET ALLOCATOR
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 4 Principle 4 (ShortCoder integration for context compression)
+  section 12 Integration (phase 3E changes mentioning ShortCoder)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3E.txt
+  (current context budget allocator — understand slot assembly)
+
+then read the current source:
+  - context_budget.rs in .elai_cc/crates/ (slot assembly logic)
+  - grep for "ShortCoder" or "shortcoder" or "simplif" in .elai_cc/crates/
+  - .elai_cc/crates/knowledge/src/ (check if ShortCoder AST rules exist from 4B spec)
+
+task: implement step A-24 — integrate ShortCoder AST-preserving
+simplification into context budget assembly. Apply to CodeContext slot
+(slot 5) to reduce token count while preserving semantic content.
+10 tree-sitter simplification rules (collapse function bodies to
+signatures, strip comments, elide type annotations on obvious bindings).
+~200-250 LOC.
+
+wire it in: ShortCoder must be called during context assembly in
+context_budget.rs, specifically when assembling the CodeContext slot.
+Must reduce actual token count measurably. Not a dead utility.
+
+prerequisite: A-10 (context budget adaptation exists).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-25: GG GENERATION NOVELTY SIGNAL
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  GG INTRINSIC VERIFICATION section (all signal definitions)
+  Specifically: generation_novelty signal — cosine similarity between
+    embeddings of current generation vs previous attempt
+
+then read the current source:
+  - F:\.ELAI_workflow\.elai_cc\python\elai_inference\server.py
+    (sidecar — A-17 already added logprob/entropy fields)
+  - .elai_cc/crates/providers/src/sidecar_client.rs (Rust client)
+  - grep for "novelty" or "generation_novelty" or "cosine" in .elai_cc/
+
+task: implement step A-25 — add generation_novelty signal to sidecar
+and Rust client. Compute cosine similarity between GraphCodeBERT
+embeddings of current generation vs previous generation for same prompt.
+Returns 0.0-1.0 (0 = identical, 1 = completely different).
+~80-100 LOC (Python + Rust).
+
+This signal is used by AB-MCTS (Layer 4) scoring formula to prefer
+novel attempts over regenerations of the same failed approach.
+
+wire it in: sidecar response must include generation_novelty field.
+Rust SidecarClient must parse it. Requires tracking previous generation
+embedding in sidecar state (per-request cache, keyed by prompt hash).
+
+prerequisite: A-17 (GG sidecar response extension — base fields exist).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-34: RA SELF-DISCOVERY — FAILURE TAXONOMY EXTENSION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-34 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  INTEGRATION section: Phase 3F ("Self-discovery: when auditor finds recurring
+    error pattern 3+ times, auto-propose new FailureTaxonomy category + fix template")
+  LAYER 1 section (FailureTaxonomy categories, fix template generation, types)
+
+F:\.ELAI_workflow\docs\specs\guide\code-completeness-enforcement-design.txt
+  Layer 5 section (recovery strategies reference FailureTaxonomy)
+
+then read the current source:
+  - .elai_cc/crates/rules/src/self_discovery.rs (existing self-discovery mechanism)
+  - .elai_cc/crates/rules/src/ (rules.db schema, predicate types)
+  - grep for "FailureTaxonomy" or "failure_category" in .elai_cc/crates/
+
+task: implement step A-34 — extend self-discovery in rules/ crate to
+detect recurring error patterns and auto-propose FailureTaxonomy categories.
+
+When auditor identifies SAME error pattern 3+ times (matched by regex +
+failure category + affected symbol kind) across baby steps:
+  (1) Auto-propose new FailureTaxonomy category with:
+      - regex patterns matching the recurring error
+      - DKG query strategy for root cause localization
+      - fix template with {placeholders} for Layer 1 resolution
+  (2) Proposed category enters PROPOSED state (rules engine lifecycle).
+      Compile-time validation: regex compiles, template parses.
+  (3) After independent approval, CANDIDATE -> ACTIVE.
+
+Trust boundary: auditor-sourced rules need independent approval
+(reuse existing trust model from rules engine).
+
+New type: FailureCategoryProposal { pattern, category_name, fix_template,
+  source_violations: Vec<ViolationId>, confidence: f32 }.
+~200-300 LOC.
+
+wire it in: self-discovery must monitor auditor violation records in SSB.
+Pattern matching on failure_category + symbol kind. Proposed categories
+must enter rules engine lifecycle (existing PROPOSED->CANDIDATE->ACTIVE).
+FailureTaxonomy must be expandable at runtime without recompilation.
+
+prerequisite: A-6 (rules.db + self-discovery infrastructure), A-2 (hooks work).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-37: RA VRAM-TIER LAYER CONFIGURATION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-37 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  VRAM-TIER CONFIGURATIONS section (full table: 8/12/16/24/48GB tiers)
+  CLOUD BUDGET ECONOMICS section (cloud config, elai_cc.toml fields)
+  LAYER 4 section (AB-MCTS branch limits per VRAM tier)
+  DESIGN PRINCIPLES rule 9 (cloud as scalpel)
+
+then read the current source:
+  - grep for "vram" or "VRAM" or "nvml" or "sysinfo" in .elai_cc/crates/
+  - .elai_cc/crates/providers/src/ (sidecar, model pool, VRAM accounting)
+  - .elai_cc/crates/core/ (type patterns)
+  - .elai_cc/crates/reasoning/src/ (if exists — layer definitions)
+
+task: implement step A-37 — at startup, detect available VRAM via
+nvml-wrapper (or sysinfo fallback) and configure reasoning layer availability.
+
+VramTierConfig type:
+  vram_detected_gb: f32,
+  tier: VramTier { Gb8, Gb12, Gb16, Gb24, Gb48 },
+  available_layers: Vec<ReasoningLayer>,  // 1-6
+  ab_mcts_max_branches: usize,           // 5 on 8GB, 15 on 12GB+, 20 on 16GB+
+  cloud_importance: CloudImportance,      // Higher on 8GB, Normal on 12GB+
+  offline_swap_strategy: Option<SwapStrategy>,
+
+Layer availability per tier:
+  8GB:  L1,2,3,4(5 branches),5,6     — cloud MORE IMPORTANT (weak local diagnosis)
+  12GB: L1,2,3,4(15 branches),5,6    — full pipeline
+  16GB: L1,2,3,4(20 branches),5,6
+  24GB: L1,2,3,4,5,6                  — dual-model (14B gen + 7B verify)
+  48GB: L1,2,3,4(full),5,6           — multi-model
+
+Offline mode: Layers 5-6 replaced by model swap (8GB: swap 3B->7B->diagnose
+  ->swap back, ~10-15s) or human escalation with diagnostic summary.
+
+Cloud config in elai_cc.toml [cloud] section:
+  enabled, monthly_budget_usd=20.0, daily_soft_limit_usd=0.70,
+  per_task_max_generations=3, diagnostic_model="haiku",
+  generation_model="sonnet", opus_allowed=false.
+  [cloud.escalation]: haiku_max_per_baby_step=2, sonnet_max_per_baby_step=1,
+  opus_max_per_task=1.
+~250-350 LOC.
+
+wire it in: VramTierConfig must be available to reasoning/ crate for layer
+routing decisions. AB-MCTS must read max_branches from VramTierConfig.
+CloudSpendTracker must read budget from [cloud] config. VRAM detection
+must run at startup alongside existing model loading.
+
+prerequisite: A-17 (GG sidecar signals for Layer 4 scoring).
+
+[APPEND COMMON FOOTER]
+
+
+========================================================================
+GROUP 3K: RAG PRODUCTION HARDENING (internal knowledge/ crate)
+========================================================================
+
+
+------------------------------------------------------------------------
+STEP 3K.1: ADAPTIVE CHUNKING
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3K.txt
+  (step 3K.1 section — full task description)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-index-pre0-2D.txt
+  (Phase 1A and 1B summaries — understand what exists)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/src/bm25.rs (current 50-line window chunking)
+  - .elai_cc/crates/knowledge/src/dkg.rs or lib.rs (LanguageGrammar trait,
+    tree-sitter grammar access)
+  - grep for "window" or "chunk" in knowledge/src/
+
+task: implement step 3K.1 — replace 50-line fixed window chunking in
+BM25 indexing with AST-aware splitting. Reuse LanguageGrammar trait from
+DKG. Split at fn/impl/struct/enum/mod (Rust), def/class (Python).
+Fallback: 50-line windows for files that fail AST parse. Chunk size
+200-800 tokens, 50-token overlap, metadata per chunk.
+
+wire it in: bm25.rs indexing must use the new chunking. Tantivy schema
+must include chunk_type and line range fields. Re-index on format change.
+
+prerequisite: Phase 1A (DKG grammars), Phase 1B (BM25 index).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP 3K.2: QUERY EXPANSION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3K.txt
+  (step 3K.2 section — full task description)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/src/pipeline.rs (query flow, where to inject)
+  - grep for "query" or "search" in knowledge/src/pipeline.rs
+
+task: implement step 3K.2 — template-based multi-query expansion.
+Keyword extraction, code symbol CamelCase/snake_case variants, synonym
+expansion. Run BM25 + vector per expansion, merge, dedup by chunk ID,
+then rerank. Skip for queries <5 words.
+
+wire it in: expansion must happen in pipeline.rs BEFORE the search
+stages. Merged results must flow into the existing reranker.
+
+prerequisite: 3K.1 (adaptive chunking working).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP 3K.3: HyDE (HYPOTHETICAL DOCUMENT EMBEDDINGS)
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3K.txt
+  (step 3K.3 section — full task description including adversarial)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/src/pipeline.rs (where HyDE stage goes)
+  - .elai_cc/crates/providers/src/sidecar_client.rs (reuse for LLM call)
+  - .elai_cc/crates/knowledge/src/ (vector embedding infrastructure)
+  - grep for "SidecarClient" or "sidecar" in knowledge/ (check if already imported)
+
+task: implement step 3K.3 — HyDE (arxiv 2212.10496). Generate
+hypothetical answer via sidecar, embed that, search with hypothetical
+embedding, rerank against original query. Only for complex queries.
+Cache hypothetical embeddings 5 minutes. Graceful degradation if
+sidecar unavailable (skip HyDE, direct search). 3s timeout.
+
+wire it in: HyDE must be a stage in pipeline.rs between query expansion
+and vector search. Must integrate with Phase 1I resilience (circuit breaker).
+
+prerequisite: 3K.2 (query expansion), sidecar (Phase 3J done).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP 3K.4: QUERY TIER ROUTING
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3K.txt
+  (step 3K.4 section — full task description)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/src/pipeline.rs (full query flow)
+  - .elai_cc/crates/knowledge/src/lib.rs (public types, QueryPipeline API)
+  - grep for "SearchMode" in knowledge/ (Phase 1I degradation cascade —
+    understand how it differs from tier routing)
+
+task: implement step 3K.4 — QueryTier enum (FAST/STANDARD/DEEP/AUTO).
+FAST: BM25 only, <20ms. STANDARD: hybrid+reranker, <200ms.
+DEEP: expansion+HyDE+hybrid+reranker, <5s. Auto-detect from query.
+Add tier parameter to QueryPipeline::search(). Default AUTO.
+
+wire it in: tier routing must gate which pipeline stages execute.
+Must be backwards compatible — existing callers without tier param
+get AUTO behavior. Distinct from SearchMode cascade (degradation).
+
+prerequisite: 3K.1-3K.3 (all pipeline stages exist).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP 3K.5: RETRIEVAL QUALITY BENCHMARK
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3K.txt
+  (step 3K.5 section — full task description)
+
+then read the current source:
+  - .elai_cc/metrics/ (existing benchmark patterns, model_baseline.toml)
+  - .elai_cc/crates/knowledge/src/pipeline.rs (pipeline API for benchmarking)
+
+task: implement step 3K.5 — build evaluation set of 30 queries with
+known-correct answer chunks from the ELAI codebase. Measure Recall@5,
+Recall@10, MRR, latency p50/p95 per tier. Record in
+.elai_cc/metrics/phase_3K_rag.toml. Regression gate: no metric >5%
+regression without documented explanation.
+
+prerequisite: 3K.1-3K.4 (all improvements complete).
+
+[APPEND COMMON FOOTER]
+
+
+========================================================================
+GROUP B: PHASE 4 IMPLEMENTATION
+========================================================================
+
+
+========================================================================
+GROUP A CONTINUED: PROMPT-TO-ARCHITECTURE CONVERSION
+========================================================================
+
+These steps convert Claude Code's original ~12,600-token system prompt
+into architectural enforcement. Each step replaces a category of prompt
+instructions with Rust code that physically prevents violations.
+
+Token savings summary:
+  A-26 (tool routing):      ~375 tokens removed from prompt
+  A-27 (bash safety):       ~550 tokens removed from prompt
+  A-28 (git commit tool):   ~4,500 tokens removed from prompt (biggest win)
+  A-29 (agent template):    ~3,875 tokens removed from prompt
+  A-30 (output postprocessor): ~375 tokens removed from prompt
+  A-31 (action classifier): ~550 tokens removed from prompt
+  TOTAL: ~10,225 prompt tokens -> ~220 tokens of tool descriptions + Rust code
+
+All six steps are independent — no dependencies between them or on
+other A-steps. Can run in parallel set 1.
+
+
+------------------------------------------------------------------------
+STEP A-26: TOOL ROUTING LAYER
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-26 section only)
+
+F:\.ELAI_workflow\docs\claude-code-system-prompts-full.md
+  Section 7 "Using Your Tools" — the 6 rules this step replaces:
+    "use Read not cat", "use Edit not sed", "use Write not echo",
+    "use Glob not find", "use Grep not grep/rg"
+  Understand EXACTLY what behavior these rules enforce.
+
+then read the current source:
+  - .elai_cc/crates/tools/src/lib.rs (find Bash tool handler, tool dispatch)
+  - grep for "BashTool" or "bash" or "execute_command" in .elai_cc/crates/tools/
+  - understand the tool dispatch path: how does a Bash call flow from
+    model request to execution?
+
+task: implement step A-26 — tool routing layer in Bash tool handler.
+
+When the Bash tool receives a command, BEFORE execution, match it against
+routing rules:
+  cat|head|tail + filepath -> reject, hint: "Use the Read tool instead"
+  sed|awk + filepath -> reject, hint: "Use the Edit tool instead"
+  echo.*>|cat.*<<|heredoc -> reject, hint: "Use the Write tool instead"
+  find|ls + glob pattern -> reject, hint: "Use the Glob tool instead"
+  grep|rg + pattern -> reject, hint: "Use the Grep tool instead"
+
+Implementation:
+  - new module: crates/tools/src/routing_rules.rs
+  - struct RoutingRule { pattern: Regex, target_tool: &str, hint: String }
+  - fn check_routing(command: &str) -> Option<RoutingRejection>
+  - integrate into Bash tool handler BEFORE command execution
+  - configurable: [tools.routing] section in elai_cc.toml
+    enabled = true (default), rules can be overridden/disabled
+  - return ToolResult::Error with the hint message on match
+
+Do NOT block compound commands that happen to contain these — only match
+when the pattern is the PRIMARY command (first token or after pipe).
+Allow explicit override: if command starts with "!" prefix, skip routing.
+
+~150-200 LOC.
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-27: BASH SAFETY FILTER
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-27 section only)
+
+F:\.ELAI_workflow\docs\claude-code-system-prompts-full.md
+  Bash tool prompt — find ALL safety rules:
+    "never force push", "never skip hooks (--no-verify)", "never --no-gpg-sign",
+    "never use -i flag (interactive)", "never run destructive git commands
+    unless explicitly requested", list of destructive ops
+  Section 6 "Executing Actions With Care" — categorization of risky ops
+
+then read the current source:
+  - .elai_cc/crates/tools/src/lib.rs (Bash tool, find validation pipeline)
+  - grep for "validation" or "validate" or "tier" in .elai_cc/crates/tools/
+  - understand the existing 5-tier validation pipeline — where does safety
+    filtering fit in?
+
+task: implement step A-27 — bash safety filter as a stage in the
+existing 5-tier validation pipeline.
+
+Blocklist patterns (severity BLOCK — reject with explanation):
+  git push --force / git push -f (explain: "use --force-with-lease instead")
+  git reset --hard (explain: "creates a backup branch first, or use git stash")
+  git checkout -- / git restore --staged (explain: "irreversible, confirm first")
+  rm -rf (explain: "use trash-put or confirm first")
+  git rebase -i / git add -i (explain: "interactive mode not supported")
+  --no-verify / --no-gpg-sign (explain: "investigate hook failure instead")
+
+Blocklist patterns (severity WARN_AND_CONFIRM — allow if interactive confirm):
+  git branch -D (warn: "force-deletes branch, use -d for safe delete")
+  git clean -f (warn: "removes untracked files permanently")
+  git push to main/master (warn: "pushing directly to main branch")
+
+Implementation:
+  - new module: crates/tools/src/safety_filter.rs
+  - struct SafetyPattern { regex: Regex, severity: Severity, message: String, alternative: String }
+  - enum Severity { Block, WarnAndConfirm }
+  - fn check_safety(command: &str) -> Vec<SafetyViolation>
+  - integrate as a new tier in the 5-tier validation pipeline (becomes 6-tier)
+  - configurable: [tools.safety] section in elai_cc.toml
+    patterns can be overridden, severity can be changed, new patterns added
+  - BLOCK returns ToolResult::Error
+  - WARN_AND_CONFIRM returns ToolResult::Confirmation (if interactive mode)
+    or ToolResult::Error (if autonomous mode)
+
+~150-200 LOC.
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-28: GIT COMMIT WORKFLOW TOOL
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-28 section only)
+
+F:\.ELAI_workflow\docs\claude-code-system-prompts-full.md
+  Bash tool prompt — "Committing changes with git" section (full 4-step
+    parallel workflow this tool replaces — read it carefully)
+  Bash tool prompt — "Creating pull requests" section (optional git_pr tool)
+
+then read the current source:
+  - .elai_cc/crates/tools/src/lib.rs (tool registration pattern, ToolDef)
+  - grep for "git2" or "Repository" in .elai_cc/crates/
+  - grep for "ToolDef" or "register_tool" in .elai_cc/crates/tools/
+
+task: implement step A-28 — git_commit tool.
+
+Tool definition:
+  name: "git_commit"
+  description: "Create a git commit with specified files and message."
+  parameters:
+    files: Vec<String> — files to stage (NEVER "." or "-A")
+    message: String — commit message summary (model provides 1-2 sentences)
+    include_test_results: bool — if true, append test pass/fail counts
+
+Internal workflow (model calls ONE tool, this runs automatically):
+  1. git status (verify files exist, are modified)
+  2. git diff --staged + git diff for listed files (verify changes)
+  3. git log --oneline -5 (match commit message style)
+  4. stage ONLY the listed files (git add <file1> <file2>...)
+  5. format commit message:
+     - model's summary as first line
+     - test results block if include_test_results=true
+     - NEVER add Co-Authored-By or AI attribution (hard rule from CLAUDE.md)
+  6. git commit via HEREDOC format
+  7. git status to verify success
+  8. return: { success: bool, commit_hash: String, files_committed: Vec<String> }
+
+Optional extension: git_pr tool (same pattern, wraps gh pr create).
+
+Tool description in schema: ~30 tokens.
+Replaces: ~4,500 tokens of Bash tool git workflow instructions.
+
+~250-350 LOC.
+
+wire it in: tool must be registered in ToolRegistry. Must be callable
+by the model. Verify tool appears in tool list when model starts.
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-29: AGENT PROMPT TEMPLATE
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-29 section only)
+
+F:\.ELAI_workflow\docs\claude-code-system-prompts-full.md
+  Agent tool prompt (full ~80 lines, ~3,875 tokens):
+    agent types, when to use, prompt-writing guide, foreground vs background,
+    worktree isolation, "brief like a smart colleague" instructions
+  Section 18 "Agent Environment Notes" (sub-agent output contract)
+
+then read the current source:
+  - .elai_cc/crates/tools/src/lib.rs (find build_agent_system_prompt,
+    Agent tool handler, how sub-agents are spawned)
+  - .elai_cc/crates/orchestrator/src/ (agent pool, session context)
+  - grep for "build_agent" or "subagent" or "AgentHandle" in .elai_cc/
+
+task: implement step A-29 — agent prompt template in orchestrator.
+
+When the model spawns a sub-agent, it provides ONLY:
+  - task: string (what to do, 1-3 sentences)
+  - subagent_type: string (optional, e.g. "research", "audit")
+
+The orchestrator wraps this in a structured template AUTOMATICALLY:
+
+  TEMPLATE:
+  === CONTEXT ===
+  Working directory: {cwd}
+  Git branch: {branch}
+  Active files: {from SSB or recent tool calls}
+  Model tier: {from ModelCapabilityProfile}
+
+  === TASK ===
+  {model's raw task string}
+
+  === CONSTRAINTS ===
+  {active rules from rules.db relevant to task}
+  {model tier limits: max output tokens, max context}
+  Output format: concise, no emojis, absolute paths only.
+  Report back: only load-bearing findings, not raw tool output.
+
+  === OUTPUT ===
+  Max length: {configured per subagent_type}
+  Format: {configured per subagent_type}
+
+This means the Agent tool description drops to ~50 tokens:
+  "Spawn a sub-agent to handle a delegated task. Provide: task (string),
+   subagent_type (optional string)."
+
+Implementation:
+  - new module: crates/orchestrator/src/agent_template.rs
+  - struct AgentTemplate with configurable sections
+  - fn build_agent_prompt(task: &str, agent_type: &str, context: &SessionContext) -> String
+  - integrate into existing agent spawning path (replace build_agent_system_prompt)
+  - configurable: [agents.template] section in elai_cc.toml
+
+~200-250 LOC.
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-30: OUTPUT POSTPROCESSOR
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-30 section only)
+
+F:\.ELAI_workflow\docs\claude-code-system-prompts-full.md
+  Section 8 "Tone and Style" (~100 tokens: no emojis, concise, file refs)
+  Section 9 "Output Efficiency" (~175-450 tokens: brevity, inverted pyramid)
+  Section 15 "Numeric Length Anchors" (~30 tokens: <=25 words between tools)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/src/ (find response handling path —
+    where does model output go after generation and before display?)
+  - grep for "response" or "output" or "display" in orchestrator/src/
+  - understand the flow: model generates -> ??? -> user sees output
+
+task: implement step A-30 — output postprocessor in orchestrator.
+
+Three processing stages applied to every model response:
+
+Stage 1: Emoji stripper
+  - regex to remove Unicode emoji ranges (U+1F600-U+1F64F, U+1F300-U+1F5FF,
+    U+2600-U+26FF, U+2700-U+27BF, etc.)
+  - preserve technical symbols (arrows, math operators)
+  - configurable: enabled by default, can disable per session
+
+Stage 2: Sycophancy filter
+  - strip leading affirmation patterns: "Sure!", "Of course!", "Great question!",
+    "Absolutely!", "That's a great idea!", "Happy to help!"
+  - regex list, case-insensitive, match at string start only
+  - trim resulting leading whitespace
+
+Stage 3: Length enforcer
+  - per-tier max_response_tokens from ModelCapabilityProfile
+  - if response exceeds limit, truncate at last complete sentence
+  - append "[response truncated]" marker
+  - configurable: [output.max_tokens] per tier in elai_cc.toml
+  - between-tool-calls limit: configurable, default disabled for local models
+    (the <=25 word rule is too aggressive for models that need more reasoning)
+
+Implementation:
+  - new module: crates/orchestrator/src/output_postprocessor.rs
+  - struct OutputPostprocessor with configurable stages
+  - fn process(response: &str, config: &OutputConfig) -> String
+  - integrate into response pipeline AFTER model generation, BEFORE display
+  - configurable: [output] section in elai_cc.toml
+
+~150-200 LOC.
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-31: ACTION CLASSIFIER + CONFIRMATION GATE
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the A-31 section only)
+
+F:\.ELAI_workflow\docs\claude-code-system-prompts-full.md
+  Section 6 "Executing Actions With Care" (full ~40 lines):
+    reversibility check, blast radius framework, categorization of risky
+    actions (destructive, hard-to-reverse, shared-state), git push gate
+  Understand the FULL categorization — this is the spec.
+
+then read the current source:
+  - .elai_cc/crates/tools/src/lib.rs (tool dispatch, PreToolUse hooks,
+    find DAIRA trace system)
+  - grep for "DAIRA" or "daira" or "trace" in .elai_cc/crates/tools/
+  - grep for "PreToolUse" or "confirmation" in .elai_cc/crates/
+  - understand: does ELAI already have a confirmation gate? If so, extend it.
+
+task: implement step A-31 — action classifier + confirmation gate.
+
+Classification (determined by tool name + argument patterns):
+  SAFE: Read, Glob, Grep, WebSearch, WebFetch, mcp_think, mcp_search_context
+    -> always allow, no confirmation
+  REVERSIBLE: Edit, Write, Bash (non-git, non-destructive)
+    -> allow, log to DAIRA trace with risk_level=REVERSIBLE
+  IRREVERSIBLE: git push, file delete (rm), git reset, database mutations
+    -> INTERACTIVE mode: require user confirmation before execution
+    -> AUTONOMOUS mode: require explicit policy override in elai_cc.toml
+  SHARED_STATE: PR create/comment, issue create/comment, message send, deploy
+    -> always require confirmation regardless of mode
+
+Argument pattern matching examples:
+  Bash("git push") -> IRREVERSIBLE
+  Bash("git status") -> SAFE
+  Bash("cargo test") -> REVERSIBLE
+  Bash("rm foo.rs") -> IRREVERSIBLE
+  Bash("ls") -> SAFE
+  Write("/path/to/file") -> REVERSIBLE
+  Agent spawning -> SAFE (sub-agent is sandboxed)
+
+Implementation:
+  - new module: crates/tools/src/action_classifier.rs
+  - enum RiskLevel { Safe, Reversible, Irreversible, SharedState }
+  - struct ActionClassification { risk: RiskLevel, reason: String }
+  - fn classify(tool_name: &str, args: &ToolArgs) -> ActionClassification
+  - integrate into PreToolUse hook chain
+  - extend DAIRA trace: add risk_level field to trace entries
+  - confirmation gate: if risk >= IRREVERSIBLE, emit ConfirmationRequest
+    through existing interactive confirmation channel
+  - configurable: [actions] section in elai_cc.toml
+    per-tool overrides, per-pattern overrides, autonomous policy
+
+~200-250 LOC.
+
+wire it in: classifier must run in PreToolUse hook chain. DAIRA trace
+must include risk_level. Confirmation gate must actually block execution
+until confirmed (not just log).
+
+[APPEND COMMON FOOTER]
+
+
+========================================================================
+GROUP B: PHASE 4 IMPLEMENTATION
+========================================================================
+
+
+------------------------------------------------------------------------
+STEP B-1: PHASE 4A — AGENT PROCESS ISOLATION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-1 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4A.txt
+  (FULL phase file — this is the primary spec)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/ (agent spawning from Phase 3C)
+  - grep for "AgentPool" or "AgentHandle" in .elai_cc/crates/
+  - grep for "IPC" or "named_pipe" or "unix_socket" in .elai_cc/
+
+task: implement Phase 4A — Tier C process isolation. Agents as isolated
+OS processes, IPC protocol (1-byte version + 4-byte length + postcard),
+ToolFilter at IPC layer, agent binary with no LLM/network/tools.
+Windows: AppContainer or restricted token + Job object.
+
+This is the gateway to all Phase 4 work. No update designs modify 4A.
+
+prerequisite: Phase 3 complete (it is).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-2: PHASE 4B — TOOLS + FAILURETAXONOMY EXPANSION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-2 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4B.txt
+  (FULL phase file)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  LAYER 1 section (FailureTaxonomy expansion, DiagnosticResult, RootCause)
+  LAYER 1 STEP 2 (SVRepair CFG analysis, DKG edge traversal)
+
+then read current source:
+  - grep for "FailureTaxonomy" in .elai_cc/crates/
+  - grep for "DiagnosticResult" or "RootCause" in .elai_cc/crates/
+
+task: implement Phase 4B — git2, validation pipeline, DAIRA trace,
+edit matching, ShortCoder. ALSO integrate:
+  [RA] FailureTaxonomy expansion with structured RootCause per category
+  [RA] DiagnosticResult type with fix_instruction per category
+  [RA] 3 new categories: LAZY_CODE, EMPTY_BODY, FILE_SIZE_EXCEEDED
+  [RA] SVRepair-style CFG analysis as optional deep localization
+  [RA] DKG-based import resolution for UNDEFINED_SYMBOL/MISSING_IMPORT
+
+prerequisite: B-1 (4A process isolation).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-3: PHASE 4C — PLUGINS + HOOKS
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-3 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4C.txt
+  (FULL phase file)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 3.1-3.2 (VERSION_GATE in T1/T2 hooks — already wired by A-2/A-6)
+
+F:\.ELAI_workflow\docs\specs\guide\code-completeness-enforcement-design.txt
+  sections 3.1-3.3 (lazy code T1, file size T1, AST completeness T2)
+  section 2.1 (ShortCoder in PostToolUse)
+
+then read current source:
+  - grep for "PreToolUse" or "PostToolUse" or "Hook" in .elai_cc/crates/
+  - read existing hook infrastructure from Phase 3J
+
+task: implement Phase 4C — hook system (PreToolUse/PostToolUse/Stop/
+PreCompact) intercepting IPC messages. Tiered static analysis integration.
+ALSO integrate: ShortCoder in PostToolUse, completeness hooks.
+
+prerequisite: B-1 (4A).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-4: CONSTRAINED DECODING
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-4 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 4 Principle 4 (FULL: CRANE adaptive constraints, CodeFast
+    early stopping, LogitsProcessor chain, vLLM vs ollama fallback)
+  section 13 (ConstrainedDecodingConfig type, DecodingMode enum)
+
+then read current source:
+  - .elai_cc/crates/providers/ (VllmProvider, OllamaProvider)
+  - grep for "constrained" or "grammar" or "json_schema" in .elai_cc/
+
+task: implement step B-4 — ConstrainedDecodingConfig, grammar-guided
+generation (EBNF), JSON schema mode, CRANE-style adaptive constraints,
+CodeFast early stopping.
+
+vLLM-dependent features behind cfg(feature="vllm"). Ollama gets JSON
+schema mode only.
+
+prerequisite: A-1 (done), A-10 (context budget knows model tier).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-5: PHASE 4D — PIPELINE FACTORY L1
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-5 section only — includes all integration points)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4D.txt
+  (FULL phase file)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  INTEGRATION section: Phase 4D
+
+F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  MODE 1 sections 1-6 (surgical mode)
+  MODE 2 sections 1-6 (oracle mode)
+  INTEGRATION + PHASE PLACEMENT sections
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 3 (baby step sizing, decomposition depth per tier)
+  section 4 Principles 1-3 (literal prompts, few-shot, templates)
+
+F:\.ELAI_workflow\docs\specs\guide\code-completeness-enforcement-design.txt
+  section 1.1 (FILE_PLAN block, replaces target_file)
+  section 1.3 (ModuleTree template per language)
+
+task: implement Phase 4D — FlashResearch, Designer agent, PipelineSpec.
+This is the LARGEST integration point. Integrate AT BUILD TIME:
+  [PM] SurgicalDecomposer, blast radius, project detection, regression gates
+  [PM] Oracle mode, source tier classification, /research command
+  [TE] decomposition depth per ModelCapabilityProfile
+  [TE] baby step sizing per model tier, template generation, few-shot from DKG
+  [CC] FILE_PLAN as 9th BabyStepSpec block, ModuleTree, file count limits
+  [RA] COMPLEXITY_HIGH marking, AB-MCTS budget, few-shot injection, escalation
+
+prerequisite: B-1 (4A), A-4 (ProjectProfile), A-1+A-10 (model tier).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-6: PHASE 4E — PIPELINE FACTORY L2
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-6 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4E.txt
+  (FULL phase file)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  INTEGRATION section: Phase 4E (BubbleUp + reasoning layers)
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 3 (phase sizing, DecompositionTree validation)
+
+F:\.ELAI_workflow\docs\specs\guide\code-completeness-enforcement-design.txt
+  section 2.1 (skeleton-first generation, fill protocol, mini-critic)
+  section 2.2 (bridge file templates per language)
+  section 1.2 (FileLineTracker, TOCTOU prevention)
+  section 5.3 (deterministic file splitter)
+  section 5.1 (lazy-code BubbleUp)
+
+task: implement Phase 4E — ExecutablePipeline, DAG repair, TreeNavigator,
+BubbleUpHandler. Integrate AT BUILD TIME:
+  [TE] phase sizing with model tier, DecompositionTree validation
+  [CC] skeleton-first generation + fill protocol + mini-critic
+  [CC] bridge file templates, FileLineTracker, file splitter, lazy-code BubbleUp
+  [RA] BubbleUpAction::DiagnoseAndRetry, escalation levels
+
+prerequisite: B-5 (4D), A-20 (MistakeBook).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-7: PHASE 4F — FEASIBILITY PROBE
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-7 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4F.txt
+  (FULL phase file)
+
+task: implement Phase 4F — hardware probe, novel step stubs,
+branch-and-explore in Tier C sandbox with baby step feasibility.
+No update designs modify 4F beyond its existing extensions.
+
+prerequisite: B-5 (4D), B-6 (4E).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-8: PHASE 4G — AUTONOMOUS MODE + RETRY + REASONING
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-8 section only — includes all integration points)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4G.txt
+  (FULL phase file)
+
+F:\.ELAI_workflow\docs\specs\guide\reasoning-architecture-design.txt
+  INTEGRATION section: Phase 4G
+  LAYER 4 section (AB-MCTS budget, branch limits per VRAM tier)
+  LAYER 5-6 sections (cloud escalation, budget economics)
+  CLOUD BUDGET ECONOMICS section
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 5 (FULL: retry economics, temperature schedule, futility
+    detection, best-of-N, progressive escalation, retry budget)
+
+task: implement Phase 4G — AutonomousGate, auto-advance, evidence checks.
+Integrate:
+  [TE] retry strategy, futility detection, best-of-N, progressive escalation
+  [RA] AutoAdvanceEvaluator, Layer 1-6 exhaustion escalation
+  [RA] CloudSpendTracker budget tiers, AB-MCTS branch budget per VRAM tier
+
+prerequisite: B-7 (4F), A-17 (GG signals), A-18 (repair context), A-20 (MistakeBook).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-9: CONSTRAINED DECODING FOR IMPORTS
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-9 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 2.3 (FULL: JSON Schema allowlist, EBNF grammar alternative,
+    auto-generation from Cargo.toml + deprecated_patterns, import-context)
+  AUDIT RESOLUTION LOG: BLOCK-4 (why negative lookahead fails, FSM fix)
+
+then read current source:
+  - .elai_cc/crates/providers/ (constrained decoding from B-4)
+  - grep for "ConstrainedDecoding" or "grammar" in providers/
+
+task: implement step B-9 — positive allowlist via JSON Schema or EBNF
+for import lines. Auto-generated from Cargo.toml/package.json +
+deprecated_patterns. vLLM-only, feature-gated.
+
+CRITICAL: positive allowlist, NOT negative lookahead (BLOCK-4).
+
+prerequisite: B-4 (constrained decoding infra), A-6 (deprecated_patterns).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-10: MAINTENANCE AUTOMATION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-10 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 4.2 (freshness decay recalculation: schedule, actions, pruning)
+  section 4.3 (steering vector refresh: trigger, pair generation, compute)
+
+then read current source:
+  - .elai_cc/crates/knowledge/src/freshness.rs (from A-13)
+  - compute_steering_vector.py (from A-8)
+  - grep for "dep.audit" or "dep_audit" in .elai_cc/ (from A-15)
+
+task: implement step B-10 — freshness decay recalculation automation,
+steering vector refresh triggered by deprecated_patterns changes.
+
+prerequisite: A-13 (freshness), A-8 (steering vector), A-15 (dep audit).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-11: PHASE 4H — SELF-MODIFICATION
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-11 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4H.txt
+  (FULL phase file)
+
+F:\.ELAI_workflow\docs\specs\guide\anti-staleness-enforcement.txt
+  section 4.1 (nightly dep audit — triggers from 4H self-mod loop)
+  section 4.3 (steering vector refresh — triggered by dep audit)
+
+task: implement Phase 4H — DGM config archive, staged evaluation,
+MSI convergence. Integrate: nightly dep audit trigger, steering
+vector refresh from anti-staleness.
+
+prerequisite: B-1 (4A).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-12: PHASE 4I — MEDIA VALIDATOR
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\update-implementation-order.txt
+  (the B-12 section only)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4I.txt
+  (FULL phase file)
+
+task: implement Phase 4I — Tier 1 deterministic media validation
+(ImageMagick, FFmpeg, etc.) + Tier 2 VLM structured output (advisory).
+Conditional — only if pipeline produces media.
+
+prerequisite: B-1 (4A).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP B-13: PHASE 4J — EMPIRE INTEGRATION (conditional)
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-4J.txt
+  (FULL phase file — if it exists)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-index-3A-4J.txt
+  (4J summary for context)
+
+then read the current source:
+  - grep for "empire" or "FactoryLine" or "brain" in .elai_cc/crates/
+  - .elai_cc/crates/orchestrator/ (IPC infrastructure from B-1/4A)
+
+task: implement Phase 4J — FactoryLine protocol client, brain
+registration with heartbeat, Empire event subscription with SSB bridge,
+capability exposure (4 capabilities), Empire repair pipeline.
+Feature-gated: cfg(feature="empire"). Cross-platform transport.
+
+Conditional — only when Empire codebase is accessible.
+
+prerequisite: B-1 (4A).
+
+[APPEND COMMON FOOTER]

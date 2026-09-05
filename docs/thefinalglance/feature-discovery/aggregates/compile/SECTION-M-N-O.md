@@ -1,0 +1,4304 @@
+# SECTION M–N–O — ELAI exhaustive super feature list (compiled)
+
+Self-contained compile of families **M** (commercial multi-seat), **N** (INTERLACE/unification), and **O** (personal research machine). Format matches other SECTION-* files: plan-unit grain, every distinct aggregate atom retained with ID + anchors, IX composes-with, superseded losers inline, user-facing surfaces, closing audit.
+
+Precedence: deep original ledger > summary orientation; explicit SUPERSEDED/CORRECT markers win target state. Status labels are plan-recorded unless an auditor independently verified.
+
+Sources (read-only): `docs/thefinalglance/feature-discovery/aggregates/M-AGGREGATE.md`, `N-AGGREGATE.md`, `O-AGGREGATE.md`.
+
+## System: M — Commercial shipping / multi-seat (entitlement, org policy, fleet evidence, release channel, packaging, EEF)
+
+Family M is the commercial shipping / multi-seat closing letter after B..L: M-0 index + MD-1..MD-5 doctrine + MA-1..MA-7 Section-A pointers + sessions M-1..M-6 and demand-gated enterprise rider M-7+. Status labels are plan-recorded claims unless an auditor re-verifies live code. Deep ledger DEEP-M-001 supersedes summary orientation; losers stay as **Superseded:** bullets with anchors.
+
+Source aggregate: `docs/thefinalglance/feature-discovery/aggregates/M-AGGREGATE.md` (DEEP-M-001 + 13-M-SUMMARY_INDEX (918 aggregate records)). Aggregate distinct atoms parsed for this family: 1073.
+
+### M-0: INDEX — commercial shipping / multi-seat doctrine (MD-1..MD-5, MA-1..MA-7, GATE M-0, waves)
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers M-001, M-SD, SUP | sample: M-0:L54-L54; M-0:L63-L63; M-0:L1-L1; M-0:L2-L3; M-0:L3-L4; M-0:L4-L5 | 67 non-summary-placed, 0 summary-placed, 70 total unique atoms in unit | IDs: SUP-002, M-001/M0-E042, M-001/M0-E048, M-001/M0-E001, M-001/M0-E002, M-001/M0-E003, M-001/M0-E004, M-001/M0-E005, …
+**Composes with**: A-1, A-4, B-43, G-2, G-8, G-9, J-59, K-1, K-3, K-6, K-24, M-1, M-2, M-3, M-4, M-5, M-5a, M-5b, M-5c, M-5d, M-6, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3; M-001/IX-002 → M-1, M-2, M-3, M-4, M-5a, M-5b, M-5c, M-5d; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-2, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-1, M-2, M-3, M-4, M-5, M-6; M-001/IX-007 → M-2, M-3, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-1, M-4; M-001/IX-010 → K-24, M-1, M-3, M-5a, M-5d
+
+- Superseded: (SUP-002) [superseded] [superseded] | Winner (target state): M-001/M0-E004 + M-001/M0-E051 + M-001/SD-M0-005 (M-7+ enterprise rider) | Loser (retained): SUMMARY residual text calling enterprise rider M-6+ (13-M:L141) | Reason: M-6 was reassigned to evidence-format open standard 2026-07-05; informal M-6+ renumbered to M-7+. Summary header already notes the correction; body L141 still says M-6+. Target state: M-7+. | Winner anchor: DEEP-M-001.discovery.md:L38, L84, L509; M-0:L4-L5, L68-L70 | Loser anchor: 13-M-SUMMARY_INDEX.discovery.md:L141 (vs L2-L4 header correction)
+- [status] (M-001/M0-E006) [E/STATUS] USER OVERRIDE of K-10: K-10 defers new plan LETTERS until A-1..A-4 + K-3 are DONE; the user authorized this letter 2026-07-02 for authoring only. (M-0:L8-L11 | ledger-line: DEEP-M-001.discovery.md:L39)
+- [status] (M-001/M0-E040) [E/STATUS] M-1 is seat entitlement + purchase rail [KEYSTONE], WAVE M1. (M-0:L51-L52 | ledger-line: DEEP-M-001.discovery.md:L73)
+- [status] (M-001/M0-E041) [E/STATUS] M-2 is org policy pack + distribution + drift detection, WAVE M2. (M-0:L53-L53 | ledger-line: DEEP-M-001.discovery.md:L74)
+- [status] (M-001/M0-E042) [SURFACE-RELATED/E/STATUS] M-3 is fleet evidence rollup (`elai org report`), WAVE M3, depends M-1, MA-3, MA-6. (M-0:L54-L54 | DEEP-M-001.discovery.md:L75)
+- [status] (M-001/M0-E043) [E/STATUS] M-4 is signed release channel + auto-updater + support bundle, WAVE M2, depends MA-4. (M-0:L55-L55 | ledger-line: DEEP-M-001.discovery.md:L76)
+- [status] (M-001/M0-E044) [E/STATUS] M-5 is commercial packaging + verifier OSS + trust continuity, WAVE M1(a,d)/M3(b,c). (M-0:L56-L56 | ledger-line: DEEP-M-001.discovery.md:L77)
+- [status] (M-001/M0-E045) [E/STATUS] M-6 is evidence format as a versioned open standard (EEF v1), WAVE M3, depends M-5a. (M-0:L57-L57 | ledger-line: DEEP-M-001.discovery.md:L78)
+- [status] (M-001/M0-E046) [E/STATUS] GATE M-0: no M session EXECUTES until K's A-1..A-4 + K-3 are DONE and K-24 slices L1..L4 are live. (M-0:L59-L62 | ledger-line: DEEP-M-001.discovery.md:L79)
+- [status] (M-001/M0-E048) [SURFACE-RELATED/E/STATUS] WAVE M1: M-1; M-5a (verifier OSS extraction) + M-5d (tiers.toml). (M-0:L63-L63 | DEEP-M-001.discovery.md:L81)
+- [status] (M-001/M0-E049) [E/STATUS] WAVE M2: M-2; M-4. (M-0:L64-L64 | ledger-line: DEEP-M-001.discovery.md:L82)
+- [status] (M-001/M0-E050) [E/STATUS] WAVE M3: M-3; M-5b (EULA/DPA/pricing under lint) + M-5c (continuity statement); M-6 (after M-5a extraction + stable emit paths). (M-0:L65-L66 | ledger-line: DEEP-M-001.discovery.md:L83)
+- [gate] (M-001/M0-E007) [E/STATUS] M EXECUTION stays gated behind the K-10 order; M is authored last and runs last. (M-0:L10-L11 | ledger-line: DEEP-M-001.discovery.md:L40)
+- [gate] (M-001/M0-E017) [E/RECOVERY] MD-1 NEVER-BRICK: entitlement failure/expiry degrades to the FREE tier — never blocks local work, never touches safety gates. (M-0:L25-L26 | ledger-line: DEEP-M-001.discovery.md:L50)
+- [gate] (M-001/M0-E018) [E/FAIL] MD-1 commerce is fail-OPEN by design — the one deliberate, recorded inversion of R1. (M-0:L26-L28 | ledger-line: DEEP-M-001.discovery.md:L51)
+- [gate] (M-001/M0-E019) [E/SEC] MD-1 keeps safety gates fail-closed exactly as before. (M-0:L27-L28 | ledger-line: DEEP-M-001.discovery.md:L52)
+- [gate] (M-001/M0-E020) [E/CFG] The free tier is the base state, so W-2 is satisfied without an env gate. (M-0:L28-L29 | ledger-line: DEEP-M-001.discovery.md:L53)
+- [gate] (M-001/M0-E029) [E/PRIV] Rollups aggregate NUMBERS + HASHES, never raw transcripts (G-9 is a precondition of every export). (M-0:L37-L38 | ledger-line: DEEP-M-001.discovery.md:L62)
+- [gate] (M-001/M0-E031) [E/CLAIM] "$20=$200"-class claims stay gated on K-24's measured $/resolved-task number. (M-0:L40-L40 | ledger-line: DEEP-M-001.discovery.md:L64)
+- [gate] (M-001/M0-E032) [E/DEP] MA-1 points at K-24 BCC billing/credits — the metering rail M-1's entitlement gates (L1..L4 before M-1 live leg). (M-0:L42-L43 | ledger-line: DEEP-M-001.discovery.md:L65)
+- [gate] (M-001/M0-E034) [E/DEP] MA-3 points at J-59 per-seat memory + trust isolation — the data-governance slice; gates M-3's rollup. (M-0:L45-L45 | ledger-line: DEEP-M-001.discovery.md:L67)
+- [gate] (M-001/M0-E036) [E/DEP] MA-5 points at K-3/K-11 PR evidence emitter — the per-repo distribution leg M-3 aggregates above. (M-0:L47-L47 | ledger-line: DEEP-M-001.discovery.md:L69)
+- [gate] (M-001/M0-E052) [E/DEFER] Enterprise rider is DEMAND-GATED: authored only when >=3 paying orgs ask, or a signed deal is blocked on it. (M-0:L70-L71 | ledger-line: DEEP-M-001.discovery.md:L85)
+- [gate] (M-001/M0-E053) [E/LIMIT] Until the demand gate fires, K-0:531 non-goal stands and the M-2 file-distributed policy pack is the org story. (M-0:L71-L72 | ledger-line: DEEP-M-001.discovery.md:L86)
+- [gate] (M-001/M0-E054) [E/FAIL] Re-proposing an org SaaS before the gate fires is a P0-grade miss (feature-map Section 4 discipline). (M-0:L72-L73 | ledger-line: DEEP-M-001.discovery.md:L87)
+- (M-001/M0-E001) [E/STATUS] M-plan is the COMMERCIAL SHIPPING / MULTI-SEAT closing letter after B..L. (M-0:L1-L1 | ledger-line: DEEP-M-001.discovery.md:L34)
+- (M-001/M0-E002) [E/STATUS] Generated 2026-07-02 in one wave by the main LLM in-band via paper-to-plan PHASE 4-5, with gap analysis at `workflow/reasoning/steal-multiseat-gap-2026-07-02.md`. (M-0:L2-L3 | ledger-line: DEEP-M-001.discovery.md:L35)
+- (M-001/M0-E003) [E/STATUS] Scope is 6 sessions M-1..M-6 plus 7 Section-A execution pointers MA-1..MA-7. (M-0:L3-L4 | ledger-line: DEEP-M-001.discovery.md:L36)
+- (M-001/M0-E004) [E/STATUS] M-6 was appended 2026-07-05 (evidence-format open standard; spec-eval ADD-1, user-directed); the rider’s informal "M-6+" slot was renumbered to M-7+. (M-0:L4-L5 | ledger-line: DEEP-M-001.discovery.md:L37)
+- (M-001/M0-E005) [E/STATUS] Doctrine inherits F-0 W-1..W-10 + G-0 GD-1..GD-5 + K-0 KD-1..KD-5 and ADDS MD-1..MD-5. (M-0:L5-L6 | ledger-line: DEEP-M-001.discovery.md:L38)
+- (M-001/M0-E008) [E/CAP] B..L finished equals a sellable SINGLE seat; M makes the seat SELLABLE TO A COMPANY. (M-0:L13-L16 | ledger-line: DEEP-M-001.discovery.md:L41)
+- (M-001/M0-E009) [E/CAP] M packages the verified seat into something an org can buy, deploy, police, and audit. (M-0:L14-L16 | ledger-line: DEEP-M-001.discovery.md:L42)
+- (M-001/M0-E010) [E/CAP] M-1 is a seat entitlement a payment can mint and a machine can verify offline. (M-0:L16-L17 | ledger-line: DEEP-M-001.discovery.md:L43)
+- (M-001/M0-E011) [E/CAP] M-2 is an org policy pack every seat obeys and cannot weaken. (M-0:L17-L17 | ledger-line: DEEP-M-001.discovery.md:L44)
+- (M-001/M0-E012) [E/CAP] M-3 is a fleet evidence rollup that answers the org-side buyer K-7 targets. (M-0:L17-L18 | ledger-line: DEEP-M-001.discovery.md:L45)
+- (M-001/M0-E013) [E/CAP] M-4 is a signed release channel + updater + support path. (M-0:L18-L18 | ledger-line: DEEP-M-001.discovery.md:L46)
+- (M-001/M0-E014) [E/CAP] M-5 is the commercial/legal wrapper including the GTM open-source-verifier decision. (M-0:L18-L19 | ledger-line: DEEP-M-001.discovery.md:L47)
+- (M-001/M0-E015) [E/DEP] Approximately 60% of M is composition of shipped/planned substrate: K-24 billing rail, J-49/J-59 per-seat, B-43 installer, K-6/K-7 evidence pack, G-8/G-9 signing/redaction, K-1 claims lint. (M-0:L19-L21 | ledger-line: DEEP-M-001.discovery.md:L48)
+- (M-001/M0-E016) [E/CAP] The net-new is exactly the commerce machinery no prior letter owns (grep-proof in the gap file). (M-0:L20-L22 | ledger-line: DEEP-M-001.discovery.md:L49)
+- (M-001/M0-E021) [E/SEC] MD-2 OFFLINE-VERIFIABLE COMMERCE: every entitlement / policy pack / fleet bundle verifies OFFLINE using the G-8 local-Merkle/signature pattern. (M-0:L30-L31 | ledger-line: DEEP-M-001.discovery.md:L54)
+- (M-001/M0-E022) [E/LIMIT] The license service is issue/renew/revoke ONLY — never a runtime dependency. (M-0:L31-L32 | ledger-line: DEEP-M-001.discovery.md:L55)
+- (M-001/M0-E023) [E/CAP] A seat that never phones home keeps working (MD-1 floor). (M-0:L32-L32 | ledger-line: DEEP-M-001.discovery.md:L56)
+- (M-001/M0-E024) [E/LIMIT] MD-3 MINIMAL FIRST-PARTY CLOUD: exactly one tiny endpoint (mint/renew/revoke). (M-0:L33-L33 | ledger-line: DEEP-M-001.discovery.md:L57)
+- (M-001/M0-E025) [E/FLOW] Org policy and fleet evidence stay file/git-distributable. (M-0:L33-L34 | ledger-line: DEEP-M-001.discovery.md:L58)
+- (M-001/M0-E026) [E/LIMIT] NO SSO/SAML/SCIM/RBAC/org-console build — the K-0:531 non-goal + GTM "agencies NOT enterprise" decision stand. (M-0:L34-L35 | ledger-line: DEEP-M-001.discovery.md:L59)
+- (M-001/M0-E027) [E/PRIV] MD-4 SEAT-PRIVACY DEFAULT: per-seat journal/memory isolated (J-59). (M-0:L36-L36 | ledger-line: DEEP-M-001.discovery.md:L60)
+- (M-001/M0-E028) [E/PRIV] Org sharing is opt-in per artifact class (K-0:382 decision upheld). (M-0:L36-L37 | ledger-line: DEEP-M-001.discovery.md:L61)
+- (M-001/M0-E030) [E/CLAIM] MD-5 CLAIMS DISCIPLINE ON MONEY (KD-1 extended): no pricing/value/tier copy ships outside the K-1 claims lint. (M-0:L39-L40 | ledger-line: DEEP-M-001.discovery.md:L63)
+- (M-001/M0-E033) [E/DEP] MA-2 points at J-49 multi-seat local-serving admission — per-user quota on a shared box; M-1 tier feeds it. (M-0:L44-L44 | ledger-line: DEEP-M-001.discovery.md:L66)
+- (M-001/M0-E037) [E/DEP] MA-6 points at K-6/K-7/K-13 compliance export + briefs — the per-seat artifacts M-3 rolls up, M-5 wraps. (M-0:L48-L48 | ledger-line: DEEP-M-001.discovery.md:L70)
+- (M-001/M0-E038) [E/DEP] MA-7 points at K-23 multi-repo workspace — orthogonal axis; noted to prevent scope confusion. (M-0:L49-L49 | ledger-line: DEEP-M-001.discovery.md:L71)
+- (M-001/M0-E039) [E/LIMIT] Section-A pointers sequence EXISTING files only — M never re-authors them (GD-1). (M-0:L42-L42 | ledger-line: DEEP-M-001.discovery.md:L72)
+- (M-001/M0-E047) [E/CLAIM] Selling before the measured number, distribution leg, and metering rail exist is selling an unmeasured claim (KD-1). (M-0:L60-L62 | ledger-line: DEEP-M-001.discovery.md:L80)
+- (M-001/M0-E055) [E/EVENT] LIVE SSB baseline 268/577 (K-plan stamp 2026-06-26, ssb.rs:1508 / action_type_lock.rs:775 — re-grep at edit). (M-0:L75-L77 | ledger-line: DEEP-M-001.discovery.md:L88)
+- (M-001/M0-E056) [E/EVENT] M net +2..+4: +EntitlementEvent (M-1, Pattern-2), +OrgPolicyEvent (M-2, Pattern-2), optional +OrgReportEvent (M-3, prefer-reuse a K-6/G-8 row first), optional +ReleaseChannelEvent (M-4, prefer-reuse). (M-0:L77-L79 | ledger-line: DEEP-M-001.discovery.md:L89)
+- (M-001/M0-E057) [E/EVENT] M-5 = zero SSB (E-23-class + one crate extraction). (M-0:L79-L79 | ledger-line: DEEP-M-001.discovery.md:L90)
+- (M-001/M0-E058) [E/EVIDENCE] Live anchors are carried from K/L 2026-06-26..27 stamps + the 2026-07-02 gap-file greps. (M-0:L81-L83 | ledger-line: DEEP-M-001.discovery.md:L91)
+- (M-001/M0-E059) [E/EVIDENCE] `_grounding/M-GROUNDING-MAP.md` is generated at the FIRST M execution session (before any code) — every anchor re-grepped then. (M-0:L83-L84 | ledger-line: DEEP-M-001.discovery.md:L92)
+- (M-001/M0-E060) [E/CLAIM] Gap-existence claims are grep-proven in the gap file; external market/pricing figures are [EXTERNAL] and live only in M-5's lint-governed copy. (M-0:L84-L85 | ledger-line: DEEP-M-001.discovery.md:L93)
+- [deferred] (M-001/M0-E035) [E/DEP] MA-4 points at B-43 one-line install + B-45 dashboard installer — M-4 builds the updater they defer. (M-0:L46-L46 | ledger-line: DEEP-M-001.discovery.md:L68)
+- [deferred] (M-001/M0-E051) [E/DEFER] ENTERPRISE RIDER (recorded, NOT planned): SSO/SAML/SCIM/RBAC + hosted org console = FUTURE M-7+ (renumbered 2026-07-05; M-6 = evidence-format standard). (M-0:L68-L70 | ledger-line: DEEP-M-001.discovery.md:L84)
+- [summary-delta] (M-001/SD-M0-001) [Δ] **ADD** full MA-1..MA-7 Section-A pointer set (summary used MA-3/MA-4/MA-6 by name only; originals enumerate all seven targets and GD-1 non-reauthor rule). | summary-anchor: 13-M:L8, L460-L463, L660-L662 | source-atoms: M0-E032–M0-E039, M0-I001 (DEEP-M-001.discovery.md:L505)
+- [summary-delta] (M-001/SD-M0-002) [Δ] **ADD** exact enterprise demand gate: >=3 paying orgs ask OR a signed deal is blocked; re-proposing org SaaS early is P0-grade miss. | summary-anchor: 13-M:L70, L141-L142, L504-L505 | source-atoms: M0-E051–M0-E054 (DEEP-M-001.discovery.md:L506)
+- [summary-delta] (M-001/SD-M0-003) [Δ] **ADD** live SSB baseline anchors ssb.rs:1508 / action_type_lock.rs:775 and zero-SSB rule for M-5. | summary-anchor: 13-M:L9-L10, L548-L551 | source-atoms: M0-E055–M0-E057 (DEEP-M-001.discovery.md:L507)
+- [summary-delta] (M-001/SD-M0-004) [Δ] **ADD** first-execution grounding map generation path `_grounding/M-GROUNDING-MAP.md` and [EXTERNAL] pricing confinement to M-5. | summary-anchor: 13-M:L5-L7 | source-atoms: M0-E058–M0-E060 (DEEP-M-001.discovery.md:L508)
+- [summary-delta] (M-001/SD-M0-005) [Δ] **CORRECT** enterprise-rider numbering: originals authoritatively renumber informal M-6+ to M-7+ with M-6 = evidence format; summary already noted the header correction. | summary-anchor: 13-M:L2-L4, L141, L585 | source-atoms: M0-E004, M0-E051 (DEEP-M-001.discovery.md:L509)
+- [summary-delta] (M-001/SD-M0-006) [Δ] **ADD** exact wave membership including M-5a/d in M1, M-2/M-4 in M2, M-3/M-5b/c/M-6 in M3. | summary-anchor: 13-M:L463 | source-atoms: M0-E048–M0-E050 (DEEP-M-001.discovery.md:L510)
+- [ambiguity] (M-001/M0-A001) [A/STATUS] Exact DONE criteria for K A-1..A-4, K-3, and K-24 L1..L4 that open GATE M-0 are named but not restated in M-0. (M-0:L59-L62 | ledger-line: DEEP-M-001.discovery.md:L95)
+- [ambiguity] (M-001/M0-A002) [A/EVENT] Whether OrgReportEvent and ReleaseChannelEvent are created or reused is deferred to edit-time W-9 decision. (M-0:L77-L79 | ledger-line: DEEP-M-001.discovery.md:L96)
+- [inference] (M-001/M0-I001) [I/DEP] MA-1..MA-7 are sequencing pointers only; their targets remain owned by their home letters and must not be reimplemented under M. (M-0:L42-L49 | ledger-line: DEEP-M-001.discovery.md:L94)
+
+### M-1: seat entitlement + purchase rail [KEYSTONE]
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers M-001, M-SD, SUMMARY, SUP | sample: M-1:L18-L18; M-1:L37-L37; M-1:L42-L43; M-1:L49-L50; M-1:L50-L50; M-1:L53-L56 | 53 non-summary-placed, 52 summary-placed, 122 total unique atoms in unit | IDs: SUP-001, SUP-002, SUP-003, SUP-004, M-001/M1-E010, M-001/M1-E022, M-001/M1-E029, M-001/M1-E036, …
+**Composes with**: A-1, A-4, B-43, G-2, G-8, G-9, J-59, K-1, K-3, K-6, K-24, M-0, M-2, M-3, M-4, M-5, M-5a, M-5b, M-5c, M-5d, M-6, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-2, M-3, M-4, M-5a, M-5b, M-5c, M-5d, M-6; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-2, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-2, M-3, M-4, M-5, M-6; M-001/IX-007 → M-2, M-3, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-4; M-001/IX-010 → K-24, M-3, M-5a, M-5d
+
+- Superseded: (SUMMARY/M1-E043) [UI/SURFACE/superseded as target UI by SUP-001] A license-status line is paired with SettingsWindow. (M:L37-L38 | 13-M-SUMMARY_INDEX.discovery.md:L133)
+- Superseded: (SUMMARY/M1-E044) [STATUS/superseded as target UI by SUP-001] Exact SettingsWindow presentation is deferred to edit time under W-4. (M:L37-L38 | 13-M-SUMMARY_INDEX.discovery.md:L134)
+- Superseded: (SUP-001) [superseded] [superseded] | Winner (target state): M-001/M1-C001 + M-001/SD-M1-007 (deep) | Loser (retained): SUMMARY/M1-E043 + SUMMARY/M1-E044 (SettingsWindow license-status line) | Reason: Deep conflict register and summary delta CORRECT/REMOVE: numbered M-1 does not name SettingsWindow. Target state surfaces are `elai license status` + ExpiredGrace status banner + B-43 install-end activation. Summary SettingsWindow pairing is orientation-only and W-4 deferred speculation. | Winner anchor: DEEP-M-001.discovery.md:L165, L522; M-1:L37-L37, L50-L50, L56-L56 | Loser anchor: 13-M-SUMMARY_INDEX.discovery.md:L133-L134, L441, L508, L589
+- Superseded: (SUP-002) [superseded] [superseded] | Winner (target state): M-001/M0-E004 + M-001/M0-E051 + M-001/SD-M0-005 (M-7+ enterprise rider) | Loser (retained): SUMMARY residual text calling enterprise rider M-6+ (13-M:L141) | Reason: M-6 was reassigned to evidence-format open standard 2026-07-05; informal M-6+ renumbered to M-7+. Summary header already notes the correction; body L141 still says M-6+. Target state: M-7+. | Winner anchor: DEEP-M-001.discovery.md:L38, L84, L509; M-0:L4-L5, L68-L70 | Loser anchor: 13-M-SUMMARY_INDEX.discovery.md:L141 (vs L2-L4 header correction)
+- Superseded: (SUP-003) [superseded] [superseded] | Winner (target state): M-001/M4-E023 + M-001/SD-M4-002 (ReleaseChannelEvent arms named) | Loser (retained): SUMMARY/OBS ReleaseChannelEvent 'No variants specified' (13-M:L549) | Reason: Deep M-4 names Pattern-2 arms UpdateAvailable/Applied/RefusedHash/RolledBack (create-vs-reuse still W-9). Target state: arms known; prefer-reuse still open (AC-002). | Winner anchor: DEEP-M-001.discovery.md:L306, L549; M-4:L33-L34, L56-L57 | Loser anchor: 13-M-SUMMARY_INDEX.discovery.md:L273-L274, L549
+- Superseded: (SUP-004) [superseded] [superseded] | Winner (target state): Deep M-plan originals (DEEP-M-001 extraction) for all implement-level detail | Loser (retained): SUMMARY as sole authority for field schemas, CLI argument forms, fixture paths, module paths | Reason: Summary original-plan policy: originals inventoried but not read (13-M:L10). Deep ledger read all 7 originals completely. Where summary compresses and deep expands, deep description is target state; summary remains orientation inventory under SUMMARY/*. | Winner anchor: DEEP-M-001.discovery.md:L1-L11, L576-L585 | Loser anchor: 13-M-SUMMARY_INDEX.discovery.md:L10-L11, L606-L620
+- [status] (M-001/M1-E001) [E/STATUS] M-1 is Track M, lever SELLABLE, grounding STRONG (gap G1/G2, grep-proven; K-24 substrate PLANNED), nature BUILD, effort M-L, WAVE M1. (M-1:L1-L3 | ledger-line: DEEP-M-001.discovery.md:L106)
+- [status] (M-001/M1-E022) [SURFACE/E/SURFACE] CLI verbs: `elai license activate <file|key>`, `elai license status`, `elai license deactivate`. (M-1:L37-L37 | DEEP-M-001.discovery.md:L127)
+- [status] (M-001/M1-E036) [SURFACE-RELATED/E/STATE] Expiry -> 14-day grace (ExpiredGrace rows + status banner) -> DegradedToFree. (M-1:L49-L50 | DEEP-M-001.discovery.md:L141)
+- [status] (M-001/M1-E037) [SURFACE/E/SURFACE] ExpiredGrace emits a status banner (user-visible). (M-1:L50-L50 | DEEP-M-001.discovery.md:L142)
+- [status] (M-001/M1-E041) [E/DATA] WIRING produces: commerce/entitlement.rs (Entitlement, activate/status/deactivate, tier()), EntitlementEvent SSB (+1), mint-service runbook + operator ledger format. (M-1:L58-L60 | ledger-line: DEEP-M-001.discovery.md:L146)
+- [status] (M-001/M1-E044) [SURFACE-RELATED/E/TEST] trigger: `elai license activate fixtures/team-entitlement.signed && elai license status`. (M-1:L63-L63 | DEEP-M-001.discovery.md:L149)
+- [status] (SUMMARY/M1-E001) [STATUS] M-1 is the M keystone, lever SELLABLE, STRONG-grounded by gaps G1/G2, BUILD, effort M-L, wave M1. (M:L25-L26 | 13-M-SUMMARY_INDEX.discovery.md:L91)
+- [status] (SUMMARY/M1-E012) [CLI/SURFACE] The CLI exposes 'elai license status'. (M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L102)
+- [config] (M-001/M1-E010) [SURFACE-RELATED/E/CFG] Tiers are DATA (M-5d tiers.toml). (M-1:L18-L18 | DEEP-M-001.discovery.md:L115)
+- [config] (M-001/M1-E013) [E/LIMIT] LOCK-2 MD-2/MD-3: the license service does mint/renew/revoke ONLY. No telemetry, no runtime callback, no feature flags served remotely. (M-1:L23-L24 | ledger-line: DEEP-M-001.discovery.md:L118)
+- [config] (M-001/M1-E029) [SURFACE-RELATED/E/CFG] Free tier = everything shipped through L that is not explicitly Team-tier in tiers.toml (M-5d). (M-1:L42-L43 | DEEP-M-001.discovery.md:L134)
+- [config] (M-001/M1-E042) [SURFACE-RELATED/E/INT] WIRING consumes: G-8 signing core, K-24 grant path, tiers.toml (M-5d), ClockProvider. (M-1:L61-L61 | DEEP-M-001.discovery.md:L147)
+- [config] (SUMMARY/M1-E029) [CFG] Tier behavior is data-driven through M-5d tiers.toml under TD-3. (M:L32 | 13-M-SUMMARY_INDEX.discovery.md:L119)
+- [gate] (M-001/M1-E003) [E/CAP] Objective: turn a payment into a verifiable seat — a signed, OFFLINE-verifiable Entitlement that a payment mints, a machine activates, and every tier-gated feature reads. (M-1:L6-L9 | ledger-line: DEEP-M-001.discovery.md:L108)
+- [gate] (M-001/M1-E011) [E/RECOVERY] LOCK-1 MD-1: expiry/verification-failure => DegradedToFree + everything Free-tier keeps working + safety gates untouched. (M-1:L21-L22 | ledger-line: DEEP-M-001.discovery.md:L116)
+- [gate] (M-001/M1-E024) [E/EVENT] +EntitlementEvent (Pattern-2: Activated/Renewed/ExpiredGrace/DegradedToFree/Revoked/RefusedForged). (M-1:L38-L39 | ledger-line: DEEP-M-001.discovery.md:L129)
+- [gate] (M-001/M1-E030) [E/LIMIT] The gate READS data; the LLM never adjudicates tier (TD-3). (M-1:L43-L44 | ledger-line: DEEP-M-001.discovery.md:L135)
+- [gate] (M-001/M1-E035) [E/FLOW] Task 4: renewal/expiry loop — opportunistic re-check when online (never blocking). (M-1:L49-L49 | ledger-line: DEEP-M-001.discovery.md:L140)
+- [gate] (M-001/M1-E047) [E/TEST] Clock-forwarded expiry fixture (SeededClock) -> ExpiredGrace then DegradedToFree rows AND a Free-tier task still runs green AND every safety gate still fires (MD-1 negative arm). (M-1:L67-L69 | ledger-line: DEEP-M-001.discovery.md:L152)
+- [gate] (M-001/M1-E048) [E/TEST] A forged-signature entitlement is REFUSED (RefusedForged, R2). (M-1:L69-L70 | ledger-line: DEEP-M-001.discovery.md:L153)
+- [gate] (M-001/M1-E051) [E/LIMIT] Risk R2 fail-open abuse: Free-tier floor means piracy of Team features is a licensing matter, not a technical wall. Deliberate (MD-1); paid value concentrates in org pack/rollup which are org-workflow features, low piracy value. (M-1:L76-L78 | ledger-line: DEEP-M-001.discovery.md:L156)
+- [gate] (SUMMARY/M1-E017) [SAFE] Entitlement degradation leaves safety gates untouched. (M:L29 | 13-M-SUMMARY_INDEX.discovery.md:L107)
+- [gate] (SUMMARY/M1-E026) [INT] tier() gates K-24 credit grants. (M:L31 | 13-M-SUMMARY_INDEX.discovery.md:L116)
+- [gate] (SUMMARY/M1-E027) [INT] tier() gates M-2 Team features. (M:L31-L32 | 13-M-SUMMARY_INDEX.discovery.md:L117)
+- [gate] (SUMMARY/M1-E028) [INT] tier() gates M-3 Team features. (M:L31-L32 | 13-M-SUMMARY_INDEX.discovery.md:L118)
+- [gate] (SUMMARY/M1-E042) [OBS] EntitlementEvent has RefusedForged. (M:L36-L38 | 13-M-SUMMARY_INDEX.discovery.md:L132)
+- [gate] (SUMMARY/M1-E050) [TEST] After degradation, every safety gate must still fire. (M:L40-L41 | 13-M-SUMMARY_INDEX.discovery.md:L140)
+- [gate] (SUMMARY/M1-E051) [TEST] A forged signature must be refused under R2. (M:L41 | 13-M-SUMMARY_INDEX.discovery.md:L141)
+- [surface] (M-001/M1-E039) [SURFACE-RELATED/E/DEP] COMPOSES-WITH: G-8 attestation signing/verify core; K-24 credit ledger + seats.toml; ClockProvider (all expiry math — no SystemTime); K-1 claims lint (any UI copy about tiers); B-43 installer (activation offered at install-end, one line). (M-1:L53-L56 | DEEP-M-001.discovery.md:L144)
+- [surface] (M-001/M1-E040) [SURFACE/E/SURFACE] B-43 installer offers activation at install-end (one line). (M-1:L56-L56 | DEEP-M-001.discovery.md:L145)
+- [surface] (M-001/M1-E043) [SURFACE-RELATED/E/INT] reachable_from: `elai license *` CLI (real entrypoint); tier() read on the K-24 grant path. (M-1:L62-L62 | DEEP-M-001.discovery.md:L148)
+- [surface] (SUMMARY/M1-E011) [CLI/SURFACE] The CLI exposes 'elai license activate'. (M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L101)
+- [surface] (SUMMARY/M1-E013) [CLI/SURFACE] The CLI exposes 'elai license deactivate'. (M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L103)
+- [surface] (SUMMARY/M1-E021) [ACTION/SURFACE] The mint endpoint can mint an entitlement. (M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L111)
+- [surface] (SUMMARY/M1-E022) [ACTION/SURFACE] The mint endpoint can renew an entitlement. (M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L112)
+- [surface] (SUMMARY/M1-E023) [ACTION/SURFACE] The mint endpoint can revoke an entitlement. (M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L113)
+- [surface] (SUMMARY/M1-E034) [UI/SURFACE] B-43 offers activation at the end of installation. (M:L34-L35 | 13-M-SUMMARY_INDEX.discovery.md:L124)
+- (M-001/M1-E002) [E/DEP] Depends on K-24 slices L1..L4 live (MA-1) and G-8 attestation signing shape shipped. (M-1:L2-L3 | ledger-line: DEEP-M-001.discovery.md:L107)
+- (M-001/M1-E004) [E/RECOVERY] Expiry, grace, and degrade-to-free semantics can never brick a working seat (MD-1). (M-1:L8-L9 | ledger-line: DEEP-M-001.discovery.md:L109)
+- (M-001/M1-E005) [E/STATUS] Gap G1/G2: zero entitlement machinery anywhere in B..L. (M-1:L11-L12 | ledger-line: DEEP-M-001.discovery.md:L110)
+- (M-001/M1-E006) [E/DEP] K-24 is METERING (credits spent per usage) and deliberately leaves "payment webhook OUTSIDE ELAI"; it never binds a paying org to an installed seat. (M-1:L12-L14 | ledger-line: DEEP-M-001.discovery.md:L111)
+- (M-001/M1-E007) [E/INT] The signing/verification pattern EXISTS as G-8 blake3-Merkle/ed25519-signed attestations verified offline by `elai verify-attestation`. (M-1:L15-L17 | ledger-line: DEEP-M-001.discovery.md:L112)
+- (M-001/M1-E008) [E/INT] The Entitlement is the SAME shape pointed at commerce (GD-1: reuse the signing/verify core, do not re-implement). (M-1:L16-L17 | ledger-line: DEEP-M-001.discovery.md:L113)
+- (M-001/M1-E009) [E/CLAIM] Buyer per GTM memory: team/agency seats, $39-49/seat class. (M-1:L18-L18 | ledger-line: DEEP-M-001.discovery.md:L114)
+- (M-001/M1-E012) [E/LIMIT] No kill-the-binary path exists in the code, period. (M-1:L22-L22 | ledger-line: DEEP-M-001.discovery.md:L117)
+- (M-001/M1-E014) [E/SEC] A seat offline for a year still verifies its entitlement locally (expiry logic is local, from the signed artifact + ClockProvider). (M-1:L24-L25 | ledger-line: DEEP-M-001.discovery.md:L119)
+- (M-001/M1-E015) [E/COMP] LOCK-3 payment provider: Merchant-of-Record (Paddle/Lemon-Squeezy-class) OUTSIDE ELAI, PCI scope zero — the K-24 decision inherited verbatim. (M-1:L26-L28 | ledger-line: DEEP-M-001.discovery.md:L120)
+- (M-001/M1-E016) [E/DEFER] Provider choice is a user decision at execution (E-50's MoR-vs-Stripe fork applies to ELAI itself here). (M-1:L27-L28 | ledger-line: DEEP-M-001.discovery.md:L121)
+- (M-001/M1-E017) [E/DATA] LOCK-4 Entitlement is org-granular with seat slots: Entitlement{org_id, tier, seats_max, features[], issued_at_ms, expires_at_ms, grace_days=14, sig}. (M-1:L29-L31 | ledger-line: DEEP-M-001.discovery.md:L122)
+- (M-001/M1-E018) [E/DATA] A seat ACTIVATION binds {seat_id = blake3(machine-scoped salt), org_id} locally. (M-1:L30-L31 | ledger-line: DEEP-M-001.discovery.md:L123)
+- (M-001/M1-E019) [E/LIMIT] Seat-count enforcement is HONEST best-effort client-side (an offline product cannot hard-enforce concurrency). (M-1:L31-L33 | ledger-line: DEEP-M-001.discovery.md:L124)
+- (M-001/M1-E020) [E/OBS] Over-use shows in the M-3 rollup instead — recorded limit, GD-5. (M-1:L32-L33 | ledger-line: DEEP-M-001.discovery.md:L125)
+- (M-001/M1-E021) [E/CAP] Task 1: Entitlement type + signer/verifier in `crates/orchestrator/src/commerce/entitlement.rs` reusing the G-8 signing core. (M-1:L36-L37 | ledger-line: DEEP-M-001.discovery.md:L126)
+- (M-001/M1-E023) [E/DATA] Local store under `~/.elai/entitlement/`. (M-1:L37-L38 | ledger-line: DEEP-M-001.discovery.md:L128)
+- (M-001/M1-E025) [E/CFG] Task 2: tier gating seam — one `entitlement::tier()` read. (M-1:L40-L40 | ledger-line: DEEP-M-001.discovery.md:L130)
+- (M-001/M1-E026) [E/INT] tier() is consumed by (a) K-24 credit-grant path (Team credits only mint against a live Team entitlement). (M-1:L40-L41 | ledger-line: DEEP-M-001.discovery.md:L131)
+- (M-001/M1-E027) [E/INT] tier() is consumed by (b) M-2 org-pack apply (Team feature). (M-1:L41-L41 | ledger-line: DEEP-M-001.discovery.md:L132)
+- (M-001/M1-E028) [E/INT] tier() is consumed by (c) M-3 `org report` (Team feature). (M-1:L41-L42 | ledger-line: DEEP-M-001.discovery.md:L133)
+- (M-001/M1-E031) [E/CAP] Task 3: mint service (the ONE first-party cloud piece, MD-3): MoR webhook in, signed Entitlement out (mint/renew/revoke). (M-1:L45-L46 | ledger-line: DEEP-M-001.discovery.md:L136)
+- (M-001/M1-E032) [E/SEC] Mint keys are offline-managed. (M-1:L46-L46 | ledger-line: DEEP-M-001.discovery.md:L137)
+- (M-001/M1-E033) [E/OBS] Every mint is appended to an operator-side ledger file (auditable, GD-2-shaped). (M-1:L46-L47 | ledger-line: DEEP-M-001.discovery.md:L138)
+- (M-001/M1-E034) [E/LIMIT] Mint-service deployment is an ops runbook, not a crate in the workspace. (M-1:L47-L48 | ledger-line: DEEP-M-001.discovery.md:L139)
+- (M-001/M1-E038) [E/FLOW] Revocation applies on next opportunistic check only (offline seats keep grace semantics — honest, GD-5). (M-1:L50-L51 | ledger-line: DEEP-M-001.discovery.md:L143)
+- (M-001/M1-E045) [E/TEST] expect_ssb: EntitlementEvent(Activated) with org_id + tier=Team; a K-24 fixture grant succeeds ONLY with the live Team entitlement. (M-1:L64-L65 | ledger-line: DEEP-M-001.discovery.md:L150)
+- (M-001/M1-E046) [E/TEST] Fixture Team entitlement activates OFFLINE (network disabled) -> Activated row + Team features unlock. (M-1:L66-L67 | ledger-line: DEEP-M-001.discovery.md:L151)
+- (M-001/M1-E049) [E/TEST] Seat over-activation beyond seats_max is RECORDED (visible in M-3), not silently absorbed. (M-1:L70-L71 | ledger-line: DEEP-M-001.discovery.md:L154)
+- (M-001/M1-E050) [E/SEC] Risk R1 key management: a leaked mint key = infinite seats. Mitigation: offline key ceremony + revoke list shipped in release manifests (M-4) — recorded, not solved, GD-5. (M-1:L73-L75 | ledger-line: DEEP-M-001.discovery.md:L155)
+- (M-001/M1-E052) [E/FAIL] Risk R3 clock tampering: local expiry uses ClockProvider/OsClock; a wound-back clock extends grace. Bounded by opportunistic online re-check; recorded residue (GD-5). (M-1:L79-L80 | ledger-line: DEEP-M-001.discovery.md:L157)
+- (SUMMARY/M1-E002) [DATA] Entitlements are signed. (M:L27-L28 | 13-M-SUMMARY_INDEX.discovery.md:L92)
+- (SUMMARY/M1-E003) [SAFE] Entitlement validity is verifiable offline. (M:L27-L28 | 13-M-SUMMARY_INDEX.discovery.md:L93)
+- (SUMMARY/M1-E004) [DATA] Entitlement carries org_id. (M:L27 | 13-M-SUMMARY_INDEX.discovery.md:L94)
+- (SUMMARY/M1-E005) [DATA] Entitlement carries tier. (M:L27 | 13-M-SUMMARY_INDEX.discovery.md:L95)
+- (SUMMARY/M1-E006) [DATA] Entitlement carries seats_max. (M:L27 | 13-M-SUMMARY_INDEX.discovery.md:L96)
+- (SUMMARY/M1-E007) [DATA] Entitlement carries features. (M:L27 | 13-M-SUMMARY_INDEX.discovery.md:L97)
+- (SUMMARY/M1-E008) [DATA] Entitlement carries expiry. (M:L27 | 13-M-SUMMARY_INDEX.discovery.md:L98)
+- (SUMMARY/M1-E009) [DATA] Entitlement carries sig. (M:L27 | 13-M-SUMMARY_INDEX.discovery.md:L99)
+- (SUMMARY/M1-E010) [INT] Entitlement signing reuses the G-8 signing core. (M:L27-L28 | 13-M-SUMMARY_INDEX.discovery.md:L100)
+- (SUMMARY/M1-E014) [LIFE] An entitlement has a 14-day grace period. (M:L28-L29 | 13-M-SUMMARY_INDEX.discovery.md:L104)
+- (SUMMARY/M1-E015) [LIFE] Expiration after grace transitions the seat to DegradedToFree. (M:L28-L29 | 13-M-SUMMARY_INDEX.discovery.md:L105)
+- (SUMMARY/M1-E016) [FALLBACK] Entitlement expiry never bricks the seat; it retains Free-tier operation. (M:L29 | 13-M-SUMMARY_INDEX.discovery.md:L106)
+- (SUMMARY/M1-E018) [FLOW] A merchant-of-record payment webhook sits outside ELAI. (M:L29-L30 | 13-M-SUMMARY_INDEX.discovery.md:L108)
+- (SUMMARY/M1-E019) [COMP] Keeping the payment webhook outside ELAI gives ELAI zero PCI handling under the inherited K-24 decision. (M:L29-L30 | 13-M-SUMMARY_INDEX.discovery.md:L109)
+- (SUMMARY/M1-E020) [FLOW] Payment fulfillment flows from the MoR webhook to the one first-party mint endpoint and then to seat activation. (M:L29-L31 | 13-M-SUMMARY_INDEX.discovery.md:L110)
+- (SUMMARY/M1-E024) [CAP] The mint endpoint is limited to mint, renew, and revoke. (M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L114)
+- (SUMMARY/M1-E025) [CFG] A tier() read determines commercial feature access. (M:L31 | 13-M-SUMMARY_INDEX.discovery.md:L115)
+- (SUMMARY/M1-E030) [LIFE] Seat counting is an honest client-side best-effort mechanism. (M:L32-L33 | 13-M-SUMMARY_INDEX.discovery.md:L120)
+- (SUMMARY/M1-E031) [OBS] Seat over-use is surfaced by M-3. (M:L32-L33 | 13-M-SUMMARY_INDEX.discovery.md:L121)
+- (SUMMARY/M1-E032) [FAIL] Over-activation is recorded rather than silently absorbed. (M:L32-L33, L41-L42 | 13-M-SUMMARY_INDEX.discovery.md:L122)
+- (SUMMARY/M1-E033) [INT] ClockProvider owns all entitlement-expiry math. (M:L34-L35 | 13-M-SUMMARY_INDEX.discovery.md:L123)
+- (SUMMARY/M1-E035) [INT] The planned integration module is crates/orchestrator/src/commerce/entitlement.rs. (M:L36 | 13-M-SUMMARY_INDEX.discovery.md:L125)
+- (SUMMARY/M1-E036) [OBS] M-1 adds an EntitlementEvent family. (M:L36-L37 | 13-M-SUMMARY_INDEX.discovery.md:L126)
+- (SUMMARY/M1-E037) [OBS] EntitlementEvent has Activated. (M:L36-L37 | 13-M-SUMMARY_INDEX.discovery.md:L127)
+- (SUMMARY/M1-E038) [OBS] EntitlementEvent has Renewed. (M:L36-L37 | 13-M-SUMMARY_INDEX.discovery.md:L128)
+- (SUMMARY/M1-E039) [OBS] EntitlementEvent has ExpiredGrace. (M:L36-L37 | 13-M-SUMMARY_INDEX.discovery.md:L129)
+- (SUMMARY/M1-E040) [OBS] EntitlementEvent has DegradedToFree. (M:L36-L38 | 13-M-SUMMARY_INDEX.discovery.md:L130)
+- (SUMMARY/M1-E041) [OBS] EntitlementEvent has Revoked. (M:L36-L38 | 13-M-SUMMARY_INDEX.discovery.md:L131)
+- (SUMMARY/M1-E045) [TEST] A Team entitlement fixture must activate offline. (M:L39 | 13-M-SUMMARY_INDEX.discovery.md:L135)
+- (SUMMARY/M1-E046) [TEST] Offline activation must emit Activated. (M:L39 | 13-M-SUMMARY_INDEX.discovery.md:L136)
+- (SUMMARY/M1-E047) [TEST] Offline activation must unlock Team features. (M:L39 | 13-M-SUMMARY_INDEX.discovery.md:L137)
+- (SUMMARY/M1-E048) [TEST] SeededClock expiry must produce ExpiredGrace followed by DegradedToFree. (M:L40 | 13-M-SUMMARY_INDEX.discovery.md:L138)
+- (SUMMARY/M1-E049) [TEST] After degradation, a Free task must still complete green. (M:L40-L41 | 13-M-SUMMARY_INDEX.discovery.md:L139)
+- (SUMMARY/M1-E052) [TEST] An over-activation fixture must produce a recorded signal. (M:L41-L42 | 13-M-SUMMARY_INDEX.discovery.md:L142)
+- [summary-delta] (M-001/SD-M1-001) [Δ] **ADD** full Entitlement field set including issued_at_ms, expires_at_ms, grace_days=14 default, features[], and seat_id = blake3(machine-scoped salt). | summary-anchor: 13-M:L91-L108, L586-L588 | source-atoms: M1-E017–M1-E018 (DEEP-M-001.discovery.md:L516)
+- [summary-delta] (M-001/SD-M1-002) [Δ] **ADD** local store path `~/.elai/entitlement/`, activate argument form `<file|key>`, mint operator ledger, and ops-runbook-not-crate rule. | summary-anchor: 13-M:L111-L113, L586-L587 | source-atoms: M1-E022–M1-E023, M1-E031–M1-E034 (DEEP-M-001.discovery.md:L517)
+- [summary-delta] (M-001/SD-M1-003) [Δ] **ADD** opportunistic online re-check, revocation-on-next-check-only, and ExpiredGrace status banner. | summary-anchor: 13-M:L114-L116, L587 | source-atoms: M1-E035–M1-E038 (DEEP-M-001.discovery.md:L518)
+- [summary-delta] (M-001/SD-M1-004) [Δ] **ADD** MoR class examples (Paddle/Lemon-Squeezy), E-50 provider-choice fork, and seats.toml composition. | summary-anchor: 13-M:L107-L109, L492 | source-atoms: M1-E015–M1-E016, M1-E039 (DEEP-M-001.discovery.md:L519)
+- [summary-delta] (M-001/SD-M1-005) [Δ] **ADD** exact Free-tier definition (everything through L not Team in tiers.toml), TD-3 no-LLM-tier-adjudication, and three named tier() consumers. | summary-anchor: 13-M:L114-L119 | source-atoms: M1-E025–M1-E030 (DEEP-M-001.discovery.md:L520)
+- [summary-delta] (M-001/SD-M1-006) [Δ] **ADD** acceptance trigger commands, SeededClock expiry arm, offline network-disabled activation, and key-leak/clock-tamper residues. | summary-anchor: 13-M:L134-L142, L558-L562 | source-atoms: M1-E044–M1-E052 (DEEP-M-001.discovery.md:L521)
+- [summary-delta] (M-001/SD-M1-007) [Δ] **CORRECT/REMOVE** summary SettingsWindow license-status pairing: not present in numbered M-1; substitute CLI status + status banner + install-end activation. | summary-anchor: 13-M:L133-L134, L441, L508, L589 | source-atoms: M1-C001, M1-E022, M1-E037, M1-E040 (DEEP-M-001.discovery.md:L522)
+- [ambiguity] (M-001/M1-A001) [A/DATA] machine-scoped salt for seat_id is named but its storage, rotation, and privacy properties are unspecified. (M-1:L30-L31 | ledger-line: DEEP-M-001.discovery.md:L159)
+- [ambiguity] (M-001/M1-A002) [SURFACE/A/SURFACE] "status banner" for ExpiredGrace is named without panel/window placement, copy, or dismiss rules. (M-1:L50-L50 | DEEP-M-001.discovery.md:L160)
+- [ambiguity] (M-001/M1-A003) [SURFACE-RELATED/A/CFG] Exact Free vs Pro vs Team feature-key inventory is deferred to M-5d tiers.toml content. (M-1:L18-L18, L42-L43 | DEEP-M-001.discovery.md:L161)
+- [ambiguity] (M-001/M1-A004) [A/FLOW] Opportunistic online re-check interval, transport, and failure behavior are unspecified. (M-1:L49-L51 | ledger-line: DEEP-M-001.discovery.md:L162)
+- [ambiguity] (M-001/M1-A005) [A/DATA] Operator ledger format is produced but its schema fields are not enumerated. (M-1:L46-L47, L59-L60 | ledger-line: DEEP-M-001.discovery.md:L163)
+- [ambiguity] (M-001/M1-C001) [SURFACE/C/SURFACE] Summary discovery asserts a SettingsWindow license-status line (W-4 deferred). Numbered M-1 names `elai license status` + ExpiredGrace status banner and B-43 install-end activation; it does not name SettingsWindow. (M-1:L37-L37, L50-L50, L56-L56 | DEEP-M-001.discovery.md:L164)
+- [inference] (M-001/M1-I001) [I/STATE] deactivate is a first-class CLI verb producing local deactivation state, but its exact local-store mutation and SSB arm are not separately named beyond the activate/status/deactivate surface list. (M-1:L37-L39, L58-L60 | ledger-line: DEEP-M-001.discovery.md:L158)
+
+### M-2: org policy pack + distribution + drift detection
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers M-001, M-SD, SUMMARY, SUP | sample: M-2:L29-L30; M-2:L29-L30; M-2:L34-L34; M-2:L50-L52; M-2:L54-L54; M-2:L29-L30 | 43 non-summary-placed, 38 summary-placed, 87 total unique atoms in unit | IDs: M-001/M2-E015, M-001/M2-E016, M-001/M2-E018, M-001/M2-E027, M-001/M2-E029, M-001/M2-A003, M-001/M2-E001, M-001/M2-E002, …
+**Composes with**: A-1, A-4, B-43, E-39, G-2, G-8, G-9, J-59, K-1, K-3, K-5, K-6, K-24, M-0, M-1, M-3, M-4, M-5, M-5a, M-5b, M-5c, M-5d, M-6, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-1, M-3, M-4, M-5a, M-5b, M-5c, M-5d, M-6; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-1, M-3, M-4, M-5, M-6; M-001/IX-007 → M-3, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-1, M-4; M-001/IX-010 → K-24, M-1, M-3, M-5a, M-5d
+
+- [status] (M-001/M2-E001) [E/STATUS] M-2 is Track M, lever CANT-WRECK (org grain), grounding STRONG (gap G3; 3F/R8/E-39 substrate SHIPPED), nature BUILD-compose, effort M, WAVE M2. (M-2:L1-L3 | ledger-line: DEEP-M-001.discovery.md:L174)
+- [status] (SUMMARY/M2-E001) [STATUS] M-2 has lever CANT-WRECK at organization grain, STRONG grounding from gap G3 and shipped 3F/R8/E-39, BUILD-compose, effort M, wave M2. (M:L44-L45 | 13-M-SUMMARY_INDEX.discovery.md:L148)
+- [gate] (M-001/M2-E002) [E/DEP] Depends on M-1 (Team tier), rules-engine 3F lifecycle, gate-manifest freeze (R8) live. (M-2:L2-L3 | ledger-line: DEEP-M-001.discovery.md:L175)
+- [gate] (M-001/M2-E004) [E/CFG] Pack contents: org rules (mutable=0-equivalent tier), gate-manifest pins, spend caps, model/backend allowlist, redaction config, update-channel pin. (M-2:L7-L9 | ledger-line: DEEP-M-001.discovery.md:L177)
+- [gate] (M-001/M2-E007) [E/STATUS] Gap G3: mutable=0 rules, gate_freeze_check + .claude/gate-manifest.txt, E-39 caps, B-37 allowlists, G-9 redaction ALL exist — per-install, hand-configured, with no cross-seat distribution or drift story. (M-2:L12-L15 | ledger-line: DEEP-M-001.discovery.md:L180)
+- [gate] (M-001/M2-E009) [E/SEC] The freeze discipline is the precedent: R8 proves "a run cannot edit its own gate"; M-2 lifts the same property one level — "a seat cannot edit its org's gate". (M-2:L17-L18 | ledger-line: DEEP-M-001.discovery.md:L182)
+- [gate] (M-001/M2-E014) [E/CFG] LOCK-3 absence of a pack = today's behavior, byte-for-byte. Single-seat users never see M-2 (W-2 satisfied structurally; no env gate). (M-2:L27-L28 | ledger-line: DEEP-M-001.discovery.md:L187)
+- [gate] (M-001/M2-E020) [E/EVENT] +OrgPolicyEvent (Pattern-2: Applied/Drift/RefusedForged/WeakenAttemptBlocked). (M-2:L35-L36 | ledger-line: DEEP-M-001.discovery.md:L193)
+- [gate] (M-001/M2-E024) [E/FAIL] Task 3 weaken-attempt gate: a local rule edit / cap raise / allowlist widen that contradicts the pack is REFUSED with WeakenAttemptBlocked naming the pack clause (deterministic compare, TD-3). (M-2:L41-L42 | ledger-line: DEEP-M-001.discovery.md:L197)
+- [gate] (M-001/M2-E026) [E/DEP] COMPOSES-WITH: 3F rules lifecycle + mutable-tier semantics; gate_freeze_check.py / gate-manifest (R8 — the pack PINS it, never replaces it); E-39 cost gate (caps consumer); K-5 GateIntensity policy table (the pack may pin its hash); G-9 redaction; G-8 signing core; M-1 tier() (pack apply = Team feature). (M-2:L45-L48 | ledger-line: DEEP-M-001.discovery.md:L199)
+- [gate] (M-001/M2-E027) [SURFACE-RELATED/E/DATA] WIRING produces: commerce/org_policy.rs (pack type, verify/apply, weaken gate), `elai org policy *` CLI, OrgPolicyEvent SSB (+1). (M-2:L50-L52 | DEEP-M-001.discovery.md:L200)
+- [gate] (M-001/M2-E028) [E/INT] WIRING consumes: 3F loader, gate-manifest hashes, E-39 caps, G-9 config, M-1 tier, G-8 signing. (M-2:L53-L53 | ledger-line: DEEP-M-001.discovery.md:L201)
+- [gate] (M-001/M2-E031) [E/TEST] expect_ssb: OrgPolicyEvent(Applied) with pack hash; the task blocked by the ORG cap (E-39 row names the org clause, not local config); the org GREP rule fires in SHADOW. (M-2:L57-L58 | ledger-line: DEEP-M-001.discovery.md:L204)
+- [gate] (M-001/M2-E033) [E/TEST] A tampered pack byte is REFUSED (RefusedForged, R2). (M-2:L59-L60 | ledger-line: DEEP-M-001.discovery.md:L206)
+- [gate] (M-001/M2-E034) [E/TEST] A local attempt to raise the org cap -> WeakenAttemptBlocked. (M-2:L60-L61 | ledger-line: DEEP-M-001.discovery.md:L207)
+- [gate] (M-001/M2-E037) [E/FAIL] Risk R1 org-rule FP friction at fleet scale (the CodeGate death, GD-4): org rules enter SHADOW first, promote per-org on the same fpr<5% discipline — the 3F lifecycle already encodes this; the pack just carries lifecycle state. (M-2:L64-L67 | ledger-line: DEEP-M-001.discovery.md:L210)
+- [gate] (M-001/M2-E038) [E/SEC] Risk R2 pack-key compromise = org-wide policy injection. Same key posture as M-1 R1; pack verify also pins the SIGNER identity per org (a foreign org's validly-signed pack is refused). (M-2:L68-L69 | ledger-line: DEEP-M-001.discovery.md:L211)
+- [gate] (M-001/M2-E039) [E/DET] Risk R3 precedence bugs (org vs local vs defaults) are silent-failure-prone: the apply order is one deterministic function with a contract test enumerating all three layers (R2 broken-arm test). (M-2:L70-L71 | ledger-line: DEEP-M-001.discovery.md:L212)
+- [gate] (SUMMARY/M2-E006) [CFG] The pack pins the gate manifest. (M:L46-L47 | 13-M-SUMMARY_INDEX.discovery.md:L153)
+- [gate] (SUMMARY/M2-E021) [INT] M-2 composes gate_freeze_check and the gate manifest, which the pack pins. (M:L51-L52 | 13-M-SUMMARY_INDEX.discovery.md:L168)
+- [gate] (SUMMARY/M2-E031) [OBS] OrgPolicyEvent has RefusedForged. (M:L53-L54 | 13-M-SUMMARY_INDEX.discovery.md:L178)
+- [gate] (SUMMARY/M2-E032) [OBS] OrgPolicyEvent has WeakenAttemptBlocked. (M:L53-L54 | 13-M-SUMMARY_INDEX.discovery.md:L179)
+- [gate] (SUMMARY/M2-E034) [TEST] The applied organization cap must block a task and name the responsible pack clause. (M:L55-L56 | 13-M-SUMMARY_INDEX.discovery.md:L181)
+- [gate] (SUMMARY/M2-E035) [TEST] A tampered pack must be refused. (M:L56 | 13-M-SUMMARY_INDEX.discovery.md:L182)
+- [gate] (SUMMARY/M2-E036) [TEST] A local cap raise must produce WeakenAttemptBlocked. (M:L56 | 13-M-SUMMARY_INDEX.discovery.md:L183)
+- [surface] (M-001/M2-E015) [SURFACE-RELATED/E/OBS] LOCK-4 drift is DETECTED + surfaced, not auto-corrected: boot compares applied-pack hash vs the org-pinned hash -> OrgPolicyEvent(Drift) + boot warning + M-3 rollup visibility. (M-2:L29-L30 | DEEP-M-001.discovery.md:L188)
+- [surface] (M-001/M2-E016) [SURFACE/E/SURFACE] Drift surfaces as a boot warning. (M-2:L29-L30 | DEEP-M-001.discovery.md:L189)
+- [surface] (M-001/M2-E018) [SURFACE-RELATED/E/CAP] Task 1: pack format + signer/verifier + `elai org policy init|sign|verify|show` (admin authoring side). (M-2:L34-L34 | DEEP-M-001.discovery.md:L191)
+- [surface] (M-001/M2-E029) [SURFACE-RELATED/E/INT] reachable_from: boot path (pack discovery) + `elai org policy *` CLI. (M-2:L54-L54 | DEEP-M-001.discovery.md:L202)
+- [surface] (SUMMARY/M2-E016) [UI/SURFACE] Policy drift is surfaced. (M:L48-L49 | 13-M-SUMMARY_INDEX.discovery.md:L163)
+- [surface] (SUMMARY/M2-E024) [CLI/SURFACE] The CLI exposes 'elai org policy init'. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L171)
+- [surface] (SUMMARY/M2-E025) [CLI/SURFACE] The CLI exposes 'elai org policy sign'. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L172)
+- [surface] (SUMMARY/M2-E026) [CLI/SURFACE] The CLI exposes 'elai org policy verify'. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L173)
+- [surface] (SUMMARY/M2-E027) [CLI/SURFACE] The CLI exposes 'elai org policy show'. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L174)
+- (M-001/M2-E003) [E/CAP] One signed, file-distributable OrgPolicyPack every seat applies at boot and cannot weaken. (M-2:L6-L7 | ledger-line: DEEP-M-001.discovery.md:L176)
+- (M-001/M2-E005) [E/CAP] The org buys ONE control surface instead of policing N laptops by hand. (M-2:L8-L9 | ledger-line: DEEP-M-001.discovery.md:L178)
+- (M-001/M2-E006) [E/LIMIT] No cloud, no console — the pack travels by git/file (MD-3). (M-2:L10-L10 | ledger-line: DEEP-M-001.discovery.md:L179)
+- (M-001/M2-E010) [E/DATA] LOCK-1 the pack is DATA: policy.toml + rule rows + manifest pin hashes + caps + allowlist + redaction config + channel pin, signed with the org key (G-8 core again). (M-2:L21-L22 | ledger-line: DEEP-M-001.discovery.md:L183)
+- (M-001/M2-E011) [E/LIMIT] NEVER executable content (the L-13 FS-2 doctrine at org grain). (M-2:L22-L23 | ledger-line: DEEP-M-001.discovery.md:L184)
+- (M-001/M2-E012) [E/SEC] LOCK-2 precedence: org pack > local config, and org rules land in an immune tier a local edit cannot demote (exactly the mutable=0 semantics, org-keyed). (M-2:L24-L25 | ledger-line: DEEP-M-001.discovery.md:L185)
+- (M-001/M2-E013) [E/SEC] A seat may ADD stricter checks, never weaken (monotone-tighten only). (M-2:L25-L26 | ledger-line: DEEP-M-001.discovery.md:L186)
+- (M-001/M2-E017) [E/DEFER] Auto-remediate is a later rider (needs GD-4 FP bounding first). (M-2:L30-L31 | ledger-line: DEEP-M-001.discovery.md:L190)
+- (M-001/M2-E019) [E/INT] Module: `crates/orchestrator/src/commerce/org_policy.rs`. (M-2:L35-L35 | ledger-line: DEEP-M-001.discovery.md:L192)
+- (M-001/M2-E021) [E/FLOW] Task 2 boot apply seam: pack discovery (repo `.elai/org-policy.signed`, then `~/.elai/org/`), verify, apply-in-order. (M-2:L37-L39 | ledger-line: DEEP-M-001.discovery.md:L194)
+- (M-001/M2-E022) [E/FLOW] Apply-in-order: rules rows via the 3F loader into the org-immune tier; caps into E-39; pins compared against the local frozen set; redaction config into G-9; channel pin read by M-4. (M-2:L38-L39 | ledger-line: DEEP-M-001.discovery.md:L195)
+- (M-001/M2-E023) [E/EVENT] Emits Applied with the pack hash. (M-2:L40-L40 | ledger-line: DEEP-M-001.discovery.md:L196)
+- (M-001/M2-E025) [E/OBS] Task 4 drift check: per-boot + per-`org report` (M-3 consumes Drift rows per seat). (M-2:L43-L43 | ledger-line: DEEP-M-001.discovery.md:L198)
+- (M-001/M2-E030) [E/TEST] trigger: place fixtures/org-policy.signed (spend cap 0.05, one org GREP rule, stable channel pin) in a fixture repo; boot; run a fixture task that would exceed the cap. (M-2:L55-L56 | ledger-line: DEEP-M-001.discovery.md:L203)
+- (M-001/M2-E032) [E/TEST] Fixture boots with the pack applied + org cap enforced. (M-2:L59-L59 | ledger-line: DEEP-M-001.discovery.md:L205)
+- (M-001/M2-E035) [E/TEST] A seat with NO pack behaves byte-identically to pre-M-2 (regression arm). (M-2:L61-L61 | ledger-line: DEEP-M-001.discovery.md:L208)
+- (M-001/M2-E036) [E/TEST] A stale applied-pack vs pinned-hash fixture -> Drift row at boot. (M-2:L61-L62 | ledger-line: DEEP-M-001.discovery.md:L209)
+- (SUMMARY/M2-E002) [STATUS] M-2 depends on M-1. (M:L45 | 13-M-SUMMARY_INDEX.discovery.md:L149)
+- (SUMMARY/M2-E003) [DATA] The organization policy is one signed OrgPolicyPack. (M:L46 | 13-M-SUMMARY_INDEX.discovery.md:L150)
+- (SUMMARY/M2-E004) [FLOW] OrgPolicyPack is distributable as a file. (M:L46 | 13-M-SUMMARY_INDEX.discovery.md:L151)
+- (SUMMARY/M2-E005) [CFG] The pack maps organization rules into an org-immune tier. (M:L46-L47 | 13-M-SUMMARY_INDEX.discovery.md:L152)
+- (SUMMARY/M2-E007) [CFG] The pack carries E-39 spend caps. (M:L47 | 13-M-SUMMARY_INDEX.discovery.md:L154)
+- (SUMMARY/M2-E008) [CFG] The pack carries the B-37 allowlist. (M:L47 | 13-M-SUMMARY_INDEX.discovery.md:L155)
+- (SUMMARY/M2-E009) [CFG] The pack carries G-9 configuration. (M:L47 | 13-M-SUMMARY_INDEX.discovery.md:L156)
+- (SUMMARY/M2-E010) [CFG] The pack carries the M-4 release-channel pin. (M:L47 | 13-M-SUMMARY_INDEX.discovery.md:L157)
+- (SUMMARY/M2-E011) [LIFE] OrgPolicyPack is applied at boot. (M:L47 | 13-M-SUMMARY_INDEX.discovery.md:L158)
+- (SUMMARY/M2-E012) [SAFE] A seat may add checks stricter than the organization pack. (M:L47-L48 | 13-M-SUMMARY_INDEX.discovery.md:L159)
+- (SUMMARY/M2-E013) [SAFE] A seat may never weaken organization checks. (M:L48 | 13-M-SUMMARY_INDEX.discovery.md:L160)
+- (SUMMARY/M2-E014) [SAFE] The organization merge is monotone-tighten, lifting R8 to organization grain. (M:L48 | 13-M-SUMMARY_INDEX.discovery.md:L161)
+- (SUMMARY/M2-E015) [OBS] Policy drift is detected. (M:L48-L49 | 13-M-SUMMARY_INDEX.discovery.md:L162)
+- (SUMMARY/M2-E017) [FAIL] Policy drift is not auto-corrected before GD-4. (M:L49 | 13-M-SUMMARY_INDEX.discovery.md:L164)
+- (SUMMARY/M2-E018) [SAFE] OrgPolicyPack is data, never executable content. (M:L49-L50 | 13-M-SUMMARY_INDEX.discovery.md:L165)
+- (SUMMARY/M2-E019) [FALLBACK] With no organization pack, behavior is byte-identical to current seat behavior. (M:L50 | 13-M-SUMMARY_INDEX.discovery.md:L166)
+- (SUMMARY/M2-E020) [INT] M-2 composes the 3F lifecycle and mutable tier. (M:L51 | 13-M-SUMMARY_INDEX.discovery.md:L167)
+- (SUMMARY/M2-E022) [INT] M-2 composes E-39, K-5 policy-table hash, G-9, G-8 signing, and M-1 tier. (M:L51-L52 | 13-M-SUMMARY_INDEX.discovery.md:L169)
+- (SUMMARY/M2-E023) [INT] The planned integration module is commerce/org_policy.rs. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L170)
+- (SUMMARY/M2-E028) [OBS] M-2 adds an OrgPolicyEvent family. (M:L53-L54 | 13-M-SUMMARY_INDEX.discovery.md:L175)
+- (SUMMARY/M2-E029) [OBS] OrgPolicyEvent has Applied. (M:L53-L54 | 13-M-SUMMARY_INDEX.discovery.md:L176)
+- (SUMMARY/M2-E030) [OBS] OrgPolicyEvent has Drift. (M:L53-L54 | 13-M-SUMMARY_INDEX.discovery.md:L177)
+- (SUMMARY/M2-E033) [TEST] A fixture pack must boot into Applied. (M:L55 | 13-M-SUMMARY_INDEX.discovery.md:L180)
+- (SUMMARY/M2-E037) [TEST] A no-pack seat must be byte-identical to baseline. (M:L56-L57 | 13-M-SUMMARY_INDEX.discovery.md:L184)
+- (SUMMARY/M2-E038) [TEST] A stale pack must produce Drift at boot. (M:L57 | 13-M-SUMMARY_INDEX.discovery.md:L185)
+- [deferred] (M-001/M2-E008) [E/LIMIT] The org layer was an explicit K non-goal (K-0:531); M-2 is its minimal file-based form, NOT an org SaaS (ENTERPRISE RIDER stands). (M-2:L15-L16 | ledger-line: DEEP-M-001.discovery.md:L181)
+- [summary-delta] (M-001/SD-M2-001) [Δ] **ADD** pack discovery order: repo `.elai/org-policy.signed` then `~/.elai/org/`, plus apply-in-order consumer map (3F/E-39/gate-manifest/G-9/M-4). | summary-anchor: 13-M:L151-L160, L590-L591 | source-atoms: M2-E021–M2-E022 (DEEP-M-001.discovery.md:L528)
+- [summary-delta] (M-001/SD-M2-002) [Δ] **ADD** weaken gate covers rule edit / cap raise / allowlist widen with deterministic pack-clause naming; org GREP rule fires in SHADOW. | summary-anchor: 13-M:L159-L163, L180-L185 | source-atoms: M2-E024, M2-E031, M2-E037 (DEEP-M-001.discovery.md:L529)
+- [summary-delta] (M-001/SD-M2-003) [Δ] **ADD** signer-identity pin refusing foreign-org valid packs; three-layer precedence contract test; fpr<5% SHADOW promotion discipline. | summary-anchor: 13-M:L590-L591 | source-atoms: M2-E037–M2-E039 (DEEP-M-001.discovery.md:L530)
+- [summary-delta] (M-001/SD-M2-004) [Δ] **ADD** fixture details: spend cap 0.05, stable channel pin, E-39 row names org clause not local config. | summary-anchor: 13-M:L180-L185 | source-atoms: M2-E030–M2-E031 (DEEP-M-001.discovery.md:L531)
+- [summary-delta] (M-001/SD-M2-005) [Δ] **ADD** K-5 GateIntensity policy-table hash may be pack-pinned; L-13 FS-2 non-executable doctrine at org grain. | summary-anchor: 13-M:L167-L169 | source-atoms: M2-E011, M2-E026 (DEEP-M-001.discovery.md:L532)
+- [ambiguity] (M-001/M2-A001) [A/DATA] Exact policy.toml field schema, rule-row serialization, and signature envelope layout are not specified. (M-2:L21-L22, L34-L35 | ledger-line: DEEP-M-001.discovery.md:L214)
+- [ambiguity] (M-001/M2-A002) [A/CFG] Stale threshold that distinguishes Drift from acceptable lag is not defined beyond applied-pack hash vs org-pinned hash. (M-2:L29-L30 | ledger-line: DEEP-M-001.discovery.md:L215)
+- [ambiguity] (M-001/M2-A003) [SURFACE/A/SURFACE] Boot warning presentation (CLI only vs UI badge) is not specified. (M-2:L29-L30 | DEEP-M-001.discovery.md:L216)
+- [ambiguity] (M-001/M2-A004) [A/FLOW] Git distribution workflow, multi-pack conflict, and pack revocation/rotation are not specified. (M-2:L10-L10, L37-L38 | ledger-line: DEEP-M-001.discovery.md:L217)
+- [inference] (M-001/M2-I001) [I/CFG] Because apply order maps each pack clause to a named consumer (3F/E-39/gate-manifest/G-9/M-4), the pack is a binding multi-subsystem configuration object rather than a free-form document. (M-2:L37-L39, L45-L48 | ledger-line: DEEP-M-001.discovery.md:L213)
+
+### M-3: fleet evidence rollup (`elai org report`)
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers M-001, M-SD, SUMMARY, SUP | sample: M-3:L37-L37; M-3:L38-L38; M-3:L39-L40; M-3:L39-L40; M-3:L43-L44; M-3:L53-L55 | 42 non-summary-placed, 40 summary-placed, 92 total unique atoms in unit | IDs: M-001/M3-E019, M-001/M3-E020, M-001/M3-E022, M-001/M3-E023, M-001/M3-E026, M-001/M3-E029, M-001/M3-E031, M-001/M3-E032, …
+**Composes with**: A-1, A-4, B-43, G-2, G-8, G-9, H-9, J-59, K-1, K-3, K-4, K-6, K-11, K-24, M-0, M-1, M-2, M-4, M-5, M-5a, M-5b, M-5c, M-5d, M-6, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-1, M-2, M-4, M-5a, M-5b, M-5c, M-5d, M-6; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-2; M-001/IX-006 → G-8, M-1, M-2, M-4, M-5, M-6; M-001/IX-007 → M-2, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6; M-001/IX-009 → B-43, M-1, M-4; M-001/IX-010 → K-24, M-1, M-5a, M-5d; M-001/IX-011 → G-2, G-8, K-6, M-5a, M-6
+
+- [status] (M-001/M3-E001) [E/STATUS] M-3 is Track M, lever AUDITABLE (org grain), grounding STRONG (gap G4; K-6/G-2/G-8/K-1 SHIPPED-or-PLANNED per-seat), nature BUILD-compose, effort M, WAVE M3. (M-3:L1-L3 | ledger-line: DEEP-M-001.discovery.md:L227)
+- [status] (M-001/M3-E010) [E/DATA] LOCK-1 rollup input = the K-6 bundle format extended with seat_id + entitlement org_id + M-2 pack-hash + Drift status. (M-3:L21-L23 | ledger-line: DEEP-M-001.discovery.md:L236)
+- [status] (SUMMARY/M3-E001) [STATUS] M-3 has lever AUDITABLE at organization grain, STRONG grounding from gap G4, BUILD-compose, effort M, wave M3. (M:L59-L60 | 13-M-SUMMARY_INDEX.discovery.md:L191)
+- [config] (M-001/M3-E023) [SURFACE/E/SURFACE] Verify flag form: `elai org report --verify`. (M-3:L39-L40 | DEEP-M-001.discovery.md:L249)
+- [config] (M-001/M3-E034) [E/TEST] Org bundle's every rollup number recomputes from the 2 valid constituent journals (GD-2 fleet-grain, byte-recomputable under ELAI_SEED fixtures). (M-3:L62-L63 | ledger-line: DEEP-M-001.discovery.md:L260)
+- [config] (M-001/M3-E039) [E/OBS] Risk R1 stale exports: every constituent carries its journal head seq + date; the report prints per-seat freshness and flags exports older than the org-set window. (M-3:L68-L70 | ledger-line: DEEP-M-001.discovery.md:L265)
+- [gate] (M-001/M3-E004) [E/CAP] Aggregates per-seat exports into ONE org evidence bundle whose every number recomputes from the constituent seat journals — GD-2 lifted to fleet grain. (M-3:L8-L11 | ledger-line: DEEP-M-001.discovery.md:L230)
+- [gate] (M-001/M3-E006) [E/STATUS] Gap G4: K-6 compliance export, G-2 RRA, K-1 dossier, K-4 gate-tax, H-9 spend, G-6 SAFEDELTA are all per-seat files. No aggregation surface exists (grep-proven). (M-3:L13-L15 | ledger-line: DEEP-M-001.discovery.md:L232)
+- [gate] (M-001/M3-E007) [E/FLOW] Pull-model by design: seats EXPORT (a file), an admin AGGREGATES (a command). No agent phones home, ever (MD-3/MD-4). (M-3:L16-L17 | ledger-line: DEEP-M-001.discovery.md:L233)
+- [gate] (M-001/M3-E013) [E/TEST] The rollup additionally greps its own output for seeded secret markers and FAILS the build of the bundle on a hit (R2-style self-test). (M-3:L26-L27 | ledger-line: DEEP-M-001.discovery.md:L239)
+- [gate] (M-001/M3-E014) [E/FAIL] LOCK-3 broken chains are refused: a seat export whose hash chain / attestation does not verify is EXCLUDED and NAMED in the rollup (RefusedSeat row in the report). (M-3:L28-L30 | ledger-line: DEEP-M-001.discovery.md:L240)
+- [gate] (M-001/M3-E016) [E/DATA] LOCK-4 metrics in the rollup are the ALREADY-DEFINED ones: verified-outcome rate, K-4 gate-tax, K-1 dossier deltas, H-9 $/resolved-task, unvouched-hunk counts from K-3, M-2 Drift. (M-3:L31-L33 | ledger-line: DEEP-M-001.discovery.md:L242)
+- [gate] (M-001/M3-E029) [SURFACE-RELATED/E/DATA] WIRING produces: org_report.rs (aggregate + verify + render), `elai org report` CLI, seat-export field extension; +0..1 SSB. (M-3:L53-L55 | DEEP-M-001.discovery.md:L255)
+- [gate] (M-001/M3-E033) [E/TEST] expect_ssb: (on the admin seat) the report emitted + verify PASS rows for 2 seats, RefusedSeat naming the broken one. (M-3:L60-L61 | ledger-line: DEEP-M-001.discovery.md:L259)
+- [gate] (M-001/M3-E035) [E/TEST] Broken-chain seat is REFUSED+NAMED (R2). (M-3:L63-L64 | ledger-line: DEEP-M-001.discovery.md:L261)
+- [gate] (M-001/M3-E037) [E/TEST] A seeded secret marker in a constituent bundle FAILS the rollup build (LOCK-2 arm). (M-3:L64-L65 | ledger-line: DEEP-M-001.discovery.md:L263)
+- [gate] (M-001/M3-E041) [E/PRIV] Risk R3 privacy regression via new fields: the added fields are ids + hashes only; the LOCK-2 self-test plus the K-6 secret-grep run on the AGGREGATE too. (M-3:L73-L74 | ledger-line: DEEP-M-001.discovery.md:L267)
+- [gate] (SUMMARY/M3-E012) [CLI/SURFACE] An admin aggregates with 'elai org report <dir> --verify'. (M:L62 | 13-M-SUMMARY_INDEX.discovery.md:L202)
+- [gate] (SUMMARY/M3-E016) [DATA] The bundle rolls up K-4 gate tax. (M:L63-L64 | 13-M-SUMMARY_INDEX.discovery.md:L206)
+- [gate] (SUMMARY/M3-E025) [FAIL] A seat with a broken evidence chain is refused. (M:L66 | 13-M-SUMMARY_INDEX.discovery.md:L215)
+- [gate] (SUMMARY/M3-E026) [OBS] A refused broken-chain seat is named. (M:L66 | 13-M-SUMMARY_INDEX.discovery.md:L216)
+- [gate] (SUMMARY/M3-E027) [CLAIM] M-3 defines zero new metrics; it only aggregates existing metrics. (M:L66 | 13-M-SUMMARY_INDEX.discovery.md:L217)
+- [gate] (SUMMARY/M3-E029) [SAFE] G-9 is both a precondition and aggregate self-test for the report. (M:L67-L68 | 13-M-SUMMARY_INDEX.discovery.md:L219)
+- [gate] (SUMMARY/M3-E035) [TEST] The three fixtures must aggregate into one bundle. (M:L70 | 13-M-SUMMARY_INDEX.discovery.md:L225)
+- [gate] (SUMMARY/M3-E037) [TEST] The broken seat must be refused and named as RefusedSeat under R2. (M:L70-L71 | 13-M-SUMMARY_INDEX.discovery.md:L227)
+- [gate] (SUMMARY/M3-E039) [TEST] A seeded secret in any constituent must fail the build. (M:L71-L72 | 13-M-SUMMARY_INDEX.discovery.md:L229)
+- [surface] (M-001/M3-E019) [SURFACE/E/SURFACE] CLI arm: `elai export compliance --org`. (M-3:L37-L37 | DEEP-M-001.discovery.md:L245)
+- [surface] (M-001/M3-E020) [SURFACE/E/SURFACE] Task 2 aggregator: `elai org report <dir-of-seat-exports>` -> one org bundle. (M-3:L38-L38 | DEEP-M-001.discovery.md:L246)
+- [surface] (M-001/M3-E022) [SURFACE-RELATED/E/SEC] Offline-verifiable end-to-end (`elai org report --verify` re-checks every constituent chain). (M-3:L39-L40 | DEEP-M-001.discovery.md:L248)
+- [surface] (M-001/M3-E026) [SURFACE/E/SURFACE] Task 3 render: one human sheet (markdown) + one machine file (msgpack/toml) — the K-7 brief's org answer, generated not hand-written. (M-3:L43-L44 | DEEP-M-001.discovery.md:L252)
+- [surface] (M-001/M3-E031) [SURFACE-RELATED/E/INT] reachable_from: `elai org report` (real entrypoint); `elai export compliance --org` on seats. (M-3:L57-L57 | DEEP-M-001.discovery.md:L257)
+- [surface] (M-001/M3-E032) [SURFACE-RELATED/E/TEST] trigger: 3 fixture seat exports (one clean, one with Drift, one with a broken chain) -> `elai org report fixtures/exports --verify`. (M-3:L58-L59 | DEEP-M-001.discovery.md:L258)
+- [surface] (SUMMARY/M3-E005) [CLI/SURFACE] Each seat exports with 'elai export compliance --org'. (M:L61 | 13-M-SUMMARY_INDEX.discovery.md:L195)
+- (M-001/M3-E002) [E/DEP] Depends on M-1 (Team tier), M-2 (Drift rows), MA-3 (J-59 per-seat isolation), MA-6 (K-6 export shape). (M-3:L2-L4 | ledger-line: DEEP-M-001.discovery.md:L228)
+- (M-001/M3-E003) [E/CAP] Answers org-side buyer (K-7 AppSec/GRC persona) questions: what the FLEET did, what reached reviewers unvouched, whether seats are on policy, cost per verified outcome. (M-3:L6-L8 | ledger-line: DEEP-M-001.discovery.md:L229)
+- (M-001/M3-E005) [E/PRIV] Zero telemetry and zero raw content (MD-4). (M-3:L11-L11 | ledger-line: DEEP-M-001.discovery.md:L231)
+- (M-001/M3-E008) [E/FLOW] Distribution medium is the org's own file share / git — same as M-2. (M-3:L17-L17 | ledger-line: DEEP-M-001.discovery.md:L234)
+- (M-001/M3-E009) [E/PRIV] K-0:382 upheld: shares evidence NUMBERS + HASHES, not memory/content — does not touch the org-shared-memory decision (which stays with J-49/J-59's later opt-in). (M-3:L18-L19 | ledger-line: DEEP-M-001.discovery.md:L235)
+- (M-001/M3-E011) [E/LIMIT] One export shape, two consumers (K-6 procurement, M-3 rollup) — never a second bespoke export (GD-1). (M-3:L23-L24 | ledger-line: DEEP-M-001.discovery.md:L237)
+- (M-001/M3-E012) [E/PRIV] LOCK-2 privacy floor: G-9 redaction is a PRECONDITION of export (already K-6's rule). (M-3:L25-L26 | ledger-line: DEEP-M-001.discovery.md:L238)
+- (M-001/M3-E015) [E/FAIL] Never silently included or silently dropped (R1: missing/invalid evidence screams). (M-3:L29-L30 | ledger-line: DEEP-M-001.discovery.md:L241)
+- (M-001/M3-E017) [E/CLAIM] M-3 defines ZERO new metrics (KD-1: no new number without its own measurement session). (M-3:L32-L33 | ledger-line: DEEP-M-001.discovery.md:L243)
+- (M-001/M3-E018) [E/DATA] Task 1 seat-export extension: K-6 bundle + {seat_id, org_id, pack_hash, drift_status} fields (#[serde(default)], no migration). (M-3:L36-L37 | ledger-line: DEEP-M-001.discovery.md:L244)
+- (M-001/M3-E021) [E/DATA] Org bundle contains: per-seat table + org rollups + a manifest of constituent bundle hashes. (M-3:L38-L39 | ledger-line: DEEP-M-001.discovery.md:L247)
+- (M-001/M3-E024) [E/INT] Module: `crates/orchestrator/src/commerce/org_report.rs`. (M-3:L40-L41 | ledger-line: DEEP-M-001.discovery.md:L250)
+- (M-001/M3-E025) [E/EVENT] SSB: prefer-reuse ComplianceExported/G-8 rows; +OrgReportEvent only if no existing row fits (decide at edit, W-9). (M-3:L41-L42 | ledger-line: DEEP-M-001.discovery.md:L251)
+- (M-001/M3-E027) [E/OBS] Task 4 seat-count honesty leg: distinct seat_ids per org vs seats_max (M-1 LOCK-4's recorded limit surfaces HERE — over-activation is visible to the org admin, the honest enforcement point). (M-3:L45-L46 | ledger-line: DEEP-M-001.discovery.md:L253)
+- (M-001/M3-E028) [E/DEP] COMPOSES-WITH: K-6 export (input shape — extended, not forked); G-2 RRA + G-8 attestation verify core (the --verify leg); G-9 (precondition); K-1 dossier + K-4 + H-9 (the numbers); K-3/K-11 (unvouched counts); M-1 entitlement (org_id + Team gating); M-2 (Drift). (M-3:L48-L51 | ledger-line: DEEP-M-001.discovery.md:L254)
+- (M-001/M3-E030) [E/INT] WIRING consumes: K-6 bundles, G-8 verify, M-1/M-2 rows, K-1/K-4/H-9 numbers. (M-3:L56-L56 | ledger-line: DEEP-M-001.discovery.md:L256)
+- (M-001/M3-E036) [E/TEST] Drift seat shows drift_status in the per-seat table. (M-3:L64-L64 | ledger-line: DEEP-M-001.discovery.md:L262)
+- (M-001/M3-E038) [E/TEST] Grep of the org bundle for raw transcript bytes is EMPTY (MD-4 arm). (M-3:L65-L66 | ledger-line: DEEP-M-001.discovery.md:L264)
+- (M-001/M3-E040) [E/OBS] Risk R2 metric gaming by seat selection: the report REQUIRES the org's seat roster (from M-1 activations) and names missing seats — absence is visible, not silent. (M-3:L71-L72 | ledger-line: DEEP-M-001.discovery.md:L266)
+- (SUMMARY/M3-E002) [STATUS] M-3 depends on M-1 and M-2. (M:L60 | 13-M-SUMMARY_INDEX.discovery.md:L192)
+- (SUMMARY/M3-E003) [STATUS] M-3 also depends on MA-3/J-59 and MA-6/K-6. (M:L60 | 13-M-SUMMARY_INDEX.discovery.md:L193)
+- (SUMMARY/M3-E004) [FLOW] Fleet aggregation uses a pull model. (M:L61 | 13-M-SUMMARY_INDEX.discovery.md:L194)
+- (SUMMARY/M3-E006) [INT] The seat export extends the K-6 bundle rather than forking it. (M:L61-L62, L67 | 13-M-SUMMARY_INDEX.discovery.md:L196)
+- (SUMMARY/M3-E007) [DATA] The organization export adds seat_id. (M:L61-L62 | 13-M-SUMMARY_INDEX.discovery.md:L197)
+- (SUMMARY/M3-E008) [DATA] The organization export adds org_id. (M:L61-L62 | 13-M-SUMMARY_INDEX.discovery.md:L198)
+- (SUMMARY/M3-E009) [DATA] The organization export adds pack_hash. (M:L61-L62 | 13-M-SUMMARY_INDEX.discovery.md:L199)
+- (SUMMARY/M3-E010) [DATA] The organization export adds drift. (M:L61-L62 | 13-M-SUMMARY_INDEX.discovery.md:L200)
+- (SUMMARY/M3-E011) [DATA] The added export fields use serde defaults for compatibility. (M:L62 | 13-M-SUMMARY_INDEX.discovery.md:L201)
+- (SUMMARY/M3-E013) [DATA] One organization bundle is produced per report invocation. (M:L62-L63 | 13-M-SUMMARY_INDEX.discovery.md:L203)
+- (SUMMARY/M3-E014) [DATA] The organization bundle contains a per-seat table. (M:L63 | 13-M-SUMMARY_INDEX.discovery.md:L204)
+- (SUMMARY/M3-E015) [DATA] The bundle rolls up verified-outcome rate. (M:L63 | 13-M-SUMMARY_INDEX.discovery.md:L205)
+- (SUMMARY/M3-E017) [DATA] The bundle rolls up K-1 deltas. (M:L63-L64 | 13-M-SUMMARY_INDEX.discovery.md:L207)
+- (SUMMARY/M3-E018) [DATA] The bundle rolls up H-9 dollars per resolved task. (M:L63-L64 | 13-M-SUMMARY_INDEX.discovery.md:L208)
+- (SUMMARY/M3-E019) [DATA] The bundle rolls up K-3 unvouched counts. (M:L64 | 13-M-SUMMARY_INDEX.discovery.md:L209)
+- (SUMMARY/M3-E020) [DATA] The bundle rolls up M-2 policy drift. (M:L64 | 13-M-SUMMARY_INDEX.discovery.md:L210)
+- (SUMMARY/M3-E021) [DATA] The bundle reports seat-roster honesty against entitlement seats_max. (M:L64 | 13-M-SUMMARY_INDEX.discovery.md:L211)
+- (SUMMARY/M3-E022) [AUDIT] Every fleet number is recomputable from constituent seat journals. (M:L64-L65 | 13-M-SUMMARY_INDEX.discovery.md:L212)
+- (SUMMARY/M3-E023) [PRIV] Fleet reporting sends zero telemetry. (M:L65-L66 | 13-M-SUMMARY_INDEX.discovery.md:L213)
+- (SUMMARY/M3-E024) [PRIV] Fleet reporting includes zero raw content. (M:L65-L66 | 13-M-SUMMARY_INDEX.discovery.md:L214)
+- (SUMMARY/M3-E028) [INT] M-3 composes G-2/G-8 verification. (M:L67 | 13-M-SUMMARY_INDEX.discovery.md:L218)
+- (SUMMARY/M3-E030) [INT] M-3 composes K-1, K-4, H-9, K-3, M-1, and M-2. (M:L67-L68 | 13-M-SUMMARY_INDEX.discovery.md:L220)
+- (SUMMARY/M3-E031) [INT] The planned integration module is commerce/org_report.rs. (M:L69 | 13-M-SUMMARY_INDEX.discovery.md:L221)
+- (SUMMARY/M3-E032) [OBS] Existing SSB events should be reused for organization reporting when possible. (M:L69 | 13-M-SUMMARY_INDEX.discovery.md:L222)
+- (SUMMARY/M3-E033) [OBS] OrgReportEvent may be added only if no existing event fits. (M:L69 | 13-M-SUMMARY_INDEX.discovery.md:L223)
+- (SUMMARY/M3-E034) [TEST] Acceptance uses three fixture exports: clean, drift, and broken. (M:L70 | 13-M-SUMMARY_INDEX.discovery.md:L224)
+- (SUMMARY/M3-E036) [TEST] The clean and drift seats must verify PASS. (M:L70-L71 | 13-M-SUMMARY_INDEX.discovery.md:L226)
+- (SUMMARY/M3-E038) [TEST] Rollup numbers must recompute byte-identically. (M:L71 | 13-M-SUMMARY_INDEX.discovery.md:L228)
+- (SUMMARY/M3-E040) [TEST] A byte-level transcript grep over the generated bundle must be empty. (M:L72 | 13-M-SUMMARY_INDEX.discovery.md:L230)
+- [summary-delta] (M-001/SD-M3-001) [Δ] **ADD** dual render outputs: human markdown sheet + machine msgpack/toml as the K-7 org answer. | summary-anchor: 13-M:L201-L211, L450 | source-atoms: M3-E026, M3-I001 (DEEP-M-001.discovery.md:L538)
+- [summary-delta] (M-001/SD-M3-002) [Δ] **ADD** freshness fields (journal head seq + date), org-set window flagging, and required M-1 seat roster with named missing seats. | summary-anchor: 13-M:L576-L577, L592-L593 | source-atoms: M3-E039–M3-E040 (DEEP-M-001.discovery.md:L539)
+- [summary-delta] (M-001/SD-M3-003) [Δ] **ADD** serde(default) no-migration extension, prefer-reuse ComplianceExported/G-8 SSB guidance, and aggregate secret-grep on rollup output. | summary-anchor: 13-M:L198-L201, L221-L223 | source-atoms: M3-E013, M3-E018, M3-E025, M3-E041 (DEEP-M-001.discovery.md:L540)
+- [summary-delta] (M-001/SD-M3-004) [Δ] **ADD** exact trigger fixture trio path and admin-seat expect_ssb wording for 2 PASS + named RefusedSeat. | summary-anchor: 13-M:L224-L230 | source-atoms: M3-E032–M3-E038 (DEEP-M-001.discovery.md:L541)
+- [summary-delta] (M-001/SD-M3-005) [Δ] **QUALIFY** summary’s `--verify` as present on the report command while behavior without the flag remains unspecified in originals. | summary-anchor: 13-M:L201-L202, L576, L592 | source-atoms: M3-E022–M3-E023, M3-A002 (DEEP-M-001.discovery.md:L542)
+- [ambiguity] (M-001/M3-A001) [A/CFG] Org-set freshness window unit/default is named but not valued. (M-3:L68-L70 | ledger-line: DEEP-M-001.discovery.md:L269)
+- [ambiguity] (M-001/M3-A002) [SURFACE-RELATED/A/FLOW] Behavior of `elai org report` without `--verify` is not specified. (M-3:L38-L40, L58-L59 | DEEP-M-001.discovery.md:L270)
+- [ambiguity] (M-001/M3-A003) [A/DATA] Exact machine file choice between msgpack and toml, output path, and partial-output after refusals are unresolved. (M-3:L43-L44, L62-L64 | ledger-line: DEEP-M-001.discovery.md:L271)
+- [ambiguity] (M-001/M3-A004) [A/OBS] Whether Drift on a verified seat affects an overall org verdict is not specified (fixture expects verify PASS for the Drift seat). (M-3:L58-L64 | ledger-line: DEEP-M-001.discovery.md:L272)
+- [ambiguity] (M-001/M3-A005) [A/EVENT] OrgReportEvent variants, if created, are not enumerated. (M-3:L41-L42 | ledger-line: DEEP-M-001.discovery.md:L273)
+- [inference] (M-001/M3-I001) [SURFACE/I/SURFACE] Human markdown sheet and machine msgpack/toml are dual renderings of one org bundle rather than two independent aggregation paths. (M-3:L38-L44 | DEEP-M-001.discovery.md:L268)
+
+### M-4: signed release channel + auto-updater + support bundle
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers M-001, M-SD, SUMMARY, SUP | sample: M-4:L26-L26; M-4:L33-L33; M-4:L39-L40; M-4:L40-L40; M-4:L48-L50; M-4:L52-L53 | 42 non-summary-placed, 44 summary-placed, 97 total unique atoms in unit | IDs: SUP-003, M-001/M4-E016, M-001/M4-E022, M-001/M4-E028, M-001/M4-E029, M-001/M4-E031, M-001/M4-E033, M-001/M4-E034, …
+**Composes with**: A-1, A-4, B-43, B-45, G-2, G-8, G-9, J-59, K-1, K-3, K-6, K-24, M-0, M-1, M-2, M-3, M-5, M-5a, M-5b, M-5c, M-5d, M-6, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-1, M-2, M-3, M-5a, M-5b, M-5c, M-5d, M-6; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-2, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-1, M-2, M-3, M-5, M-6; M-001/IX-007 → M-2, M-3; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-1; M-001/IX-010 → K-24, M-1, M-3, M-5a, M-5d
+
+- Superseded: (SUP-003) [superseded] [superseded] | Winner (target state): M-001/M4-E023 + M-001/SD-M4-002 (ReleaseChannelEvent arms named) | Loser (retained): SUMMARY/OBS ReleaseChannelEvent 'No variants specified' (13-M:L549) | Reason: Deep M-4 names Pattern-2 arms UpdateAvailable/Applied/RefusedHash/RolledBack (create-vs-reuse still W-9). Target state: arms known; prefer-reuse still open (AC-002). | Winner anchor: DEEP-M-001.discovery.md:L306, L549; M-4:L33-L34, L56-L57 | Loser anchor: 13-M-SUMMARY_INDEX.discovery.md:L273-L274, L549
+- [status] (M-001/M4-E001) [E/STATUS] M-4 is Track M, lever REACH + CANT-WRECK, grounding STRONG (gap G5/G6; B-43 defers the updater BY NAME at B-43:15), nature BUILD, effort M, WAVE M2. (M-4:L1-L3 | ledger-line: DEEP-M-001.discovery.md:L283)
+- [status] (M-001/M4-E018) [E/DATA] Support bundle contents: versions, entitlement status (tier only, no key), config + pack hashes, `elai doctor` output, last-N journal rows through G-9 redaction. (M-4:L27-L29 | ledger-line: DEEP-M-001.discovery.md:L300)
+- [status] (SUMMARY/M4-E001) [STATUS] M-4 has lever REACH plus CANT-WRECK, STRONG grounding from gaps G5/G6 and B-43’s named updater deferral, BUILD, effort M, wave M2. (M:L74-L75 | 13-M-SUMMARY_INDEX.discovery.md:L236)
+- [config] (M-001/M4-E008) [E/CFG] LOCK-1 update CHECK is default-ON + non-blocking. (M-4:L19-L19 | ledger-line: DEEP-M-001.discovery.md:L290)
+- [config] (SUMMARY/M4-E017) [OPS] Update checking is default-on. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L252)
+- [gate] (M-001/M4-E006) [E/INT] B-43's blake3-manifest + refuse-on-mismatch pattern (B-43:161-163, :343) is the verification core to REUSE. (M-4:L13-L14 | ledger-line: DEEP-M-001.discovery.md:L288)
+- [gate] (M-001/M4-E013) [E/FAIL] Mismatch = refuse, exactly the B-43 posture. (M-4:L23-L24 | ledger-line: DEEP-M-001.discovery.md:L295)
+- [gate] (M-001/M4-E023) [E/EVENT] +ReleaseChannelEvent (Pattern-2: UpdateAvailable/Applied/RefusedHash/RolledBack) or prefer-reuse (W-9 at edit). (M-4:L33-L34 | ledger-line: DEEP-M-001.discovery.md:L305)
+- [gate] (M-001/M4-E033) [SURFACE-RELATED/E/INT] reachable_from: `elai update *` + `elai support bundle` CLI (real entrypoints); boot-time non-blocking check. (M-4:L52-L53 | DEEP-M-001.discovery.md:L315)
+- [gate] (M-001/M4-E035) [SURFACE-RELATED/E/TEST] expect_ssb: UpdateAvailable row; RefusedHash row on the bad artifact; after fixing the fixture, Applied row; `elai update rollback` -> RolledBack + prior binary hash-verified. (M-4:L56-L57 | DEEP-M-001.discovery.md:L317)
+- [gate] (M-001/M4-E036) [E/TEST] Corrupted-artifact fixture is REFUSED before any file lands (R2). (M-4:L58-L59 | ledger-line: DEEP-M-001.discovery.md:L318)
+- [gate] (SUMMARY/M4-E005) [INT] Artifact verification reuses B-43’s refuse-on-mismatch core. (M:L76-L77 | 13-M-SUMMARY_INDEX.discovery.md:L240)
+- [gate] (SUMMARY/M4-E018) [OPS] Update checking is non-blocking. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L253)
+- [gate] (SUMMARY/M4-E040) [TEST] A corrupted artifact must be refused before any file lands. (M:L88 | 13-M-SUMMARY_INDEX.discovery.md:L275)
+- [surface] (M-001/M4-E016) [SURFACE/E/SURFACE] `elai update rollback` restores it and verifies the hash before exec. (M-4:L26-L26 | DEEP-M-001.discovery.md:L298)
+- [surface] (M-001/M4-E022) [SURFACE/E/SURFACE] CLI verbs: `elai update check|apply|rollback|channel`. (M-4:L33-L33 | DEEP-M-001.discovery.md:L304)
+- [surface] (M-001/M4-E028) [SURFACE/E/SURFACE] Task 4 support bundle: `elai support bundle` -> `workflow/support/bundle-{date}.tar.zst`, G-9-redacted. (M-4:L39-L40 | DEEP-M-001.discovery.md:L310)
+- [surface] (M-001/M4-E029) [SURFACE/E/SURFACE] Support bundle prints a content summary so the user sees what it holds BEFORE sharing. (M-4:L40-L40 | DEEP-M-001.discovery.md:L311)
+- [surface] (M-001/M4-E031) [SURFACE-RELATED/E/DATA] WIRING produces: update.rs (check/apply/rollback/channel), release-manifest format + ops signing runbook, `elai support bundle`; +0..1 SSB. (M-4:L48-L50 | DEEP-M-001.discovery.md:L313)
+- [surface] (M-001/M4-E034) [SURFACE-RELATED/E/TEST] trigger: fixture release server dir with v(N+1) manifest (one artifact's blake3 deliberately wrong) -> `elai update check && elai update apply`. (M-4:L54-L55 | DEEP-M-001.discovery.md:L316)
+- [surface] (M-001/M4-E039) [SURFACE-RELATED/E/TEST] `elai support bundle` on a fixture session with a seeded AWS key + email produces a bundle whose secret-grep is EMPTY (G-9 arm) and prints its content summary. (M-4:L60-L62 | DEEP-M-001.discovery.md:L321)
+- [surface] (SUMMARY/M4-E013) [CLI/SURFACE] The CLI exposes 'elai update check'. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L248)
+- [surface] (SUMMARY/M4-E014) [CLI/SURFACE] The CLI exposes 'elai update apply'. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L249)
+- [surface] (SUMMARY/M4-E015) [CLI/SURFACE] The CLI exposes 'elai update rollback'. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L250)
+- [surface] (SUMMARY/M4-E016) [CLI/SURFACE] The CLI exposes 'elai update channel'. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L251)
+- [surface] (SUMMARY/M4-E023) [CLI/SURFACE] The CLI exposes 'elai support bundle'. (M:L81 | 13-M-SUMMARY_INDEX.discovery.md:L258)
+- [surface] (SUMMARY/M4-E031) [UI/SURFACE] Support-bundle creation prints a summary. (M:L82 | 13-M-SUMMARY_INDEX.discovery.md:L266)
+- (M-001/M4-E002) [E/DEP] Depends on MA-4 (B-43 HostInstaller shipped; B-45 noted), M-2 (channel pin clause), G-9 (redaction). (M-4:L2-L4 | ledger-line: DEEP-M-001.discovery.md:L284)
+- (M-001/M4-E004) [E/CAP] Plus the missing support path: a G-9-redacted local diagnostic bundle. (M-4:L9-L9 | ledger-line: DEEP-M-001.discovery.md:L286)
+- (M-001/M4-E005) [E/STATUS] Gap G5: B-43:15 names "separate plan auto-updater (delta updates + signature pinning)" — never authored anywhere B..L (grep-proven). (M-4:L11-L13 | ledger-line: DEEP-M-001.discovery.md:L287)
+- (M-001/M4-E007) [E/STATUS] Gap G6: G-9 redaction exists with no support-bundle consumer; support requests today would mean hand-copying logs (secret-leak roulette). (M-4:L15-L16 | ledger-line: DEEP-M-001.discovery.md:L289)
+- (M-001/M4-E009) [E/SEC] Update APPLY is user-confirmed (interactive) or org-policy-scheduled (M-2 clause). (M-4:L19-L20 | ledger-line: DEEP-M-001.discovery.md:L291)
+- (M-001/M4-E010) [E/LIMIT] Never mid-session, never silent binary swap. (M-4:L20-L20 | ledger-line: DEEP-M-001.discovery.md:L292)
+- (M-001/M4-E011) [E/CFG] W-2 clean: check-on is the default state. (M-4:L20-L21 | ledger-line: DEEP-M-001.discovery.md:L293)
+- (M-001/M4-E012) [E/DATA] LOCK-2 every release = a signed manifest {version, channel, per-artifact blake3, min-rollback version, revocation-list update (M-1 R1 mitigation lands HERE)}. (M-4:L22-L23 | ledger-line: DEEP-M-001.discovery.md:L294)
+- (M-001/M4-E014) [E/DEFER] Delta updates are a LATER rider — v1 is whole-artifact (simplest correct thing). (M-4:L24-L24 | ledger-line: DEEP-M-001.discovery.md:L296)
+- (M-001/M4-E015) [E/RECOVERY] LOCK-3 rollback keeps the last-good binary alongside (the J-3 last-good discipline applied to binaries). (M-4:L25-L26 | ledger-line: DEEP-M-001.discovery.md:L297)
+- (M-001/M4-E017) [E/PRIV] LOCK-4 the support bundle is written LOCALLY and never auto-sent (MD-4). (M-4:L27-L27 | ledger-line: DEEP-M-001.discovery.md:L299)
+- (M-001/M4-E019) [E/PRIV] Sending the support bundle anywhere is a human act. (M-4:L29-L29 | ledger-line: DEEP-M-001.discovery.md:L301)
+- (M-001/M4-E020) [E/CAP] Task 1: release manifest format + signer (ops side) + verifier (client, G-8/B-43 core). (M-4:L32-L32 | ledger-line: DEEP-M-001.discovery.md:L302)
+- (M-001/M4-E021) [E/INT] Module: `crates/cli/src/update.rs`. (M-4:L33-L33 | ledger-line: DEEP-M-001.discovery.md:L303)
+- (M-001/M4-E024) [E/CFG] Task 2 channels + org pin: stable/beta resolution; M-2 pack clause `update.channel_pin` wins over local. (M-4:L35-L36 | ledger-line: DEEP-M-001.discovery.md:L306)
+- (M-001/M4-E025) [E/CFG] Staged rollout = a rollout_pct field the client hashes its seat_id against (deterministic bucket, no server state). (M-4:L36-L37 | ledger-line: DEEP-M-001.discovery.md:L307)
+- (M-001/M4-E026) [E/DET] Bucket = blake3(seat_id) % 100 — deterministic, journal-explainable (GD-2), no server coordination. (M-4:L70-L71 | ledger-line: DEEP-M-001.discovery.md:L308)
+- (M-001/M4-E027) [E/RECOVERY] Task 3 rollback: retain previous artifact + manifest; restore + hash-verify + re-exec. (M-4:L38-L38 | ledger-line: DEEP-M-001.discovery.md:L309)
+- (M-001/M4-E030) [E/DEP] COMPOSES-WITH: B-43 HostInstaller + blake3-manifest pattern (installer stays the fresh-install path; updater is its sibling, sharing verification code); B-45 (dashboard artifact rides the same manifest); M-2 (channel pin + scheduled apply); G-9 (bundle redaction); doctor (bundle content); M-1 (revocation-list distribution). (M-4:L42-L46 | ledger-line: DEEP-M-001.discovery.md:L312)
+- (M-001/M4-E032) [E/INT] WIRING consumes: B-43 verification core, M-2 pack clause, G-9, doctor, G-8 signing. (M-4:L51-L51 | ledger-line: DEEP-M-001.discovery.md:L314)
+- (M-001/M4-E037) [E/TEST] Clean fixture applies + rollback restores the exact prior binary (hash match). (M-4:L59-L59 | ledger-line: DEEP-M-001.discovery.md:L319)
+- (M-001/M4-E038) [E/TEST] An org pack pinning stable makes a beta manifest invisible to the seat (M-2 arm). (M-4:L59-L60 | ledger-line: DEEP-M-001.discovery.md:L320)
+- (M-001/M4-E040) [E/RECOVERY] Risk R1 self-update on Windows (running exe cannot replace itself): standard rename-swap-on-next-start pattern; the applied version activates on restart — stated in the UX, not hidden. (M-4:L64-L66 | ledger-line: DEEP-M-001.discovery.md:L322)
+- (M-001/M4-E041) [E/SEC] Risk R2 compromised release key = fleet-wide code push: same key posture as M-1/M-2 (offline ceremony); the manifest's min-rollback + revocation list is also the recovery lever. Recorded residue (GD-5). (M-4:L67-L69 | ledger-line: DEEP-M-001.discovery.md:L323)
+- (M-001/M4-E042) [E/DET] Risk R3 staged-rollout determinism: bucket = blake3(seat_id) % 100. (M-4:L70-L71 | ledger-line: DEEP-M-001.discovery.md:L324)
+- (SUMMARY/M4-E002) [STATUS] M-4 depends on MA-4, M-2, and G-9. (M:L75 | 13-M-SUMMARY_INDEX.discovery.md:L237)
+- (SUMMARY/M4-E003) [DATA] Release manifests are signed. (M:L76 | 13-M-SUMMARY_INDEX.discovery.md:L238)
+- (SUMMARY/M4-E004) [DATA] Each release artifact carries a blake3 digest. (M:L76 | 13-M-SUMMARY_INDEX.discovery.md:L239)
+- (SUMMARY/M4-E006) [SAFE] Revocation-list distribution provides M-1’s key-compromise lever. (M:L77 | 13-M-SUMMARY_INDEX.discovery.md:L241)
+- (SUMMARY/M4-E007) [CFG] The updater supports a stable channel. (M:L77 | 13-M-SUMMARY_INDEX.discovery.md:L242)
+- (SUMMARY/M4-E008) [CFG] The updater supports a beta channel. (M:L77 | 13-M-SUMMARY_INDEX.discovery.md:L243)
+- (SUMMARY/M4-E009) [CFG] An M-2 organization-policy clause can pin the release channel. (M:L77-L78 | 13-M-SUMMARY_INDEX.discovery.md:L244)
+- (SUMMARY/M4-E010) [FLOW] Staged rollout is deterministic. (M:L78 | 13-M-SUMMARY_INDEX.discovery.md:L245)
+- (SUMMARY/M4-E011) [FLOW] Rollout assignment is blake3(seat_id) modulo 100. (M:L78 | 13-M-SUMMARY_INDEX.discovery.md:L246)
+- (SUMMARY/M4-E012) [OBS] A staged-rollout assignment must be explainable from the journal. (M:L78 | 13-M-SUMMARY_INDEX.discovery.md:L247)
+- (SUMMARY/M4-E019) [SAFE] An update apply requires user confirmation unless organization-scheduled. (M:L79-L80 | 13-M-SUMMARY_INDEX.discovery.md:L254)
+- (SUMMARY/M4-E020) [OPS] An organization policy may schedule update application. (M:L79-L80 | 13-M-SUMMARY_INDEX.discovery.md:L255)
+- (SUMMARY/M4-E021) [SAFE] Update application is never silent. (M:L80 | 13-M-SUMMARY_INDEX.discovery.md:L256)
+- (SUMMARY/M4-E022) [LIFE] Rollback retains the last-good binary. (M:L80-L81 | 13-M-SUMMARY_INDEX.discovery.md:L257)
+- (SUMMARY/M4-E024) [PRIV] A support bundle is assembled locally. (M:L81 | 13-M-SUMMARY_INDEX.discovery.md:L259)
+- (SUMMARY/M4-E025) [SAFE] Support-bundle diagnostics are G-9-redacted. (M:L81 | 13-M-SUMMARY_INDEX.discovery.md:L260)
+- (SUMMARY/M4-E026) [DATA] A support bundle includes versions. (M:L81 | 13-M-SUMMARY_INDEX.discovery.md:L261)
+- (SUMMARY/M4-E027) [DATA] A support bundle includes tier. (M:L81 | 13-M-SUMMARY_INDEX.discovery.md:L262)
+- (SUMMARY/M4-E028) [DATA] A support bundle includes hashes. (M:L81-L82 | 13-M-SUMMARY_INDEX.discovery.md:L263)
+- (SUMMARY/M4-E029) [DATA] A support bundle includes doctor output. (M:L82 | 13-M-SUMMARY_INDEX.discovery.md:L264)
+- (SUMMARY/M4-E030) [DATA] A support bundle includes a redacted journal tail. (M:L82 | 13-M-SUMMARY_INDEX.discovery.md:L265)
+- (SUMMARY/M4-E032) [PRIV] A support bundle is never automatically sent. (M:L82 | 13-M-SUMMARY_INDEX.discovery.md:L267)
+- (SUMMARY/M4-E033) [STATUS] Version 1 updates whole artifacts. (M:L82-L83 | 13-M-SUMMARY_INDEX.discovery.md:L268)
+- (SUMMARY/M4-E035) [INT] M-4 is a sibling of B-43 HostInstaller and shares its manifest-verification code. (M:L84 | 13-M-SUMMARY_INDEX.discovery.md:L270)
+- (SUMMARY/M4-E036) [INT] M-4 also composes B-45, M-2, G-9, doctor, and G-8. (M:L84-L85 | 13-M-SUMMARY_INDEX.discovery.md:L271)
+- (SUMMARY/M4-E037) [INT] The planned CLI integration module is crates/cli/src/update.rs plus a support-bundle arm. (M:L86 | 13-M-SUMMARY_INDEX.discovery.md:L272)
+- (SUMMARY/M4-E038) [OBS] M-4 may add a Pattern-2 ReleaseChannelEvent. (M:L86-L87 | 13-M-SUMMARY_INDEX.discovery.md:L273)
+- (SUMMARY/M4-E039) [OBS] Existing event types should be preferred over ReleaseChannelEvent when they fit. (M:L86-L87 | 13-M-SUMMARY_INDEX.discovery.md:L274)
+- (SUMMARY/M4-E041) [TEST] A clean artifact must apply successfully. (M:L88 | 13-M-SUMMARY_INDEX.discovery.md:L276)
+- (SUMMARY/M4-E042) [TEST] Rollback after a clean apply must restore the prior binary with a matching hash. (M:L88-L89 | 13-M-SUMMARY_INDEX.discovery.md:L277)
+- (SUMMARY/M4-E043) [TEST] An organization stable-channel pin must hide beta manifests. (M:L89 | 13-M-SUMMARY_INDEX.discovery.md:L278)
+- (SUMMARY/M4-E044) [TEST] A support bundle built from a seeded-secret fixture session must have an empty secret grep. (M:L89-L90 | 13-M-SUMMARY_INDEX.discovery.md:L279)
+- [deferred] (M-001/M4-E003) [E/CAP] Ship the auto-updater B-43 explicitly deferred: signed release manifests, stable/beta channels with org pinning, staged rollout, and one-command rollback. (M-4:L6-L9 | ledger-line: DEEP-M-001.discovery.md:L285)
+- [deferred] (SUMMARY/M4-E034) [DEFER] Delta updates are deferred to a later rider. (M:L83 | 13-M-SUMMARY_INDEX.discovery.md:L269)
+- [summary-delta] (M-001/SD-M4-001) [Δ] **ADD** complete release-manifest field set: version, channel, per-artifact blake3, min-rollback version, revocation-list update. | summary-anchor: 13-M:L238-L241, L594 | source-atoms: M4-E012 (DEEP-M-001.discovery.md:L548)
+- [summary-delta] (M-001/SD-M4-002) [Δ] **ADD** exact ReleaseChannelEvent arms UpdateAvailable/Applied/RefusedHash/RolledBack (summary said variants unspecified). | summary-anchor: 13-M:L273-L274, L549 | source-atoms: M4-E023, M4-E035 (DEEP-M-001.discovery.md:L549)
+- [summary-delta] (M-001/SD-M4-003) [Δ] **ADD** support bundle path `workflow/support/bundle-{date}.tar.zst`, entitlement status tier-only (no key), and printed pre-share content summary. | summary-anchor: 13-M:L258-L267 | source-atoms: M4-E018, M4-E028–M4-E029 (DEEP-M-001.discovery.md:L550)
+- [summary-delta] (M-001/SD-M4-004) [Δ] **ADD** pack clause name `update.channel_pin`, rollout_pct field, Windows rename-swap-on-next-start restart UX, and boot-time non-blocking check reachability. | summary-anchor: 13-M:L244-L247, L594-L595 | source-atoms: M4-E024–M4-E026, M4-E033, M4-E040 (DEEP-M-001.discovery.md:L551)
+- [summary-delta] (M-001/SD-M4-005) [Δ] **ADD** fixture acceptance sequence including deliberate wrong blake3, Applied after fix, and RolledBack hash verification. | summary-anchor: 13-M:L275-L279 | source-atoms: M4-E034–M4-E039 (DEEP-M-001.discovery.md:L552)
+- [ambiguity] (M-001/M4-A001) [A/CFG] Polling interval, failure backoff, download transport, and channel-switch authorization are unspecified. (M-4:L19-L21, L35-L37 | ledger-line: DEEP-M-001.discovery.md:L326)
+- [ambiguity] (M-001/M4-A002) [A/DATA] last-N journal row count and exact tar.zst layout internals are unspecified. (M-4:L27-L29, L39-L40 | ledger-line: DEEP-M-001.discovery.md:L327)
+- [ambiguity] (M-001/M4-A003) [SURFACE/A/SURFACE] UX wording for Windows restart-activation is required but not drafted. (M-4:L64-L66 | DEEP-M-001.discovery.md:L328)
+- [ambiguity] (M-001/M4-A004) [A/EVENT] Prefer-reuse vs new ReleaseChannelEvent is unresolved at W-9 edit time. (M-4:L33-L34 | ledger-line: DEEP-M-001.discovery.md:L329)
+- [inference] (M-001/M4-I001) [I/CFG] Org-policy-scheduled apply is implied to be an M-2 pack clause peer of `update.channel_pin`, but schedule field names are not listed. (M-4:L19-L20, L35-L36, L45-L45 | ledger-line: DEEP-M-001.discovery.md:L325)
+
+### M-5: commercial packaging + verifier OSS + trust continuity
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers M-001, M-SD, SUMMARY, SUP | sample: M-5:L14-L15; M-5:L15-L16; M-5:L28-L29; M-5:L30-L31; M-5:L45-L48; M-5:L50-L52 | 38 non-summary-placed, 46 summary-placed, 98 total unique atoms in unit | IDs: M-001/M5-E009, M-001/M5-E010, M-001/M5-E020, M-001/M5-E021, M-001/M5-E029, M-001/M5-E030, M-001/M5-E032, M-001/M5-E033, …
+**Composes with**: A-1, A-4, B-43, G-2, G-8, G-9, J-59, K-1, K-3, K-6, K-7, K-24, M-0, M-1, M-2, M-3, M-4, M-5a, M-5b, M-5c, M-5d, M-6, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-1, M-2, M-3, M-4, M-5a, M-5b, M-5c, M-5d; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-2, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-1, M-2, M-3, M-4, M-6; M-001/IX-007 → M-2, M-3, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-1, M-4; M-001/IX-010 → K-24, M-1, M-3, M-5a, M-5d
+
+- [status] (M-001/M5-E002) [E/STATUS] WAVE M1 (a,d) / WAVE M3 (b,c). (M-5:L4-L5 | ledger-line: DEEP-M-001.discovery.md:L340)
+- [status] (M-001/M5-E009) [SURFACE-RELATED/E/CAP] Slice (a) VERIFIER OSS EXTRACTION [WAVE M1 — the one build]: extract standalone `elai-verify` crate/binary. (M-5:L14-L15 | DEEP-M-001.discovery.md:L347)
+- [status] (M-001/M5-E014) [E/COMP] Slice (b) LEGAL WRAPPER [WAVE M3]: EULA (engine) + license-split statement (engine EULA vs verifier OSS) + DPA template + refund/termination language for the seat model. (M-5:L21-L24 | ledger-line: DEEP-M-001.discovery.md:L352)
+- [status] (M-001/M5-E017) [E/COMP] Slice (c) TRUST CONTINUITY STATEMENT [WAVE M3]: solo-maintainer answer (focus-rescope contradiction #2). (M-5:L25-L26 | ledger-line: DEEP-M-001.discovery.md:L355)
+- [status] (M-001/M5-E021) [SURFACE-RELATED/E/CFG] Slice (d) TIER MATRIX AS DATA [WAVE M1]: tiers.toml Free / Pro / Team rows -> feature keys M-1's tier() gates + K-24's credit grants read. (M-5:L30-L31 | DEEP-M-001.discovery.md:L359)
+- [status] (M-001/M5-E032) [SURFACE-RELATED/E/INT] reachable_from: `elai-verify` standalone binary (real entrypoint, engine-free); tiers.toml read by `elai license status`. (M-5:L54-L55 | DEEP-M-001.discovery.md:L370)
+- [status] (M-001/M5-E033) [SURFACE/E/SURFACE] `elai license status` renders tier names/features from tiers.toml. (M-5:L54-L55, L62-L63 | DEEP-M-001.discovery.md:L371)
+- [status] (M-001/M5-E039) [SURFACE-RELATED/E/TEST] `elai license status` renders tier names/features from tiers.toml (fixture, M-1 join). (M-5:L62-L63 | DEEP-M-001.discovery.md:L377)
+- [status] (SUMMARY/M5-E046) [TEST] 'elai license status' must render from tiers.toml. (M:L109-L110 | 13-M-SUMMARY_INDEX.discovery.md:L330)
+- [config] (M-001/M5-E016) [E/COMP] Drafts for counsel review — authoring, not legal advice; flagged for the user. (M-5:L24-L24 | ledger-line: DEEP-M-001.discovery.md:L354)
+- [config] (M-001/M5-E029) [SURFACE-RELATED/E/DEP] COMPOSES-WITH: G-8 attestation verify, G-2 rra verify, K-6 conformance, M-3 org verify (the four legs the OSS binary wraps); K-1 dossier + claims lint; K-7 brief (gains the verifier-OSS line); M-1 (tiers.toml consumer); GTM memory decisions (executed, not re-litigated). (M-5:L45-L48 | DEEP-M-001.discovery.md:L367)
+- [config] (M-001/M5-E030) [SURFACE-RELATED/E/DATA] WIRING produces: elai-verify crate/binary (published), EULA/DPA/continuity drafts under docs/strategy/commercial/, tiers.toml, claims-lint pricing recognizer extension. (M-5:L50-L52 | DEEP-M-001.discovery.md:L368)
+- [config] (M-001/M5-E042) [SURFACE-RELATED/E/CLAIM] Risk R3 tiers.toml drift vs marketing copy: the lint's pricing recognizer greps rendered copy against tiers.toml values — one source of pricing truth, mechanically enforced. (M-5:L71-L72 | DEEP-M-001.discovery.md:L380)
+- [config] (SUMMARY/M5-E024) [CFG] tiers.toml defines Free as data. (M:L100 | 13-M-SUMMARY_INDEX.discovery.md:L308)
+- [config] (SUMMARY/M5-E025) [CFG] tiers.toml defines Pro as data. (M:L100 | 13-M-SUMMARY_INDEX.discovery.md:L309)
+- [config] (SUMMARY/M5-E026) [CFG] tiers.toml defines Team as data. (M:L100 | 13-M-SUMMARY_INDEX.discovery.md:L310)
+- [config] (SUMMARY/M5-E027) [CFG] tiers.toml is the one pricing source of truth. (M:L100-L101 | 13-M-SUMMARY_INDEX.discovery.md:L311)
+- [config] (SUMMARY/M5-E028) [INT] M-1 reads tiers.toml. (M:L100-L101 | 13-M-SUMMARY_INDEX.discovery.md:L312)
+- [config] (SUMMARY/M5-E029) [INT] K-24 reads tiers.toml. (M:L100-L101 | 13-M-SUMMARY_INDEX.discovery.md:L313)
+- [config] (SUMMARY/M5-E037) [INT] Integration includes tiers.toml. (M:L105 | 13-M-SUMMARY_INDEX.discovery.md:L321)
+- [gate] (M-001/M5-E027) [E/FAIL] A fork of verify logic = drift = the exact failure the attestation exists to prevent. One source of verify truth. (M-5:L40-L41 | ledger-line: DEEP-M-001.discovery.md:L365)
+- [gate] (M-001/M5-E036) [E/TEST] Standalone binary verifies fixture attestation + RRA + org bundle on an engine-free machine (PASS) and catches a one-byte tamper (FAIL, R2). (M-5:L59-L60 | ledger-line: DEEP-M-001.discovery.md:L374)
+- [gate] (M-001/M5-E038) [E/TEST] A seeded pricing superlative in the tier copy FAILS the lint (MD-5 arm). (M-5:L61-L62 | ledger-line: DEEP-M-001.discovery.md:L376)
+- [gate] (M-001/M5-E040) [E/FAIL] Risk R1 verifier extraction reveals engine entanglement in verify paths: that is a FINDING, not a blocker — the refactor to a clean boundary is in-scope for (a) and improves the engine. (M-5:L65-L67 | ledger-line: DEEP-M-001.discovery.md:L378)
+- [gate] (SUMMARY/M5-E023) [CLAIM] Commercial documentation must not advertise a fake SLA. (M:L99-L100 | 13-M-SUMMARY_INDEX.discovery.md:L307)
+- [gate] (SUMMARY/M5-E045) [TEST] A seeded pricing superlative must fail claims lint under MD-5. (M:L109 | 13-M-SUMMARY_INDEX.discovery.md:L329)
+- [surface] (M-001/M5-E010) [SURFACE-RELATED/E/INT] elai-verify wraps: verify-attestation (G-8) + `rra verify` action-stream re-check (G-2) + the K-6 bundle conformance check + M-3 org-bundle verify. (M-5:L15-L16 | DEEP-M-001.discovery.md:L348)
+- [surface] (M-001/M5-E020) [SURFACE/E/SURFACE] Support-expectation page (what a seat gets; honest solo-operation posture, GD-5 — no fake SLA). (M-5:L28-L29 | DEEP-M-001.discovery.md:L358)
+- [surface] (M-001/M5-E034) [SURFACE-RELATED/E/TEST] trigger: on a CLEAN machine (no engine): `elai-verify attestation fixtures/run.attestation && elai-verify rra fixtures/run.rra`. (M-5:L56-L57 | DEEP-M-001.discovery.md:L372)
+- (M-001/M5-E001) [E/STATUS] M-5 is Track M, lever SELLABLE + AUDITABLE, grounding STRONG (gap G7; GTM decision on file: project_gtm_playbook_2026 "open-source ONLY the verifier, engine stays closed, escrow for bus-factor"), nature E-23-class docs + ONE crate extraction, effort S-M. (M-5:L1-L4 | ledger-line: DEEP-M-001.discovery.md:L339)
+- (M-001/M5-E003) [E/DEP] Depends on K-1 claims lint live; (a) needs G-2/G-8 verify paths stable. (M-5:L5-L5 | ledger-line: DEEP-M-001.discovery.md:L341)
+- (M-001/M5-E004) [E/CAP] Execute commercial decisions that already exist as strategy but have NO executing session in B..L. (M-5:L7-L9 | ledger-line: DEEP-M-001.discovery.md:L342)
+- (M-001/M5-E005) [E/CAP] Publish the standalone OSS verifier (the distribution + anti-rug-pull leg). (M-5:L9-L9 | ledger-line: DEEP-M-001.discovery.md:L343)
+- (M-001/M5-E006) [E/COMP] Write the legal wrapper (EULA/DPA/pricing) under the K-1 claims lint. (M-5:L9-L10 | ledger-line: DEEP-M-001.discovery.md:L344)
+- (M-001/M5-E007) [E/COMP] Publish the continuity/escrow statement. (M-5:L10-L10 | ledger-line: DEEP-M-001.discovery.md:L345)
+- (M-001/M5-E008) [E/CFG] Pin the seat-tier matrix as DATA that M-1 reads. (M-5:L11-L11 | ledger-line: DEEP-M-001.discovery.md:L346)
+- (M-001/M5-E011) [E/LIMIT] Zero engine deps (the extraction IS the proof the verify path has no engine entanglement — a compile-time boundary test). (M-5:L16-L17 | ledger-line: DEEP-M-001.discovery.md:L349)
+- (M-001/M5-E012) [E/COMP] License MIT-or-Apache (user picks at execution); repo published; the engine repo stays closed. (M-5:L17-L18 | ledger-line: DEEP-M-001.discovery.md:L350)
+- (M-001/M5-E013) [E/CAP] Every evidence artifact ELAI emits becomes third-party-checkable without buying anything — the GTM wedge's credibility leg. (M-5:L18-L20 | ledger-line: DEEP-M-001.discovery.md:L351)
+- (M-001/M5-E015) [E/PRIV] DPA grounds what a seat processes locally and what the mint service sees: org_id + payment metadata ONLY — grounded in M-1 LOCK-2. (M-5:L22-L23 | ledger-line: DEEP-M-001.discovery.md:L353)
+- (M-001/M5-E018) [E/COMP] Source-escrow-on-lapse commitment OR a license-converts-to-OSS-on-abandonment clause — user decision at execution, both drafted. (M-5:L26-L28 | ledger-line: DEEP-M-001.discovery.md:L356)
+- (M-001/M5-E019) [E/COMP] Key-ceremony/custody note (M-1/M-2/M-4 keys). (M-5:L27-L28 | ledger-line: DEEP-M-001.discovery.md:L357)
+- (M-001/M5-E022) [E/CFG] Pricing NUMBERS live here once and nowhere else; every rendered surface reads this file. (M-5:L31-L32 | ledger-line: DEEP-M-001.discovery.md:L360)
+- (M-001/M5-E023) [E/CLAIM] Seed framing per GTM memory (team/agency $39-49 class) tagged [EXTERNAL-GTM] until K-24's measured $/resolved-task lands (MD-5). (M-5:L32-L33 | ledger-line: DEEP-M-001.discovery.md:L361)
+- (M-001/M5-E024) [E/CLAIM] LOCK-1 MD-5/KD-1: ALL copy in (b)/(d) passes the K-1 claims lint (extended with a pricing recognizer). (M-5:L36-L38 | ledger-line: DEEP-M-001.discovery.md:L362)
+- (M-001/M5-E025) [E/CLAIM] No unmeasured superlative, no "$20=$200"-class claim before K-24's measured number, every external figure tagged. (M-5:L37-L38 | ledger-line: DEEP-M-001.discovery.md:L363)
+- (M-001/M5-E026) [E/INT] LOCK-2 the verifier is extraction, NOT reimplementation (GD-1): the crate re-exports the same verify code paths the engine uses. (M-5:L39-L41 | ledger-line: DEEP-M-001.discovery.md:L364)
+- (M-001/M5-E028) [E/LIMIT] LOCK-3 the Article-50-certified hook stays KILLED (GTM record; K-6's "designed to support" wording is the ceiling). (M-5:L42-L43 | ledger-line: DEEP-M-001.discovery.md:L366)
+- (M-001/M5-E031) [E/INT] WIRING consumes: G-8/G-2/K-6/M-3 verify paths, K-1 lint, GTM decision records. (M-5:L53-L53 | ledger-line: DEEP-M-001.discovery.md:L369)
+- (M-001/M5-E035) [E/EVENT] expect_ssb: none (standalone binary journals nothing; E-23-class legs have no SSB). (M-5:L58-L58 | ledger-line: DEEP-M-001.discovery.md:L373)
+- (M-001/M5-E037) [E/TEST] The crate compiles with ZERO engine-crate deps (the boundary test). (M-5:L60-L61 | ledger-line: DEEP-M-001.discovery.md:L375)
+- (M-001/M5-E041) [E/COMP] Risk R2 legal drafts treated as final: every (b)/(c) artifact carries a counsel-review-required banner; the user ships nothing external without review (house rule: user reviews before any external use, same as K-7). (M-5:L68-L70 | ledger-line: DEEP-M-001.discovery.md:L379)
+- (SUMMARY/M5-E001) [STATUS] M-5 has levers SELLABLE and AUDITABLE, STRONG grounding from gap G7, E-23-class nature plus one extraction, and effort S-M. (M:L92-L93 | 13-M-SUMMARY_INDEX.discovery.md:L285)
+- (SUMMARY/M5-E002) [STATUS] M-5 slices a and d are wave M1; slices b and c are wave M3. (M:L93 | 13-M-SUMMARY_INDEX.discovery.md:L286)
+- (SUMMARY/M5-E003) [CAP] M-5 publishes a standalone open-source elai-verify crate and binary. (M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L287)
+- (SUMMARY/M5-E004) [INT] elai-verify wraps the same G-8 attestation verification path. (M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L288)
+- (SUMMARY/M5-E005) [INT] elai-verify wraps the same G-2 RRA verification path. (M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L289)
+- (SUMMARY/M5-E006) [INT] elai-verify wraps the same K-6 conformance verification path. (M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L290)
+- (SUMMARY/M5-E007) [INT] elai-verify wraps the same M-3 organization-bundle verification path. (M:L95 | 13-M-SUMMARY_INDEX.discovery.md:L291)
+- (SUMMARY/M5-E008) [SAFE] elai-verify has zero engine dependencies. (M:L95-L96 | 13-M-SUMMARY_INDEX.discovery.md:L292)
+- (SUMMARY/M5-E009) [TEST] Extracting the verifier forms a compile-time proof of the engine boundary. (M:L95-L96 | 13-M-SUMMARY_INDEX.discovery.md:L293)
+- (SUMMARY/M5-E010) [CAP] The ELAI engine remains closed-source. (M:L96 | 13-M-SUMMARY_INDEX.discovery.md:L294)
+- (SUMMARY/M5-E011) [COMP] Commercial packaging includes an EULA draft. (M:L97 | 13-M-SUMMARY_INDEX.discovery.md:L295)
+- (SUMMARY/M5-E012) [COMP] Commercial packaging includes a license-split draft. (M:L97 | 13-M-SUMMARY_INDEX.discovery.md:L296)
+- (SUMMARY/M5-E013) [COMP] Commercial packaging includes a DPA draft. (M:L97 | 13-M-SUMMARY_INDEX.discovery.md:L297)
+- (SUMMARY/M5-E014) [COMP] Each legal draft carries a counsel-review banner. (M:L97 | 13-M-SUMMARY_INDEX.discovery.md:L298)
+- (SUMMARY/M5-E015) [PRIV] The mint service sees org_id. (M:L97-L98 | 13-M-SUMMARY_INDEX.discovery.md:L299)
+- (SUMMARY/M5-E016) [PRIV] The mint service sees payment metadata. (M:L97-L98 | 13-M-SUMMARY_INDEX.discovery.md:L300)
+- (SUMMARY/M5-E017) [PRIV] The mint service sees only org_id and payment metadata. (M:L97-L98 | 13-M-SUMMARY_INDEX.discovery.md:L301)
+- (SUMMARY/M5-E018) [COMP] The trust-continuity statement offers escrow on lapse. (M:L98 | 13-M-SUMMARY_INDEX.discovery.md:L302)
+- (SUMMARY/M5-E019) [COMP] The trust-continuity statement alternatively offers conversion to OSS on abandonment. (M:L98-L99 | 13-M-SUMMARY_INDEX.discovery.md:L303)
+- (SUMMARY/M5-E020) [STATUS] Both continuity alternatives are drafted and the user selects between them. (M:L98-L99 | 13-M-SUMMARY_INDEX.discovery.md:L304)
+- (SUMMARY/M5-E021) [COMP] Commercial documentation includes a key-custody note. (M:L99 | 13-M-SUMMARY_INDEX.discovery.md:L305)
+- (SUMMARY/M5-E022) [CLAIM] Commercial documentation states an honest solo-support posture. (M:L99-L100 | 13-M-SUMMARY_INDEX.discovery.md:L306)
+- (SUMMARY/M5-E030) [CLAIM] The $39-49-per-seat go-to-market framing is tagged [EXTERNAL-GTM]. (M:L101 | 13-M-SUMMARY_INDEX.discovery.md:L314)
+- (SUMMARY/M5-E031) [CLAIM] That price framing remains externally qualified until K-24 supplies a measured number. (M:L101 | 13-M-SUMMARY_INDEX.discovery.md:L315)
+- (SUMMARY/M5-E032) [DEFER] The Article-50-certified hook remains killed under LOCK-3. (M:L102 | 13-M-SUMMARY_INDEX.discovery.md:L316)
+- (SUMMARY/M5-E033) [INT] M-5 composes G-8/G-2/K-6/M-3 verification, K-1 dossier and claims lint, K-7 brief, and M-1. (M:L103-L104 | 13-M-SUMMARY_INDEX.discovery.md:L317)
+- (SUMMARY/M5-E034) [CLAIM] K-1 claims lint gains a pricing recognizer. (M:L103-L104 | 13-M-SUMMARY_INDEX.discovery.md:L318)
+- (SUMMARY/M5-E035) [INT] The published integration artifact is the elai-verify crate. (M:L105 | 13-M-SUMMARY_INDEX.discovery.md:L319)
+- (SUMMARY/M5-E036) [INT] Legal and commercial content lives under docs/strategy/commercial/. (M:L105 | 13-M-SUMMARY_INDEX.discovery.md:L320)
+- (SUMMARY/M5-E038) [INT] Integration includes a claims-lint extension. (M:L105-L106 | 13-M-SUMMARY_INDEX.discovery.md:L322)
+- (SUMMARY/M5-E039) [OBS] M-5 adds no SSB event. (M:L106 | 13-M-SUMMARY_INDEX.discovery.md:L323)
+- (SUMMARY/M5-E040) [TEST] On a clean, engine-free machine, elai-verify must verify a fixture attestation. (M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L324)
+- (SUMMARY/M5-E041) [TEST] On a clean, engine-free machine, elai-verify must verify a fixture RRA. (M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L325)
+- (SUMMARY/M5-E042) [TEST] On a clean, engine-free machine, elai-verify must verify a fixture organization bundle. (M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L326)
+- (SUMMARY/M5-E043) [TEST] elai-verify must catch a one-byte artifact tamper under R2. (M:L108 | 13-M-SUMMARY_INDEX.discovery.md:L327)
+- (SUMMARY/M5-E044) [TEST] The crate must compile with zero engine-crate dependencies. (M:L108-L109 | 13-M-SUMMARY_INDEX.discovery.md:L328)
+- [summary-delta] (M-001/SD-M5-001) [Δ] **ADD** GTM decision source project_gtm_playbook_2026 and explicit MIT-or-Apache user-pick for verifier license. | summary-anchor: 13-M:L285-L290 | source-atoms: M5-E001, M5-E012 (DEEP-M-001.discovery.md:L558)
+- [summary-delta] (M-001/SD-M5-002) [Δ] **ADD** refund/termination language, counsel-review-required banner house rule, and support-expectation page (no fake SLA). | summary-anchor: 13-M:L290-L308 | source-atoms: M5-E014, M5-E016, M5-E020, M5-E041 (DEEP-M-001.discovery.md:L559)
+- [summary-delta] (M-001/SD-M5-003) [Δ] **ADD** key-ceremony/custody note covering M-1/M-2/M-4 keys and K-7 brief gaining the verifier-OSS line. | summary-anchor: 13-M:L300-L301, L317-L318 | source-atoms: M5-E019, M5-E029 (DEEP-M-001.discovery.md:L560)
+- [summary-delta] (M-001/SD-M5-004) [Δ] **ADD** exact clean-machine trigger commands for attestation + rra, pricing-recognizer drift grep against tiers.toml, and entanglement-as-finding risk. | summary-anchor: 13-M:L324-L330 | source-atoms: M5-E034–M5-E042 (DEEP-M-001.discovery.md:L561)
+- [summary-delta] (M-001/SD-M5-005) [Δ] **ADD** docs path docs/strategy/commercial/ and `elai license status` as tiers.toml consumer entrypoint. | summary-anchor: 13-M:L320-L321, L330 | source-atoms: M5-E030, M5-E032–M5-E033 (DEEP-M-001.discovery.md:L562)
+- [ambiguity] (M-001/M5-A001) [A/COMP] User must choose escrow-on-lapse vs convert-to-OSS-on-abandonment; both are drafted but neither is selected. (M-5:L26-L28 | ledger-line: DEEP-M-001.discovery.md:L382)
+- [ambiguity] (M-001/M5-A002) [A/COMP] MIT vs Apache license choice for the verifier is deferred to execution. (M-5:L17-L18 | ledger-line: DEEP-M-001.discovery.md:L383)
+- [ambiguity] (M-001/M5-A003) [SURFACE-RELATED/A/CFG] Exact Free/Pro/Team feature-key matrix and numeric prices are data in tiers.toml and not fixed in this plan. (M-5:L30-L33 | DEEP-M-001.discovery.md:L384)
+- [ambiguity] (M-001/M5-A004) [SURFACE/A/SURFACE] Subcommand grammar for org-bundle verify under elai-verify is implied by the four-leg wrap but not typed as a verb list beyond attestation and rra triggers. (M-5:L15-L16, L56-L60 | DEEP-M-001.discovery.md:L385)
+- [inference] (M-001/M5-I001) [SURFACE/I/SURFACE] Support-expectation page is a published commercial documentation surface rather than a runtime panel; no CLI verb is named for it. (M-5:L28-L29, L50-L52 | DEEP-M-001.discovery.md:L381)
+
+### M-6: evidence format as a versioned open standard (EEF v1)
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers M-001, M-SD, SUMMARY, SUP | sample: M-6:L5-L6; M-6:L14-L15; M-6:L29-L29; M-6:L31-L32; M-6:L32-L33; M-6:L38-L39 | 41 non-summary-placed, 42 summary-placed, 102 total unique atoms in unit | IDs: SUP-002, M-001/M6-E002, M-001/M6-E007, M-001/M6-E017, M-001/M6-E019, M-001/M6-E020, M-001/M6-E025, M-001/M6-E026, …
+**Composes with**: A-1, A-4, B-43, E-45, G-2, G-8, G-9, J-59, K-1, K-3, K-6, K-11, K-24, M-0, M-1, M-2, M-3, M-4, M-5, M-5a, M-5b, M-5c, M-5d, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-1, M-2, M-3, M-4, M-5a, M-5b, M-5c, M-5d; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-2, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-1, M-2, M-3, M-4, M-5; M-001/IX-007 → M-2, M-3, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-1, M-4; M-001/IX-010 → K-24, M-1, M-3, M-5a, M-5d
+
+- Superseded: (SUP-002) [superseded] [superseded] | Winner (target state): M-001/M0-E004 + M-001/M0-E051 + M-001/SD-M0-005 (M-7+ enterprise rider) | Loser (retained): SUMMARY residual text calling enterprise rider M-6+ (13-M:L141) | Reason: M-6 was reassigned to evidence-format open standard 2026-07-05; informal M-6+ renumbered to M-7+. Summary header already notes the correction; body L141 still says M-6+. Target state: M-7+. | Winner anchor: DEEP-M-001.discovery.md:L38, L84, L509; M-0:L4-L5, L68-L70 | Loser anchor: 13-M-SUMMARY_INDEX.discovery.md:L141 (vs L2-L4 header correction)
+- [status] (M-001/M6-E001) [E/STATUS] M-6 is Track M, lever REACH + AUDITABLE, grounding STRONG (spec-eval 2026-07-05 §5 ADD-1), nature BUILD-compose + docs, effort M, WAVE M3. (M-6:L1-L5 | ledger-line: DEEP-M-001.discovery.md:L395)
+- [status] (M-001/M6-E010) [E/CAP] Slice (a) SCHEMA EXTRACTION [the one build]: generate the spec's machine half FROM THE SHIPPED TYPES. (M-6:L21-L21 | ledger-line: DEEP-M-001.discovery.md:L404)
+- [status] (M-001/M6-E045) [SURFACE-RELATED/E/FAIL] Risk R1 premature standardization: freezing v1 before the RRA/attestation surfaces stabilize forces a fast v2 and burns credibility. Mitigation: M-6 sits in WAVE M3 behind GATE M-0; v1 scope = only artifacts elai-verify already verifies today. (M-6:L81-L84 | DEEP-M-001.discovery.md:L439)
+- [status] (SUMMARY/M6-E001) [STATUS] M-6 has levers REACH and AUDITABLE, STRONG grounding from spec-eval ADD-1, BUILD-compose plus docs, effort M, wave M3. (M:L112-L116 | 13-M-SUMMARY_INDEX.discovery.md:L336)
+- [config] (M-001/M6-E009) [E/CAP] Counter-move to K-0's kill-switch ("GitHub ships native evidence -> pivot to be-compatible"): publishing first makes ELAI the thing to be compatible WITH. (M-6:L17-L18 | ledger-line: DEEP-M-001.discovery.md:L403)
+- [gate] (M-001/M6-E015) [E/DATA] Covers: verdict/receipt row shapes K-3/K-11 render (gate verdict, stdout-hash-bound test outcome, DSR band, anchored finding). (M-6:L26-L28 | ledger-line: DEEP-M-001.discovery.md:L409)
+- [gate] (M-001/M6-E018) [E/COMP] Versioned prose spec: field semantics, integrity rules — what a verifier MUST check, what missing evidence MUST mean: fail, per R1. (M-6:L29-L31 | ledger-line: DEEP-M-001.discovery.md:L412)
+- [gate] (M-001/M6-E024) [E/SEC] The golden lock lives in the frozen gate-manifest set (R8) so a run cannot mutate the format it is judged in. (M-6:L36-L37 | ledger-line: DEEP-M-001.discovery.md:L418)
+- [gate] (M-001/M6-E027) [E/CLAIM] Claims discipline: it is a "published format" until >=1 EXTERNAL emitter exists; the words "open standard" / "industry standard" are KD-1-gated on that adoption evidence. (M-6:L41-L43 | ledger-line: DEEP-M-001.discovery.md:L421)
+- [gate] (M-001/M6-E029) [E/LIMIT] LOCK-1 ONE SOURCE OF SCHEMA TRUTH (GD-1): machine schemas are DERIVED from the engine's serialization types; a hand-forked schema = drift = the exact failure attestation exists to prevent (mirrors M-5 LOCK-2). (M-6:L46-L48 | ledger-line: DEEP-M-001.discovery.md:L423)
+- [gate] (M-001/M6-E032) [E/PRIV] Publishing the schema must not leak engine internals beyond what emitted artifacts already show; the G-9 redaction guarantees are restated in the spec as emitter REQUIREMENTS. (M-6:L52-L53 | ledger-line: DEEP-M-001.discovery.md:L426)
+- [gate] (M-001/M6-E033) [SURFACE-RELATED/E/FAIL] LOCK-4 FAIL-CLOSED SEMANTICS ARE NORMATIVE: the spec text makes R1 (missing evidence = FAIL, UNVOUCHED never renders clean) a conformance requirement for verifiers, not a recommendation — a permissive third-party verifier is non-conformant by definition. (M-6:L54-L56 | DEEP-M-001.discovery.md:L427)
+- [gate] (M-001/M6-E034) [SURFACE-RELATED/E/DEP] COMPOSES-WITH: M-5a elai-verify (gains `conform`; the reference verifier), G-2 RRA + G-8 attestation + K-6 bundle (the emit paths — the schemas describe them, never fork them), E-45 golden-lock pattern (schema evolution), K-1 claims lint (adoption-claim recognizer extension), K-3/K-11 (the verdict/receipt shapes rendered into PRs), gate-manifest R8 (the golden lock joins the frozen set). (M-6:L58-L62 | DEEP-M-001.discovery.md:L428)
+- [gate] (M-001/M6-E035) [SURFACE-RELATED/E/DATA] WIRING produces: docs/strategy/eef/ spec v1 (prose + derived schemas + conformance fixtures), the `elai-verify conform` subcommand, the schema golden-lock file (added to .claude/gate-manifest.txt), the K-1 lint adoption-claim recognizer, the third-party emitter example. (M-6:L64-L67 | DEEP-M-001.discovery.md:L429)
+- [gate] (M-001/M6-E037) [SURFACE-RELATED/E/INT] reachable_from: `elai-verify conform <artifact>` on an engine-free machine (real entrypoint); the golden lock enforced by gate_freeze_check.py on every run (R8 path). (M-6:L70-L71 | DEEP-M-001.discovery.md:L431)
+- [gate] (M-001/M6-E040) [SURFACE-RELATED/E/TEST] A conformant fixture PASSes and a one-byte-tampered / missing-field fixture FAILS on an engine-free machine (R2). (M-6:L75-L76 | DEEP-M-001.discovery.md:L434)
+- [gate] (M-001/M6-E043) [E/TEST] A seeded "industry standard" phrase in the spec/README FAILS the K-1 lint until the adoption row exists (LOCK-2 arm). (M-6:L77-L79 | ledger-line: DEEP-M-001.discovery.md:L437)
+- [gate] (M-001/M6-E047) [SURFACE-RELATED/E/CLAIM] Risk R3 nobody adopts (the honest default): the format still pays for itself as internal rigor (the golden lock + conform subcommand harden ELAI's own emit paths); adoption claims stay gated so non-adoption never becomes a false claim. (M-6:L87-L89 | DEEP-M-001.discovery.md:L441)
+- [gate] (SUMMARY/M6-E019) [SAFE] Format conformance is fail-closed. (M:L121-L122 | 13-M-SUMMARY_INDEX.discovery.md:L354)
+- [gate] (SUMMARY/M6-E020) [FAIL] Missing required evidence is normatively a conformance FAIL. (M:L122 | 13-M-SUMMARY_INDEX.discovery.md:L355)
+- [gate] (SUMMARY/M6-E023) [SAFE] The schema golden-file lock joins the frozen gate manifest under R8/E-45. (M:L123-L124 | 13-M-SUMMARY_INDEX.discovery.md:L358)
+- [gate] (SUMMARY/M6-E026) [CLAIM] The phrase 'open standard' is KD-1-gated on at least one external emitter. (M:L124-L125 | 13-M-SUMMARY_INDEX.discovery.md:L361)
+- [gate] (SUMMARY/M6-E033) [INT] M-6 composes E-45’s golden lock, K-1 lint, K-3/K-11 rendered shapes, and gate-manifest R8. (M:L127-L128 | 13-M-SUMMARY_INDEX.discovery.md:L368)
+- [gate] (SUMMARY/M6-E036) [TEST] A one-byte-tampered fixture must fail 'elai-verify conform'. (M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L371)
+- [gate] (SUMMARY/M6-E037) [TEST] A missing-field fixture must fail 'elai-verify conform'. (M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L372)
+- [gate] (SUMMARY/M6-E040) [TEST] A seeded 'industry standard' phrase must fail K-1 lint while no adoption row exists. (M:L131-L132 | 13-M-SUMMARY_INDEX.discovery.md:L375)
+- [surface] (M-001/M6-E002) [SURFACE-RELATED/E/DEP] Depends on M-5a (elai-verify extracted), G-2/G-8/K-6 emit paths stable. (M-6:L5-L6 | DEEP-M-001.discovery.md:L396)
+- [surface] (M-001/M6-E007) [SURFACE-RELATED/E/CAP] Third-party tools can EMIT ELAI-verifiable evidence and elai-verify becomes the reference verifier of a format rather than the private tool of one engine. (M-6:L14-L15 | DEEP-M-001.discovery.md:L401)
+- [surface] (M-001/M6-E017) [SURFACE-RELATED/E/COMP] Slice (b) PROSE SPEC + CONFORMANCE FIXTURES at docs/strategy/eef/ (or a sibling repo at publication). (M-6:L29-L29 | DEEP-M-001.discovery.md:L411)
+- [surface] (M-001/M6-E019) [SURFACE-RELATED/E/TEST] Conformance fixture pack: valid bundles + one-byte-tampered + missing-field negatives. (M-6:L31-L32 | DEEP-M-001.discovery.md:L413)
+- [surface] (M-001/M6-E020) [SURFACE/E/SURFACE] `elai-verify conform <artifact>` (an M-5 binary subcommand extension) validates any artifact against a pinned spec version. (M-6:L32-L33 | DEEP-M-001.discovery.md:L414)
+- [surface] (M-001/M6-E025) [SURFACE-RELATED/E/COMP] Slice (d) PUBLICATION + THIRD-PARTY EMITTER STORY: publish spec + schemas + fixtures alongside the elai-verify repo (same license family as M-5a; user picks). (M-6:L38-L39 | DEEP-M-001.discovery.md:L419)
+- [surface] (M-001/M6-E026) [SURFACE-RELATED/E/COMP] Short "emit EEF from your tool" doc with one worked example (a minimal third-party emitter producing a conformant verdict row). (M-6:L39-L40 | DEEP-M-001.discovery.md:L420)
+- [surface] (M-001/M6-E038) [SURFACE-RELATED/E/TEST] trigger: on a CLEAN machine: `elai-verify conform fixtures/run.rra && elai-verify conform fixtures/tampered.rra; test $? -ne 0`. (M-6:L72-L73 | DEEP-M-001.discovery.md:L432)
+- [surface] (M-001/M6-E044) [SURFACE-RELATED/E/TEST] The worked third-party example emits a row `elai-verify conform` accepts. (M-6:L79-L79 | DEEP-M-001.discovery.md:L438)
+- [surface] (M-001/M6-E046) [SURFACE-RELATED/E/PRIV] Risk R2 the schema leaks engine detail: review pass against LOCK-3 with the G-9 redaction spec; the conformance fixtures are generated from redacted runs only. (M-6:L85-L86 | DEEP-M-001.discovery.md:L440)
+- [surface] (SUMMARY/M6-E018) [CLI/SURFACE] elai-verify adds 'conform <artifact>'. (M:L121 | 13-M-SUMMARY_INDEX.discovery.md:L353)
+- (M-001/M6-E003) [E/EVIDENCE] Grounding cites SLSA/in-toto format-first precedent as [training, unsearched — re-verify at execution]. (M-6:L2-L4 | ledger-line: DEEP-M-001.discovery.md:L397)
+- (M-001/M6-E004) [E/STATUS] PROOF_SPINE: none directly (distribution amplifier for the spine's numbers); user-acked 2026-07-05 as spine-exempt. (M-6:L7-L8 | ledger-line: DEEP-M-001.discovery.md:L398)
+- (M-001/M6-E005) [E/CAP] M-5 open-sources the verifier BINARY; M-6 publishes what the binary verifies: a versioned, machine-readable EVIDENCE FORMAT specification ("EEF v1" — ELAI Evidence Format; final name at execution). (M-6:L10-L13 | ledger-line: DEEP-M-001.discovery.md:L399)
+- (M-001/M6-E006) [E/DATA] Coverage: RRA bundle, attestation predicate, compliance bundle, and claim-receipt row shapes. (M-6:L13-L14 | ledger-line: DEEP-M-001.discovery.md:L400)
+- (M-001/M6-E008) [E/CAP] Converts the moat from "our binary" to "our grammar": the one ecosystem play a single-author project can defend. (M-6:L15-L17 | ledger-line: DEEP-M-001.discovery.md:L402)
+- (M-001/M6-E011) [E/DATA] Schema files: JSON-Schema for JSON surfaces; a documented msgpack layout for the RRA; derived from the same Rust structs the engine serializes (schemars-class derivation; verify the crate per anti-slopsquatting at execution), never hand-written twice. (M-6:L21-L24 | ledger-line: DEEP-M-001.discovery.md:L405)
+- (M-001/M6-E012) [E/DATA] Covers: the RRA bundle (G-2 action stream + seed + hardware class + fingerprint + evidence manifest + blake3 root). (M-6:L24-L26 | ledger-line: DEEP-M-001.discovery.md:L406)
+- (M-001/M6-E013) [E/DATA] Covers: the in-toto v1 attestation predicate (G-8). (M-6:L26-L26 | ledger-line: DEEP-M-001.discovery.md:L407)
+- (M-001/M6-E014) [E/DATA] Covers: the K-6 compliance bundle. (M-6:L26-L26 | ledger-line: DEEP-M-001.discovery.md:L408)
+- (M-001/M6-E016) [E/LIMIT] One source of schema truth = the code. (M-6:L28-L28 | ledger-line: DEEP-M-001.discovery.md:L410)
+- (M-001/M6-E021) [E/STATE] Slice (c) VERSIONING + GOVERNANCE: append-only field evolution locked by a golden file (the E-45 action-type golden-lock pattern applied to the schema). (M-6:L34-L35 | ledger-line: DEEP-M-001.discovery.md:L415)
+- (M-001/M6-E022) [E/DATA] Every emitted artifact carries spec_version. (M-6:L35-L36 | ledger-line: DEEP-M-001.discovery.md:L416)
+- (M-001/M6-E023) [E/STATE] A breaking change requires a major version + a migration note. (M-6:L36-L36 | ledger-line: DEEP-M-001.discovery.md:L417)
+- (M-001/M6-E028) [E/CLAIM] The K-1 lint gains an adoption-claim recognizer. (M-6:L42-L43 | ledger-line: DEEP-M-001.discovery.md:L422)
+- (M-001/M6-E030) [E/CLAIM] LOCK-2 KD-1 ON ADOPTION: no "standard" claim without an external emitter; no ecosystem-size claim ever; every comparison figure [EXTERNAL]. (M-6:L49-L50 | ledger-line: DEEP-M-001.discovery.md:L424)
+- (M-001/M6-E031) [E/LIMIT] LOCK-3 the ENGINE STAYS CLOSED (GTM record): only the format, fixtures, and verifier are open. (M-6:L51-L51 | ledger-line: DEEP-M-001.discovery.md:L425)
+- (M-001/M6-E036) [E/INT] WIRING consumes: the engine serialization types (derivation source), G-2/G-8/K-6 emit paths, M-5a binary, E-45 golden-lock pattern, K-1 lint. (M-6:L68-L69 | ledger-line: DEEP-M-001.discovery.md:L430)
+- (M-001/M6-E039) [E/EVENT] expect_ssb: none (standalone verifier + docs; E-23-class legs journal nothing). (M-6:L74-L74 | ledger-line: DEEP-M-001.discovery.md:L433)
+- (M-001/M6-E041) [E/TEST] Derived schemas byte-match a regeneration from the engine types (LOCK-1 drift test). (M-6:L76-L77 | ledger-line: DEEP-M-001.discovery.md:L435)
+- (M-001/M6-E042) [E/TEST] A schema field removal trips the golden lock (R8). (M-6:L77-L77 | ledger-line: DEEP-M-001.discovery.md:L436)
+- (SUMMARY/M6-E002) [STATUS] SLSA/in-toto precedent is training-memory only and must be re-verified at execution. (M:L113-L115 | 13-M-SUMMARY_INDEX.discovery.md:L337)
+- (SUMMARY/M6-E003) [STATUS] M-6 depends on M-5a extraction and stable G-2/G-8/K-6 emit paths. (M:L115-L116 | 13-M-SUMMARY_INDEX.discovery.md:L338)
+- (SUMMARY/M6-E004) [CAP] M-6 publishes a versioned machine-readable evidence format provisionally called EEF v1. (M:L117 | 13-M-SUMMARY_INDEX.discovery.md:L339)
+- (SUMMARY/M6-E005) [STATUS] The final EEF name is selected at execution. (M:L117 | 13-M-SUMMARY_INDEX.discovery.md:L340)
+- (SUMMARY/M6-E006) [DATA] The format specifies the RRA bundle shape. (M:L117-L118 | 13-M-SUMMARY_INDEX.discovery.md:L341)
+- (SUMMARY/M6-E007) [DATA] The format specifies the attestation predicate shape. (M:L117-L118 | 13-M-SUMMARY_INDEX.discovery.md:L342)
+- (SUMMARY/M6-E008) [DATA] The format specifies the compliance-bundle shape. (M:L118 | 13-M-SUMMARY_INDEX.discovery.md:L343)
+- (SUMMARY/M6-E009) [DATA] The format specifies verdict-row shapes. (M:L118 | 13-M-SUMMARY_INDEX.discovery.md:L344)
+- (SUMMARY/M6-E010) [DATA] The format specifies receipt-row shapes. (M:L118 | 13-M-SUMMARY_INDEX.discovery.md:L345)
+- (SUMMARY/M6-E011) [INT] Third-party tools can emit evidence that ELAI can verify. (M:L118-L119 | 13-M-SUMMARY_INDEX.discovery.md:L346)
+- (SUMMARY/M6-E012) [CAP] elai-verify becomes the reference verifier for the format. (M:L119 | 13-M-SUMMARY_INDEX.discovery.md:L347)
+- (SUMMARY/M6-E013) [DATA] Schemas are derived from engine serialization types. (M:L119-L120 | 13-M-SUMMARY_INDEX.discovery.md:L348)
+- (SUMMARY/M6-E014) [SAFE] Engine serialization types are the single source of schema truth. (M:L120 | 13-M-SUMMARY_INDEX.discovery.md:L349)
+- (SUMMARY/M6-E015) [SAFE] Schema definitions must never be maintained as a hand-written fork. (M:L120 | 13-M-SUMMARY_INDEX.discovery.md:L350)
+- (SUMMARY/M6-E016) [COMP] Publication includes a prose format specification. (M:L121 | 13-M-SUMMARY_INDEX.discovery.md:L351)
+- (SUMMARY/M6-E017) [TEST] Publication includes conformance fixtures. (M:L121 | 13-M-SUMMARY_INDEX.discovery.md:L352)
+- (SUMMARY/M6-E021) [LIFE] Schema evolution is append-only. (M:L123 | 13-M-SUMMARY_INDEX.discovery.md:L356)
+- (SUMMARY/M6-E022) [SAFE] Schema evolution is protected by a golden-file lock. (M:L123-L124 | 13-M-SUMMARY_INDEX.discovery.md:L357)
+- (SUMMARY/M6-E024) [OPS] The evidence format is published beside elai-verify. (M:L124 | 13-M-SUMMARY_INDEX.discovery.md:L359)
+- (SUMMARY/M6-E025) [OPS] Publication includes a worked third-party-emitter example. (M:L124 | 13-M-SUMMARY_INDEX.discovery.md:L360)
+- (SUMMARY/M6-E027) [CLAIM] Before one external emitter exists, the permitted phrase is 'published format'. (M:L125 | 13-M-SUMMARY_INDEX.discovery.md:L362)
+- (SUMMARY/M6-E028) [CLAIM] K-1 claims lint gains an adoption-claim recognizer. (M:L125-L126 | 13-M-SUMMARY_INDEX.discovery.md:L363)
+- (SUMMARY/M6-E029) [STATUS] M-6 has no direct PROOF_SPINE contribution. (M:L126 | 13-M-SUMMARY_INDEX.discovery.md:L364)
+- (SUMMARY/M6-E030) [STATUS] M-6 is recorded as a distribution amplifier with a user-acknowledged spine exemption. (M:L126 | 13-M-SUMMARY_INDEX.discovery.md:L365)
+- (SUMMARY/M6-E031) [INT] M-6 extends M-5a’s verifier binary. (M:L127 | 13-M-SUMMARY_INDEX.discovery.md:L366)
+- (SUMMARY/M6-E032) [INT] M-6 describes, but never forks, the G-2/G-8/K-6 emit paths. (M:L127-L128 | 13-M-SUMMARY_INDEX.discovery.md:L367)
+- (SUMMARY/M6-E034) [CAP] The engine stays closed while the evidence format and verifier are published. (M:L128 | 13-M-SUMMARY_INDEX.discovery.md:L369)
+- (SUMMARY/M6-E035) [TEST] A conformant fixture must pass 'elai-verify conform' on an engine-free machine. (M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L370)
+- (SUMMARY/M6-E038) [TEST] Derived schemas must byte-match regeneration from engine types. (M:L130-L131 | 13-M-SUMMARY_INDEX.discovery.md:L373)
+- (SUMMARY/M6-E039) [TEST] Removing a schema field must trip the R8 golden lock. (M:L131 | 13-M-SUMMARY_INDEX.discovery.md:L374)
+- (SUMMARY/M6-E041) [TEST] The worked third-party example must emit a row accepted by conform. (M:L132-L133 | 13-M-SUMMARY_INDEX.discovery.md:L376)
+- (SUMMARY/M6-E042) [OBS] M-6 adds no SSB event because it consists of the standalone verifier and documentation. (M:L133 | 13-M-SUMMARY_INDEX.discovery.md:L377)
+- [summary-delta] (M-001/SD-M6-001) [Δ] **ADD** schema derivation mechanics: JSON-Schema + documented RRA msgpack layout, schemars-class, anti-slopsquatting check. | summary-anchor: 13-M:L348-L350, L601 | source-atoms: M6-E010–M6-E011 (DEEP-M-001.discovery.md:L568)
+- [summary-delta] (M-001/SD-M6-002) [Δ] **ADD** exact RRA field inventory (action stream, seed, hardware class, fingerprint, evidence manifest, blake3 root) and receipt fields (gate verdict, stdout-hash-bound outcome, DSR band, anchored finding). | summary-anchor: 13-M:L341-L346 | source-atoms: M6-E012–M6-E015 (DEEP-M-001.discovery.md:L569)
+- [summary-delta] (M-001/SD-M6-003) [Δ] **ADD** golden lock path into `.claude/gate-manifest.txt`, gate_freeze_check.py enforcement, and major-version + migration-note rule. | summary-anchor: 13-M:L356-L358 | source-atoms: M6-E021–M6-E024, M6-E035, M6-E037 (DEEP-M-001.discovery.md:L570)
+- [summary-delta] (M-001/SD-M6-004) [Δ] **ADD** G-9 redaction restated as emitter REQUIREMENTS; permissive third-party verifiers are non-conformant by definition. | summary-anchor: 13-M:L354-L355 | source-atoms: M6-E032–M6-E033 (DEEP-M-001.discovery.md:L571)
+- [summary-delta] (M-001/SD-M6-005) [Δ] **ADD** K-0 kill-switch counter-move rationale, spine-exempt PROOF_SPINE note, and "pays for itself as internal rigor" non-adoption residual. | summary-anchor: 13-M:L358-L365 | source-atoms: M6-E004, M6-E008–M6-E009, M6-E047 (DEEP-M-001.discovery.md:L572)
+- [summary-delta] (M-001/SD-M6-006) [Δ] **ADD** exact conform trigger on run.rra + tampered.rra, regeneration byte-match, field-removal golden-lock trip, and industry-standard lint arm. | summary-anchor: 13-M:L370-L377 | source-atoms: M6-E038–M6-E044 (DEEP-M-001.discovery.md:L573)
+- [ambiguity] (M-001/M6-A001) [A/STATUS] Final EEF product name is deferred to execution. (M-6:L12-L13 | ledger-line: DEEP-M-001.discovery.md:L443)
+- [ambiguity] (M-001/M6-A002) [A/DATA] Media type, extension namespaces, unknown-field handling, and compatibility window are unspecified. (M-6:L21-L28, L34-L37 | ledger-line: DEEP-M-001.discovery.md:L444)
+- [ambiguity] (M-001/M6-A003) [A/STATE] Whether fields can be deprecated or made optional inside a major version is not stated beyond append-only + major-for-breaking. (M-6:L34-L36 | ledger-line: DEEP-M-001.discovery.md:L445)
+- [ambiguity] (M-001/M6-A004) [A/CLAIM] Adoption row schema, authority, and verification process are unspecified. (M-6:L41-L43 | ledger-line: DEEP-M-001.discovery.md:L446)
+- [ambiguity] (M-001/M6-A005) [A/COMP] Publication as docs/strategy/eef/ vs sibling repo is unresolved. (M-6:L29-L29, L38-L39 | ledger-line: DEEP-M-001.discovery.md:L447)
+- [inference] (M-001/M6-I001) [SURFACE-RELATED/I/DATA] Because every emitted artifact carries spec_version and conform pins a version, multi-version coexistence is implied even though negotiation protocol is not defined. (M-6:L32-L36 | DEEP-M-001.discovery.md:L442)
+
+### M-7+: enterprise rider (SSO/SAML/SCIM/RBAC + hosted org console) — demand-gated, not planned
+
+**Status**: planned (demand-gated enterprise rider; NOT planned for M-1..M-6 wave — M-7+)
+**Anchors**: ledgers SUP | sample: — | 0 non-summary-placed, 0 summary-placed, 1 total unique atoms in unit | IDs: SUP-002
+**Composes with**: A-1, A-4, B-43, G-2, G-8, G-9, J-59, K-1, K-3, K-6, K-24, M-0, M-1, M-2, M-3, M-4, M-5, M-5a, M-5b, M-5c, M-5d, M-6, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-1, M-2, M-3, M-4, M-5a, M-5b, M-5c, M-5d; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-2, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-1, M-2, M-3, M-4, M-5, M-6; M-001/IX-007 → M-2, M-3, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-1, M-4; M-001/IX-010 → K-24, M-1, M-3, M-5a, M-5d
+
+- Superseded: (SUP-002) [superseded] [superseded] | Winner (target state): M-001/M0-E004 + M-001/M0-E051 + M-001/SD-M0-005 (M-7+ enterprise rider) | Loser (retained): SUMMARY residual text calling enterprise rider M-6+ (13-M:L141) | Reason: M-6 was reassigned to evidence-format open standard 2026-07-05; informal M-6+ renumbered to M-7+. Summary header already notes the correction; body L141 still says M-6+. Target state: M-7+. | Winner anchor: DEEP-M-001.discovery.md:L38, L84, L509; M-0:L4-L5, L68-L70 | Loser anchor: 13-M-SUMMARY_INDEX.discovery.md:L141 (vs L2-L4 header correction)
+
+### M-registers: cross-unit IX / SD / AC / HDR registers
+
+**Status**: planned (register / orientation inventory)
+**Anchors**: ledgers M-001, M-AC, M-IX, SUMMARY | sample: DEEP-M-001.discovery.md:L3-L11; DEEP-M-001.discovery.md:L8; DEEP-M-001.discovery.md:L15-L25; DEEP-M-001.discovery.md:L455; DEEP-M-001.discovery.md:L456; DEEP-M-001.discovery.md:L457 | 39 non-summary-placed, 7 summary-placed, 46 total unique atoms in unit | IDs: M-001/HDR-001, M-001/HDR-002, M-001/HDR-003, M-001/IX-001, M-001/IX-002, M-001/IX-003, M-001/IX-004, M-001/IX-005, …
+**Composes with**: A-1, A-4, B-43, G-2, G-8, G-9, J-59, K-1, K-3, K-6, K-24, M-0, M-1, M-2, M-3, M-4, M-5, M-5a, M-5b, M-5c, M-5d, M-6, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-1, M-2, M-3, M-4, M-5a, M-5b, M-5c, M-5d; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-2, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-1, M-2, M-3, M-4, M-5, M-6; M-001/IX-007 → M-2, M-3, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-1, M-4; M-001/IX-010 → K-24, M-1, M-3, M-5a, M-5d
+
+- [gate] (M-001/HDR-003) [E/EVIDENCE] Exact path/SHA/line/byte table for M-0..M-6 originals (aggregate 542/38,550). (DEEP-M-001.discovery.md:L15-L25)
+- [gate] (SUMMARY/HDR-002) [STATUS] Coverage map for M-wide and M-1..M-6 with waves and dependency gates. (13-M:L15-L25)
+- (M-001/AUDIT-001) [E/EVIDENCE] Source coverage 7/7 files, 542/542 lines, 38,550/38,550 bytes; SHA mismatches 0. (DEEP-M-001.discovery.md:L576-L578)
+- (M-001/AUDIT-002) [E/EVIDENCE] Atomic source ledger 360 unique = 323 E + 7 I + 29 A + 1 C; per-file M-0=63 M-1=59 M-2=44 M-3=47 M-4=47 M-5=47 M-6=53. (DEEP-M-001.discovery.md:L578-L580)
+- (M-001/AUDIT-003) [E/EVIDENCE] Relational IX=24, SD=39, AC=12; not double-counted as features. (DEEP-M-001.discovery.md:L580-L581)
+- (M-001/AUDIT-004) [E/EVIDENCE] ID audit: unique IDs matching M0..M6-[EIAC]nnn; duplicate/missing/nonconforming atomic IDs = 0. (DEEP-M-001.discovery.md:L581-L582)
+- (M-001/AUDIT-005) [E/EVIDENCE] output_lines=0588; output_bytes=81798; canonical normalized SHA-256 6e89c168aebda2d7ea262996eb61e9d5f0b48ecca42989c543847fe77faf9c34. (DEEP-M-001.discovery.md:L586-L588)
+- (M-001/HDR-001) [E/STATUS] Processed manifest DEEP-SOURCE-MANIFEST.md:L1195-L1207; family M; 7 files; 542 logical lines; 38,550 bytes; all numbered/index original; mechanical verification matched (0 missing/unexpected/duplicate/SHA/line/byte mismatches). (DEEP-M-001.discovery.md:L3-L11)
+- (M-001/HDR-002) [E/STATUS] Read boundary: all seven originals read completely; 13-M-SUMMARY_INDEX consulted only as orientation/delta artifact; no source atom derived solely from summary. (DEEP-M-001.discovery.md:L8)
+- (SUMMARY/HDR-001) [STATUS] Primary source M-SUMMARY_INDEX.md 146/146 lines; orientation-only ELAI-SPEC-OVERVIEW; 6/6 sessions; MD-1..MD-5; originals existence-checked but not read (summary-bounded). (13-M:L3-L12)
+- [interaction] (M-001/IX-001) [E/IX] GATE M-0 is the single execution gate for every M session: K A-1..A-4 + K-3 DONE and K-24 L1..L4 live before any M code lands. | evidence: M0-E046–M0-E047; M1-E002 (DEEP-M-001.discovery.md:L455)
+- [interaction] (M-001/IX-002) [E/IX] Wave order is M1 (M-1, M-5a, M-5d) then M2 (M-2, M-4) then M3 (M-3, M-5b, M-5c, M-6). | evidence: M0-E048–M0-E050; M5-E002; M6-E001 (DEEP-M-001.discovery.md:L456)
+- [interaction] (M-001/IX-003) [E/IX] MD-1..MD-5 are letter-wide invariants: commerce fail-open to Free, offline-verifiable commerce, one mint endpoint, seat privacy, claims discipline on money. | evidence: M0-E017–M0-E031; M1-E011–M1-E014; M3-E005; M5-E024–M5-E025 (DEEP-M-001.discovery.md:L457)
+- [interaction] (M-001/IX-004) [E/IX] M-1 is the keystone: its `tier()` read gates K-24 Team credit grants, M-2 pack apply, and M-3 org report. | evidence: M1-E025–M1-E028; M2-E002, M2-E026; M3-E002 (DEEP-M-001.discovery.md:L458)
+- [interaction] (M-001/IX-005) [E/IX] Entitlement is org-granular with seat slots; honest over-activation is only enforced as visibility in M-3's roster honesty leg, not as a hard offline concurrency wall. | evidence: M1-E017–M1-E020, M1-E049; M3-E027, M3-E040 (DEEP-M-001.discovery.md:L459)
+- [interaction] (M-001/IX-006) [E/IX] G-8 signing/verify core is shared by M-1 entitlements, M-2 packs, M-3 --verify, M-4 manifests, and M-5/M-6 verification legs. | evidence: M1-E007–M1-E008; M2-E010; M3-E022, M3-E028; M4-E020; M5-E010; M6-E013 (DEEP-M-001.discovery.md:L460)
+- [interaction] (M-001/IX-007) [E/IX] M-2 pack apply is a Team feature and feeds M-4 via `update.channel_pin` plus scheduled apply; Drift rows feed M-3. | evidence: M2-E004, M2-E015, M2-E022, M2-E025–M2-E026; M4-E002, M4-E009, M4-E024, M4-E038; M3-E002, M3-E010 (DEEP-M-001.discovery.md:L461)
+- [interaction] (M-001/IX-008) [E/IX] M-3 extends K-6 rather than forking it, requires G-9 redaction precondition, and reuses G-2/G-8 for chain verify. | evidence: M3-E010–M3-E013, M3-E028 (DEEP-M-001.discovery.md:L462)
+- [interaction] (M-001/IX-009) [E/IX] M-4 distributes M-1's revocation-list mitigation inside release manifests and reuses B-43 refuse-on-mismatch for artifacts. | evidence: M1-E050; M4-E006, M4-E012–M4-E013, M4-E030 (DEEP-M-001.discovery.md:L463)
+- [interaction] (M-001/IX-010) [E/IX] M-5d tiers.toml is the single pricing/feature matrix M-1 tier() and K-24 credit grants read; M-5a extracts the four verify legs including M-3 org-bundle verify. | evidence: M1-E010, M1-E029, M1-E042; M5-E009–M5-E010, M5-E021–M5-E022, M5-E033 (DEEP-M-001.discovery.md:L464)
+- [interaction] (M-001/IX-011) [E/IX] M-6 depends on M-5a and extends the same binary with `conform`, while schemas describe (never fork) G-2/G-8/K-6 emit paths. | evidence: M6-E002, M6-E005, M6-E020, M6-E034 (DEEP-M-001.discovery.md:L465)
+- [interaction] (M-001/IX-012) [E/IX] Claims discipline spans the letter: MD-5/K-1 lint on pricing/EULA (M-5), adoption-claim recognizer (M-6), and ban on unmeasured monetary claims before K-24. | evidence: M0-E030–M0-E031, M0-E047; M5-E024–M5-E025, M5-E042; M6-E027–M6-E028, M6-E043 (DEEP-M-001.discovery.md:L466)
+- [interaction] (M-001/IX-013) [E/IX] Privacy chain: J-59 isolation (MA-3) gates M-3; G-9 redacts exports/support; rollups and support bundles never auto-send and never carry raw transcripts. | evidence: M0-E027–M0-E029, M0-E034; M3-E005, M3-E012–M3-E013, M3-E038; M4-E017–M4-E019, M4-E039 (DEEP-M-001.discovery.md:L467)
+- [interaction] (M-001/IX-014) [E/IX] Fail-open commerce vs fail-closed safety: MD-1 degrades entitlement to Free while safety gates, pack weaken blocks, forged refuse, and missing-evidence FAIL remain fail-closed. | evidence: M0-E017–M0-E019; M1-E011–M1-E012, M1-E047–M1-E048; M2-E024, M2-E033; M6-E033 (DEEP-M-001.discovery.md:L468)
+- [interaction] (M-001/IX-015) [E/IX] Offline-first commerce: license service is never a runtime dependency; mint/renew/revoke only; pack and report travel by file/git. | evidence: M0-E021–M0-E025; M1-E013–M1-E014, M1-E031; M2-E006; M3-E007 (DEEP-M-001.discovery.md:L469)
+- [interaction] (M-001/IX-016) [E/IX] SSB budget: mandatory +EntitlementEvent and +OrgPolicyEvent; optional OrgReportEvent/ReleaseChannelEvent prefer-reuse; M-5 and M-6 add zero. | evidence: M0-E055–M0-E057; M1-E024; M2-E020; M3-E025; M4-E023; M5-E035; M6-E039 (DEEP-M-001.discovery.md:L470)
+- [interaction] (M-001/IX-017) [E/IX] Enterprise rider M-7+ (SSO/SAML/SCIM/RBAC/hosted console) is demand-gated and deliberately out of M-1..M-6; M-2 file pack is the org story until then. | evidence: M0-E026, M0-E051–M0-E054; M2-E008 (DEEP-M-001.discovery.md:L471)
+- [interaction] (M-001/IX-018) [E/IX] Section-A pointers MA-1..MA-7 sequence existing work M must not re-author; MA-3/MA-4/MA-6 are hard deps of M-3/M-4, MA-1 of M-1. | evidence: M0-E032–M0-E039; M1-E002; M3-E002; M4-E002 (DEEP-M-001.discovery.md:L472)
+- [interaction] (M-001/IX-019) [E/IX] Key-compromise posture is shared: offline ceremony for mint/pack/release keys; recovery levers include M-4 revocation-list distribution and min-rollback. | evidence: M1-E032, M1-E050; M2-E038; M4-E012, M4-E041; M5-E019 (DEEP-M-001.discovery.md:L473)
+- [interaction] (M-001/IX-020) [E/IX] Deterministic client-side math: ClockProvider for expiry; blake3(seat_id)%100 for rollout; blake3 machine-scoped seat_id; SeededClock fixtures. | evidence: M1-E014, M1-E018, M1-E039, M1-E047; M4-E025–M4-E026, M4-E042 (DEEP-M-001.discovery.md:L474)
+- [interaction] (M-001/IX-021) [E/IX/SURFACE] Human-facing commercial surfaces span license CLI, status banner, install-end activation, org policy CLI, boot warning, org report human/machine sheets, update CLI, support bundle summary, elai-verify binary, support-expectation page, EEF prose/spec, and tiers.toml-driven license status. | evidence: M1-E022, M1-E037, M1-E040; M2-E016, M2-E018; M3-E019–M3-E020, M3-E026; M4-E022, M4-E028–M4-E029; M5-E020, M5-E033; M6-E017, M6-E020, M6-E026 (DEEP-M-001.discovery.md:L475)
+- [interaction] (M-001/IX-022) [I/IX] Mint service ops ledger (M-1) plus counsel-bannered legal drafts (M-5) together form the operator-side commercial audit trail, separate from seat SSB. | evidence: M1-E033–M1-E034; M5-E014–M5-E016, M5-E041 (DEEP-M-001.discovery.md:L476)
+- [interaction] (M-001/IX-023) [E/IX] M-6 R8 golden lock and M-2 gate-manifest pin both freeze evaluator/policy artifacts a run cannot rewrite; they operate at format and org-policy layers respectively. | evidence: M2-E009–M2-E010, M2-E022; M6-E021, M6-E024, M6-E037 (DEEP-M-001.discovery.md:L477)
+- [interaction] (M-001/IX-024) [E/IX] First M execution generates `_grounding/M-GROUNDING-MAP.md` and re-greps live anchors before code; M-6 also re-verifies unsearched SLSA/in-toto precedent. | evidence: M0-E058–M0-E059; M6-E003 (DEEP-M-001.discovery.md:L478)
+- [ambiguity] (M-001/AC-001) [ambiguity/status/AC] GATE M-0 prerequisite DONE criteria for K A-1..A-4, K-3, K-24 L1..L4 are named by reference only. | refs: M0-A001 (DEEP-M-001.discovery.md:L484)
+- [ambiguity] (M-001/AC-002) [ambiguity/event/AC] OrgReportEvent and ReleaseChannelEvent create-vs-reuse remains an edit-time W-9 decision. | refs: M0-A002; M3-A005; M4-A004 (DEEP-M-001.discovery.md:L485)
+- [ambiguity] (M-001/AC-003) [conflict/surface/AC] Summary SettingsWindow license-status line is not established by numbered M-1; source surfaces are CLI status + ExpiredGrace status banner + B-43 install-end activation. | refs: M1-C001 (DEEP-M-001.discovery.md:L486)
+- [ambiguity] (M-001/AC-004) [ambiguity/data/AC] seat_id salt storage/rotation, operator ledger schema, and exact tiers.toml feature inventory are open. | refs: M1-A001, M1-A003, M1-A005 (DEEP-M-001.discovery.md:L487)
+- [ambiguity] (M-001/AC-005) [ambiguity/surface/AC] ExpiredGrace status banner placement/copy and M-2 boot warning presentation are unspecified. | refs: M1-A002; M2-A003 (DEEP-M-001.discovery.md:L488)
+- [ambiguity] (M-001/AC-006) [ambiguity/flow/AC] Opportunistic re-check interval/transport and deactivate local-state/SSB semantics are incomplete. | refs: M1-A004; M1-I001 (DEEP-M-001.discovery.md:L489)
+- [ambiguity] (M-001/AC-007) [ambiguity/data/AC] OrgPolicyPack serialization, stale threshold, git multi-pack workflow, and pack rotation are open. | refs: M2-A001–M2-A004 (DEEP-M-001.discovery.md:L490)
+- [ambiguity] (M-001/AC-008) [ambiguity/flow/AC] `elai org report` without `--verify`, machine msgpack-vs-toml choice, partial output after refusals, and Drift overall-verdict interaction are open. | refs: M3-A001–M3-A004 (DEEP-M-001.discovery.md:L491)
+- [ambiguity] (M-001/AC-009) [ambiguity/config/AC] Updater polling/backoff/transport, support last-N size, Windows restart UX copy, and org-scheduled-apply field names are open. | refs: M4-I001, M4-A001–M4-A003 (DEEP-M-001.discovery.md:L492)
+- [ambiguity] (M-001/AC-010) [ambiguity/comp/AC] Continuity choice (escrow vs convert-to-OSS), verifier license (MIT vs Apache), and exact elai-verify org-bundle verb list remain open. | refs: M5-A001–M5-A004 (DEEP-M-001.discovery.md:L493)
+- [ambiguity] (M-001/AC-011) [ambiguity/data/AC] Final EEF name, media type, deprecation inside major versions, adoption-row authority, and docs-vs-sibling-repo publication path are open. | refs: M6-A001–M6-A005 (DEEP-M-001.discovery.md:L494)
+- [ambiguity] (M-001/AC-012) [ambiguity/claim/AC] External GTM $39-49 framing remains [EXTERNAL-GTM]-tagged and SLSA/in-toto precedent remains unsearched until re-verified. | refs: M1-E009; M5-E023; M6-E003 (DEEP-M-001.discovery.md:L495)
+
+### M-summary-wide: summary-wide product boundary, workflow, invariants, deferrals, failures
+
+**Status**: planned (register / orientation inventory)
+**Anchors**: ledgers SUMMARY | sample: M:L28; M:L28; M:L28; M:L30-L31; M:L30-L31; M:L30-L31 | 0 non-summary-placed, 285 summary-placed, 285 total unique atoms in unit | IDs: SUMMARY/M1-E011, SUMMARY/M1-E012, SUMMARY/M1-E013, SUMMARY/M1-E021, SUMMARY/M1-E022, SUMMARY/M1-E023, SUMMARY/M1-E034, SUMMARY/M1-E043, …
+**Composes with**: A-1, A-4, B-43, G-2, G-8, G-9, INV-002, J-59, K-1, K-3, K-6, K-24, M-0, M-1, M-2, M-3, M-4, M-5, M-5a, M-5b, M-5c, M-5d, M-6, M-7+, MA-1, MA-3, MA-4, MA-6, MA-7, MD-1, MD-5. IX: M-001/IX-001 → A-1, A-4, K-24, K-3, M-0; M-001/IX-002 → M-1, M-2, M-3, M-4, M-5a, M-5b, M-5c, M-5d; M-001/IX-003 → MD-1, MD-5; M-001/IX-004 → K-24, M-1, M-2, M-3; M-001/IX-005 → M-3; M-001/IX-006 → G-8, M-1, M-2, M-3, M-4, M-5, M-6; M-001/IX-007 → M-2, M-3, M-4; M-001/IX-008 → G-2, G-8, G-9, K-6, M-3; M-001/IX-009 → B-43, M-1, M-4; M-001/IX-010 → K-24, M-1, M-3, M-5a, M-5d
+
+- Superseded: (SUMMARY/DEFER-002) [DEFER/superseded numbering note: see SUP-002; target M-7+] item=`Enterprise rider numbering` state=`Header says former M-6+ became M-7+; cross-cutting text still says M-6+` anchor=`M:L2-L4 vs M:L141` (13-M:L505)
+- Superseded: (SUMMARY/OBS-004) [OBS/superseded detail by SUP-003; deep names arms] family=`ReleaseChannelEvent` contents=`No variants specified` ssb=`Optional; prefer reuse` (13-M:L549)
+- [status] (SUMMARY/ACCEPT-005) [TEST] cap=`M-5` pos=`Engine-free verification of attestation/RRA/org bundle; license status renders tier data` neg=`One-byte tamper caught; pricing superlative linted` det=`Crate compiles with zero engine dependencies` (13-M:L565)
+- [status] (SUMMARY/AMB-005) [A/SettingsWindow: see SUP-001] The SettingsWindow license-status layout and states are deliberately left to edit-time W-4. (13-M:L589)
+- [status] (SUMMARY/DEFER-004) [DEFER] item=`Exact license-status presentation` state=`Decide at edit under W-4` anchor=`M:L37-L38` (13-M:L507)
+- [status] (SUMMARY/M1-E012) [CLI/SURFACE] The CLI exposes 'elai license status'. (M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L102)
+- [status] (SUMMARY/M1-E043) [UI/SURFACE] A license-status line is paired with SettingsWindow. (M:L37-L38 | 13-M-SUMMARY_INDEX.discovery.md:L133)
+- [status] (SUMMARY/M5-E046) [TEST/SURFACE] 'elai license status' must render from tiers.toml. (M:L109-L110 | 13-M-SUMMARY_INDEX.discovery.md:L330)
+- [status] (SUMMARY/SURF-001) [SURFACE] surface=`License CLI` — activate, status, deactivate (atoms: M1-E011..M1-E013) (13-M:L440)
+- [status] (SUMMARY/SURF-002) [SURFACE] surface=`SettingsWindow` — license-status line; exact presentation decided at edit (atoms: M1-E043..M1-E044) (13-M:L441)
+- [config] (SUMMARY/DEEPER-MISS-005) [DEEPER] seats.toml is named as a K-24 composition artifact at M:L34, while tiers.toml is M-5’s pricing truth; originals must clarify their distinct roles. (13-M:L666)
+- [config] (SUMMARY/DEEPER-MISS-007) [DEEPER] Implementation destinations named in the summary are planned targets, not confirmed source files: crates/orchestrator/src/commerce/entitlement.rs, commerce/org_policy.rs, commerce/org_report.rs, crates/cli/src/update.rs, docs/strategy/commercial/, tiers.toml, and the elai-verify crate. (13-M:L668)
+- [config] (SUMMARY/INV-011) [INVAR] tiers.toml is data and the single pricing truth consumed by entitlement and billing. [M1-E029, M5-E024..M5-E029] (13-M:L430)
+- [config] (SUMMARY/SURF-015) [SURFACE] surface=`tiers.toml` — Free/Pro/Team and pricing source of truth (atoms: M5-E024..M5-E029) (13-M:L454)
+- [gate] (SUMMARY/ACCEPT-001) [TEST] cap=`M-1` pos=`Offline Team activation and unlock` neg=`Forged signature refusal; over-activation recorded` det=`Seeded expiry chain; Free task remains green; all safety gates fire` (13-M:L561)
+- [gate] (SUMMARY/ACCEPT-002) [TEST] cap=`M-2` pos=`Pack Applied; org cap blocks and names clause` neg=`Tampered pack refused; local weakening blocked; stale pack drift` det=`No-pack seat byte-identical` (13-M:L562)
+- [gate] (SUMMARY/ACCEPT-003) [TEST] cap=`M-3` pos=`Clean and drift exports pass into one bundle` neg=`Broken chain refused/named; seeded secret fails; transcript grep empty` det=`Rollups recompute byte-identically` (13-M:L563)
+- [gate] (SUMMARY/ACCEPT-004) [TEST] cap=`M-4` pos=`Clean apply succeeds; support bundle generated` neg=`Corrupt artifact refused before disk; beta hidden by stable pin; secret grep empty` det=`Rollback binary hash equals prior binary` (13-M:L564)
+- [gate] (SUMMARY/ACCEPT-006) [TEST] cap=`M-6` pos=`Conformant fixture and third-party example pass conform` neg=`Tamper, missing field, field removal, and unsupported adoption claim fail` det=`Derived schema byte-matches regeneration on engine-free verifier path` (13-M:L566)
+- [gate] (SUMMARY/AMB-008) [A] M-3 does not specify organization-bundle serialization, output path, command behavior without '--verify', partial-output handling after refusals, or whether a broken seat is omitted versus included as refused. (13-M:L592)
+- [gate] (SUMMARY/AMB-010) [A] M-4 does not define manifest schema/version, download transport, polling interval, failure backoff, channel-switch authorization, install atomicity, platform support, or retention count beyond one last-good binary. (13-M:L594)
+- [gate] (SUMMARY/DEEPER-001) [DEEPER] Doctrine, MA-1..MA-7 pointers, gate, enterprise rider | docs/thefinalglance/M-plan/M-0_INDEX.md | Resolve doctrine details, prerequisites, rider numbering, source map (13-M:L612)
+- [gate] (SUMMARY/DEEPER-004) [DEEPER] M-3 original | docs/thefinalglance/M-plan/M-3_fleet_evidence_rollup.md | Bundle schema, verifier behavior, metrics fields, partial failure (13-M:L615)
+- [gate] (SUMMARY/DEFER-001) [DEFER] item=`SSO, SAML, SCIM, RBAC, hosted console` state=`Demand-gated enterprise rider, not minimal M` anchor=`M:L20-L21, L141-L142` (13-M:L504)
+- [gate] (SUMMARY/FAIL-001) [FAIL] trigger=`Entitlement passes expiry and grace` → result=`ExpiredGrace then DegradedToFree` consequence=`Free task remains usable; safety gates still fire` anchor=`M:L28-L29, L40-L41` (13-M:L522)
+- [gate] (SUMMARY/FAIL-002) [FAIL] trigger=`Forged entitlement` → result=`RefusedForged / refusal` consequence=`No Team unlock` anchor=`M:L36-L42` (13-M:L523)
+- [gate] (SUMMARY/FAIL-004) [FAIL] trigger=`Forged/tampered org pack` → result=`RefusedForged / refusal` consequence=`Pack is not applied` anchor=`M:L53-L56` (13-M:L525)
+- [gate] (SUMMARY/FAIL-005) [FAIL] trigger=`Local weakening or cap raise` → result=`WeakenAttemptBlocked` consequence=`Organization floor remains effective` anchor=`M:L47-L48, L53-L56` (13-M:L526)
+- [gate] (SUMMARY/FAIL-008) [FAIL] trigger=`Broken seat evidence chain` → result=`Refuse and name seat` consequence=`Exclude it from verified seats; no anonymous absorption` anchor=`M:L65-L66, L70-L71` (13-M:L529)
+- [gate] (SUMMARY/FAIL-009) [FAIL] trigger=`Secret in fleet constituent` → result=`Fail report build` consequence=`Prevent secret-bearing organization bundle` anchor=`M:L71-L72` (13-M:L530)
+- [gate] (SUMMARY/FAIL-010) [FAIL] trigger=`Transcript bytes in fleet bundle` → result=`Test failure` consequence=`Fleet output must remain content-free` anchor=`M:L72` (13-M:L531)
+- [gate] (SUMMARY/FAIL-011) [FAIL] trigger=`Corrupt update artifact` → result=`Refuse before file lands` consequence=`Preserve current binary/files` anchor=`M:L88` (13-M:L532)
+- [gate] (SUMMARY/FAIL-012) [FAIL] trigger=`Failed/new binary rollback request` → result=`Restore last-good hash` consequence=`Deterministic recovery` anchor=`M:L80-L81, L88-L89` (13-M:L533)
+- [gate] (SUMMARY/FAIL-014) [FAIL] trigger=`One-byte verifier artifact tamper` → result=`Verification failure` consequence=`Works without engine installation` anchor=`M:L107-L109` (13-M:L535)
+- [gate] (SUMMARY/FAIL-015) [FAIL] trigger=`Pricing superlative without evidence` → result=`Claims-lint failure` consequence=`Blocks unsupported pricing claim` anchor=`M:L101, L109` (13-M:L536)
+- [gate] (SUMMARY/FAIL-016) [FAIL] trigger=`Missing conformance evidence` → result=`FAIL` consequence=`Normative fail-closed format behavior` anchor=`M:L121-L123, L129-L130` (13-M:L537)
+- [gate] (SUMMARY/FAIL-017) [FAIL] trigger=`Evidence artifact one-byte tamper` → result=`conform failure` consequence=`Engine-free independent detection` anchor=`M:L129-L130` (13-M:L538)
+- [gate] (SUMMARY/FAIL-018) [FAIL] trigger=`Schema field removal` → result=`Golden-lock failure` consequence=`Append-only format evolution preserved` anchor=`M:L123-L124, L131` (13-M:L539)
+- [gate] (SUMMARY/FAIL-019) [FAIL] trigger=`'Industry standard' without adoption row` → result=`Claims-lint failure` consequence=`Only 'published format' is allowed` anchor=`M:L124-L126, L131-L132` (13-M:L540)
+- [gate] (SUMMARY/INV-001) [INVAR] Commerce availability and safety have deliberately different failure semantics: commerce degrades to Free; safety gates never degrade. [MX-E020..MX-E024, MX-E035..MX-E036] (13-M:L420)
+- [gate] (SUMMARY/INV-008) [INVAR] Broken or forged trust chains are refused and named where applicable. [M1-E042, M1-E051, M2-E031, M2-E035, M3-E025..M3-E026, M3-E037] (13-M:L427)
+- [gate] (SUMMARY/INV-012) [INVAR] Monetary, pricing, adoption, SLA, and certification language remains evidence-gated rather than promotional by default. [MX-E031..MX-E032, M5-E022..M5-E023, M5-E030..M5-E032, M6-E026..M6-E028] (13-M:L431)
+- [gate] (SUMMARY/INV-014) [INVAR] Evidence schemas derive from engine types, evolve append-only, and fail closed on missing evidence. [M6-E013..M6-E023] (13-M:L433)
+- [gate] (SUMMARY/M3-E012) [CLI/SURFACE] An admin aggregates with 'elai org report <dir> --verify'. (M:L62 | 13-M-SUMMARY_INDEX.discovery.md:L202)
+- [gate] (SUMMARY/M6-E036) [TEST/SURFACE] A one-byte-tampered fixture must fail 'elai-verify conform'. (M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L371)
+- [gate] (SUMMARY/M6-E037) [TEST/SURFACE] A missing-field fixture must fail 'elai-verify conform'. (M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L372)
+- [gate] (SUMMARY/MX-E007) [STATUS] K-10’s logged deviation applies to authoring only; M execution remains behind the K-10 order and M-0 gate. (M:L7-L8 | 13-M-SUMMARY_INDEX.discovery.md:L50)
+- [gate] (SUMMARY/MX-E020) [FALLBACK] MD-1 is the never-brick rule: commerce fails open to the Free tier. (M:L17-L18 | 13-M-SUMMARY_INDEX.discovery.md:L63)
+- [gate] (SUMMARY/MX-E021) [SAFE] MD-1 does not weaken or disable safety gates. (M:L17-L19 | 13-M-SUMMARY_INDEX.discovery.md:L64)
+- [gate] (SUMMARY/MX-E022) [STATUS] MD-1 is the one recorded inversion of the R1 fail-closed rule. (M:L17-L19 | 13-M-SUMMARY_INDEX.discovery.md:L65)
+- [gate] (SUMMARY/MX-E027) [DEFER] SSO and SCIM are demand-gated rather than part of the minimal first-party cloud. (M:L20-L21 | 13-M-SUMMARY_INDEX.discovery.md:L70)
+- [gate] (SUMMARY/MX-E032) [CLAIM] Monetary value claims are blocked until K-24 supplies a measured number. (M:L22-L23 | 13-M-SUMMARY_INDEX.discovery.md:L75)
+- [gate] (SUMMARY/MX-E035) [FALLBACK] Commerce is the sole deliberately fail-open layer and degrades a seat rather than bricking it. (M:L138-L139 | 13-M-SUMMARY_INDEX.discovery.md:L78)
+- [gate] (SUMMARY/MX-E036) [SAFE] Every safety gate remains fail-closed even when commerce fails open. (M:L138-L139 | 13-M-SUMMARY_INDEX.discovery.md:L79)
+- [gate] (SUMMARY/MX-E038) [DEFER] SSO, SAML, SCIM, RBAC, and a hosted console are demand-gated enterprise-rider capabilities. (M:L141-L142 | 13-M-SUMMARY_INDEX.discovery.md:L81)
+- [gate] (SUMMARY/MX-E039) [CLAIM] The demand-gated rider preserves the recorded agencies-not-enterprise go-to-market posture. (M:L141-L142 | 13-M-SUMMARY_INDEX.discovery.md:L82)
+- [gate] (SUMMARY/MX-E041) [STATUS] GATE M-0 holds every M session behind K A-1..A-4, K-3, and K-24 L1..L4. (M:L143-L144 | 13-M-SUMMARY_INDEX.discovery.md:L84)
+- [gate] (SUMMARY/OBS-001) [OBS] family=`EntitlementEvent` contents=`Activated, Renewed, ExpiredGrace, DegradedToFree, Revoked, RefusedForged` ssb=`New Pattern-2 family` (13-M:L546)
+- [gate] (SUMMARY/OBS-002) [OBS] family=`OrgPolicyEvent` contents=`Applied, Drift, RefusedForged, WeakenAttemptBlocked` ssb=`New Pattern-2 family` (13-M:L547)
+- [gate] (SUMMARY/OBS-007) [OBS] family=`Fleet bundle` contents=`Seat table; verified-outcome, gate-tax, K-1 delta, cost, unvouched, drift, roster-honesty rollups` ssb=`Recomputed from constituent journals` (13-M:L552)
+- [gate] (SUMMARY/ORDER-001) [DEP] All M execution is held behind GATE M-0. The named prerequisites are K A-1..A-4, K-3, and K-24 L1..L4. [MX-E007, MX-E040..MX-E042] (13-M:L461)
+- [gate] (SUMMARY/REUSE-018) [DEP] K-4 → gate-tax metric (13-M:L486)
+- [gate] (SUMMARY/REUSE-027) [DEP] gate_freeze_check / gate manifest → pinned organization policy and schema evolution (13-M:L495)
+- [gate] (SUMMARY/REUSE-029) [DEP] R1, R2, R8 → failure semantics, tamper refusal, frozen/golden-lock properties (13-M:L497)
+- [gate] (SUMMARY/SURF-008) [SURFACE] surface=`elai-verify conform` — fail-closed evidence-format conformance (atoms: M6-E018..M6-E020) (13-M:L447)
+- [gate] (SUMMARY/WF-003) [FLOW] workflow=`Purchase, activation, expiry, and continued safe use` step=3 (13-M:L385): tier() reads the data-defined tier and gates K-24 credit grants plus M-2/M-3 Team functionality. [M1-E025..M1-E029]
+- [gate] (SUMMARY/WF-005) [FLOW] workflow=`Purchase, activation, expiry, and continued safe use` step=5 (13-M:L387): A degraded seat can still run Free work and every safety gate remains active. Forgery is refused, while excess activation is honestly recorded for M-3 rather than bricking the seat. [M1-E030..M1-E032, M1-E049..M1-E052]
+- [gate] (SUMMARY/WF-008) [FLOW] workflow=`Policy creation, boot application, tightening, and drift` step=3 (13-M:L393): A seat may tighten these controls but cannot weaken them; a raise/weaken attempt becomes WeakenAttemptBlocked. [M2-E012..M2-E014, M2-E032, M2-E036]
+- [gate] (SUMMARY/WF-009) [FLOW] workflow=`Policy creation, boot application, tightening, and drift` step=4 (13-M:L394): Tampering is refused. Staleness creates surfaced Drift but is not auto-corrected. No pack preserves byte-identical baseline behavior. [M2-E015..M2-E019, M2-E030..M2-E031, M2-E035, M2-E037..M2-E038]
+- [gate] (SUMMARY/WF-012) [FLOW] workflow=`Private fleet evidence aggregation` step=3 (13-M:L400): The command verifies evidence chains, refuses and names broken seats, and builds one per-seat table plus existing-metric rollups. [M3-E013..M3-E027]
+- [gate] (SUMMARY/WF-014) [FLOW] workflow=`Safe update and local support` step=1 (13-M:L405): A seat non-blockingly checks signed stable/beta manifests by default. An organization pin may filter the visible channel, while blake3(seat_id)%100 deterministically assigns staged rollout. [M4-E003..M4-E018]
+- [gate] (SUMMARY/WF-015) [FLOW] workflow=`Safe update and local support` step=2 (13-M:L406): Application requires explicit user confirmation or an organization schedule and is never silent. Artifact mismatch is refused before disk write. [M4-E019..M4-E021, M4-E040]
+- [gate] (SUMMARY/WF-022) [FLOW] workflow=`Independent verification and format adoption` step=5 (13-M:L416): Schema changes are append-only and golden-locked; field removal, missing evidence, or tampering fails closed. [M6-E019..M6-E023, M6-E035..M6-E040]
+- [surface] (Binary: elai-verify) (attestation, rra, K-6, org bundle) — refs: M-001/M5-E009..M5-E010, SUMMARY/M5-E003..M5-E007
+- [surface] (CLI: elai export compliance --org) — refs: M-001/M3-E019, SUMMARY/M3-E005
+- [surface] (CLI: elai license activate|status|deactivate) — refs: M-001/M1-E022, M-001/M1-E040, M-001/M5-E033, SUMMARY/M1-E011..M1-E013, SUMMARY/M5-E046
+- [surface] (CLI: elai org policy init|sign|verify|show) — refs: M-001/M2-E018, SUMMARY/M2-E024..M2-E027
+- [surface] (CLI: elai org report <dir> [--verify]) — refs: M-001/M3-E020, M-001/M3-E023, SUMMARY/M3-E012
+- [surface] (CLI: elai support bundle) (+ printed content summary) — refs: M-001/M4-E028, M-001/M4-E029, SUMMARY/M4-E023, SUMMARY/M4-E031
+- [surface] (CLI: elai update check|apply|rollback|channel) — refs: M-001/M4-E022, M-001/M4-E016, SUMMARY/M4-E013..M4-E016
+- [surface] (CLI: elai-verify conform <artifact>) — refs: M-001/M6-E020, SUMMARY/M6-E018
+- [surface] (Config surface: tiers.toml Free/Pro/Team + pricing) — refs: M-001/M5-E021..M5-E022, SUMMARY/M5-E024..M5-E029
+- [surface] (Docs: EEF prose spec + third-party emitter example) — refs: M-001/M6-E017, M-001/M6-E026, SUMMARY/M6-E016, SUMMARY/M6-E025
+- [surface] (Docs: EULA/DPA/continuity under docs/strategy/commercial/) — refs: M-001/M5-E014..M5-E019, SUMMARY/M5-E011..M5-E023
+- [surface] (Docs: support-expectation page) — refs: M-001/M5-E020, M-001/M5-I001
+- [surface] (Installer: B-43 install-end activation offer) — refs: M-001/M1-E040, SUMMARY/M1-E034
+- [surface] (Render: org report human markdown + machine msgpack/toml) — refs: M-001/M3-E026, M-001/M3-I001
+- [surface] (SUMMARY/M1-E011) [CLI/SURFACE] The CLI exposes 'elai license activate'. (M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L101)
+- [surface] (SUMMARY/M1-E013) [CLI/SURFACE] The CLI exposes 'elai license deactivate'. (M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L103)
+- [surface] (SUMMARY/M1-E021) [ACTION/SURFACE] The mint endpoint can mint an entitlement. (M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L111)
+- [surface] (SUMMARY/M1-E022) [ACTION/SURFACE] The mint endpoint can renew an entitlement. (M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L112)
+- [surface] (SUMMARY/M1-E023) [ACTION/SURFACE] The mint endpoint can revoke an entitlement. (M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L113)
+- [surface] (SUMMARY/M1-E034) [UI/SURFACE] B-43 offers activation at the end of installation. (M:L34-L35 | 13-M-SUMMARY_INDEX.discovery.md:L124)
+- [surface] (SUMMARY/M2-E016) [UI/SURFACE] Policy drift is surfaced. (M:L48-L49 | 13-M-SUMMARY_INDEX.discovery.md:L163)
+- [surface] (SUMMARY/M2-E024) [CLI/SURFACE] The CLI exposes 'elai org policy init'. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L171)
+- [surface] (SUMMARY/M2-E025) [CLI/SURFACE] The CLI exposes 'elai org policy sign'. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L172)
+- [surface] (SUMMARY/M2-E026) [CLI/SURFACE] The CLI exposes 'elai org policy verify'. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L173)
+- [surface] (SUMMARY/M2-E027) [CLI/SURFACE] The CLI exposes 'elai org policy show'. (M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L174)
+- [surface] (SUMMARY/M3-E005) [CLI/SURFACE] Each seat exports with 'elai export compliance --org'. (M:L61 | 13-M-SUMMARY_INDEX.discovery.md:L195)
+- [surface] (SUMMARY/M4-E013) [CLI/SURFACE] The CLI exposes 'elai update check'. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L248)
+- [surface] (SUMMARY/M4-E014) [CLI/SURFACE] The CLI exposes 'elai update apply'. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L249)
+- [surface] (SUMMARY/M4-E015) [CLI/SURFACE] The CLI exposes 'elai update rollback'. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L250)
+- [surface] (SUMMARY/M4-E016) [CLI/SURFACE] The CLI exposes 'elai update channel'. (M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L251)
+- [surface] (SUMMARY/M4-E023) [CLI/SURFACE] The CLI exposes 'elai support bundle'. (M:L81 | 13-M-SUMMARY_INDEX.discovery.md:L258)
+- [surface] (SUMMARY/M4-E031) [UI/SURFACE] Support-bundle creation prints a summary. (M:L82 | 13-M-SUMMARY_INDEX.discovery.md:L266)
+- [surface] (SUMMARY/M5-E003) [CAP/SURFACE] M-5 publishes a standalone open-source elai-verify crate and binary. (M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L287)
+- [surface] (SUMMARY/M5-E004) [INT/SURFACE] elai-verify wraps the same G-8 attestation verification path. (M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L288)
+- [surface] (SUMMARY/M5-E005) [INT/SURFACE] elai-verify wraps the same G-2 RRA verification path. (M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L289)
+- [surface] (SUMMARY/M5-E006) [INT/SURFACE] elai-verify wraps the same K-6 conformance verification path. (M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L290)
+- [surface] (SUMMARY/M5-E007) [INT/SURFACE] elai-verify wraps the same M-3 organization-bundle verification path. (M:L95 | 13-M-SUMMARY_INDEX.discovery.md:L291)
+- [surface] (SUMMARY/M5-E008) [SAFE/SURFACE] elai-verify has zero engine dependencies. (M:L95-L96 | 13-M-SUMMARY_INDEX.discovery.md:L292)
+- [surface] (SUMMARY/M5-E011) [COMP/SURFACE] Commercial packaging includes an EULA draft. (M:L97 | 13-M-SUMMARY_INDEX.discovery.md:L295)
+- [surface] (SUMMARY/M5-E013) [COMP/SURFACE] Commercial packaging includes a DPA draft. (M:L97 | 13-M-SUMMARY_INDEX.discovery.md:L297)
+- [surface] (SUMMARY/M5-E018) [COMP/SURFACE] The trust-continuity statement offers escrow on lapse. (M:L98 | 13-M-SUMMARY_INDEX.discovery.md:L302)
+- [surface] (SUMMARY/M5-E019) [COMP/SURFACE] The trust-continuity statement alternatively offers conversion to OSS on abandonment. (M:L98-L99 | 13-M-SUMMARY_INDEX.discovery.md:L303)
+- [surface] (SUMMARY/M5-E035) [INT/SURFACE] The published integration artifact is the elai-verify crate. (M:L105 | 13-M-SUMMARY_INDEX.discovery.md:L319)
+- [surface] (SUMMARY/M5-E040) [TEST/SURFACE] On a clean, engine-free machine, elai-verify must verify a fixture attestation. (M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L324)
+- [surface] (SUMMARY/M5-E041) [TEST/SURFACE] On a clean, engine-free machine, elai-verify must verify a fixture RRA. (M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L325)
+- [surface] (SUMMARY/M5-E042) [TEST/SURFACE] On a clean, engine-free machine, elai-verify must verify a fixture organization bundle. (M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L326)
+- [surface] (SUMMARY/M5-E043) [TEST/SURFACE] elai-verify must catch a one-byte artifact tamper under R2. (M:L108 | 13-M-SUMMARY_INDEX.discovery.md:L327)
+- [surface] (SUMMARY/M6-E011) [INT/SURFACE] Third-party tools can emit evidence that ELAI can verify. (M:L118-L119 | 13-M-SUMMARY_INDEX.discovery.md:L346)
+- [surface] (SUMMARY/M6-E012) [CAP/SURFACE] elai-verify becomes the reference verifier for the format. (M:L119 | 13-M-SUMMARY_INDEX.discovery.md:L347)
+- [surface] (SUMMARY/M6-E018) [CLI/SURFACE] elai-verify adds 'conform <artifact>'. (M:L121 | 13-M-SUMMARY_INDEX.discovery.md:L353)
+- [surface] (SUMMARY/M6-E024) [OPS/SURFACE] The evidence format is published beside elai-verify. (M:L124 | 13-M-SUMMARY_INDEX.discovery.md:L359)
+- [surface] (SUMMARY/M6-E035) [TEST/SURFACE] A conformant fixture must pass 'elai-verify conform' on an engine-free machine. (M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L370)
+- [surface] (SUMMARY/SURF-003) [SURFACE] surface=`Org-policy CLI` — init, sign, verify, show (atoms: M2-E024..M2-E027) (13-M:L442)
+- [surface] (SUMMARY/SURF-004) [SURFACE] surface=`Fleet CLI` — seat export and admin report with verification (atoms: M3-E005, M3-E012) (13-M:L443)
+- [surface] (SUMMARY/SURF-005) [SURFACE] surface=`Update CLI` — check, apply, rollback, channel (atoms: M4-E013..M4-E016) (13-M:L444)
+- [surface] (SUMMARY/SURF-006) [SURFACE] surface=`Support CLI` — local redacted support bundle with printed summary (atoms: M4-E023..M4-E032) (13-M:L445)
+- [surface] (SUMMARY/SURF-007) [SURFACE] surface=`elai-verify` — standalone verification of attestation, RRA, K-6 conformance, and org bundle (atoms: M5-E003..M5-E009) (13-M:L446)
+- [surface] (SUMMARY/SURF-009) [SURFACE] surface=`Entitlement` — signed org/tier/seat/features/expiry record (atoms: M1-E002..M1-E009) (13-M:L448)
+- [surface] (SUMMARY/SURF-010) [SURFACE] surface=`OrgPolicyPack` — signed inert file with organization controls and pins (atoms: M2-E003..M2-E018) (13-M:L449)
+- [surface] (SUMMARY/SURF-011) [SURFACE] surface=`Organization bundle` — per-seat table plus recomputable rollups (atoms: M3-E013..M3-E027) (13-M:L450)
+- [surface] (SUMMARY/SURF-012) [SURFACE] surface=`Release manifest` — signed, per-artifact blake3, stable/beta metadata (atoms: M4-E003..M4-E009) (13-M:L451)
+- [surface] (SUMMARY/SURF-013) [SURFACE] surface=`Support bundle` — versions, tier, hashes, doctor, redacted journal tail (atoms: M4-E024..M4-E032) (13-M:L452)
+- [surface] (SUMMARY/SURF-014) [SURFACE] surface=`Legal/commercial docs` — EULA, license split, DPA, continuity alternatives, custody and support posture (atoms: M5-E011..M5-E023) (13-M:L453)
+- [surface] (SUMMARY/SURF-016) [SURFACE] surface=`Published evidence format` — derived schemas, prose spec, fixtures, example emitter (atoms: M6-E004..M6-E025) (13-M:L455)
+- [surface] (Status: ExpiredGrace status banner) — refs: M-001/M1-E037, M-001/M1-A002, M-001/AC-005
+- [surface] (Status: M-2 boot warning (Drift)) — refs: M-001/M2-E016, M-001/M2-A003
+- [surface] ([superseded as target UI] SettingsWindow license-status line) — SUMMARY/M1-E043..M1-E044 retained under SUP-001; not in numbered M-1
+- (M-001 IX/SD/AC) exact match to ledger footer 24/39/12: **YES**
+- (M-001 source atoms) exact match to ledger footer 360: **YES**
+- (SUMMARY inventory) vs declared 304: **304/304** (exact)
+- (SUMMARY/AMB-001) [A/partially resolved numbering by SUP-002 / deep M-7+] Enterprise-rider numbering conflicts inside the summary: M:L2-L4 says M-6+ was renumbered M-7+, but M:L141 still calls it M-6+. Treat M-7+ as the newer header correction until M-0 is inspected. (13-M:L585)
+- (SUMMARY/AMB-002) [A] The entitlement signature algorithm, canonical byte representation, key rotation, revocation-list structure, and local entitlement storage location are absent. (13-M:L586)
+- (SUMMARY/AMB-003) [A] Grace-period start conditions, renewal timing, clock-skew policy, offline expiry messaging, and deactivation semantics are absent. (13-M:L587)
+- (SUMMARY/AMB-004) [A] 'Seat-count best-effort' does not define seat identity issuance, duplicate-device rules, reconciliation cadence, or privacy-preserving roster representation. (13-M:L588)
+- (SUMMARY/AMB-006) [A] OrgPolicyPack serialization, schema version, signer/key custody, precedence ordering, file discovery path, git workflow, and stale threshold are absent. (13-M:L590)
+- (SUMMARY/AMB-007) [A] 'Drift' does not specify which comparisons trigger it, how pack_hash relates to effective configuration, or the user remediation flow. (13-M:L591)
+- (SUMMARY/AMB-009) [A] The summary names '2 verify PASS' for clean/drift fixtures; it does not say whether Drift affects an overall organization verdict. (13-M:L593)
+- (SUMMARY/AMB-011) [A] ReleaseChannelEvent and OrgReportEvent are unresolved reuse decisions; their event variants are absent. (13-M:L595)
+- (SUMMARY/AMB-012) [A] Support-bundle file format, destination, size/tail limit, exact redaction policy, encryption, retention, and user transmission flow are absent. (13-M:L596)
+- (SUMMARY/AMB-013) [A] The selected trust-continuity model is unresolved between escrow-on-lapse and convert-to-OSS-on-abandonment. (13-M:L597)
+- (SUMMARY/AMB-014) [A] Legal drafts explicitly require counsel review; they are not represented as legally approved final documents. (13-M:L598)
+- (SUMMARY/AMB-015) [A] Exact tier entitlements, pricing, billing interval, taxes, currency, and K-24 credit-grant values are absent. (13-M:L599)
+- (SUMMARY/AMB-016) [A] 'K-6 conformance' versus M-6 format conformance naming may represent different layers; originals must disambiguate. (13-M:L600)
+- (SUMMARY/AMB-017) [A] The final name, media type, version-negotiation rules, canonical encoding, extension namespaces, unknown-field handling, and compatibility window for EEF v1 are absent. (13-M:L601)
+- (SUMMARY/AMB-018) [A] 'Append-only schema evolution' does not state whether fields can be deprecated, made optional, or moved into a new major version. (13-M:L602)
+- (SUMMARY/AMB-019) [A] The adoption row’s schema, authority, and verification process are absent. (13-M:L603)
+- (SUMMARY/AMB-020) [A] M-6 precedent is explicitly unsearched and requires execution-time verification. (13-M:L604)
+- (SUMMARY/DEEPER-002) [DEEPER] M-1 original | docs/thefinalglance/M-plan/M-1_seat_entitlement_and_purchase_rail.md | Entitlement schema/lifecycle, keys, CLI and seat accounting details (13-M:L613)
+- (SUMMARY/DEEPER-003) [DEEPER] M-2 original | docs/thefinalglance/M-plan/M-2_org_policy_pack_distribution.md | Pack schema, precedence, distribution, drift and event details (13-M:L614)
+- (SUMMARY/DEEPER-005) [DEEPER] M-4 original | docs/thefinalglance/M-plan/M-4_signed_release_channel_updater_support.md | Manifest/update protocol, rollback, support-bundle format (13-M:L616)
+- (SUMMARY/DEEPER-006) [DEEPER] M-5 original | docs/thefinalglance/M-plan/M-5_commercial_packaging_verifier_oss.md | Verifier crate boundary, legal artifacts, tier truth, continuity choice (13-M:L617)
+- (SUMMARY/DEEPER-007) [DEEPER] M-6 original | docs/thefinalglance/M-plan/M-6_evidence_schema_open_standard.md | Schema generation, conformance contract, evolution and publication (13-M:L618)
+- (SUMMARY/DEEPER-008) [DEEPER] M-6 spec-eval ADD-1 | workflow/reasoning/elai-spec-eval-ambition-2026-07-05.md | M:L2-L4, L113-L115 (13-M:L626)
+- (SUMMARY/DEEPER-009) [DEEPER] Multi-seat gap analysis | workflow/reasoning/steal-multiseat-gap-2026-07-02.md | M:L5-L7 (13-M:L627)
+- (SUMMARY/DEEPER-MISS-001) [DEEPER] MA-1 through MA-7 are mentioned but only MA-3, MA-4, and MA-6 are used by name in the summary; their exact targets and the unused MA pointers require M-0 inspection. (13-M:L662)
+- (SUMMARY/DEEPER-MISS-003) [DEEPER] B-45 and K-10 lack matching top-level plan filenames in their respective directory inventories. (13-M:L664)
+- (SUMMARY/DEEPER-MISS-004) [DEEPER] K A-1..A-4 and K-24 L1..L4 are prerequisite substeps, not standalone paths in this summary; resolve within K originals. (13-M:L665)
+- (SUMMARY/DEEPER-MISS-006) [DEEPER] 'Pattern-2', frontend_pair, org-immune tier, and the named rule families need canonical definitions from M-0/upstream sources. (13-M:L667)
+- (SUMMARY/DEFER-005) [DEFER] item=`OrgReportEvent` state=`Add only if no existing SSB event fits` anchor=`M:L69` (13-M:L508)
+- (SUMMARY/DEFER-006) [DEFER] item=`ReleaseChannelEvent` state=`Optional; prefer an existing event if it fits` anchor=`M:L86-L87` (13-M:L509)
+- (SUMMARY/DEFER-007) [DEFER] item=`Delta updates` state=`Later rider; v1 is whole-artifact` anchor=`M:L82-L83` (13-M:L510)
+- (SUMMARY/DEFER-008) [DEFER] item=`Trust-continuity choice` state=`User must choose escrow-on-lapse or convert-to-OSS-on-abandonment; both drafted` anchor=`M:L98-L99` (13-M:L511)
+- (SUMMARY/DEFER-009) [DEFER] item=`Article-50-certified hook` state=`Killed under LOCK-3` anchor=`M:L102` (13-M:L512)
+- (SUMMARY/DEFER-010) [DEFER] item=`Final EEF name` state=`Chosen at execution` anchor=`M:L117` (13-M:L513)
+- (SUMMARY/DEFER-012) [DEFER] item=`SLSA/in-toto precedent grounding` state=`Must be re-verified at execution` anchor=`M:L113-L115` (13-M:L515)
+- (SUMMARY/DEFER-013) [DEFER] item=`Direct proof-spine contribution from M-6` state=`None; explicitly exempted` anchor=`M:L126` (13-M:L516)
+- (SUMMARY/FAIL-003) [FAIL] trigger=`Excess seat activation` → result=`Record it` consequence=`Surface through fleet report; do not silently absorb or brick` anchor=`M:L32-L33, L41-L42` (13-M:L524)
+- (SUMMARY/FAIL-006) [FAIL] trigger=`Stale org pack` → result=`Drift` consequence=`Surface at boot; do not auto-correct yet` anchor=`M:L48-L49, L57` (13-M:L527)
+- (SUMMARY/FAIL-007) [FAIL] trigger=`No org pack` → result=`Baseline behavior` consequence=`Byte-identical single-seat behavior` anchor=`M:L50, L56-L57` (13-M:L528)
+- (SUMMARY/FAIL-013) [FAIL] trigger=`Seeded secret in support session` → result=`Redact; grep stays empty` consequence=`Bundle remains local and is never auto-sent` anchor=`M:L81-L82, L89-L90` (13-M:L534)
+- (SUMMARY/INV-002) [INVAR] Runtime work never depends on a licensing service. Once obtained, entitlement proof is local and offline-verifiable. [MX-E023..MX-E025, M1-E002..M1-E003] (13-M:L421)
+- (SUMMARY/INV-003) [INVAR] The only first-party commercial cloud surface is the mint endpoint, limited to mint/renew/revoke. Policy and evidence move through files or git. [MX-E025..MX-E026, M1-E020..M1-E024] (13-M:L422)
+- (SUMMARY/INV-004) [INVAR] Organization controls are monotonic: a seat can tighten but cannot weaken a signed organization pack. [M2-E012..M2-E014] (13-M:L423)
+- (SUMMARY/INV-005) [INVAR] Organization pack content is inert data, never executable code. [M2-E018] (13-M:L424)
+- (SUMMARY/INV-006) [INVAR] Absence of an organization pack must preserve byte-identical single-seat behavior. [M2-E019, M2-E037] (13-M:L425)
+- (SUMMARY/INV-007) [INVAR] Fleet reporting is pull-based, locally recomputable, and contains neither telemetry nor raw content/transcripts. [M3-E004, M3-E022..M3-E024, M3-E040] (13-M:L426)
+- (SUMMARY/INV-009) [INVAR] Update integrity is checked before any artifact lands, and a last-good binary remains rollbackable. [M4-E022, M4-E040..M4-E042] (13-M:L428)
+- (SUMMARY/INV-010) [INVAR] Support material is local, redacted, summarized to the user, and never auto-sent. [M4-E024..M4-E032] (13-M:L429)
+- (SUMMARY/INV-013) [INVAR] The external verifier reuses the same verification paths but has zero engine dependencies; publishing it does not open the engine. [M5-E003..M5-E010] (13-M:L432)
+- (SUMMARY/INV-015) [INVAR] SSB additions are intentionally bounded: EntitlementEvent and OrgPolicyEvent are explicit; M-3/M-4 prefer reuse; M-5/M-6 add none. [MX-E010, M1-E036..M1-E042, M2-E028..M2-E032, M3-E032..M3-E033, M4-E038..M4-E039, M5-E039, M6-E042] (13-M:L434)
+- (SUMMARY/MX-E001) [CAP] M is a single-track commercial-shipping / multi-seat letter closing B through L. (M:L1 | 13-M-SUMMARY_INDEX.discovery.md:L44)
+- (SUMMARY/MX-E002) [STATUS] The index covers six M sessions. (M:L1 | 13-M-SUMMARY_INDEX.discovery.md:L45)
+- (SUMMARY/MX-E003) [STATUS] M-6 was appended on 2026-07-05 from spec-eval ADD-1 following explicit user direction. (M:L2-L4 | 13-M-SUMMARY_INDEX.discovery.md:L46)
+- (SUMMARY/MX-E005) [STATUS] The original M wave was generated 2026-07-02 with the main LLM in-band via paper-to-plan phases 4-5 and no paper. (M:L5-L6 | 13-M-SUMMARY_INDEX.discovery.md:L48)
+- (SUMMARY/MX-E006) [STATUS] The multi-seat gap analysis was grep-proven. (M:L5-L7 | 13-M-SUMMARY_INDEX.discovery.md:L49)
+- (SUMMARY/MX-E009) [STATUS] The recorded live stamp is 268/577 from K on 2026-06-26, with a W-9 re-grep required at edit. (M:L10 | 13-M-SUMMARY_INDEX.discovery.md:L52)
+- (SUMMARY/MX-E010) [OBS] M expects only +2 through +4 net-new SSB event families/rows across the letter. (M:L10 | 13-M-SUMMARY_INDEX.discovery.md:L53)
+- (SUMMARY/MX-E011) [CAP] B through L are treated as a sellable single-seat product; M makes it sellable to a company. (M:L13-L14 | 13-M-SUMMARY_INDEX.discovery.md:L54)
+- (SUMMARY/MX-E012) [CAP] M is deliberately a minimal, offline-first organization layer. (M:L14-L15 | 13-M-SUMMARY_INDEX.discovery.md:L55)
+- (SUMMARY/MX-E013) [CAP] M explicitly does not become an organization SaaS. (M:L14-L15 | 13-M-SUMMARY_INDEX.discovery.md:L56)
+- (SUMMARY/MX-E014) [INT] M is approximately 60% composition of K-24, J-49/J-59, B-43, K-6/K-7, G-8/G-9, and K-1. (M:L15-L16 | 13-M-SUMMARY_INDEX.discovery.md:L57)
+- (SUMMARY/MX-E015) [CAP] Net-new commerce machinery includes entitlement. (M:L16-L17 | 13-M-SUMMARY_INDEX.discovery.md:L58)
+- (SUMMARY/MX-E016) [CAP] Net-new commerce machinery includes an organization policy pack. (M:L16-L17 | 13-M-SUMMARY_INDEX.discovery.md:L59)
+- (SUMMARY/MX-E017) [CAP] Net-new commerce machinery includes a fleet rollup. (M:L16-L17 | 13-M-SUMMARY_INDEX.discovery.md:L60)
+- (SUMMARY/MX-E018) [CAP] Net-new commerce machinery includes an updater. (M:L16-L17 | 13-M-SUMMARY_INDEX.discovery.md:L61)
+- (SUMMARY/MX-E019) [CAP] Net-new commerce machinery includes a legal wrapper. (M:L16-L17 | 13-M-SUMMARY_INDEX.discovery.md:L62)
+- (SUMMARY/MX-E023) [CAP] MD-2 requires commerce to be offline-verifiable, reusing the G-8 pattern. (M:L19 | 13-M-SUMMARY_INDEX.discovery.md:L66)
+- (SUMMARY/MX-E024) [SAFE] The license service must never be a runtime dependency. (M:L19 | 13-M-SUMMARY_INDEX.discovery.md:L67)
+- (SUMMARY/MX-E025) [CAP] MD-3 permits exactly one first-party cloud endpoint, the mint endpoint. (M:L19-L20 | 13-M-SUMMARY_INDEX.discovery.md:L68)
+- (SUMMARY/MX-E026) [FLOW] Organization policy and evidence travel by file or git rather than a hosted control plane. (M:L20-L21 | 13-M-SUMMARY_INDEX.discovery.md:L69)
+- (SUMMARY/MX-E028) [PRIV] MD-4 defaults to per-seat isolation by composing J-59. (M:L21-L22 | 13-M-SUMMARY_INDEX.discovery.md:L71)
+- (SUMMARY/MX-E029) [PRIV] Fleet rollups contain numbers and hashes. (M:L21-L22 | 13-M-SUMMARY_INDEX.discovery.md:L72)
+- (SUMMARY/MX-E030) [PRIV] Fleet rollups never contain transcripts. (M:L21-L22 | 13-M-SUMMARY_INDEX.discovery.md:L73)
+- (SUMMARY/MX-E031) [CLAIM] MD-5 applies K-1 claims lint to all pricing and EULA copy. (M:L22-L23 | 13-M-SUMMARY_INDEX.discovery.md:L74)
+- (SUMMARY/MX-E033) [CAP] At organization grain, the finished product is purchasable, policeable, and auditable without being an org SaaS. (M:L135-L138 | 13-M-SUMMARY_INDEX.discovery.md:L76)
+- (SUMMARY/MX-E034) [FLOW] Apart from the one mint endpoint, organization commerce, policy, and evidence use offline-verifiable files. (M:L137-L138 | 13-M-SUMMARY_INDEX.discovery.md:L77)
+- (SUMMARY/MX-E037) [AUDIT] Organization answers are computed from seat journals, not vendor dashboards. (M:L139-L141 | 13-M-SUMMARY_INDEX.discovery.md:L80)
+- (SUMMARY/MX-E040) [STATUS] M is authored as the closing letter and executes last. (M:L142-L143 | 13-M-SUMMARY_INDEX.discovery.md:L83)
+- (SUMMARY/MX-E042) [CLAIM] Selling before K-24’s measured number exists is forbidden by KD-1/MD-5 claim discipline. (M:L143-L144 | 13-M-SUMMARY_INDEX.discovery.md:L85)
+- (SUMMARY/OBS-003) [OBS] family=`OrgReportEvent` contents=`No variants specified` ssb=`Prefer reuse; conditional new family only if nothing fits` (13-M:L548)
+- (SUMMARY/OBS-005) [OBS] family=`M-5 verifier/package` contents=`Verification outcomes exist, but summary says NO SSB` ssb=`No new SSB` (13-M:L550)
+- (SUMMARY/OBS-006) [OBS] family=`M-6 format/docs` contents=`Conformance verdicts/receipts are specified as format shapes, but summary says NO SSB for this work` ssb=`No new SSB` (13-M:L551)
+- (SUMMARY/OBS-008) [OBS] family=`Support bundle` contents=`Versions, tier, hashes, doctor, redacted journal tail` ssb=`Local diagnostic; never auto-sent` (13-M:L553)
+- (SUMMARY/ORDER-002) [DEP] Within M, M-1 precedes M-2; M-3 requires M-1/M-2 plus J-59/K-6 pointers; M-4 requires M-2/G-9 plus MA-4; M-6 requires M-5a and stable upstream emit paths. [M2-E002, M3-E002..M3-E003, M4-E002, M6-E003] (13-M:L462)
+- (SUMMARY/ORDER-003) [DEP] Wave grouping: M1 contains entitlement plus tiers/verifier extraction; M2 contains policy and updater; M3 contains fleet rollup, legal/continuity work, and evidence-format publication. [coverage map; M5-E002] (13-M:L463)
+- (SUMMARY/REUSE-001) [DEP] 3F → policy lifecycle and mutable tier (13-M:L469)
+- (SUMMARY/REUSE-002) [DEP] B-37 → organization allowlist (13-M:L470)
+- (SUMMARY/REUSE-003) [DEP] B-43 → installer-end activation and shared artifact mismatch verification (13-M:L471)
+- (SUMMARY/REUSE-004) [DEP] B-45 → updater composition (13-M:L472)
+- (SUMMARY/REUSE-005) [DEP] E-23 → commercial-document class/pattern (13-M:L473)
+- (SUMMARY/REUSE-006) [DEP] E-39 → spend caps (13-M:L474)
+- (SUMMARY/REUSE-007) [DEP] E-45 → schema/golden-lock evolution pattern (13-M:L475)
+- (SUMMARY/REUSE-008) [DEP] G-2 → RRA verification and evidence format (13-M:L476)
+- (SUMMARY/REUSE-009) [DEP] G-8 → signing, attestation verification, and offline verification pattern (13-M:L477)
+- (SUMMARY/REUSE-010) [DEP] G-9 → redaction, report precondition/self-test, support-bundle safety (13-M:L478)
+- (SUMMARY/REUSE-011) [DEP] H-9 → dollars-per-resolved-task rollup (13-M:L479)
+- (SUMMARY/REUSE-012) [DEP] J-3 → last-good binary rollback discipline (13-M:L480)
+- (SUMMARY/REUSE-013) [DEP] J-49 → pre-existing per-seat admission/quota composition (13-M:L481)
+- (SUMMARY/REUSE-014) [DEP] J-59 / MA-3 → per-seat memory/trust isolation (13-M:L482)
+- (SUMMARY/REUSE-015) [DEP] K-0:531 → recorded exclusion of org/SSO/RBAC/multi-tenant build (13-M:L483)
+- (SUMMARY/REUSE-016) [DEP] K-1 → dossier/claims lint, pricing recognizer, adoption-claim recognizer, K-1 deltas (13-M:L484)
+- (SUMMARY/REUSE-017) [DEP] K-3 → unvouched counts and rendered evidence shapes (13-M:L485)
+- (SUMMARY/REUSE-019) [DEP] K-5 → policy-table hash (13-M:L487)
+- (SUMMARY/REUSE-020) [DEP] K-6 / MA-6 → compliance export and conformance path (13-M:L488)
+- (SUMMARY/REUSE-021) [DEP] K-7 → buyer/positioning questions and commercial brief (13-M:L489)
+- (SUMMARY/REUSE-022) [DEP] K-10 → authoring/execution order constraint (13-M:L490)
+- (SUMMARY/REUSE-023) [DEP] K-11 → rendered evidence shapes (13-M:L491)
+- (SUMMARY/REUSE-024) [DEP] K-24 → payment architecture, credit grants, pricing measurement, seats data (13-M:L492)
+- (SUMMARY/REUSE-025) [DEP] L-13 → inert-data / non-executable organization policy rule (13-M:L493)
+- (SUMMARY/REUSE-026) [DEP] ClockProvider / SeededClock → deterministic expiry lifecycle (13-M:L494)
+- (SUMMARY/REUSE-028) [DEP] doctor → support diagnostics (13-M:L496)
+- (SUMMARY/REUSE-030) [DEP] GD-2, GD-4, GD-5, KD-1, LOCK-3, TD-3, W-2, W-4, W-9 → explainability, drift timing, honesty, claims, killed scope, data-driven tiers, clean behavior, UI decision, event reuse/re-grep (13-M:L498)
+- (SUMMARY/WF-001) [FLOW] workflow=`Purchase, activation, expiry, and continued safe use` step=1 (13-M:L383): An external merchant of record handles payment and calls ELAI’s sole first-party mint endpoint. The endpoint only mints, renews, or revokes an entitlement. [M1-E018..M1-E024]
+- (SUMMARY/WF-002) [FLOW] workflow=`Purchase, activation, expiry, and continued safe use` step=2 (13-M:L384): A signed entitlement is delivered to a seat and verified offline; installation may offer activation at its end. [M1-E002..M1-E010, M1-E034]
+- (SUMMARY/WF-004) [FLOW] workflow=`Purchase, activation, expiry, and continued safe use` step=4 (13-M:L386): All expiry math uses ClockProvider. After a 14-day grace, the lifecycle emits ExpiredGrace and DegradedToFree. [M1-E014..M1-E017, M1-E033, M1-E039..M1-E040]
+- (SUMMARY/WF-006) [FLOW] workflow=`Policy creation, boot application, tightening, and drift` step=1 (13-M:L391): An administrator initializes, signs, verifies, and shows one file-distributable OrgPolicyPack. [M2-E003..M2-E004, M2-E024..M2-E027]
+- (SUMMARY/WF-007) [FLOW] workflow=`Policy creation, boot application, tightening, and drift` step=2 (13-M:L392): At boot, the pack supplies rules, manifest pins, caps, allowlists, redaction configuration, and release-channel pinning. [M2-E005..M2-E011]
+- (SUMMARY/WF-010) [FLOW] workflow=`Private fleet evidence aggregation` step=1 (13-M:L398): Each seat produces an extended K-6 compliance export with seat and policy identifiers but no raw content. [M3-E005..M3-E011, M3-E023..M3-E024]
+- (SUMMARY/WF-011) [FLOW] workflow=`Private fleet evidence aggregation` step=2 (13-M:L399): An administrator pulls exports into a directory and runs the verifying organization-report command. [M3-E004, M3-E012]
+- (SUMMARY/WF-013) [FLOW] workflow=`Private fleet evidence aggregation` step=4 (13-M:L401): Every number can be rederived from constituent journals, with secrets and transcript bytes excluded. [M3-E022, M3-E029, M3-E038..M3-E040]
+- (SUMMARY/WF-016) [FLOW] workflow=`Safe update and local support` step=3 (13-M:L407): The previous known-good binary is retained so rollback can restore its exact hash. [M4-E022, M4-E041..M4-E042]
+- (SUMMARY/WF-017) [FLOW] workflow=`Safe update and local support` step=4 (13-M:L408): A user can assemble a local, redacted support bundle, inspect its printed summary, and decide whether to transmit it; ELAI never auto-sends it. [M4-E023..M4-E032]
+- (SUMMARY/WF-018) [FLOW] workflow=`Independent verification and format adoption` step=1 (13-M:L412): The same engine verification paths are extracted into an open-source, engine-independent elai-verify boundary while the engine remains closed. [M5-E003..M5-E010]
+- (SUMMARY/WF-019) [FLOW] workflow=`Independent verification and format adoption` step=2 (13-M:L413): On a clean machine, the binary verifies attestations, RRAs, conformance artifacts, and fleet bundles and rejects one-byte tampering. [M5-E040..M5-E044]
+- (SUMMARY/WF-020) [FLOW] workflow=`Independent verification and format adoption` step=3 (13-M:L414): M-6 derives evidence schemas from engine serialization types and publishes them with prose, fixtures, the conform command, and a third-party example. [M6-E004..M6-E025]
+- (SUMMARY/WF-021) [FLOW] workflow=`Independent verification and format adoption` step=4 (13-M:L415): External emitters can target the format. 'Open standard' remains a prohibited adoption claim until at least one external emitter exists. [M6-E011..M6-E012, M6-E026..M6-E028]
+- [deferred] (SUMMARY/DEEPER-MISS-002) [DEEPER] The enterprise rider’s authoritative identifier needs M-0 verification because M-6+ and M-7+ both appear. (13-M:L663)
+- [deferred] (SUMMARY/DEFER-003) [DEFER] item=`Automatic drift correction` state=`Deferred until at least GD-4` anchor=`M:L49` (13-M:L506)
+- [deferred] (SUMMARY/DEFER-011) [DEFER] item=`'Open standard' claim` state=`Deferred until at least one external emitter exists` anchor=`M:L124-L126` (13-M:L514)
+- [deferred] (SUMMARY/MX-E004) [STATUS] The enterprise rider’s informal M-6+ slot was renumbered M-7+ in M-0_INDEX. (M:L2-L4 | 13-M-SUMMARY_INDEX.discovery.md:L47)
+- [deferred] (SUMMARY/MX-E008) [STATUS] M-0_INDEX owns doctrine MD-1..MD-5, Section-A pointers MA-1..MA-7, and the enterprise rider. (M:L9 | 13-M-SUMMARY_INDEX.discovery.md:L51)
+- [inference] (SUMMARY/INF-001) [I] The +2..+4 SSB estimate likely means EntitlementEvent and OrgPolicyEvent are mandatory while OrgReportEvent and ReleaseChannelEvent account for the optional upper bound. This follows from M:L10, L36-L37, L53-L54, L69, and L86-L87. (13-M:L572)
+- [inference] (SUMMARY/INF-002) [I] 'DegradedToFree' likely removes paid/Team capabilities because tier() gates them, but the exact feature-by-feature removal list is not stated. (13-M:L573)
+- [inference] (SUMMARY/INF-003) [I] A revoked entitlement likely changes tier availability, but the summary names Revoked without stating the resulting seat state or grace behavior. (13-M:L574)
+- [inference] (SUMMARY/INF-004) [I] 'deactivate' likely removes the local activation, but its local-state semantics and whether it emits Revoked or another event are not stated. (13-M:L575)
+- [inference] (SUMMARY/INF-005) [I] The M-3 command’s '--verify' likely controls mandatory chain verification, but behavior without the flag is not described. (13-M:L576)
+- [inference] (SUMMARY/INF-006) [I] The roster-honesty rollup likely consumes M-1’s recorded over-activation signal; the exact reconciliation algorithm is not specified. (13-M:L577)
+- [inference] (SUMMARY/INF-007) [I] An organization-scheduled apply likely comes from OrgPolicyPack, but schedule fields are not enumerated among the listed pack clauses. (13-M:L578)
+- [inference] (SUMMARY/INF-008) [I] The revocation list likely covers entitlement and/or release keys, but its file format, refresh transport, and offline staleness semantics are absent. (13-M:L579)
+- [inference] (SUMMARY/INF-009) [I] 'published format' likely includes a distribution location and version negotiation, but neither registry nor URL is specified. (13-M:L580)
+- [inference] (SUMMARY/INF-010) [I] Legal-document generation may be documentation-only rather than runtime behavior; no command surface is stated. (13-M:L581)
+- [inference] (SUMMARY/INF-SSB-NOTE) [I] The summary’s +2..+4 SSB estimate is consistent with two mandatory families plus two conditional/reuse-first families; this consistency statement is an inference, not an additional requirement. (13-M:L555)
+
+### User-facing surfaces (M)
+
+Windows, panels, drawers, commands, CLI verbs, flags, status displays, notifications, published commercial/docs surfaces, and other SURFACE-tagged atoms. One line per atom with ID.
+
+#### Surfaces for M-0 (INDEX — commercial shipping / multi-seat doctrine (MD-1..MD-5, MA-1..MA-7, GATE M-0, waves))
+- M-3 is fleet evidence rollup (`elai org report`), WAVE M3, depends M-1, MA-3, MA-6. (`M-001/M0-E042`) [M-0:L54-L54 | DEEP-M-001.discovery.md:L75]
+- WAVE M1: M-1; M-5a (verifier OSS extraction) + M-5d (tiers.toml). (`M-001/M0-E048`) [M-0:L63-L63 | DEEP-M-001.discovery.md:L81]
+
+#### Surfaces for M-1 (seat entitlement + purchase rail [KEYSTONE])
+- Tiers are DATA (M-5d tiers.toml). (`M-001/M1-E010`) [M-1:L18-L18 | DEEP-M-001.discovery.md:L115]
+- CLI verbs: `elai license activate <file|key>`, `elai license status`, `elai license deactivate`. (`M-001/M1-E022`) [M-1:L37-L37 | DEEP-M-001.discovery.md:L127]
+- Free tier = everything shipped through L that is not explicitly Team-tier in tiers.toml (M-5d). (`M-001/M1-E029`) [M-1:L42-L43 | DEEP-M-001.discovery.md:L134]
+- Expiry -> 14-day grace (ExpiredGrace rows + status banner) -> DegradedToFree. (`M-001/M1-E036`) [M-1:L49-L50 | DEEP-M-001.discovery.md:L141]
+- ExpiredGrace emits a status banner (user-visible). (`M-001/M1-E037`) [M-1:L50-L50 | DEEP-M-001.discovery.md:L142]
+- COMPOSES-WITH: G-8 attestation signing/verify core; K-24 credit ledger + seats.toml; ClockProvider (all expiry math — no SystemTime); K-1 claims lint (any UI copy about tiers); B-43 installer (activation offered at install-end, one line). (`M-001/M1-E039`) [M-1:L53-L56 | DEEP-M-001.discovery.md:L144]
+- B-43 installer offers activation at install-end (one line). (`M-001/M1-E040`) [M-1:L56-L56 | DEEP-M-001.discovery.md:L145]
+- WIRING consumes: G-8 signing core, K-24 grant path, tiers.toml (M-5d), ClockProvider. (`M-001/M1-E042`) [M-1:L61-L61 | DEEP-M-001.discovery.md:L147]
+- reachable_from: `elai license *` CLI (real entrypoint); tier() read on the K-24 grant path. (`M-001/M1-E043`) [M-1:L62-L62 | DEEP-M-001.discovery.md:L148]
+- trigger: `elai license activate fixtures/team-entitlement.signed && elai license status`. (`M-001/M1-E044`) [M-1:L63-L63 | DEEP-M-001.discovery.md:L149]
+- "status banner" for ExpiredGrace is named without panel/window placement, copy, or dismiss rules. (`M-001/M1-A002`) [M-1:L50-L50 | DEEP-M-001.discovery.md:L160]
+- Exact Free vs Pro vs Team feature-key inventory is deferred to M-5d tiers.toml content. (`M-001/M1-A003`) [M-1:L18-L18, L42-L43 | DEEP-M-001.discovery.md:L161]
+- Summary discovery asserts a SettingsWindow license-status line (W-4 deferred). Numbered M-1 names `elai license status` + ExpiredGrace status banner and B-43 install-end activation; it does not name SettingsWindow. (`M-001/M1-C001`) [M-1:L37-L37, L50-L50, L56-L56 | DEEP-M-001.discovery.md:L164]
+
+#### Surfaces for M-2 (org policy pack + distribution + drift detection)
+- LOCK-4 drift is DETECTED + surfaced, not auto-corrected: boot compares applied-pack hash vs the org-pinned hash -> OrgPolicyEvent(Drift) + boot warning + M-3 rollup visibility. (`M-001/M2-E015`) [M-2:L29-L30 | DEEP-M-001.discovery.md:L188]
+- Drift surfaces as a boot warning. (`M-001/M2-E016`) [M-2:L29-L30 | DEEP-M-001.discovery.md:L189]
+- Task 1: pack format + signer/verifier + `elai org policy init|sign|verify|show` (admin authoring side). (`M-001/M2-E018`) [M-2:L34-L34 | DEEP-M-001.discovery.md:L191]
+- WIRING produces: commerce/org_policy.rs (pack type, verify/apply, weaken gate), `elai org policy *` CLI, OrgPolicyEvent SSB (+1). (`M-001/M2-E027`) [M-2:L50-L52 | DEEP-M-001.discovery.md:L200]
+- reachable_from: boot path (pack discovery) + `elai org policy *` CLI. (`M-001/M2-E029`) [M-2:L54-L54 | DEEP-M-001.discovery.md:L202]
+- Boot warning presentation (CLI only vs UI badge) is not specified. (`M-001/M2-A003`) [M-2:L29-L30 | DEEP-M-001.discovery.md:L216]
+
+#### Surfaces for M-3 (fleet evidence rollup (`elai org report`))
+- CLI arm: `elai export compliance --org`. (`M-001/M3-E019`) [M-3:L37-L37 | DEEP-M-001.discovery.md:L245]
+- Task 2 aggregator: `elai org report <dir-of-seat-exports>` -> one org bundle. (`M-001/M3-E020`) [M-3:L38-L38 | DEEP-M-001.discovery.md:L246]
+- Offline-verifiable end-to-end (`elai org report --verify` re-checks every constituent chain). (`M-001/M3-E022`) [M-3:L39-L40 | DEEP-M-001.discovery.md:L248]
+- Verify flag form: `elai org report --verify`. (`M-001/M3-E023`) [M-3:L39-L40 | DEEP-M-001.discovery.md:L249]
+- Task 3 render: one human sheet (markdown) + one machine file (msgpack/toml) — the K-7 brief's org answer, generated not hand-written. (`M-001/M3-E026`) [M-3:L43-L44 | DEEP-M-001.discovery.md:L252]
+- WIRING produces: org_report.rs (aggregate + verify + render), `elai org report` CLI, seat-export field extension; +0..1 SSB. (`M-001/M3-E029`) [M-3:L53-L55 | DEEP-M-001.discovery.md:L255]
+- reachable_from: `elai org report` (real entrypoint); `elai export compliance --org` on seats. (`M-001/M3-E031`) [M-3:L57-L57 | DEEP-M-001.discovery.md:L257]
+- trigger: 3 fixture seat exports (one clean, one with Drift, one with a broken chain) -> `elai org report fixtures/exports --verify`. (`M-001/M3-E032`) [M-3:L58-L59 | DEEP-M-001.discovery.md:L258]
+- Human markdown sheet and machine msgpack/toml are dual renderings of one org bundle rather than two independent aggregation paths. (`M-001/M3-I001`) [M-3:L38-L44 | DEEP-M-001.discovery.md:L268]
+- Behavior of `elai org report` without `--verify` is not specified. (`M-001/M3-A002`) [M-3:L38-L40, L58-L59 | DEEP-M-001.discovery.md:L270]
+
+#### Surfaces for M-4 (signed release channel + auto-updater + support bundle)
+- `elai update rollback` restores it and verifies the hash before exec. (`M-001/M4-E016`) [M-4:L26-L26 | DEEP-M-001.discovery.md:L298]
+- CLI verbs: `elai update check|apply|rollback|channel`. (`M-001/M4-E022`) [M-4:L33-L33 | DEEP-M-001.discovery.md:L304]
+- Task 4 support bundle: `elai support bundle` -> `workflow/support/bundle-{date}.tar.zst`, G-9-redacted. (`M-001/M4-E028`) [M-4:L39-L40 | DEEP-M-001.discovery.md:L310]
+- Support bundle prints a content summary so the user sees what it holds BEFORE sharing. (`M-001/M4-E029`) [M-4:L40-L40 | DEEP-M-001.discovery.md:L311]
+- WIRING produces: update.rs (check/apply/rollback/channel), release-manifest format + ops signing runbook, `elai support bundle`; +0..1 SSB. (`M-001/M4-E031`) [M-4:L48-L50 | DEEP-M-001.discovery.md:L313]
+- reachable_from: `elai update *` + `elai support bundle` CLI (real entrypoints); boot-time non-blocking check. (`M-001/M4-E033`) [M-4:L52-L53 | DEEP-M-001.discovery.md:L315]
+- trigger: fixture release server dir with v(N+1) manifest (one artifact's blake3 deliberately wrong) -> `elai update check && elai update apply`. (`M-001/M4-E034`) [M-4:L54-L55 | DEEP-M-001.discovery.md:L316]
+- expect_ssb: UpdateAvailable row; RefusedHash row on the bad artifact; after fixing the fixture, Applied row; `elai update rollback` -> RolledBack + prior binary hash-verified. (`M-001/M4-E035`) [M-4:L56-L57 | DEEP-M-001.discovery.md:L317]
+- `elai support bundle` on a fixture session with a seeded AWS key + email produces a bundle whose secret-grep is EMPTY (G-9 arm) and prints its content summary. (`M-001/M4-E039`) [M-4:L60-L62 | DEEP-M-001.discovery.md:L321]
+- UX wording for Windows restart-activation is required but not drafted. (`M-001/M4-A003`) [M-4:L64-L66 | DEEP-M-001.discovery.md:L328]
+
+#### Surfaces for M-5 (commercial packaging + verifier OSS + trust continuity)
+- Slice (a) VERIFIER OSS EXTRACTION [WAVE M1 — the one build]: extract standalone `elai-verify` crate/binary. (`M-001/M5-E009`) [M-5:L14-L15 | DEEP-M-001.discovery.md:L347]
+- elai-verify wraps: verify-attestation (G-8) + `rra verify` action-stream re-check (G-2) + the K-6 bundle conformance check + M-3 org-bundle verify. (`M-001/M5-E010`) [M-5:L15-L16 | DEEP-M-001.discovery.md:L348]
+- Support-expectation page (what a seat gets; honest solo-operation posture, GD-5 — no fake SLA). (`M-001/M5-E020`) [M-5:L28-L29 | DEEP-M-001.discovery.md:L358]
+- Slice (d) TIER MATRIX AS DATA [WAVE M1]: tiers.toml Free / Pro / Team rows -> feature keys M-1's tier() gates + K-24's credit grants read. (`M-001/M5-E021`) [M-5:L30-L31 | DEEP-M-001.discovery.md:L359]
+- COMPOSES-WITH: G-8 attestation verify, G-2 rra verify, K-6 conformance, M-3 org verify (the four legs the OSS binary wraps); K-1 dossier + claims lint; K-7 brief (gains the verifier-OSS line); M-1 (tiers.toml consumer); GTM memory decisions (executed, not re-litigated). (`M-001/M5-E029`) [M-5:L45-L48 | DEEP-M-001.discovery.md:L367]
+- WIRING produces: elai-verify crate/binary (published), EULA/DPA/continuity drafts under docs/strategy/commercial/, tiers.toml, claims-lint pricing recognizer extension. (`M-001/M5-E030`) [M-5:L50-L52 | DEEP-M-001.discovery.md:L368]
+- reachable_from: `elai-verify` standalone binary (real entrypoint, engine-free); tiers.toml read by `elai license status`. (`M-001/M5-E032`) [M-5:L54-L55 | DEEP-M-001.discovery.md:L370]
+- `elai license status` renders tier names/features from tiers.toml. (`M-001/M5-E033`) [M-5:L54-L55, L62-L63 | DEEP-M-001.discovery.md:L371]
+- trigger: on a CLEAN machine (no engine): `elai-verify attestation fixtures/run.attestation && elai-verify rra fixtures/run.rra`. (`M-001/M5-E034`) [M-5:L56-L57 | DEEP-M-001.discovery.md:L372]
+- `elai license status` renders tier names/features from tiers.toml (fixture, M-1 join). (`M-001/M5-E039`) [M-5:L62-L63 | DEEP-M-001.discovery.md:L377]
+- Risk R3 tiers.toml drift vs marketing copy: the lint's pricing recognizer greps rendered copy against tiers.toml values — one source of pricing truth, mechanically enforced. (`M-001/M5-E042`) [M-5:L71-L72 | DEEP-M-001.discovery.md:L380]
+- Support-expectation page is a published commercial documentation surface rather than a runtime panel; no CLI verb is named for it. (`M-001/M5-I001`) [M-5:L28-L29, L50-L52 | DEEP-M-001.discovery.md:L381]
+- Exact Free/Pro/Team feature-key matrix and numeric prices are data in tiers.toml and not fixed in this plan. (`M-001/M5-A003`) [M-5:L30-L33 | DEEP-M-001.discovery.md:L384]
+- Subcommand grammar for org-bundle verify under elai-verify is implied by the four-leg wrap but not typed as a verb list beyond attestation and rra triggers. (`M-001/M5-A004`) [M-5:L15-L16, L56-L60 | DEEP-M-001.discovery.md:L385]
+
+#### Surfaces for M-6 (evidence format as a versioned open standard (EEF v1))
+- Depends on M-5a (elai-verify extracted), G-2/G-8/K-6 emit paths stable. (`M-001/M6-E002`) [M-6:L5-L6 | DEEP-M-001.discovery.md:L396]
+- Third-party tools can EMIT ELAI-verifiable evidence and elai-verify becomes the reference verifier of a format rather than the private tool of one engine. (`M-001/M6-E007`) [M-6:L14-L15 | DEEP-M-001.discovery.md:L401]
+- Slice (b) PROSE SPEC + CONFORMANCE FIXTURES at docs/strategy/eef/ (or a sibling repo at publication). (`M-001/M6-E017`) [M-6:L29-L29 | DEEP-M-001.discovery.md:L411]
+- Conformance fixture pack: valid bundles + one-byte-tampered + missing-field negatives. (`M-001/M6-E019`) [M-6:L31-L32 | DEEP-M-001.discovery.md:L413]
+- `elai-verify conform <artifact>` (an M-5 binary subcommand extension) validates any artifact against a pinned spec version. (`M-001/M6-E020`) [M-6:L32-L33 | DEEP-M-001.discovery.md:L414]
+- Slice (d) PUBLICATION + THIRD-PARTY EMITTER STORY: publish spec + schemas + fixtures alongside the elai-verify repo (same license family as M-5a; user picks). (`M-001/M6-E025`) [M-6:L38-L39 | DEEP-M-001.discovery.md:L419]
+- Short "emit EEF from your tool" doc with one worked example (a minimal third-party emitter producing a conformant verdict row). (`M-001/M6-E026`) [M-6:L39-L40 | DEEP-M-001.discovery.md:L420]
+- LOCK-4 FAIL-CLOSED SEMANTICS ARE NORMATIVE: the spec text makes R1 (missing evidence = FAIL, UNVOUCHED never renders clean) a conformance requirement for verifiers, not a recommendation — a permissive third-party verifier is non-conformant by definition. (`M-001/M6-E033`) [M-6:L54-L56 | DEEP-M-001.discovery.md:L427]
+- COMPOSES-WITH: M-5a elai-verify (gains `conform`; the reference verifier), G-2 RRA + G-8 attestation + K-6 bundle (the emit paths — the schemas describe them, never fork them), E-45 golden-lock pattern (schema evolution), K-1 claims lint (adoption-claim recognizer extension), K-3/K-11 (the verdict/receipt shapes rendered into PRs), gate-manifest R8 (the golden lock joins the frozen set). (`M-001/M6-E034`) [M-6:L58-L62 | DEEP-M-001.discovery.md:L428]
+- WIRING produces: docs/strategy/eef/ spec v1 (prose + derived schemas + conformance fixtures), the `elai-verify conform` subcommand, the schema golden-lock file (added to .claude/gate-manifest.txt), the K-1 lint adoption-claim recognizer, the third-party emitter example. (`M-001/M6-E035`) [M-6:L64-L67 | DEEP-M-001.discovery.md:L429]
+- reachable_from: `elai-verify conform <artifact>` on an engine-free machine (real entrypoint); the golden lock enforced by gate_freeze_check.py on every run (R8 path). (`M-001/M6-E037`) [M-6:L70-L71 | DEEP-M-001.discovery.md:L431]
+- trigger: on a CLEAN machine: `elai-verify conform fixtures/run.rra && elai-verify conform fixtures/tampered.rra; test $? -ne 0`. (`M-001/M6-E038`) [M-6:L72-L73 | DEEP-M-001.discovery.md:L432]
+- A conformant fixture PASSes and a one-byte-tampered / missing-field fixture FAILS on an engine-free machine (R2). (`M-001/M6-E040`) [M-6:L75-L76 | DEEP-M-001.discovery.md:L434]
+- The worked third-party example emits a row `elai-verify conform` accepts. (`M-001/M6-E044`) [M-6:L79-L79 | DEEP-M-001.discovery.md:L438]
+- Risk R1 premature standardization: freezing v1 before the RRA/attestation surfaces stabilize forces a fast v2 and burns credibility. Mitigation: M-6 sits in WAVE M3 behind GATE M-0; v1 scope = only artifacts elai-verify already verifies today. (`M-001/M6-E045`) [M-6:L81-L84 | DEEP-M-001.discovery.md:L439]
+- Risk R2 the schema leaks engine detail: review pass against LOCK-3 with the G-9 redaction spec; the conformance fixtures are generated from redacted runs only. (`M-001/M6-E046`) [M-6:L85-L86 | DEEP-M-001.discovery.md:L440]
+- Risk R3 nobody adopts (the honest default): the format still pays for itself as internal rigor (the golden lock + conform subcommand harden ELAI's own emit paths); adoption claims stay gated so non-adoption never becomes a false claim. (`M-001/M6-E047`) [M-6:L87-L89 | DEEP-M-001.discovery.md:L441]
+- Because every emitted artifact carries spec_version and conform pins a version, multi-version coexistence is implied even though negotiation protocol is not defined. (`M-001/M6-I001`) [M-6:L32-L36 | DEEP-M-001.discovery.md:L442]
+
+#### Surfaces for M-registers (cross-unit IX / SD / AC / HDR registers)
+- Human-facing commercial surfaces span license CLI, status banner, install-end activation, org policy CLI, boot warning, org report human/machine sheets, update CLI, support bundle summary, elai-verify binary, support-expectation page, EEF prose/spec, and tiers.toml-driven license status. | evidence: M1-E022, M1-E037, M1-E040; M2-E016, M2-E018; M3-E019–M3-E020, M3-E026; M4-E022, M4-E028–M4-E029; M5-E020, M5-E033; M6-E017, M6-E020, M6-E026 (`M-001/IX-021`) [DEEP-M-001.discovery.md:L475]
+- Summary SettingsWindow license-status line is not established by numbered M-1; source surfaces are CLI status + ExpiredGrace status banner + B-43 install-end activation. | refs: M1-C001 (`M-001/AC-003`) [DEEP-M-001.discovery.md:L486]
+- ExpiredGrace status banner placement/copy and M-2 boot warning presentation are unspecified. | refs: M1-A002; M2-A003 (`M-001/AC-005`) [DEEP-M-001.discovery.md:L488]
+
+#### Surfaces for M-summary-wide (summary-wide product boundary, workflow, invariants, deferrals, failures)
+- The CLI exposes 'elai license activate'. (`SUMMARY/M1-E011`) [M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L101]
+- The CLI exposes 'elai license status'. (`SUMMARY/M1-E012`) [M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L102]
+- The CLI exposes 'elai license deactivate'. (`SUMMARY/M1-E013`) [M:L28 | 13-M-SUMMARY_INDEX.discovery.md:L103]
+- The mint endpoint can mint an entitlement. (`SUMMARY/M1-E021`) [M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L111]
+- The mint endpoint can renew an entitlement. (`SUMMARY/M1-E022`) [M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L112]
+- The mint endpoint can revoke an entitlement. (`SUMMARY/M1-E023`) [M:L30-L31 | 13-M-SUMMARY_INDEX.discovery.md:L113]
+- B-43 offers activation at the end of installation. (`SUMMARY/M1-E034`) [M:L34-L35 | 13-M-SUMMARY_INDEX.discovery.md:L124]
+- A license-status line is paired with SettingsWindow. (`SUMMARY/M1-E043`) [M:L37-L38 | 13-M-SUMMARY_INDEX.discovery.md:L133]
+- Policy drift is surfaced. (`SUMMARY/M2-E016`) [M:L48-L49 | 13-M-SUMMARY_INDEX.discovery.md:L163]
+- The CLI exposes 'elai org policy init'. (`SUMMARY/M2-E024`) [M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L171]
+- The CLI exposes 'elai org policy sign'. (`SUMMARY/M2-E025`) [M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L172]
+- The CLI exposes 'elai org policy verify'. (`SUMMARY/M2-E026`) [M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L173]
+- The CLI exposes 'elai org policy show'. (`SUMMARY/M2-E027`) [M:L53 | 13-M-SUMMARY_INDEX.discovery.md:L174]
+- Each seat exports with 'elai export compliance --org'. (`SUMMARY/M3-E005`) [M:L61 | 13-M-SUMMARY_INDEX.discovery.md:L195]
+- An admin aggregates with 'elai org report <dir> --verify'. (`SUMMARY/M3-E012`) [M:L62 | 13-M-SUMMARY_INDEX.discovery.md:L202]
+- The CLI exposes 'elai update check'. (`SUMMARY/M4-E013`) [M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L248]
+- The CLI exposes 'elai update apply'. (`SUMMARY/M4-E014`) [M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L249]
+- The CLI exposes 'elai update rollback'. (`SUMMARY/M4-E015`) [M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L250]
+- The CLI exposes 'elai update channel'. (`SUMMARY/M4-E016`) [M:L79 | 13-M-SUMMARY_INDEX.discovery.md:L251]
+- The CLI exposes 'elai support bundle'. (`SUMMARY/M4-E023`) [M:L81 | 13-M-SUMMARY_INDEX.discovery.md:L258]
+- Support-bundle creation prints a summary. (`SUMMARY/M4-E031`) [M:L82 | 13-M-SUMMARY_INDEX.discovery.md:L266]
+- M-5 publishes a standalone open-source elai-verify crate and binary. (`SUMMARY/M5-E003`) [M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L287]
+- elai-verify wraps the same G-8 attestation verification path. (`SUMMARY/M5-E004`) [M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L288]
+- elai-verify wraps the same G-2 RRA verification path. (`SUMMARY/M5-E005`) [M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L289]
+- elai-verify wraps the same K-6 conformance verification path. (`SUMMARY/M5-E006`) [M:L94-L95 | 13-M-SUMMARY_INDEX.discovery.md:L290]
+- elai-verify wraps the same M-3 organization-bundle verification path. (`SUMMARY/M5-E007`) [M:L95 | 13-M-SUMMARY_INDEX.discovery.md:L291]
+- elai-verify has zero engine dependencies. (`SUMMARY/M5-E008`) [M:L95-L96 | 13-M-SUMMARY_INDEX.discovery.md:L292]
+- Commercial packaging includes an EULA draft. (`SUMMARY/M5-E011`) [M:L97 | 13-M-SUMMARY_INDEX.discovery.md:L295]
+- Commercial packaging includes a DPA draft. (`SUMMARY/M5-E013`) [M:L97 | 13-M-SUMMARY_INDEX.discovery.md:L297]
+- The trust-continuity statement offers escrow on lapse. (`SUMMARY/M5-E018`) [M:L98 | 13-M-SUMMARY_INDEX.discovery.md:L302]
+- The trust-continuity statement alternatively offers conversion to OSS on abandonment. (`SUMMARY/M5-E019`) [M:L98-L99 | 13-M-SUMMARY_INDEX.discovery.md:L303]
+- The published integration artifact is the elai-verify crate. (`SUMMARY/M5-E035`) [M:L105 | 13-M-SUMMARY_INDEX.discovery.md:L319]
+- On a clean, engine-free machine, elai-verify must verify a fixture attestation. (`SUMMARY/M5-E040`) [M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L324]
+- On a clean, engine-free machine, elai-verify must verify a fixture RRA. (`SUMMARY/M5-E041`) [M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L325]
+- On a clean, engine-free machine, elai-verify must verify a fixture organization bundle. (`SUMMARY/M5-E042`) [M:L107-L108 | 13-M-SUMMARY_INDEX.discovery.md:L326]
+- elai-verify must catch a one-byte artifact tamper under R2. (`SUMMARY/M5-E043`) [M:L108 | 13-M-SUMMARY_INDEX.discovery.md:L327]
+- 'elai license status' must render from tiers.toml. (`SUMMARY/M5-E046`) [M:L109-L110 | 13-M-SUMMARY_INDEX.discovery.md:L330]
+- Third-party tools can emit evidence that ELAI can verify. (`SUMMARY/M6-E011`) [M:L118-L119 | 13-M-SUMMARY_INDEX.discovery.md:L346]
+- elai-verify becomes the reference verifier for the format. (`SUMMARY/M6-E012`) [M:L119 | 13-M-SUMMARY_INDEX.discovery.md:L347]
+- elai-verify adds 'conform <artifact>'. (`SUMMARY/M6-E018`) [M:L121 | 13-M-SUMMARY_INDEX.discovery.md:L353]
+- The evidence format is published beside elai-verify. (`SUMMARY/M6-E024`) [M:L124 | 13-M-SUMMARY_INDEX.discovery.md:L359]
+- A conformant fixture must pass 'elai-verify conform' on an engine-free machine. (`SUMMARY/M6-E035`) [M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L370]
+- A one-byte-tampered fixture must fail 'elai-verify conform'. (`SUMMARY/M6-E036`) [M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L371]
+- A missing-field fixture must fail 'elai-verify conform'. (`SUMMARY/M6-E037`) [M:L129-L130 | 13-M-SUMMARY_INDEX.discovery.md:L372]
+- surface=`License CLI` — activate, status, deactivate (atoms: M1-E011..M1-E013) (`SUMMARY/SURF-001`) [13-M:L440]
+- surface=`SettingsWindow` — license-status line; exact presentation decided at edit (atoms: M1-E043..M1-E044) (`SUMMARY/SURF-002`) [13-M:L441]
+- surface=`Org-policy CLI` — init, sign, verify, show (atoms: M2-E024..M2-E027) (`SUMMARY/SURF-003`) [13-M:L442]
+- surface=`Fleet CLI` — seat export and admin report with verification (atoms: M3-E005, M3-E012) (`SUMMARY/SURF-004`) [13-M:L443]
+- surface=`Update CLI` — check, apply, rollback, channel (atoms: M4-E013..M4-E016) (`SUMMARY/SURF-005`) [13-M:L444]
+- surface=`Support CLI` — local redacted support bundle with printed summary (atoms: M4-E023..M4-E032) (`SUMMARY/SURF-006`) [13-M:L445]
+- surface=`elai-verify` — standalone verification of attestation, RRA, K-6 conformance, and org bundle (atoms: M5-E003..M5-E009) (`SUMMARY/SURF-007`) [13-M:L446]
+- surface=`elai-verify conform` — fail-closed evidence-format conformance (atoms: M6-E018..M6-E020) (`SUMMARY/SURF-008`) [13-M:L447]
+- surface=`Entitlement` — signed org/tier/seat/features/expiry record (atoms: M1-E002..M1-E009) (`SUMMARY/SURF-009`) [13-M:L448]
+- surface=`OrgPolicyPack` — signed inert file with organization controls and pins (atoms: M2-E003..M2-E018) (`SUMMARY/SURF-010`) [13-M:L449]
+- surface=`Organization bundle` — per-seat table plus recomputable rollups (atoms: M3-E013..M3-E027) (`SUMMARY/SURF-011`) [13-M:L450]
+- surface=`Release manifest` — signed, per-artifact blake3, stable/beta metadata (atoms: M4-E003..M4-E009) (`SUMMARY/SURF-012`) [13-M:L451]
+- surface=`Support bundle` — versions, tier, hashes, doctor, redacted journal tail (atoms: M4-E024..M4-E032) (`SUMMARY/SURF-013`) [13-M:L452]
+- surface=`Legal/commercial docs` — EULA, license split, DPA, continuity alternatives, custody and support posture (atoms: M5-E011..M5-E023) (`SUMMARY/SURF-014`) [13-M:L453]
+- surface=`tiers.toml` — Free/Pro/Team and pricing source of truth (atoms: M5-E024..M5-E029) (`SUMMARY/SURF-015`) [13-M:L454]
+- surface=`Published evidence format` — derived schemas, prose spec, fixtures, example emitter (atoms: M6-E004..M6-E025) (`SUMMARY/SURF-016`) [13-M:L455]
+- — refs: M-001/M1-E022, M-001/M1-E040, M-001/M5-E033, SUMMARY/M1-E011..M1-E013, SUMMARY/M5-E046 (`CLI: elai license activate|status|deactivate`)
+- — refs: M-001/M1-E037, M-001/M1-A002, M-001/AC-005 (`Status: ExpiredGrace status banner`)
+- — refs: M-001/M1-E040, SUMMARY/M1-E034 (`Installer: B-43 install-end activation offer`)
+- — refs: M-001/M2-E018, SUMMARY/M2-E024..M2-E027 (`CLI: elai org policy init|sign|verify|show`)
+- — refs: M-001/M2-E016, M-001/M2-A003 (`Status: M-2 boot warning (Drift)`)
+- — refs: M-001/M3-E019, SUMMARY/M3-E005 (`CLI: elai export compliance --org`)
+- — refs: M-001/M3-E020, M-001/M3-E023, SUMMARY/M3-E012 (`CLI: elai org report <dir> [--verify]`)
+- — refs: M-001/M3-E026, M-001/M3-I001 (`Render: org report human markdown + machine msgpack/toml`)
+- — refs: M-001/M4-E022, M-001/M4-E016, SUMMARY/M4-E013..M4-E016 (`CLI: elai update check|apply|rollback|channel`)
+- (+ printed content summary) — refs: M-001/M4-E028, M-001/M4-E029, SUMMARY/M4-E023, SUMMARY/M4-E031 (`CLI: elai support bundle`)
+- (attestation, rra, K-6, org bundle) — refs: M-001/M5-E009..M5-E010, SUMMARY/M5-E003..M5-E007 (`Binary: elai-verify`)
+- — refs: M-001/M6-E020, SUMMARY/M6-E018 (`CLI: elai-verify conform <artifact>`)
+- — refs: M-001/M5-E020, M-001/M5-I001 (`Docs: support-expectation page`)
+- — refs: M-001/M5-E014..M5-E019, SUMMARY/M5-E011..M5-E023 (`Docs: EULA/DPA/continuity under docs/strategy/commercial/`)
+- — refs: M-001/M6-E017, M-001/M6-E026, SUMMARY/M6-E016, SUMMARY/M6-E025 (`Docs: EEF prose spec + third-party emitter example`)
+- — refs: M-001/M5-E021..M5-E022, SUMMARY/M5-E024..M5-E029 (`Config surface: tiers.toml Free/Pro/Team + pricing`)
+- — SUMMARY/M1-E043..M1-E044 retained under SUP-001; not in numbered M-1 (`[superseded as target UI] SettingsWindow license-status line`)
+
+## System: N — INTERLACE / UNIFICATION (measurement spine, composition, promotion, claim/receipt, arbitration, provenance, render, governance, counterfactual, journal-fold, consistency, OutputBoundary, edit-loop, framing stability, closure)
+
+Family N is the INTERLACE / UNIFICATION program: N-0 index + ND-deltas + sessions N-1..N-16 (measurement spine through governance closure). Status labels are plan-recorded claims unless an auditor re-verifies live code. Deep ledgers DEEP-N-001/002 supersede summary orientation; losers stay as **Superseded:** bullets with anchors.
+
+Source aggregate: `docs/thefinalglance/feature-discovery/aggregates/N-AGGREGATE.md` (DEEP-N-001 + DEEP-N-002 + 14-N-SUMMARY_INDEX). Aggregate distinct atoms parsed for this family: 1479.
+
+### N-0: N-Plan Index (doctrine, ND-deltas, session table, schema, sequencing)
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-001, N-SD, SUP | sample: N-0:L1-L7; N-0:L8-L13; N-0:L14-L17; N-0:L14-L17, L31-L39; N-0:L19-L27; N-0:L31-L39 | 113 non-summary-placed, 0 summary-placed, 115 total unique atoms in unit | IDs: SUP-001, SUP-004, N-001/N0-E001, N-001/N0-E002, N-001/N0-E003, N-001/N0-E004, N-001/N0-E005, N-001/N0-E006, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, ID-6, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-1, M-1+, M-2, M-3, N-1, N-2, N-3, N-4, N-5, N-6, N-7, N-8. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- Superseded: (SUP-001) [superseded] [superseded] | **Target state:** N-001/N0-E001 + N-001/N0-C001 + N-001/SD-N0-007: program inventory is N-1..N-16 (16 units); external track N-13..N-16 appended. | **Losing description retained:** SUMMARY header "All 15 sessions" and open-ambiguity item 1 treating 15 vs 16 as unresolved (14-N:L1-L2, L26-L26, L827). | **Reason:** Deep N-0 explicit CORRECT: 16 units with external track; higher-plan/detail authority.
+- Superseded: (SUP-004) [superseded] [superseded] | **Target state:** N-001/N0-E077 WAVE 9 for N-13/N-14/N-15; summary matrix Wave 9 (14-N:L776-L778). Detail files say WAVE 4-adjacent / 3-4-adjacent / 5-adjacent as composition adjacency, not matrix replacement. | **Losing description retained:** Reading N13-I001/N14-I001/N15-I001 as replacing Wave 9 matrix placement. | **Reason:** N-0 index sequencing table is program authority for wave numbers; detail WAVE-*-adjacent is relative dependency adjacency. Both retained; matrix Wave 9 is target sequencing state.
+- [status] (N-001/N0-E011) [E/STATUS] Status legend: PLANNED (file written, work not started — all 12 N-N at generation), IN PROGRESS, DONE (full done-gate), DEFERRED (named upstream). (N-0:L52-L57 | ledger-line: DEEP-N-001.discovery.md:L44)
+- [status] (N-001/N0-E012) [E/TEST] W-1: DONE only when `wiring_contract_check.py --bn-file <N-N>.md --run-trigger` returns PASS (produces DEF, consumes CALL/REF, reachable_from BFS, stub_ban clean, observable_effect actually ran with SSB row + artifact); cargo-green is necessary but not sufficient. (N-0:L64-L66 | ledger-line: DEEP-N-001.discovery.md:L45)
+- [status] (N-001/N0-E033) [E/TEST/SURFACE] DONE requires all eight: (1) cargo check --workspace GREEN, (2) auditor PASS (sole test runner), (3) wiring_contract_check.py --run-trigger PASS, (4) cross_lang_diff PASS if frontend_pair present, (5) W-6 dashboard E2E item, (6) GD-4 FP-rate bound for any default-ON gate, (7) ND-2 retirement map present + user-confirmed when superseding a live path, (8) memory-writer ran. (N-0:L118-L122 | ledger-line: DEEP-N-001.discovery.md:L66)
+- [status] (N-001/N0-E035) [E/STATUS] N-2 is TIER 2, W-6+M-1+W-33+W-32, BUILD, L, Wave 2, depends N-1: corpus-grain composition validator + M-1 one-registry rule (ND-1/ND-3 checker). (N-0:L139-L145 | ledger-line: DEEP-N-001.discovery.md:L68)
+- [status] (N-001/N0-E037) [E/STATUS] N-4 is TIER 2, W-2+W-4+W-22+W-36, BUILD-on-shipped, L, Wave 3: one Claim/Belief object + receipt memo. (N-0:L153-L159 | ledger-line: DEEP-N-001.discovery.md:L70)
+- [status] (N-001/N0-E038) [E/STATUS] N-5 is TIER 2, W-3+W-17+W-35+W-14, BUILD, L, Wave 4, depends N-1: policy/intensity arbitration plane. (N-0:L160-L166 | ledger-line: DEEP-N-001.discovery.md:L71)
+- [status] (N-001/N0-E039) [E/STATUS] N-6 is TIER 2, W-19+W-29, BUILD, L, Wave 4: provenance/trust lattice + admission-gate family (semantic mapping, not one shared enum). (N-0:L167-L173 | ledger-line: DEEP-N-001.discovery.md:L72)
+- [status] (N-001/N0-E040) [E/STATUS] N-7 is TIER 2, W-7, BUILD, M, Wave 5: human render as REQUIRED verdict field. (N-0:L174-L178 | ledger-line: DEEP-N-001.discovery.md:L73)
+- [status] (N-001/N0-E041) [E/STATUS] N-8 is TIER 3, W-18+W-34+W-31, BUILD, M, Wave 5: governance-coverage substrate (five views). (N-0:L181-L186 | ledger-line: DEEP-N-001.discovery.md:L74)
+- [status] (N-001/N0-E042) [E/STATUS] N-9 is TIER 3, W-20+W-27, BUILD, M, Wave 6, depends N-1: one counterfactual/ablation engine. (N-0:L187-L191 | ledger-line: DEEP-N-001.discovery.md:L75)
+- [status] (N-001/N0-E044) [E/STATUS] N-11 is TIER 3, W-10, BUILD-on-shipped, M-L, Wave 7: journal-fold substrate extending L-16. (N-0:L197-L202 | ledger-line: DEEP-N-001.discovery.md:L77)
+- [status] (N-001/N0-E047) [E/STATUS] N-13 is OutputBoundary + structured-output capability matrix, BUILD/UNIFY, L, Wave 9, S3-1+S3-2. (N-0:L220-L224 | ledger-line: DEEP-N-001.discovery.md:L80)
+- [status] (N-001/N0-E048) [E/STATUS] N-14 is self-improvement edit-loop instruments (EvoPolicyGym), BUILD/ACTIVATION, M-L, Wave 9, ADVISORY (TD-3), feeds N-1/N-3/N-5. (N-0:L225-L229 | ledger-line: DEEP-N-001.discovery.md:L81)
+- [status] (N-001/N0-E049) [E/STATUS] N-15 is anti-affirmation stability measurement, BUILD/ACTIVATION, M, Wave 9, advisory-only, GD-4 FP-bound before default-ON. (N-0:L230-L234 | ledger-line: DEEP-N-001.discovery.md:L82)
+- [status] (N-001/N0-E069) [E/FLOW] WAVE 1: N-1 only — critical spine; highest fan-in (~30 promotions); build first. (N-0:L302-L304 | ledger-line: DEEP-N-001.discovery.md:L102)
+- [status] (N-001/N0-E070) [E/FLOW] WAVE 2: N-2 corpus validator; edges become DATA; unlock-DAG computed; ND-1/ND-3 mechanical; fan-in ranking emitted. (N-0:L305-L307 | ledger-line: DEEP-N-001.discovery.md:L103)
+- [status] (N-001/N0-E071) [E/FLOW] WAVE 3: N-3 (deflation, needs N-1 labels) + N-4 (claim object + receipt memo) in parallel on measured+validated ground. (N-0:L308-L309 | ledger-line: DEEP-N-001.discovery.md:L104)
+- [status] (N-001/N0-E072) [E/FLOW] WAVE 4: N-5 + N-6; disjoint files, parallel-safe. (N-0:L310-L311 | ledger-line: DEEP-N-001.discovery.md:L105)
+- [status] (N-001/N0-E073) [E/FLOW] WAVE 5: N-7 + N-8. (N-0:L312-L312 | ledger-line: DEEP-N-001.discovery.md:L106)
+- [status] (N-001/N0-E074) [E/FLOW] WAVE 6: N-9 (needs N-1) + N-10. (N-0:L313-L314 | ledger-line: DEEP-N-001.discovery.md:L107)
+- [status] (N-001/N0-E075) [E/FLOW] WAVE 7: N-11 (journal-fold + L-16 retirement map). (N-0:L315-L315 | ledger-line: DEEP-N-001.discovery.md:L108)
+- [status] (N-001/N0-E076) [E/FLOW] WAVE 8: N-12 (eight disjoint collapses; last, lowest risk). (N-0:L316-L316 | ledger-line: DEEP-N-001.discovery.md:L109)
+- [status] (N-001/N0-E077) [E/FLOW] WAVE 9: N-13 (after N-2 authoring check), N-14 (after N-1/N-3/N-5), N-15 (after N-1; GD-4 before default-ON); all three parallel-safe with each other. (N-0:L317-L322 | ledger-line: DEEP-N-001.discovery.md:L110)
+- [status] (N-001/N0-E079) [E/DEP] Confirm I-1 status before WAVE 4; if unshipped, N-5/N-9 carry it as named DEFERRED dependency (GD-5), do not re-implement (GD-1). (N-0:L324-L326 | ledger-line: DEEP-N-001.discovery.md:L112)
+- [status] (N-001/N0-E090) [E/FLOW] Next step: Start WAVE 1 N-1 (KEYSTONE BLOCKING); then N-2 opens WAVE 2 and computes fan-in ranking for N-3..N-12. (N-0:L369-L371 | ledger-line: DEEP-N-001.discovery.md:L123)
+- [config] (N-001/N0-E013) [E/CFG] W-2: no default-off env gate as terminal state; kill-switch DISABLE only; default ON; observable_effect runs with no env override. (N-0:L67-L68 | ledger-line: DEEP-N-001.discovery.md:L46)
+- [config] (N-001/N0-E024) [E/DET] GD-2 REPRODUCIBLE-METRIC: any number an N-N emits is recomputable from the SSB stream under a pinned ELAI_SEED. (N-0:L89-L89 | ledger-line: DEEP-N-001.discovery.md:L57)
+- [config] (N-001/N0-E026) [E/TEST] GD-4 FP-FRICTION RELEASE GATE: no N-N gate flips default-ON until its FP/over-block rate is measured and bounded on >=3 real runs through N-1's spine per ND-4. (N-0:L92-L93 | ledger-line: DEEP-N-001.discovery.md:L59)
+- [config] (N-001/N0-E081) [E/LIMIT] Anti-slopsquatting: N should add ZERO new deps; any new dep is a red flag of re-implementation (ND-1) and needs verify + user-confirm. (N-0:L333-L334 | ledger-line: DEEP-N-001.discovery.md:L114)
+- [gate] (N-001/N0-E010) [E/TEST] N ships under the same hard executed wiring done-gate F/G use so no unification can ship half-done (two live cores is the split-brain it kills). (N-0:L48-L50 | ledger-line: DEEP-N-001.discovery.md:L43)
+- [gate] (N-001/N0-E022) [E/CFG] W-10: tiered-gate — any axis needing network/subprocess at gate time is SPLIT; in-process Tier-1 is the fail-closed done-gate. (N-0:L82-L83 | ledger-line: DEEP-N-001.discovery.md:L55)
+- [gate] (N-001/N0-E028) [E/LIMIT] ND-1 UNIFY-NOT-FORK (M-1 made blocking): every N-N replaces >=2 fragmented implementations of ONE concern with ONE canonical object/engine/substrate + thin adapters; adding an (n+1)th parallel machine is a P0; N-2 builds the authoring-time checker. (N-0:L99-L102 | ledger-line: DEEP-N-001.discovery.md:L61)
+- [gate] (N-001/N0-E029) [E/RECOVERY] ND-2 RETIREMENT-MAP MANDATORY: any N-N that unifies K implementations ships an explicit retirement map (each superseded path -> parameter/adapter in unifier), old path behind `ELAI_*_LEGACY` one release, then USER-CONFIRMED removal; "add unifier and hope" is refused. (N-0:L103-L106 | ledger-line: DEEP-N-001.discovery.md:L62)
+- [gate] (N-001/N0-E032) [E/LIMIT] ND-5 ADAPTER-THINNESS: when unifying engines, per-target adapters are THIN (parameter/dispatch only); all business logic lives in the ONE core; a fat adapter re-implementing the core fails as ND-1 fork in disguise. (N-0:L114-L116 | ledger-line: DEEP-N-001.discovery.md:L65)
+- [gate] (N-001/N0-E034) [E/STATUS] N-1 is TIER 1 CRITICAL KEYSTONE BLOCKING, findings W-1+W-11+W-23, ACTIVATION, effort XL, Wave 1: unify ten benches + corpus feeders + one runner + outcome-label fold + BOOTSTRAP pack into one MEASUREMENT SPINE. (N-0:L128-L136 | ledger-line: DEEP-N-001.discovery.md:L67)
+- [gate] (N-001/N0-E053) [E/EVENT] N-2 adds `+composition_edge_checked` Pattern-2 Kind DanglingEdge / OrphanProducer / DuplicateConcept / FreshnessDrift; baseline+1; authoring-time gate still emits SSB for GD-2. (N-0:L265-L266 | ledger-line: DEEP-N-001.discovery.md:L86)
+- [gate] (N-001/N0-E054) [E/EVENT] N-3 adds `+promotion_deflated` Pattern-2 Kind TrialCountApplied / DeflationBlocked / HoldoutBudgetSpent; baseline+1. (N-0:L267-L267 | ledger-line: DEEP-N-001.discovery.md:L87)
+- [gate] (N-001/N0-E059) [E/EVENT] N-8 adds `+governance_coverage_measured` Pattern-2 Kind GateLiveness / DoctrineEnforcer / DebtRate / MutantKill; baseline+1. (N-0:L275-L276 | ledger-line: DEEP-N-001.discovery.md:L92)
+- [gate] (N-001/N0-E065) [E/EVENT] N-13 adds `+output_boundary_verdict` Pattern-2 Kind SchemaEnforced / GrammarEnforced / RepairedThenValidated / RefusedFailClosed; baseline+1. (N-0:L286-L287 | ledger-line: DEEP-N-001.discovery.md:L98)
+- [gate] (N-001/N0-E083) [E/SEC] No removal or simplification without explicit user confirmation — ND-2 retirement maps are USER-CONFIRMED, not auto-applied (done-gate clause 7). (N-0:L336-L337 | ledger-line: DEEP-N-001.discovery.md:L116)
+- [gate] (N-001/N0-E089) [E/STATUS/SURFACE] Session log empty at generation; each shipped N-N adds row: context-compiler -> integration-explorer -> spec-grounder -> executor -> auditor -> fixer (if BLOCKs) -> wiring-contract-validator (RUN_TRIGGER PASS REQUIRED) -> dashboard-smoker (if frontend_pair) -> memory-writer -> COMMITTING. (N-0:L360-L364 | ledger-line: DEEP-N-001.discovery.md:L122)
+- [gate] (N-001/N0-E092) [E/DATA] N-5 intensity resolver absorbs six deciders as axes of one table: B-41 level / L-21 model / J-84 effort / C-46 delegation / K-5 gate-risk / B-28 ModeSelector as J-55 edit-format leg. (N-0:L164-L166 | ledger-line: DEEP-N-001.discovery.md:L125)
+- [gate] (N-001/N0-E094) [E/CAP] N-6 admission family: F-1 VibeGate + J-102 config-ingress + J-109 learned-artifact + (new) K-23/M-2 surfaces share ONE scanner registry. (N-0:L171-L173 | ledger-line: DEEP-N-001.discovery.md:L127)
+- [gate] (N-001/N0-E096) [E/CAP] N-8 five views: B-17 gate-liveness + K-22 doctrine-enforcer coverage + J-46 debt-RATE + J-70 gate-manifest traceability + H-27 kill-your-own-mutant generalized to EVERY frozen gate. (N-0:L182-L186 | ledger-line: DEEP-N-001.discovery.md:L129)
+- [gate] (N-001/N0-E098) [E/CAP] N-12 eight collapses named: FailureClass enum; AbstainDecision spine; ProjectClass registry; C-47/C-49 through J-109 admission; drift-primitive library; FSM three-model conformance; ONE LSP daemon pool (W-8+W-26, W-9, W-16, W-21, W-25, W-12, W-28). (N-0:L206-L212 | ledger-line: DEEP-N-001.discovery.md:L131)
+- [surface] (N-001/N0-E015) [E/INT/SURFACE] W-3: reachable from a REAL production entrypoint (CLI / FSM transition / Pre/PostToolUse hook / Tauri command); a `#[cfg(test)]`-only caller is wire-dark. (N-0:L70-L71 | ledger-line: DEEP-N-001.discovery.md:L48)
+- [surface] (N-001/N0-E016) [E/SURFACE/SURFACE] W-4: frontend_pair mandatory for any dashboard-surfaceable SSB signal; `cross_lang_diff.py` PASS. (N-0:L72-L72 | ledger-line: DEEP-N-001.discovery.md:L49)
+- [surface] (N-001/N0-E018) [E/TEST/SURFACE] W-6: >=1 ACCEPTANCE item verified THROUGH the dashboard (dashboard-smoker), or N/A with one-line justification. (N-0:L74-L74 | ledger-line: DEEP-N-001.discovery.md:L51)
+- [surface] (N-001/N0-E058) [E/EVENT/SURFACE] N-7 adds `+verdict_rendered` Pattern-2 Kind PrComment / ChatAck / CanvasBadge / BriefRow / OrgRollup; baseline+1. (N-0:L274-L274 | ledger-line: DEEP-N-001.discovery.md:L91)
+- [surface] (N-001/N0-E095) [E/SURFACE/SURFACE] N-7 render targets: PR comment / chat ACK line / canvas badge / brief row / M-3 org rollup; ONE render substrate, many verdict producers (generalizes K-11). (N-0:L175-L178 | ledger-line: DEEP-N-001.discovery.md:L128)
+- (N-001/N0-E001) [E/STATUS] N-plan is the INTERLACE / UNIFICATION side, wiring-enforced; generation is 16 sessions covering Tier-1..4 plus external-steal track. (N-0:L1-L7 | ledger-line: DEEP-N-001.discovery.md:L34)
+- (N-001/N0-E002) [E/EVIDENCE] Primary synthesis is `workflow/reasoning/elai-weakpoints-interlace-2026-07-04.md` over ELAI-FEATURE-MAP + phase-index-MASTER + every B..M summary; 36 findings W-1..W-36 plus M-1 one-registry meta-rule. (N-0:L8-L13 | ledger-line: DEEP-N-001.discovery.md:L35)
+- (N-001/N0-E003) [E/DEP] Predecessors are B-plan through M-plan; N COMPOSES-WITH all of them under GD-1 and restates none. (N-0:L14-L17 | ledger-line: DEEP-N-001.discovery.md:L36)
+- (N-001/N0-E004) [E/CAP] N invents almost nothing; each N-N either declares one subsystem from >=2 fragmented implementations or wires an existing producer to an existing consumer left unconnected by summary-mediated authoring. (N-0:L14-L17, L31-L39 | ledger-line: DEEP-N-001.discovery.md:L37)
+- (N-001/N0-E005) [E/FLOW] Mandatory predecessor reading before any N-N execution: interlace doc, ELAI-FEATURE-MAP (not the legacy 12-file list), F-0_INDEX (W-1..W-10), G-0_INDEX (GD-1..GD-5), this index, N-SUMMARY_INDEX, then the target N-N detail, plus per-unit B..M summary entries named in Existing-state. (N-0:L19-L27 | ledger-line: DEEP-N-001.discovery.md:L38)
+- (N-001/N0-E006) [E/STATUS] Residual weakness after LACUNA-to-M is not missing features but summary-driven parallel machines that do not talk; talking that does happen is hand-maintained in ELAI-FEATURE-MAP plus prose edges with zero machine checking. (N-0:L31-L39 | ledger-line: DEEP-N-001.discovery.md:L39)
+- (N-001/N0-E007) [E/EVIDENCE] J-SUMMARY_INDEX.md:2 is cited as a live instance of summary drift from its own letter. (N-0:L36-L37, L356-L357 | ledger-line: DEEP-N-001.discovery.md:L40)
+- (N-001/N0-E008) [E/CAP] Central finding: extending a base REGISTRY auto-composed without fragmentation (e.g. action_types 17->576 under golden lock); minting PARALLEL machinery for an existing concern produced fragmentation. (N-0:L41-L50 | ledger-line: DEEP-N-001.discovery.md:L41)
+- (N-001/N0-E009) [E/CAP] N is therefore an ACTIVATION program: unify existing units into one registry each; meta-rule M-1 (one-registry-per-concern) is enforced at plan-authoring time and built as N-2. (N-0:L47-L50, L98-L102 | ledger-line: DEEP-N-001.discovery.md:L42)
+- (N-001/N0-E014) [E/CFG] W-2 N caveat: a UNIFIER that replaces live paths defaults ON behind the retire switch; the OLD path survives one release behind `ELAI_*_LEGACY` for rollback, then ND-2 retires it. (N-0:L68-L69 | ledger-line: DEEP-N-001.discovery.md:L47)
+- (N-001/N0-E017) [E/TEST] W-5: observable_effect is a LIVE end-to-end trigger, not a unit test. (N-0:L73-L73 | ledger-line: DEEP-N-001.discovery.md:L50)
+- (N-001/N0-E019) [E/DEP] W-7: no hallucinated integration points; consumes_symbol / reachable_from / MODIFY greped in elai.map at authoring; N labels code anchors "PLAN-asserted; executor re-greps per W-7" when not freshly greped; cross-letter unit IDs verifiable from summary indexes. (N-0:L75-L78 | ledger-line: DEEP-N-001.discovery.md:L52)
+- (N-001/N0-E020) [E/INT] W-8: produces/consumes symmetry — every produced symbol has an in-plan caller. (N-0:L79-L79 | ledger-line: DEEP-N-001.discovery.md:L53)
+- (N-001/N0-E021) [E/EVENT] W-9: new SSB action_types flow the action_type golden lock (Pattern-2 single-variant-with-Kind where applicable); SCHEMA bump named, never hard-coded. (N-0:L80-L81 | ledger-line: DEEP-N-001.discovery.md:L54)
+- (N-001/N0-E023) [E/LIMIT] GD-1 COMPOSE-NOT-RESTATE: every N-N consumes named prior-plan artifacts; re-implementing any B..M shipped surface is a P0 to gotchas.md; N binds, does not restate. (N-0:L86-L88 | ledger-line: DEEP-N-001.discovery.md:L56)
+- (N-001/N0-E025) [E/OBS] GD-3 ABLATION-FRAMING: any capability/latency/cost number is framed unifier-ON-vs-fragmented-OFF, never as a model-capability claim. (N-0:L90-L91 | ledger-line: DEEP-N-001.discovery.md:L58)
+- (N-001/N0-E030) [E/DATA] ND-3 EDGE-AS-DATA: every producer/consumer/unifies edge across letters is emitted as a machine-checkable row (corpus-validator input format N-2 defines), never prose-only. (N-0:L107-L109 | ledger-line: DEEP-N-001.discovery.md:L63)
+- (N-001/N0-E031) [E/OBS] ND-4 MEASURED-THROUGH-THE-SPINE: any N-N that claims a number routes it through N-1's measurement spine + ONE ModelCapabilityProfile calibration sink + N-3's trial-count deflation; no N-N mints its own calibration store or promotion threshold. (N-0:L110-L113 | ledger-line: DEEP-N-001.discovery.md:L64)
+- (N-001/N0-E043) [E/STATUS] N-10 is TIER 3, W-15+W-24, ACTIVATION, M, Wave 6: clarity/novelty -> budget wires. (N-0:L192-L196 | ledger-line: DEEP-N-001.discovery.md:L76)
+- (N-001/N0-E045) [E/STATUS] N-12 is TIER 4, W-8+W-9+W-12+W-16+W-21+W-25+W-26+W-28, DELETE, M, Wave 8: consistency + dedupe bundle of eight collapses. (N-0:L204-L212 | ledger-line: DEEP-N-001.discovery.md:L78)
+- (N-001/N0-E046) [E/STATUS] External-steal track (2026-07-05) appends N-13..N-15 from four-source-steal analysis; only genuine NEW/EXTENSION verdicts land; PAW-tier, EvoPolicyGym-n=1-stats, Ford-checklist rejected; prefix-KV is already-recorded rider; zip-slip folds into N-6. (N-0:L214-L219 | ledger-line: DEEP-N-001.discovery.md:L79)
+- (N-001/N0-E050) [E/STATUS] N-16 (2026-07-08 DeepReason) is governance closure EXTENSION of N-8: evaluator-refutation collapse + lambda exogenous-grounding floor + adjudicator-ritual metrics; advisory-only TD-3; Dung argument-graph adjudicator REJECTED. (N-0:L235-L247 | ledger-line: DEEP-N-001.discovery.md:L83)
+- (N-001/N0-E051) [E/DATA] Live baseline at generation (2026-07-04): SCHEMA_VERSION 267 / TOTAL_VARIANTS 576; formula ssb.rs:1519 SCHEMA_VERSION = SCHEMA_VERSION_DDL_EPOCH(-309) + SSB_ACTION_TYPES.len(); newest shipped bump I-36; J/K/L/M planned bumps not landed. (N-0:L255-L260 | ledger-line: DEEP-N-001.discovery.md:L84)
+- (N-001/N0-E052) [E/EVENT] N-1 reuses existing bench action_types and adds `+calibration_bootstrap_superseded` Pattern-2 Kind Prefilled / LocallySuperseded / DriftInvalidated; baseline+1. (N-0:L262-L264 | ledger-line: DEEP-N-001.discovery.md:L85)
+- (N-001/N0-E055) [E/EVENT] N-4 reuses J-83 BeliefState events + C-30 cache path; adds `+receipt_memo` Pattern-2 Kind Hit / Miss / Revalidated; baseline+1. (N-0:L268-L269 | ledger-line: DEEP-N-001.discovery.md:L88)
+- (N-001/N0-E056) [E/EVENT] N-5 adds `+route_arbitrated` composite RouteDecision (routers-consulted vec + winner + precedence-rank); baseline+1. (N-0:L270-L270 | ledger-line: DEEP-N-001.discovery.md:L89)
+- (N-001/N0-E057) [E/EVENT] N-6: no new action_type for lattice (rides G-1 taint_flow/provenance); conditional `+admission_scanned` Pattern-2 Kind Code / Config / LearnedArtifact / Workspace; baseline+0 or +1. (N-0:L271-L273 | ledger-line: DEEP-N-001.discovery.md:L90)
+- (N-001/N0-E060) [E/EVENT] N-9 adds `+counterfactual_scored` Pattern-2 Kind Role / Verifier / Ranker / Memory / Case; baseline+1. (N-0:L277-L277 | ledger-line: DEEP-N-001.discovery.md:L93)
+- (N-001/N0-E061) [E/EVENT] N-10 adds NO new action_type (reuses B-38 ambiguity / D-15 novelty rows); baseline+0. (N-0:L278-L279 | ledger-line: DEEP-N-001.discovery.md:L94)
+- (N-001/N0-E062) [E/EVENT] N-11 adds NO new action_type (reuses L-16 fold events; adds fold FUNCTIONS); baseline+0. (N-0:L280-L281 | ledger-line: DEEP-N-001.discovery.md:L95)
+- (N-001/N0-E063) [E/EVENT] N-12 adds NO new action_type (dedupe removes emitters; surviving canonical type keeps its row); baseline+0; W-12 FSM-conformance may add test-only assertion. (N-0:L282-L283 | ledger-line: DEEP-N-001.discovery.md:L96)
+- (N-001/N0-E064) [E/EVENT] Net designed core N-plan bumps ~8 new action_types (N-1..N-5, N-7, N-8, N-9 + N-6 conditional); quote as baseline+N from LIVE 267/576 as of 2026-07-04; re-read at edit. (N-0:L284-L285 | ledger-line: DEEP-N-001.discovery.md:L97)
+- (N-001/N0-E066) [E/EVENT] N-14 reuses score-bearing attempt row `{edit_kind, improved}` or adds `+edit_kind_classified` Pattern-2 Kind Synthesis / Parametric / CandidateMgmt; baseline+0 or +1 prefer-reuse. (N-0:L288-L289 | ledger-line: DEEP-N-001.discovery.md:L99)
+- (N-001/N0-E067) [E/EVENT] N-15 adds `+framing_stability_measured` Pattern-2 Kind Stable / FramingUnstable / AssertionPulled or reuses D-23 detection Kind; baseline+0 or +1 prefer-reuse. (N-0:L290-L291 | ledger-line: DEEP-N-001.discovery.md:L100)
+- (N-001/N0-E068) [E/EVENT] N-16 adds `+evaluator_closure_swept` Pattern-2 Kind EvaluatorRefuted / VerdictQuarantined / Reinstated and `+grounding_ratio_measured` Pattern-2 Kind AboveFloor / BelowFloorBraked; S7 prefer-reuse governance_coverage_measured +Kind AdjudicatorRitual; evaluator-id+version-hash is additive FIELD on existing verdict rows; baseline+2. (N-0:L295-L298 | ledger-line: DEEP-N-001.discovery.md:L101)
+- (N-001/N0-E078) [E/DEP] Three system-wide unlocks before Tier-2 unifications: (1) N-1 measurement spine, (2) I-1 supervisor plane (I-plan PRE-REQ, not N unit), (3) N-2 corpus validator. (N-0:L323-L326 | ledger-line: DEEP-N-001.discovery.md:L111)
+- (N-001/N0-E080) [E/LIMIT] Hard rules: blake3 only (never blake2/sha2 for non-RFC); rand>=0.9; tracing not log; no async-trait crate; no .unwrap()/.expect() on prod paths (test cfg + main entrypoint allowed). (N-0:L331-L332 | ledger-line: DEEP-N-001.discovery.md:L113)
+- (N-001/N0-E082) [E/TEST] One change at a time; auditor sole test runner; main LLM never runs tests. (N-0:L335-L335 | ledger-line: DEEP-N-001.discovery.md:L115)
+- (N-001/N0-E084) [E/EVIDENCE] Grounded-by-default: every cross-letter edge cites the summary entry it composes; interlace doc is the WHY. (N-0:L338-L338 | ledger-line: DEEP-N-001.discovery.md:L117)
+- (N-001/N0-E085) [E/LIMIT] Landmine: feature-map edges are prose until N-2 ships; executor must re-verify each "unifies X" edge against live summary + code (map OPEN CONFLICTS had 7 unresolved; I-2/I-5/I-11/H-50 stale-label corrections). (N-0:L343-L346 | ledger-line: DEEP-N-001.discovery.md:L118)
+- (N-001/N0-E086) [E/LIMIT] Landmine: F-6 chose type separation for SkillTrustTier vs memory-TrustTier; N-6 lattice is SEMANTIC MAPPING of six scales, NOT one shared enum. (N-0:L347-L349 | ledger-line: DEEP-N-001.discovery.md:L119)
+- (N-001/N0-E087) [E/DEFER] Landmine W-13 downgrade: L-16 already specifies most context retirement; N-11 residual is ONLY recover_stubs EOL + declaring H-49 CAS/undo-tree THE log representation — do not re-author the fold. (N-0:L350-L353 | ledger-line: DEEP-N-001.discovery.md:L120)
+- (N-001/N0-E088) [E/DEFER] Landmine W-2 downgrade: L-8 already threads L-1 over J-83; N-4 residual is K-12 critical_atoms + GRC tags joining the one object — schema alignment, not redesign. (N-0:L354-L355 | ledger-line: DEEP-N-001.discovery.md:L121)
+- (N-001/N0-E091) [E/CFG] Precedence order declared for N-5 in the index session table: safety > cost-ceiling > abstention > escalation > modality > serving-tier. (N-0:L161-L163 | ledger-line: DEEP-N-001.discovery.md:L124)
+- (N-001/N0-E093) [E/DATA] N-6 lattice maps G-1 taint <-> C-48 memory T0-T3 <-> F-6 skill S1-S4 <-> C-30 source T1-T4 <-> K-23 repo trust <-> 4D EvidenceLevel on the SAME object ingest -> memory -> citation -> skill -> cross-repo. (N-0:L168-L171 | ledger-line: DEEP-N-001.discovery.md:L126)
+- (N-001/N0-E097) [E/CAP] N-10 types AmbiguityScore (B-38/B-40/C-29/J-32) + NoveltyScore (D-15/4F/B-21) and wires consumers: 4D research depth, J-84 effort, J-39 node-sizing, J-79 grill/clarify. (N-0:L193-L196 | ledger-line: DEEP-N-001.discovery.md:L130)
+- (N-001/N0-E099) [E/LIMIT] N-16 S4: evaluator-refutation event triggers F-5 staleness cascade quarantining verdicts that evaluator issued (advisory re-audit queue, NEVER delete). (N-0:L239-L242 | ledger-line: DEEP-N-001.discovery.md:L132)
+- (N-001/N0-E100) [E/LIMIT] N-16 S6: lambda exogenous-grounding floor BRAKE forces retrieval/escalation, NEVER a PASS. (N-0:L242-L244 | ledger-line: DEEP-N-001.discovery.md:L133)
+- [deferred] (N-001/N0-E027) [E/LIMIT] GD-5 NO-FABRICATED-GUARANTEE: a unifier that has not yet retired its superseded path carries honest residue (two-cores-during-migration; adapter-thinness unproven), never a false "single-source" claim. (N-0:L94-L96 | ledger-line: DEEP-N-001.discovery.md:L60)
+- [deferred] (N-001/N0-E036) [E/STATUS] N-3 is TIER 2, W-30, ACTIVATION, M-L, Wave 3, depends N-1: lift H-17/H-18/H-19 from finance to domain-generic promotion primitives via ID-6. (N-0:L146-L152 | ledger-line: DEEP-N-001.discovery.md:L69)
+- [summary-delta] (N-001/SD-N0-001) [Δ] section=N-0 (DEEP-N-001.discovery.md:L432): **ADD** full W-1..W-10 inheritance text including N-specific W-2 LEGACY caveat and production entrypoint list. | summary_anchor=14-N:L41, L830 | source_atoms=N0-E012–N0-E022
+- [summary-delta] (N-001/SD-N0-002) [Δ] section=N-0 (DEEP-N-001.discovery.md:L433): **ADD** full GD-1..GD-5 and ND-1..ND-5 blocking rules with retirement map, edge-as-data, spine measurement, and adapter-thinness. | summary_anchor=14-N:L41, L830 | source_atoms=N0-E023–N0-E032
+- [summary-delta] (N-001/SD-N0-003) [Δ] section=N-0 (DEEP-N-001.discovery.md:L434): **ADD** eight-clause DONE definition and session-log shipping pipeline. | summary_anchor=14-N:L830 | source_atoms=N0-E033, N0-E089
+- [summary-delta] (N-001/SD-N0-004) [Δ] section=N-0 (DEEP-N-001.discovery.md:L435): **ADD** live SCHEMA 267/576 baseline, per-unit action_type bumps (including N-11/N-12 +0), and re-read-at-edit rule. | summary_anchor=14-N:L708-L726 | source_atoms=N0-E051–N0-E068
+- [summary-delta] (N-001/SD-N0-005) [Δ] section=N-0 (DEEP-N-001.discovery.md:L436): **ADD** complete WAVE 1..9 unlock-DAG, three system-wide unlocks, and I-1 pre-req for WAVE 4. | summary_anchor=14-N:L760-L780 | source_atoms=N0-E069–N0-E079
+- [summary-delta] (N-001/SD-N0-006) [Δ] section=N-0 (DEEP-N-001.discovery.md:L437): **ADD** hard rules (blake3, no new deps, user-confirmed removal) and carried landmines (prose edges, F-6 type barrier, L-16/L-8 downgrades, J drift). | summary_anchor=14-N:L830-L838 | source_atoms=N0-E080–N0-E088
+- [summary-delta] (N-001/SD-N0-007) [Δ] section=N-0 (DEEP-N-001.discovery.md:L438): **CORRECT** summary open ambiguity "15 sessions vs 16": N-0 explicitly has 16 units with external track N-13..N-16 and DeepReason N-16. | summary_anchor=14-N:L26-L26, L827 | source_atoms=N0-E001, N0-C001, N0-I001
+- [summary-delta] (N-001/SD-N0-008) [Δ] section=N-0 (DEEP-N-001.discovery.md:L439): **ADD** index-level N-5..N-8/N-10/N-13..N-16 structure atoms that the summary already partially covers but without ND/schema/sequencing authority. | summary_anchor=14-N:L169-L580 | source_atoms=N0-E038–N0-E050, N0-E091–N0-E100
+- [ambiguity] (N-001/N0-A001) [A/EVENT] N-8 Kind list in the schema section omits explicit Traceability kind while the session blurb includes J-70 gate-manifest traceability; whether Kind set is four or five is unresolved between L275-L276 and L182-L186. (N-0:L182-L186, L275-L276 | ledger-line: DEEP-N-001.discovery.md:L135)
+- [ambiguity] (N-001/N0-A002) [A/CFG] Exact `ELAI_*_LEGACY` env-name pattern, release-window length, and rollback switch wiring are named as one-release policy without concrete flag names. (N-0:L68-L69, L103-L106 | ledger-line: DEEP-N-001.discovery.md:L136)
+- [ambiguity] (N-001/N0-A003) [A/DEP] "Confirm I-1 status before WAVE 4" leaves the exact N-5/N-9 deferred-shim behavior unspecified when I-1 is still unshipped. (N-0:L324-L326 | ledger-line: DEEP-N-001.discovery.md:L137)
+- [ambiguity] (N-001/N0-C001) [C/STATUS] Opening line says "16 sessions" while the session-table banner says "THE 12 SESSIONS" before external-steal N-13..N-16 appends; both are true if external track is extra, but total unit count is 16 not 12. (N-0:L1-L1, L125-L126, L214-L247 | ledger-line: DEEP-N-001.discovery.md:L138)
+- [inference] (N-001/N0-I001) [I/STATUS] Header "16 sessions" plus N-13..N-16 external track means the program inventory is N-1..N-16 even though the "12 sessions" table heading is TIER-1..4 only; external track is appended, not inside the original 12. (N-0:L1-L7, L125-L126, L214-L247 | ledger-line: DEEP-N-001.discovery.md:L134)
+
+### N-1: measurement spine as ONE subsystem [KEYSTONE][BLOCKING]
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-001, N-SD, SUMMARY, SUP | sample: N-1:L1-L3; N-1:L5-L5; N-1:L8-L8; N-1:L8-L8, L10-L10 | 43 non-summary-placed, 3 summary-placed, 52 total unique atoms in unit | IDs: SUP-001, SUP-003, SUP-004, SUP-005, SUP-007, SUP-009, N-001/N1-E001, N-001/N1-E002, …
+**Composes with**: B-42, C-30, C-47, C-49, D-16, E-5, E-54, F-5, G-5, G-10, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-43, H-49, I-8, I-12, I-27, I-30, I-31, I-51, J-21, J-25, J-34, J-51, J-56, J-83, J-93, J-96, J-97, J-109, K-15, K-23, L-7, L-11, L-16. IX: N-001/IX-001 → GD-4, ND-4; N-001/IX-002 → N-3; N-001/IX-003 → N-3, N-9; N-001/IX-004 → N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-11, N-12, N-3, N-4, N-9
+
+- Superseded: (SUP-001) [superseded] [superseded] | **Target state:** N-001/N0-E001 + N-001/N0-C001 + N-001/SD-N0-007: program inventory is N-1..N-16 (16 units); external track N-13..N-16 appended. | **Losing description retained:** SUMMARY header "All 15 sessions" and open-ambiguity item 1 treating 15 vs 16 as unresolved (14-N:L1-L2, L26-L26, L827). | **Reason:** Deep N-0 explicit CORRECT: 16 units with external track; higher-plan/detail authority.
+- Superseded: (SUP-003) [superseded] [superseded] | **Target state:** N-001/SD-N12-001 + N-001/N12-I001: eight findings over seven sub-slices (a) merges W-8+W-26; no eighth product. | **Losing description retained:** SUMMARY N12-A01 open whether a sub-slice is missing (14-N:L24, L408-L409, L828). | **Reason:** Deep detail CORRECT/RESOLVE; structural count not missing product.
+- Superseded: (SUP-004) [superseded] [superseded] | **Target state:** N-001/N0-E077 WAVE 9 for N-13/N-14/N-15; summary matrix Wave 9 (14-N:L776-L778). Detail files say WAVE 4-adjacent / 3-4-adjacent / 5-adjacent as composition adjacency, not matrix replacement. | **Losing description retained:** Reading N13-I001/N14-I001/N15-I001 as replacing Wave 9 matrix placement. | **Reason:** N-0 index sequencing table is program authority for wave numbers; detail WAVE-*-adjacent is relative dependency adjacency. Both retained; matrix Wave 9 is target sequencing state.
+- Superseded: (SUP-005) [superseded] [superseded] | **Target state:** N-001/SD-N1-007: summary-only consumers J-84/J-85, L-4/L-7, K-24/M-5 are NOT detail atoms; do not promote as N1-E* from detail. | **Losing description retained:** SUMMARY N1-E08..E10 as if they were in N-1 detail file. | **Reason:** Detail file omits them; deep qualifies them as summary-only; retain under SUMMARY namespace only.
+- Superseded: (SUP-007) [superseded] [superseded] | **Target state:** N-001/N3-E022 + N0-E054: Kind set TrialCountApplied | DeflationBlocked | HoldoutBudgetSpent. | **Losing description retained:** SUMMARY N3-E17 showing only DeflationBlocked in places (14-N:L81-L83, L132, L713). | **Reason:** Deep full Kind set is target event schema.
+- Superseded: (SUP-009) [superseded] [superseded] | **Target state:** N-002/N5-E003 + N-001/N0-E091: safety-gates > cost-ceiling > abstention > escalation > modality > serving-tier. | **Losing description retained:** SUMMARY N5-E06 short form safety > cost > abstention > escalation > modality > serving-tier (14-N:L112-L114). | **Reason:** Deep/detail expanded tier names win target wording; short form retained as summary-era phrasing.
+- [status] (N-001/N1-E001) [E/STATUS] N-1 is TIER 1 CRITICAL, lever the-selling-number, findings W-1+W-11+W-23, STRONG, ACTIVATION, XL, WAVE 1, KEYSTONE BLOCKING, depends none. (N-1:L1-L3 | ledger-line: DEEP-N-001.discovery.md:L148)
+- [status] (N-001/N1-E011) [E/STATUS] PLAN-asserted: ten bench units exist as PLANNED across G/J/K/L/I and each reuses the runner pairwise. (N-1:L13-L13 | ledger-line: DEEP-N-001.discovery.md:L158)
+- [config] (N-001/N1-E013) [E/STATUS] ModelCapabilityProfile already gains fill_degradation_curve (J-34), tool_call_adherence (J-51), reasoning-knee (K-15), longcot arm (J-107); I-23 flags unified single-impl calibration; N-1 is that binding at bench grain. (N-1:L15-L15 | ledger-line: DEEP-N-001.discovery.md:L160)
+- [gate] (N-001/N1-E015) [E/STATUS] D-30 names cold-start for ONE gate (UniCR N=500) and DEFERS it; the same hole sits under D-16 tau / J-34/K-15 knees / J-51 floors / L-11 OQ / 3F FP bounds / H-43 baselines (W-23). (N-1:L17-L17 | ledger-line: DEEP-N-001.discovery.md:L162)
+- [gate] (N-001/N1-E016) [E/CFG] Tier-1 SHIP NOW: spine INDEX (one runner + one sink + label fold binding) + bootstrap pack + ND-4 enforcement (bench writing knee outside profile FAILS); label fold generalized to six loops. (N-1:L20-L20 | ledger-line: DEEP-N-001.discovery.md:L163)
+- [gate] (N-001/N1-E017) [E/DEFER] Tier-2 DEFER: actual SAFEDELTA live number (G-6, gated behind F-2b keystone + RunPod); N-1 ships SUBSTRATE + deterministic fixture; live number stays G-6's deferred checkbox. (N-1:L21-L21 | ledger-line: DEEP-N-001.discovery.md:L164)
+- [gate] (N-001/N1-E028) [E/OBS] expect_artifact: calibration curve written into ONE ModelCapabilityProfile; NEGATIVE: bench writing knee to any other store must FAIL ND-4 check. (N-1:L49-L49 | ledger-line: DEEP-N-001.discovery.md:L175)
+- [surface] (N-001/N1-E019) [E/SURFACE/SURFACE] CLI: `elai bench *` seams as the real production trigger. (N-1:L24-L24, L38-L39, L47-L47 | ledger-line: DEEP-N-001.discovery.md:L166)
+- [surface] (N-001/N1-E020) [E/SURFACE/SURFACE] frontend_pair: MeasurementPanel tile fed by the spine index, OR N/A justified if G-5 cockpit already surfaces the profile (confirm at authoring). (N-1:L25-L25, L45-L45 | ledger-line: DEEP-N-001.discovery.md:L167)
+- [surface] (N-001/N1-E025) [E/INT/SURFACE] reachable_from: CLI `elai bench <family>` -> runner -> corpus row + profile curve write; `#[cfg(test)]` NEVER satisfies R7. (N-1:L38-L40 | ledger-line: DEEP-N-001.discovery.md:L172)
+- [surface] (SUMMARY/N1-E17) Expose the family through the existing CLI seam `elai bench <any-family>` / `elai bench *` (`L37-L40`). (14-N:L65)
+- [surface] (SUMMARY/N1-E22) Provide a `MeasurementPanel` tile sourced from the spine index, unless G-5 already surfaces it and the N/A decision is justified (`L38-L39`). (14-N:L70)
+- (N-001/N1-E002) [E/CAP] Premise: ~30 features across 6 letters terminate promotion at "ELAI-measured number"; measurement is currently scattered entries, not a first-class subsystem; N-1 declares the spine and ND-4 routes all numbers through it. (N-1:L5-L5 | ledger-line: DEEP-N-001.discovery.md:L149)
+- (N-001/N1-E003) [E/CAP] ONE measurement spine = (1) corpus, (2) ONE runner family, (3) ONE calibration SINK, (4) ONE outcome-label fold, (5) shipped BOOTSTRAP calibration pack. (N-1:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L150)
+- (N-001/N1-E004) [E/DATA] Corpus: J-56 problem corpus with L-20 commit-mined supply + J-110 mutators as FEEDERS (not sibling benches). (N-1:L8-L8, L10-L10 | ledger-line: DEEP-N-001.discovery.md:L151)
+- (N-001/N1-E005) [E/CAP] ONE runner family: the K-15/I-27 shape already the pairwise convention across the ten benches. (N-1:L8-L8, L37-L37 | ledger-line: DEEP-N-001.discovery.md:L152)
+- (N-001/N1-E006) [E/DATA] ONE calibration SINK: W-5 ModelCapabilityProfile (I-51 models.toml); no router reads a knee from anywhere else. (N-1:L8-L8, L34-L35 | ledger-line: DEEP-N-001.discovery.md:L153)
+- (N-001/N1-E007) [E/CAP] ONE outcome-label fold: generalize J-93-F (deterministic non-LLM rule labels from SSB outcome stream) from rules-only to the six promotion loops (W-11). (N-1:L8-L8, L20-L20 | ledger-line: DEEP-N-001.discovery.md:L154)
+- (N-001/N1-E008) [E/DATA] BOOTSTRAP pack: B-42-style default artifacts, provenance=BOOTSTRAP, hard-superseded by local measurement via F-5/G-10 invalidation (W-23 cold-start fix). (N-1:L8-L8, L20-L20, L54-L54 | ledger-line: DEEP-N-001.discovery.md:L155)
+- (N-001/N1-E009) [E/CAP] Ten benches unified (bind to one runner + one sink, do NOT replace): G-6 SAFEDELTA, J-34 context-knee, K-15 reasoning-knee, J-107 longcot, L-10 hallucination-delta, K-18 case-reuse, I-38 QDELTA, I-27 convergence, L-20 supply, J-110 timeliness (+ D-19..D-25 bench/validation suites). (N-1:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L156)
+- (N-001/N1-E010) [E/LIMIT] EXCLUDED: inventing any new bench (no 11th); any new corpus family (J-56/E-54/L-20 are the corpus); a second calibration store (ND-4 violation). (N-1:L10-L10, L41-L42 | ledger-line: DEEP-N-001.discovery.md:L157)
+- (N-001/N1-E012) [E/STATUS] J-93-F supplies deterministic outcome labels to RULES only today. (N-1:L14-L14 | ledger-line: DEEP-N-001.discovery.md:L159)
+- (N-001/N1-E014) [E/DEP] B-42 ships ~12 default cosmos artifacts as in-corpus precedent for a shipped default pack. (N-1:L16-L16, L53-L53 | ledger-line: DEEP-N-001.discovery.md:L161)
+- (N-001/N1-E018) [E/INT] crates/knowledge: corpus + runner surface; crates/orchestrator: ModelCapabilityProfile sink + J-93-F label fold generalization. (N-1:L24-L24 | ledger-line: DEEP-N-001.discovery.md:L165)
+- (N-001/N1-E021) [E/CAP] produces: `crates/knowledge/src/measurement/spine.rs` — spine index (corpus + runner + sink binding) [PLAN-asserted path]. (N-1:L29-L29 | ledger-line: DEEP-N-001.discovery.md:L168)
+- (N-001/N1-E022) [E/CAP] produces: `crates/orchestrator/src/measurement/bootstrap_pack.rs` — BOOTSTRAP default artifacts + supersession rule. (N-1:L30-L30 | ledger-line: DEEP-N-001.discovery.md:L169)
+- (N-001/N1-E023) [E/CAP] produces: generalized label fold (J-93-F extended to six loops). (N-1:L31-L31 | ledger-line: DEEP-N-001.discovery.md:L170)
+- (N-001/N1-E024) [E/DEP] consumes: knowledge J-56/E-54/L-20 corpus; ModelCapabilityProfile / I-51 models.toml; J-93-F (extend); K-15/I-27 runner shape. (N-1:L33-L37 | ledger-line: DEEP-N-001.discovery.md:L171)
+- (N-001/N1-E026) [E/LIMIT] stub_ban: NO second calibration store; NO new 11th bench; NO paper-constant knee claimed as ELAI-measured (bootstrap carries provenance=BOOTSTRAP, ID-5); NO .unwrap()/.expect(); blake3 only. (N-1:L41-L44 | ledger-line: DEEP-N-001.discovery.md:L173)
+- (N-001/N1-E027) [E/EVENT] expect_ssb on trigger: corpus row + (on bootstrap replacement) `+calibration_bootstrap_superseded(Prefilled (LocallySuperseded | ledger-line: DEEP-N-001.discovery.md:L174)
+- (N-001/N1-E029) [E/EVIDENCE] Grounding: interlace W-1, W-11, W-23, TIER-1 synthesis; memory project_b42_shipped; reference arXiv IDs re-verify at authoring; ID-5 satisfied by BOOTSTRAP provenance label. (N-1:L51-L54 | ledger-line: DEEP-N-001.discovery.md:L176)
+- (N-001/N1-E030) [E/DEP] COMPOSES-WITH: J-56/E-54/L-20 corpus; K-15/I-27 runner; ModelCapabilityProfile (I-51); J-93-F; B-42 pack shape; F-5/G-10 invalidation; re-implements NONE (GD-1); ND-4 single sink for every other N-N and every J..M number. (N-1:L56-L57 | ledger-line: DEEP-N-001.discovery.md:L177)
+- [summary-delta] (N-001/SD-N1-001) [Δ] section=N-1 (DEEP-N-001.discovery.md:L445): **ADD** exact produces paths `measurement/spine.rs` and `bootstrap_pack.rs`, PLAN-asserted. | summary_anchor=14-N:L45-L78 | source_atoms=N1-E021–N1-E023
+- [summary-delta] (N-001/SD-N1-002) [Δ] section=N-1 (DEEP-N-001.discovery.md:L446): **ADD** full supersession Kind set Prefilled / LocallySuperseded / DriftInvalidated and bootstrap via F-5/G-10 invalidation. | summary_anchor=14-N:L58-L62 | source_atoms=N1-E008, N1-E027
+- [summary-delta] (N-001/SD-N1-003) [Δ] section=N-1 (DEEP-N-001.discovery.md:L447): **ADD** D-19..D-25 bench/validation suites bound into the ten-bench unification note. | summary_anchor=14-N:L50 | source_atoms=N1-E009
+- [summary-delta] (N-001/SD-N1-004) [Δ] section=N-1 (DEEP-N-001.discovery.md:L448): **ADD** Tier-2 SAFEDELTA/RunPod deferral and deterministic fixture scope for Tier-1. | summary_anchor=14-N:L764 | source_atoms=N1-E017
+- [summary-delta] (N-001/SD-N1-005) [Δ] section=N-1 (DEEP-N-001.discovery.md:L449): **ADD** cold-start hole list (D-16 tau, J-51 floors, L-11 OQ, 3F FP, H-43) and B-42 ~12-artifact precedent. | summary_anchor=14-N:L59-L65 | source_atoms=N1-E014–N1-E015, N1-I001
+- [summary-delta] (N-001/SD-N1-006) [Δ] section=N-1 (DEEP-N-001.discovery.md:L450): **ADD** I-23 unified-calibration binding rationale and ID-5 BOOTSTRAP provenance satisfaction. | summary_anchor=14-N:L61-L65 | source_atoms=N1-E013, N1-E029
+- [summary-delta] (N-001/SD-N1-007) [Δ] section=N-1 (DEEP-N-001.discovery.md:L451): **QUALIFY** summary consumers J-84/J-85, L-4/L-7, K-24/M-5: present in summary N1-E08..E10 but NOT restated in N-1 detail file; do not promote summary-only consumers as detail atoms. | summary_anchor=14-N:L57-L59 | source_atoms=(summary-only; not N1-E*)
+- [summary-delta] (N-001/SD-N1-008) [Δ] section=N-1 (DEEP-N-001.discovery.md:L452): **EXPAND** ambiguities: six loops still unnamed; MeasurementPanel authoring decision; ~30 fan-in list. | summary_anchor=14-N:L73-L78 | source_atoms=N1-A001–N1-A004
+- [ambiguity] (N-001/N1-A001) [A/CFG] The six promotion loops receiving generalized J-93-F labels are not enumerated as a closed named set. (N-1:L8-L8, L20-L20 | ledger-line: DEEP-N-001.discovery.md:L179)
+- [ambiguity] (N-001/N1-A002) [A/DATA] Exact bootstrap artifact inventory (beyond B-42 shape) and supersession transition rules between Prefilled / LocallySuperseded / DriftInvalidated are not fully specified. (N-1:L8-L8, L30-L30, L48-L48 | ledger-line: DEEP-N-001.discovery.md:L180)
+- [ambiguity] (N-001/N1-A003) [A/SURFACE/SURFACE] MeasurementPanel vs G-5 N/A is deferred to authoring confirmation without a decision criterion. (N-1:L25-L25, L45-L45 | ledger-line: DEEP-N-001.discovery.md:L181)
+- [ambiguity] (N-001/N1-A004) [A/OBS] "ELAI-measured number" fan-in "~30 features across 6 letters" is not listed individually. (N-1:L5-L5 | ledger-line: DEEP-N-001.discovery.md:L182)
+- [ambiguity] (SUMMARY/N1-A04) Whether the `MeasurementPanel` is mandatory depends on G-5 coverage (`L38-L39`). (14-N:L78)
+- [inference] (N-001/N1-I001) [I/DATA] Cold-start holes named under D-16 tau, J-34/K-15 knees, J-51 floors, L-11 OQ, 3F FP bounds, H-43 baselines are the implied bootstrap fill set even though the Tier-1 wiring only names "BOOTSTRAP default artifacts" generically. (N-1:L17-L17, N-1:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L178)
+
+### N-2: corpus-grain composition validator + M-1 one-registry rule
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY, SUP | sample: N-2:L1-L3; N-2:L5-L5; N-2:L5-L5; N-2:L8-L8, L26-L26, L30-L32; N-2:L8-L9; N-2:L10-L10 | 38 non-summary-placed, 3 summary-placed, 45 total unique atoms in unit | IDs: SUP-002, SUP-006, SUP-008, SUP-009, N-002/N2-E001, N-002/N2-E002, N-002/N2-E003, N-002/N2-E004, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, I-39, J-21, J-25, J-83, J-89, J-93, J-96, J-97, J-109, K-23, L-7, L-16, M-1, M-1+, M-2, M-3, N-0, N-1, N-3, N-4, N-5, N-6. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- Superseded: (SUP-002) [superseded] [superseded] | **Target state:** N-002/N6-C001 + N-002/SD-N6-001: six independent provenance scales (not five). | **Losing description retained:** SUMMARY N6-A01 premise "five provenance scales" (14-N:L14, L127-L130) and any five-scale framing. | **Reason:** Deep numbered source consistently enumerates six; CORRECT marker in N-002.
+- Superseded: (SUP-006) [superseded] [superseded] | **Target state:** N-002/N5-I001 + N-002/SD-N5-003: numbered source does not list E-39 among ten routers; only L-6 vs J-73 is trigger example. | **Losing description retained:** SUMMARY N5-E02 "J-84 escalation versus E-39 cost-block" as a first-class router conflict (14-N:L109-L110). | **Reason:** Deep qualifies E-39 as not in ten-router list; retain summary example as superseded/qualified.
+- Superseded: (SUP-008) [superseded] [superseded] | **Target state:** N-002/N8-E003 five views; expect_ssb Kind list names four (N8-A002 / N0-A001 open). Target substrate = five views; Kind enum still A-open. | **Losing description retained:** SUMMARY N8-E13 "five Kinds" as if enum fully named (14-N:L176-L177). | **Reason:** Deep flags Kind list omits explicit J-70 Traceability; five views remain target; Kind completeness open.
+- Superseded: (SUP-009) [superseded] [superseded] | **Target state:** N-002/N5-E003 + N-001/N0-E091: safety-gates > cost-ceiling > abstention > escalation > modality > serving-tier. | **Losing description retained:** SUMMARY N5-E06 short form safety > cost > abstention > escalation > modality > serving-tier (14-N:L112-L114). | **Reason:** Deep/detail expanded tier names win target wording; short form retained as summary-era phrasing.
+- [status] (N-002/N2-E001) [E/STATUS] N-2 is TIER 2 (HIGH), lever plans-that-talk, findings W-6+M-1+W-33+W-32, grounding STRONG, nature BUILD, effort L, WAVE 2, depends on N-1. (N-2:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L37)
+- [status] (N-002/N2-E009) [E/DATA] Summaries/status are derived mechanically by composing J-93-G (auto-derive the map's mechanical half) + I-39 (journal-derived status). (N-2:L12-L12, L17-L17, L35-L35 | ledger-line: DEEP-N-002.discovery.md:L45)
+- [status] (N-002/N2-E014) [E/DEP] PLAN-asserted existing ground: J-89 L8 plan-DAG producer->consumer type-completeness PER PLAN; J-93-G map half; I-39 journal status; `.claude/tools/wiring_contract_check.py` + `elai_map_freshness.py` + `spec_link_check.py` (executor re-greps per W-7). (N-2:L15-L18 | ledger-line: DEEP-N-002.discovery.md:L50)
+- [status] (N-002/N2-E015) [E/EVIDENCE] Feature-map OPEN CONFLICTS section had 7 unresolved edges; I-2/I-5/I-11/H-50 "PLANNED label was STALE" corrections prove drift is real, recurring, currently caught by luck. (N-2:L19-L19 | ledger-line: DEEP-N-002.discovery.md:L51)
+- [config] (N-002/N2-E010) [E/OBS] A SUMMARY_INDEX-vs-0_INDEX-vs-detail FRESHNESS check applies the `elai_map_freshness.py` pattern to the index layer (W-33). (N-2:L12-L12, L18-L18, L22-L22, L36-L36 | ledger-line: DEEP-N-002.discovery.md:L46)
+- [config] (N-002/N2-E018) [E/DEFER] DEFER (Tier-2): full name-similarity ML; start with deterministic shared-seam + token-overlap heuristic; fuzzy semantic-duplicate detector is a later refinement, flagged directional. (N-2:L23-L23 | ledger-line: DEEP-N-002.discovery.md:L54)
+- [config] (N-002/N2-E024) [E/CFG] stub_ban: NO opt-in flag that lets the check emit PASS on missing edges (R3). (N-2:L42-L42 | ledger-line: DEEP-N-002.discovery.md:L60)
+- [config] (N-002/N2-E031) [E/DEP] COMPOSES-WITH J-89 L8, J-93-G, I-39, wiring_contract_check + elai_map_freshness patterns; re-implements NONE (GD-1). This unit BUILDS the ND-1/ND-3 checker the whole N-plan (and every future letter) is judged against. (N-2:L54-L55 | ledger-line: DEEP-N-002.discovery.md:L67)
+- [gate] (N-002/N2-E002) [E/FLOW] The motivating defect is that feature-map EXTENDS/composes/consumes/gated-by edges are hand-maintained prose with zero machine check, so plans authored against summaries can silently duplicate or contradict. (N-2:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L38)
+- [gate] (N-002/N2-E005) [E/FAIL] FAIL condition (a) DANGLING EDGE: a "consumes X" naming no unit that exposes X. (N-2:L8-L9 | ledger-line: DEEP-N-002.discovery.md:L41)
+- [gate] (N-002/N2-E006) [E/FAIL] FAIL condition (b) ORPHAN PRODUCER: a unit with >=1 consumer in NO letter (the orphan-feature report). (N-2:L10-L10 | ledger-line: DEEP-N-002.discovery.md:L42)
+- [gate] (N-002/N2-E007) [E/FAIL] FAIL condition (c) DUPLICATE-CONCEPT COLLISION via name-similarity + shared-seam detection, making the M-1 one-registry-per-concern rule mechanical (would auto-catch four claim types / ten routers / E-6+E-29 MAST dup). (N-2:L11-L11 | ledger-line: DEEP-N-002.discovery.md:L43)
+- [gate] (N-002/N2-E012) [E/LIMIT] EXCLUDED: any change to the runtime wiring gate (this is the PLAN-corpus twin, not a replacement). (N-2:L13-L13 | ledger-line: DEEP-N-002.discovery.md:L48)
+- [gate] (N-002/N2-E016) [E/CFG] SHIP NOW (Tier-1): the three FAIL checks + freshness check + unlock-DAG emit. (N-2:L21-L22 | ledger-line: DEEP-N-002.discovery.md:L52)
+- [gate] (N-002/N2-E017) [E/FAIL] Fail-closed: a corpus that finds ZERO edges exits nonzero (R1, ArchUnit failOnEmptyShould). (N-2:L22-L22, L41-L41 | ledger-line: DEEP-N-002.discovery.md:L53)
+- [gate] (N-002/N2-E020) [E/INT] Wire into paper-to-plan phase-5 / planning-workflow PRE_GATE authoring seam (PRODUCTION authoring seam). (N-2:L26-L26, L37-L38 | ledger-line: DEEP-N-002.discovery.md:L56)
+- [gate] (N-002/N2-E021) [E/SURFACE/SURFACE] frontend_pair: N/A — authoring-time CI gate, not a runtime surface; justified. (N-2:L27-L27, L44-L44 | ledger-line: DEEP-N-002.discovery.md:L57)
+- [gate] (N-002/N2-E022) [E/CAP/SURFACE] produces_symbols: `.claude/tools/corpus_composition_check.py` (three FAIL checks + unlock-DAG + freshness) and the ND-3 edge-row format. (N-2:L30-L32 | ledger-line: DEEP-N-002.discovery.md:L58)
+- [gate] (N-002/N2-E023) [E/FAIL] stub_ban: NO exit-0 on a corpus with a dangling edge (fail-closed, R1). (N-2:L40-L41 | ledger-line: DEEP-N-002.discovery.md:L59)
+- [gate] (N-002/N2-E029) [E/TEST] NEGATIVE: a clean corpus with a hand-inserted dangling edge that EXITS 0 is a FAIL. (N-2:L48-L48 | ledger-line: DEEP-N-002.discovery.md:L65)
+- [surface] (N-002/N2-E004) [E/CAP/SURFACE] Build `corpus_composition_check.py` as sibling of `wiring_contract_check.py`, parsing feature-map edges as DATA in ND-3 row format and joining them against plan files + `elai.map` symbols. (N-2:L8-L8, L26-L26, L30-L32 | ledger-line: DEEP-N-002.discovery.md:L40)
+- [surface] (N-002/N2-E026) [E/SURFACE/SURFACE] CLI/command surface: `python .claude/tools/corpus_composition_check.py --map docs/thefinalglance/ELAI-FEATURE-MAP.md`. (N-2:L46-L46 | ledger-line: DEEP-N-002.discovery.md:L62)
+- [surface] (SUMMARY/N2-E15) Add `.claude/tools/corpus_composition_check.py` beside `wiring_contract_check.py` (`L60-L61`). (14-N:L98)
+- [surface] (SUMMARY/N2-E16) Invoke it as `python .claude/tools/corpus_composition_check.py --map ELAI-FEATURE-MAP.md` (`L63-L64`). (14-N:L99)
+- [surface] (SUMMARY/N2-E21) No runtime frontend is required because this is an authoring-time CI surface (`L60-L62`). (14-N:L104)
+- (N-002/N2-E003) [E/EVIDENCE] J-SUMMARY_INDEX.md:2 self-declares the letter drifted from its own index (detail stopped at J-91); nothing validates the CROSS-LETTER edge set. (N-2:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L39)
+- (N-002/N2-E008) [E/OBS] The checker EMITS the global unlock-DAG + fan-in ranking (W-32). (N-2:L12-L12, L22-L22, L31-L31, L48-L48 | ledger-line: DEEP-N-002.discovery.md:L44)
+- (N-002/N2-E011) [E/INT] Runs at paper-to-plan phase 5 / planning-workflow authoring time the way `wiring_contract_check` runs at code time; also a CI invocation over `docs/thefinalglance/`. (N-2:L12-L12, L26-L26, L37-L39 | ledger-line: DEEP-N-002.discovery.md:L47)
+- (N-002/N2-E013) [E/LIMIT] EXCLUDED: re-implementing J-89 L8; extend the per-plan type-completeness check to corpus grain instead. (N-2:L13-L13, L16-L16, L34-L34 | ledger-line: DEEP-N-002.discovery.md:L49)
+- (N-002/N2-E019) [E/DATA] Integration also adds a small ND-3 edge-row emitter that the feature-map upsert writes. (N-2:L26-L26, L32-L32, L43-L43 | ledger-line: DEEP-N-002.discovery.md:L55)
+- (N-002/N2-E025) [E/DATA] stub_ban: NO prose-only edges (edges must be DATA rows, ND-3). (N-2:L43-L43 | ledger-line: DEEP-N-002.discovery.md:L61)
+- (N-002/N2-E027) [E/EVENT] expect_ssb: `+composition_edge_checked(DanglingEdge\ (OrphanProducer\ | ledger-line: DEEP-N-002.discovery.md:L63)
+- (N-002/N2-E028) [E/TEST] expect_artifact: nonzero exit + offending edge named on a seeded dangling edge; unlock-DAG artifact on a clean run. (N-2:L48-L48 | ledger-line: DEEP-N-002.discovery.md:L64)
+- (N-002/N2-E030) [E/DEP] Grounding: interlace W-6/M-1/W-33/W-32, TIER-2 item 2; wiring-enforcement R6 lifted to plan grain; R1/R3/R8. (N-2:L50-L52 | ledger-line: DEEP-N-002.discovery.md:L66)
+- [summary-delta] (N-002/SD-N2-001) [Δ] section=N-2 (DEEP-N-002.discovery.md:L465): **ADD** exact fail Kind list `DanglingEdge\ | summary_anchor=OrphanProducer\ | source_atoms=DuplicateConcept\
+- [summary-delta] (N-002/SD-N2-002) [Δ] section=N-2 (DEEP-N-002.discovery.md:L466): **ADD** PRE_GATE / paper-to-plan phase-5 + CI over `docs/thefinalglance/`; ND-3 edge-row emitter from feature-map upsert; Tier-2 ML deferral. | summary_anchor=14-N:L97-L110 | source_atoms=N2-E011, N2-E018–N2-E020
+- [summary-delta] (N-002/SD-N2-003) [Δ] section=N-2 (DEEP-N-002.discovery.md:L467): **ADD** stub bans (no opt-in PASS on missing edges, no prose-only edges) and R3/R6/R8 grounding. | summary_anchor=14-N:L100-L110 | source_atoms=N2-E023–N2-E025, N2-E030
+- [summary-delta] (N-002/SD-N2-004) [Δ] section=N-2 (DEEP-N-002.discovery.md:L468): **EXPAND** orphan-producer ambiguity remains; similarity thresholds still open at detail grain. | summary_anchor=14-N:L107-L110 | source_atoms=N2-A001–N2-A003
+- [ambiguity] (N-002/N2-A001) [A/FAIL] "orphan producer (a unit with >=1 consumer in NO letter)" is grammatically ambiguous; likely means a producer with no consumer in any letter, but the source does not rephrase it. (N-2:L10-L10 | ledger-line: DEEP-N-002.discovery.md:L68)
+- [ambiguity] (N-002/N2-A002) [A/DATA] Similarity thresholds, collision adjudication, ND-3 edge schema fields, unlock-DAG filename/path, and full SSB payload fields beyond Kind names are not specified. (N-2:L11-L12, L32-L32, L47-L48 | ledger-line: DEEP-N-002.discovery.md:L69)
+- [ambiguity] (N-002/N2-A003) [A/RECOVERY] J drift smoking-gun is cited, but exact repair/migration behavior for stale indexes is not stated. (N-2:L5-L5, L12-L12, L19-L19 | ledger-line: DEEP-N-002.discovery.md:L70)
+
+### N-3: generalized anti-selection-bias promotion primitives
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-001, N-SD, SUMMARY | sample: N-3:L1-L3; N-3:L5-L5; N-3:L8-L8; N-3:L9-L9; N-3:L10-L10, L22-L22, L42-L42; N-3:L11-L11, L23-L23 | 34 non-summary-placed, 1 summary-placed, 35 total unique atoms in unit | IDs: N-001/N3-E001, N-001/N3-E002, N-001/N3-E003, N-001/N3-E004, N-001/N3-E005, N-001/N3-E006, N-001/N3-E007, N-001/N3-E008, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, ID-6, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-4, N-5, N-6, N-7, N-8, N-9, N-10. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1; N-001/IX-003 → N-1, N-9; N-001/IX-004 → N-1, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-4, N-9
+
+- [status] (N-001/N3-E001) [E/STATUS] N-3 is TIER 2 HIGH, lever gated-against-its-own-search, W-30, STRONG, ACTIVATION, M-L, WAVE 3, depends N-1. (N-3:L1-L3 | ledger-line: DEEP-N-001.discovery.md:L192)
+- [gate] (N-001/N3-E005) [E/CAP] H-18 deflation/threshold correction (DSR/PBO/MinBTL, N from ledger, fail-closed on missing N) applied at every promotion gate. (N-3:L10-L10, L22-L22, L42-L42 | ledger-line: DEEP-N-001.discovery.md:L196)
+- [gate] (N-001/N3-E009) [E/LIMIT] EXCLUDED: re-implementing DSR/PBO/MinBTL (re-KEY shipped H-18); any new promotion loop; a promotion that runs without the ledger (fail-closed missing N). (N-3:L13-L13, L40-L42 | ledger-line: DEEP-N-001.discovery.md:L200)
+- [gate] (N-001/N3-E014) [E/CFG] Tier-1 SHIP NOW: re-key H-17 ledger + H-18 deflation to (candidate-family) and wire 3F rule + J-57 prompt + J-97 case gates to read it; fail-closed on missing N. (N-3:L22-L22 | ledger-line: DEEP-N-001.discovery.md:L205)
+- [gate] (N-001/N3-E018) [E/CAP] produces: (candidate-family)-keyed trial ledger + deflation reader (re-keyed H-17/H-18); promotion-gate wiring at the ~8 sites. (N-3:L30-L32 | ledger-line: DEEP-N-001.discovery.md:L209)
+- [gate] (N-001/N3-E020) [E/INT] reachable_from: a real SHADOW->ACTIVE promotion transition (rules/prompt/case gate); test-only never R7. (N-3:L36-L38 | ledger-line: DEEP-N-001.discovery.md:L211)
+- [gate] (N-001/N3-E023) [E/FAIL] expect_artifact: promotion is HELD; NEGATIVE: promotion that ignores trial count and flips ACTIVE must FAIL the gate. (N-3:L48-L48 | ledger-line: DEEP-N-001.discovery.md:L214)
+- [surface] (N-001/N3-E017) [E/SURFACE/SURFACE] frontend_pair: a deflation column on the existing promotion drawers, OR N/A justified. (N-3:L27-L27, L44-L44 | ledger-line: DEEP-N-001.discovery.md:L208)
+- [surface] (SUMMARY/N3-E16) Add a deflation column to existing promotion drawers, or explicitly justify N/A (`L79-L80`). (14-N:L131)
+- (N-001/N3-E002) [E/CAP] Premise: H-17 trial ledger + H-18 deflated-significance + H-19 reusable-holdout were finance-only; every promotion loop runs the same max-of-N-noisy-scores search and is upward-biased. (N-3:L5-L5 | ledger-line: DEEP-N-001.discovery.md:L193)
+- (N-001/N3-E003) [E/CAP] Lift three finance primitives into DOMAIN-GENERIC promotion primitives keyed by (candidate-family) instead of (finance-candidate), read via ID-6 ledger hook. (N-3:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L194)
+- (N-001/N3-E004) [E/DATA] H-17 becomes persisted, agent-unresettable per-(candidate-family) trial ledger. (N-3:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L195)
+- (N-001/N3-E006) [E/CAP] H-19 reusable-holdout DP query budget (Thresholdout) for every reusable eval corpus (J-56/L-20/D-6). (N-3:L11-L11, L23-L23 | ledger-line: DEEP-N-001.discovery.md:L197)
+- (N-001/N3-E007) [E/FLOW] Loops hardened: 3F rule SHADOW->ACTIVE, J-57 prompt promotion, J-97 case-reuse fitness, B-23/H-45 configs, I-4/I-25 candidate ladders, L-11 OQ thresholds. (N-3:L12-L12 | ledger-line: DEEP-N-001.discovery.md:L198)
+- (N-001/N3-E008) [E/DEP] I-30/I-31 already route promotions through H-17 trial-N + H-18 deflation — proof the generalization is natural; N-3 extends to non-Track-17 loops. (N-3:L12-L12, L17-L17 | ledger-line: DEEP-N-001.discovery.md:L199)
+- (N-001/N3-E010) [E/STATUS] H-17/H-18/H-19 shipped/planned FINANCE-ONLY (TB-1); only H-47 partially reuses H-19. (N-3:L16-L16 | ledger-line: DEEP-N-001.discovery.md:L201)
+- (N-001/N3-E011) [E/DEP] ID-6 = "learned artifacts promote through the ledger". (N-3:L17-L17 | ledger-line: DEEP-N-001.discovery.md:L202)
+- (N-001/N3-E012) [E/STATUS] ~8 promotion loops each promote on max-of-N without trial-count deflation today. (N-3:L18-L18 | ledger-line: DEEP-N-001.discovery.md:L203)
+- (N-001/N3-E013) [E/DEP] N-1 supplies the outcome labels the deflation corrects against (did the promoted artifact actually help, per the journal). (N-3:L19-L19, L35-L35 | ledger-line: DEEP-N-001.discovery.md:L204)
+- (N-001/N3-E016) [E/INT] Integration: crates/orchestrator promotion sites (rules lifecycle, prompt/case/config archives); ID-6 ledger hook. (N-3:L26-L26 | ledger-line: DEEP-N-001.discovery.md:L207)
+- (N-001/N3-E019) [E/DEP] consumes: H-17 / H-18 DSR-PBO-MinBTL / H-19 Thresholdout (re-key, do NOT re-author); ID-6; N-1 outcome labels. (N-3:L33-L35 | ledger-line: DEEP-N-001.discovery.md:L210)
+- (N-001/N3-E021) [E/LIMIT] stub_ban: NO promotion that flips ACTIVE ignoring trial count; NO re-implementation of DSR/PBO/MinBTL; NO silent pass on missing N; NO .unwrap()/.expect(). (N-3:L39-L43 | ledger-line: DEEP-N-001.discovery.md:L212)
+- (N-001/N3-E022) [E/EVENT] trigger: real SHADOW->ACTIVE promotion with N below threshold; expect_ssb `+promotion_deflated(TrialCountApplied (DeflationBlocked | ledger-line: DEEP-N-001.discovery.md:L213)
+- (N-001/N3-E024) [E/EVIDENCE] Grounding: interlace W-30 TIER-2 item 3; W-30 landing site ID-6; H-plan Track 7 / Track 17; memory project_hplan_track7_authored. (N-3:L50-L52 | ledger-line: DEEP-N-001.discovery.md:L215)
+- (N-001/N3-E025) [E/DEP] COMPOSES-WITH: H-17/H-18/H-19 re-keyed, ID-6, N-1 labels, ~8 promotion loops as consumers; re-implements NONE. (N-3:L54-L55 | ledger-line: DEEP-N-001.discovery.md:L216)
+- [deferred] (N-001/N3-E015) [E/DEFER] Tier-2 DEFER: full Thresholdout DP budget on every corpus (start with ledger+deflation; H-19 holdout budget is second wave, needs N-1 corpus stable first). (N-3:L23-L23 | ledger-line: DEEP-N-001.discovery.md:L206)
+- [summary-delta] (N-001/SD-N3-001) [Δ] section=N-3 (DEEP-N-001.discovery.md:L458): **ADD** full Kind set TrialCountApplied / DeflationBlocked / HoldoutBudgetSpent (summary only showed DeflationBlocked in places). | summary_anchor=14-N:L132, L713 | source_atoms=N3-E022, N0-E054
+- [summary-delta] (N-001/SD-N3-002) [Δ] section=N-3 (DEEP-N-001.discovery.md:L459): **ADD** Tier-1 wire set is only 3F + J-57 + J-97 first; other loops are in the harden list but Tier-2 for full Thresholdout. | summary_anchor=14-N:L126-L133 | source_atoms=N3-E014–N3-E015, N3-I001
+- [summary-delta] (N-001/SD-N3-003) [Δ] section=N-3 (DEEP-N-001.discovery.md:L460): **ADD** agent-unresettable ledger property and re-KEY-not-reauthor ban on DSR/PBO/MinBTL. | summary_anchor=14-N:L116-L118 | source_atoms=N3-E004–N3-E005, N3-E009
+- [summary-delta] (N-001/SD-N3-004) [Δ] section=N-3 (DEEP-N-001.discovery.md:L461): **ADD** H-47 partial H-19 reuse note and TB-1 finance-only status. | summary_anchor=14-N:L137-L138 | source_atoms=N3-E010, N3-A002
+- [summary-delta] (N-001/SD-N3-005) [Δ] section=N-3 (DEEP-N-001.discovery.md:L462): **EXPAND** missing N threshold, candidate-family schema, and DP parameters as open. | summary_anchor=14-N:L135-L138 | source_atoms=N3-A001–N3-A003
+- [ambiguity] (N-001/N3-A001) [A/CFG] Threshold for "N below threshold", exact candidate-family key schema, and DSR/PBO/MinBTL parameter values are not stated. (N-3:L10-L10, L22-L22, L46-L46 | ledger-line: DEEP-N-001.discovery.md:L218)
+- [ambiguity] (N-001/N3-A002) [A/DEP] H-47 partial H-19 reuse migration path into the generalized Thresholdout budget is not specified. (N-3:L16-L16, L23-L23 | ledger-line: DEEP-N-001.discovery.md:L219)
+- [ambiguity] (N-001/N3-A003) [A/CFG] DP accounting parameters for H-19 Thresholdout budget (epsilon, query accounting, per-corpus limits) are absent. (N-3:L11-L11, L23-L23 | ledger-line: DEEP-N-001.discovery.md:L220)
+- [inference] (N-001/N3-I001) [I/FLOW] Tier-1 names only three wire sites (3F, J-57, J-97) while the loop list is eight; the remaining five are consumers that must eventually read the same re-keyed ledger even if not in the first wire set. (N-3:L12-L12, L22-L22, L32-L32 | ledger-line: DEEP-N-001.discovery.md:L217)
+
+### N-4: one Claim/Belief object + receipt memo
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-001, N-SD, SUMMARY | sample: N-4:L1-L3; N-4:L5-L5; N-4:L8-L8; N-4:L8-L8; N-4:L8-L8; N-4:L8-L8 | 40 non-summary-placed, 1 summary-placed, 41 total unique atoms in unit | IDs: N-001/N4-E001, N-001/N4-E002, N-001/N4-E003, N-001/N4-E004, N-001/N4-E005, N-001/N4-E006, N-001/N4-E007, N-001/N4-E008, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-12, K-23, L-6, L-7, L-8, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-5, N-6, N-7, N-8. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-9
+
+- [status] (N-001/N4-E001) [E/STATUS] N-4 is TIER 2 HIGH, lever cheaper-reasoning-on-your-repo, W-2+W-4+W-22+W-36, STRONG, BUILD-on-shipped, L, WAVE 3. (N-4:L1-L3 | ledger-line: DEEP-N-001.discovery.md:L230)
+- [gate] (N-001/N4-E004) [E/DATA] Receipt attached at J-83 gate IS the evidence L-3 round-trips. (N-4:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L233)
+- [gate] (N-001/N4-E011) [E/INT] Consulted by BOTH J-83 reasoning receipt-gate AND L-2 CGG first (W-36). (N-4:L9-L9, L36-L36 | ledger-line: DEEP-N-001.discovery.md:L240)
+- [gate] (N-001/N4-E017) [E/DEP] I-8 dead-end AST hashing already caches "what FAILED" (negative-space twin); N-4 adds "what was PROVEN". (N-4:L17-L17 | ledger-line: DEEP-N-001.discovery.md:L246)
+- [gate] (N-001/N4-E018) [E/CFG] Tier-1 SHIP NOW: align K-12 + GRC tags onto L-8/J-83 carrier + memo lookup-before-checker at J-83 gate, re-validated via J-21, invalidated via F-5. (N-4:L20-L20 | ledger-line: DEEP-N-001.discovery.md:L247)
+- [gate] (N-001/N4-E020) [E/INT] Integration: crates/orchestrator ssb::payloads BeliefState + J-83 gate + L-2 CGG call sites; C-30 cache generalization. (N-4:L24-L24 | ledger-line: DEEP-N-001.discovery.md:L249)
+- [gate] (N-001/N4-E024) [E/INT] reachable_from: J-83 reasoning receipt-gate on a live task (PRODUCTION); L-2 CGG predictor path (Tier-2 PRODUCTION). (N-4:L34-L36 | ledger-line: DEEP-N-001.discovery.md:L253)
+- [gate] (N-001/N4-E027) [E/OBS] expect_artifact: second pass measurably cheaper (no checker call); NEGATIVE: claim on CHANGED (F-5-invalidated) code returning stale Hit must FAIL. (N-4:L46-L46 | ledger-line: DEEP-N-001.discovery.md:L256)
+- [surface] (N-001/N4-E021) [E/SURFACE/SURFACE] frontend_pair: existing belief/claim drawer gains a memo-hit indicator, OR N/A justified. (N-4:L25-L25, L42-L42 | ledger-line: DEEP-N-001.discovery.md:L250)
+- [surface] (SUMMARY/N4-E15) Add a memo-hit indicator to existing belief/claim drawers, or justify N/A (`L99-L100`). (14-N:L158)
+- (N-001/N4-E002) [E/CAP] Premise: four typed objects all mean "statement the system may or may not trust with evidence"; nothing lets a recurring claim reuse prior receipt, so every session re-pays checker/resample cost. (N-4:L5-L5 | ledger-line: DEEP-N-001.discovery.md:L231)
+- (N-001/N4-E003) [E/DATA] ONE canonical Claim/Belief: L-1 ClaimSet{ClaimKind,span,refs} ARE J-83 BeliefState entries{claim,receipt,abstain,DKG-provenance} (L-8 already threads — finish it). (N-4:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L232)
+- (N-001/N4-E005) [E/DATA] K-12 critical_atoms must_preserve = has-receipt. (N-4:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L234)
+- (N-001/N4-E006) [E/DATA] GRC grounding tags "type:reference" join the one object; J-21 re-derives the SAME object against commit+AST. (N-4:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L235)
+- (N-001/N4-E007) [E/FLOW] RECEIPT MEMO: before expensive checker/resample (D-11 registry / F-4 tests / L-5 do-tests / L-4 resampling N=5), look up claim-identity/trigger_signature in J-96 case graph. (N-4:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L236)
+- (N-001/N4-E008) [E/FLOW] HIT re-validates cheaply via J-21 commit+AST identity instead of re-running the intervention; MISS mints a new node. (N-4:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L237)
+- (N-001/N4-E009) [E/CAP] Generalizes C-30 OracleAnswerCache (query_hash,project_hash)->answer,trust-TTL into the receipt memo. (N-4:L9-L9, L15-L15 | ledger-line: DEEP-N-001.discovery.md:L238)
+- (N-001/N4-E010) [E/RECOVERY] Memo invalidated by F-5 staleness cascade. (N-4:L9-L9, L16-L16 | ledger-line: DEEP-N-001.discovery.md:L239)
+- (N-001/N4-E012) [E/OBS] Biggest win on checker-poor local 7B lane; "gets cheaper on YOUR repo" (K-18 moat #2) extended to REASONING. (N-4:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L241)
+- (N-001/N4-E013) [E/LIMIT] EXCLUDED: re-authoring C-30 (generalize); re-designing L-8 carrier (align K-12 + GRC to it); a fifth claim type. (N-4:L10-L10, L38-L39 | ledger-line: DEEP-N-001.discovery.md:L242)
+- (N-001/N4-E014) [E/STATUS] L-1, J-83, K-12, GRC tags exist as distinct typed objects; L-8 threads L-1 over J-83. (N-4:L13-L13 | ledger-line: DEEP-N-001.discovery.md:L243)
+- (N-001/N4-E016) [E/DEP] J-21 memory validation re-derives against commit+AST; F-5 staleness cascade exists. (N-4:L16-L16 | ledger-line: DEEP-N-001.discovery.md:L245)
+- (N-001/N4-E022) [E/CAP] produces: aligned canonical Claim/Belief object; receipt-memo lookup (generalized C-30, keyed by claim-identity/trigger_signature). (N-4:L28-L30 | ledger-line: DEEP-N-001.discovery.md:L251)
+- (N-001/N4-E023) [E/DEP] consumes: L-1 / J-83 (L-8) / K-12 / GRC; J-96 / C-30 / J-21 / F-5. (N-4:L31-L33 | ledger-line: DEEP-N-001.discovery.md:L252)
+- (N-001/N4-E025) [E/LIMIT] stub_ban: NO fifth claim type; NO re-implementation of C-30; NO memo Hit returned on F-5-invalidated (changed) code; NO .unwrap()/.expect(); blake3 for claim-identity hashing. (N-4:L37-L41 | ledger-line: DEEP-N-001.discovery.md:L254)
+- (N-001/N4-E026) [E/EVENT] trigger: assert a recurring claim about UNCHANGED code twice on a live task; first: checker runs + J-96 node minted; second: `+receipt_memo(Hit)` and checker skipped. (N-4:L44-L45 | ledger-line: DEEP-N-001.discovery.md:L255)
+- (N-001/N4-E028) [E/EVENT] N-0 schema also names receipt_memo kinds Miss / Revalidated (in addition to Hit observed in N-4 acceptance). (N-4:L45-L45; cross-ref N-0:L268-L269 | ledger-line: DEEP-N-001.discovery.md:L257)
+- (N-001/N4-E029) [E/EVIDENCE] Grounding: interlace W-2, W-4, W-22, W-36, TIER-2 item 4; L downgrade note (L-8 half-plans W-2); memory project_b40_shipped. (N-4:L48-L50 | ledger-line: DEEP-N-001.discovery.md:L258)
+- (N-001/N4-E030) [E/DEP] COMPOSES-WITH: L-1, J-83 (L-8), K-12, GRC, J-96, C-30, J-21, F-5, L-2..L-6; re-implements NONE. (N-4:L52-L53 | ledger-line: DEEP-N-001.discovery.md:L259)
+- [deferred] (N-001/N4-E015) [E/DATA] J-96 mints case nodes on F-4 proof with trigger_signature + blast cone + proof receipt; J-97 is demonstration-injection memory (not yet a receipt cache). (N-4:L14-L14 | ledger-line: DEEP-N-001.discovery.md:L244)
+- [deferred] (N-001/N4-E019) [E/DEFER] Tier-2 DEFER: L-2 CGG consulting the same memo (W-36) — after J-83 side proves identity+invalidation sound. (N-4:L21-L21 | ledger-line: DEEP-N-001.discovery.md:L248)
+- [summary-delta] (N-001/SD-N4-001) [Δ] section=N-4 (DEEP-N-001.discovery.md:L468): **ADD** exact expensive-path list: D-11 registry / F-4 tests / L-5 do-tests / L-4 resampling N=5. | summary_anchor=14-N:L149-L152 | source_atoms=N4-E007
+- [summary-delta] (N-001/SD-N4-002) [Δ] section=N-4 (DEEP-N-001.discovery.md:L469): **ADD** Tier-2 deferral of L-2 CGG memo consultation after J-83 proves identity+invalidation. | summary_anchor=14-N:L154, L164-L167 | source_atoms=N4-E019, N4-E024
+- [summary-delta] (N-001/SD-N4-003) [Δ] section=N-4 (DEEP-N-001.discovery.md:L470): **ADD** I-8 dead-end AST hashing as negative-space twin; J-97 not-yet receipt cache. | summary_anchor=14-N:L140-L167 | source_atoms=N4-E015, N4-E017
+- [summary-delta] (N-001/SD-N4-004) [Δ] section=N-4 (DEEP-N-001.discovery.md:L471): **ADD** full receipt_memo Kind set Hit / Miss / Revalidated from index; detail acceptance only exercises Hit. | summary_anchor=14-N:L160-L161 | source_atoms=N4-E026, N4-E028, N4-A003
+- [summary-delta] (N-001/SD-N4-005) [Δ] section=N-4 (DEEP-N-001.discovery.md:L472): **ADD** blake3 claim-identity hashing stub ban and "no fifth claim type" residual vs L-8 half-done carrier. | summary_anchor=14-N:L164-L167 | source_atoms=N4-E013, N4-E018, N4-E025
+- [summary-delta] (N-001/SD-N4-006) [Δ] section=N-4 (DEEP-N-001.discovery.md:L473): **EXPAND** schema/TTL/eligibility ambiguities still open after detail read. | summary_anchor=14-N:L164-L167 | source_atoms=N4-A001–N4-A002
+- [ambiguity] (N-001/N4-A001) [A/DATA] Final unified schema fields for abstain and DKG-provenance after alignment are named in the BeliefState shape but not fully re-specified. (N-4:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L261)
+- [ambiguity] (N-001/N4-A002) [A/CFG] Cache TTL/eviction, "cheap" revalidation cost bounds, and eligibility rules for which checkers may be skipped are unspecified. (N-4:L9-L9, L15-L15 | ledger-line: DEEP-N-001.discovery.md:L262)
+- [ambiguity] (N-001/N4-A003) [A/EVENT] Acceptance only shows Hit path; Miss and Revalidated kinds from the index schema lack Tier-1 fixtures here. (N-4:L44-L46; N-0:L268-L269 | ledger-line: DEEP-N-001.discovery.md:L263)
+- [inference] (N-001/N4-I001) [I/DATA] Claim-identity hashing with blake3 plus J-96 trigger_signature together form the memo key, generalizing C-30's (query_hash,project_hash) pair without defining the exact serialization. (N-4:L9-L9, L30-L30, L41-L41 | ledger-line: DEEP-N-001.discovery.md:L260)
+
+### N-5: policy / intensity arbitration plane
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY | sample: N-5:L1-L3; N-5:L5-L5; N-5:L8-L9, L20-L20, L29-L29, L40-L40; N-5:L9-L9, L14-L14, L32-L32; N-5:L9-L9, L20-L20, L29-L29; N-5:L9-L9, L17-L17, L33-L33 | 34 non-summary-placed, 1 summary-placed, 35 total unique atoms in unit | IDs: N-002/N5-E001, N-002/N5-E002, N-002/N5-E003, N-002/N5-E004, N-002/N5-E005, N-002/N5-E006, N-002/N5-E007, N-002/N5-E008, …
+**Composes with**: B-28, C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-55, J-66, J-83, J-92, J-96, J-97, J-109, K-4, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-6. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- [status] (N-002/N5-E001) [E/STATUS] N-5 is TIER 2 (HIGH), lever explainable-non-emergent-routing, findings W-3+W-17+W-35+W-14, grounding STRONG, nature BUILD, effort L, WAVE 4, depends on N-1. (N-5:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L80)
+- [status] (N-002/N5-E011) [E/DEP] PLAN-asserted: ten routers + six intensity deciders exist as PLANNED/shipped, each deterministic (TD-3), each with its own SSB row. (N-5:L13-L14 | ledger-line: DEEP-N-002.discovery.md:L90)
+- [config] (N-002/N5-E002) [E/FLOW] Premise: ten deterministic routers with no arbitration plane; pairwise conflicts resolve implicitly by call order inside `task_runner` (the "dispatch order is prose" failure J-92 flags for the FSM, reproduced at the policy layer). Plus six verification-intensity deciders on uncoordinated axes. (N-5:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L81)
+- [gate] (N-002/N5-E003) [E/CAP] Binding (1): a declared PRECEDENCE spec as DATA (not code, R8-frozen) with order safety-gates > cost-ceiling > abstention > escalation > modality > serving-tier. (N-5:L8-L9, L20-L20, L29-L29, L40-L40 | ledger-line: DEEP-N-002.discovery.md:L82)
+- [gate] (N-002/N5-E008) [E/DEP] Six intensity deciders as axes: B-41 (level) / L-21 (model) / J-84 (effort) / C-46 (delegation) / K-5 (gate-risk) / B-28 ModeSelector (as J-55's edit-format leg, W-14). (N-5:L10-L10, L16-L16, L32-L32 | ledger-line: DEEP-N-002.discovery.md:L87)
+- [gate] (N-002/N5-E009) [E/OBS] K-4 gate-tax then measures ONE policy, not the composition of six. (N-5:L10-L10, L33-L33 | ledger-line: DEEP-N-002.discovery.md:L88)
+- [gate] (N-002/N5-E016) [E/INT] Integration at `crates/orchestrator` `task_runner` routing seam + frozen precedence/intensity table (R8, in `.claude/gate-manifest`). (N-5:L23-L24, L34-L35 | ledger-line: DEEP-N-002.discovery.md:L95)
+- [gate] (N-002/N5-E024) [E/TEST] expect_artifact: winning route taken per frozen precedence; NEGATIVE: decision with >=2 routers fired and NO arbitration row must FAIL (R10 seam gate). (N-5:L46-L46 | ledger-line: DEEP-N-002.discovery.md:L103)
+- [gate] (N-002/N5-E026) [E/DEP] COMPOSES-WITH the ten routers + six intensity deciders (as axes), J-92 pattern, J-66 monitor, K-4 gate-tax, B-28 (edit-format leg of J-55); re-implements NONE (GD-1). (N-5:L52-L53 | ledger-line: DEEP-N-002.discovery.md:L105)
+- [surface] (N-002/N5-E017) [E/SURFACE/SURFACE] frontend_pair: a RouteDecision explain-row on the canvas/RRA (W-7/N-7 render consumer). (N-5:L25-L25, L42-L42 | ledger-line: DEEP-N-002.discovery.md:L96)
+- [surface] (SUMMARY/N5-E15) Render a `RouteDecision` explanation row on the canvas/RRA (`L119-L120`). (14-N:L187)
+- (N-002/N5-E004) [E/DEP] Precedence spans ten routers: D-10 grounding-mode / J-84 effort / J-55 modality / H-7 role / E-20 local-cloud / J-48 serving / J-54 free-pool / L-6 curiosity / J-32 front-door / J-73 should-retrieve. (N-5:L9-L9, L14-L14, L32-L32 | ledger-line: DEEP-N-002.discovery.md:L83)
+- (N-002/N5-E005) [E/EVENT] ONE composite `RouteDecision` journal row names every router consulted + which won + why. (N-5:L9-L9, L20-L20, L29-L29 | ledger-line: DEEP-N-002.discovery.md:L84)
+- (N-002/N5-E006) [E/OBS] J-92's FSM-substate structural-enforcement is extended one level up so J-66 monitor can watch routing order as a checkable invariant. (N-5:L9-L9, L17-L17, L33-L33 | ledger-line: DEEP-N-002.discovery.md:L85)
+- (N-002/N5-E007) [E/CAP] Binding (2): ONE intensity resolver over (risk x model-tier x level x task-difficulty x delegation), absorbing six deciders as AXES of one frozen table. (N-5:L10-L10, L20-L20, L30-L30 | ledger-line: DEEP-N-002.discovery.md:L86)
+- (N-002/N5-E010) [E/LIMIT] EXCLUDED: re-implementing any router or decider (arbitrate/resolve them); a new router; changing any router's internal deterministic logic (TD-3 stays — this orders their OUTPUTS). (N-5:L11-L11, L38-L39 | ledger-line: DEEP-N-002.discovery.md:L89)
+- (N-002/N5-E012) [E/EVIDENCE] E-20 declares itself "orthogonal to D-10" and E-31 adds EscalationPolicy — letters answer multiplicity with prose orthogonality, not an arbitration spec. (N-5:L15-L15 | ledger-line: DEEP-N-002.discovery.md:L91)
+- (N-002/N5-E013) [E/DEP] B-28 Focus Tunnel ModeSelector routes FIM/DIFF/STRUCTURED; J-55 ModalityRouter routes CodeAct/constrained-call/SEARCH-REPLACE — two mode deciders on the same emission path with undefined interaction (W-14). (N-5:L16-L16 | ledger-line: DEEP-N-002.discovery.md:L92)
+- (N-002/N5-E014) [E/CFG] SHIP NOW (Tier-1): frozen precedence table + composite RouteDecision row + intensity resolver table with six deciders as axes; in-process, deterministic. (N-5:L19-L20 | ledger-line: DEEP-N-002.discovery.md:L93)
+- (N-002/N5-E018) [E/INT] reachable_from: task_runner on a task that fires >=2 conflicting routers [PRODUCTION]; a `#[cfg(test)]` caller NEVER satisfies this (R7). (N-5:L34-L36 | ledger-line: DEEP-N-002.discovery.md:L97)
+- (N-002/N5-E019) [E/FAIL] stub_ban: NO routing decision with >=2 routers fired and no arbitration row. (N-5:L37-L38 | ledger-line: DEEP-N-002.discovery.md:L98)
+- (N-002/N5-E020) [E/CFG] stub_ban: NO model-settable precedence (frozen table, R8). (N-5:L40-L40 | ledger-line: DEEP-N-002.discovery.md:L99)
+- (N-002/N5-E021) [E/LIMIT] stub_ban: NO `.unwrap()`/`.expect()` on prod paths. (N-5:L41-L41 | ledger-line: DEEP-N-002.discovery.md:L100)
+- (N-002/N5-E022) [E/TEST] trigger: a live task where two routers disagree (e.g. L-6 retrieve vs J-73 abstain). (N-5:L44-L44 | ledger-line: DEEP-N-002.discovery.md:L101)
+- (N-002/N5-E023) [E/EVENT] expect_ssb: ONE `+route_arbitrated` row naming both routers + winner + precedence-rank. (N-5:L45-L45 | ledger-line: DEEP-N-002.discovery.md:L102)
+- (N-002/N5-E025) [E/DEP] Grounding: W-3/W-17/W-35/W-14, TIER-2 item 5; wiring-enforcement R10 (unit-green != integrated-green). (N-5:L48-L50 | ledger-line: DEEP-N-002.discovery.md:L104)
+- [deferred] (N-002/N5-E015) [E/DEFER] DEFER (Tier-2): J-66 monitor watching routing-order as an invariant (lands after RouteDecision row is emitting). (N-5:L21-L21 | ledger-line: DEEP-N-002.discovery.md:L94)
+- [summary-delta] (N-002/SD-N5-001) [Δ] section=N-5 (DEEP-N-002.discovery.md:L474): **ADD** exact router enumeration and frozen precedence string safety-gates > cost-ceiling > abstention > escalation > modality > serving-tier. | summary_anchor=14-N:L169-L196 | source_atoms=N5-E003–N5-E004
+- [summary-delta] (N-002/SD-N5-002) [Δ] section=N-5 (DEEP-N-002.discovery.md:L475): **ADD** Tier-2 deferral of J-66 routing-order monitor; R8 table in gate-manifest; N-7 canvas/RRA explain-row as frontend_pair. | summary_anchor=14-N:L185-L196 | source_atoms=N5-E015–N5-E017
+- [summary-delta] (N-002/SD-N5-003) [Δ] section=N-5 (DEEP-N-002.discovery.md:L476): **QUALIFY** summary conflict examples that name E-39: numbered source does not list E-39 among the ten routers; only L-6 vs J-73 is the trigger example. | summary_anchor=14-N:L174-L175, L193 | source_atoms=N5-I001, N5-E022
+- [summary-delta] (N-002/SD-N5-004) [Δ] section=N-5 (DEEP-N-002.discovery.md:L477): **ADD** intensity-tuple vs B-28 edit-format leg tension and unresolved task-difficulty measure. | summary_anchor=14-N:L180-L196 | source_atoms=N5-A001–N5-A002
+- [ambiguity] (N-002/N5-A001) [A/DET] Tie-breaking within a precedence tier, policy versioning, and how task-difficulty is measured are not specified. (N-5:L8-L10, L20-L20 | ledger-line: DEEP-N-002.discovery.md:L106)
+- [ambiguity] (N-002/N5-A002) [A/DATA] The intensity resolver parenthesized axes omit edit-format even though B-28 is explicitly incorporated as J-55's edit-format leg. (N-5:L10-L10, L16-L16 | ledger-line: DEEP-N-002.discovery.md:L107)
+- [ambiguity] (N-002/N5-A003) [A/EVENT] Exact RouteDecision field schema beyond "routers consulted + winner + why" and full `+route_arbitrated` payload beyond names/rank are not specified. (N-5:L9-L9, L45-L45 | ledger-line: DEEP-N-002.discovery.md:L108)
+- [inference] (N-002/N5-I001) [I/DEP] Summary-level conflict examples (J-84 vs E-39, J-48 vs J-54) are not re-listed in the numbered source's router enumeration; only L-6 vs J-73 appears as the observable trigger example. E-39 is not in the ten-router list. (N-5:L9-L9, L44-L44 | ledger-line: DEEP-N-002.discovery.md:L109)
+
+### N-6: provenance / trust lattice + admission-gate family
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY | sample: N-6:L1-L3; N-6:L5-L5; N-6:L8-L8, L19-L19, L28-L28; N-6:L8-L8, L10-L10, L14-L14, L23-L23, L37-L37; N-6:L8-L8, L13-L13, L31-L31; N-6:L9-L9, L19-L19, L29-L29 | 29 non-summary-placed, 1 summary-placed, 30 total unique atoms in unit | IDs: N-002/N6-E001, N-002/N6-E002, N-002/N6-E003, N-002/N6-E004, N-002/N6-E005, N-002/N6-E006, N-002/N6-E007, N-002/N6-E008, …
+**Composes with**: C-30, C-47, C-48, C-49, E-5, F-1, F-5, F-6, G-1, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-83, J-93, J-96, J-97, J-102, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- [status] (N-002/N6-E001) [E/STATUS] N-6 is TIER 2 (HIGH), lever security-composes-only-if-the-lattice-does, findings W-19+W-29, grounding STRONG, nature BUILD, effort L, WAVE 4. (N-6:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L119)
+- [gate] (N-002/N6-E006) [E/CAP] Declare the ADMISSION family: F-1 VibeGate (code writes) + J-102 config-ingress (.md instruction surface) + J-109 learned-artifact (memory/playbook/case) + new K-23 workspace-manifest / M-2 org-pack surfaces share ONE scanner registry (scanner legs as shared DATA, surface as parameter). (N-6:L9-L9, L19-L19, L29-L29 | ledger-line: DEEP-N-002.discovery.md:L124)
+- [gate] (N-002/N6-E011) [E/CFG] SHIP NOW (Tier-1): lattice MAPPING table + carrying the label across ingest->memory->citation chain + shared scanner registry for the three EXISTING admission gates. (N-6:L18-L19 | ledger-line: DEEP-N-002.discovery.md:L129)
+- [gate] (N-002/N6-E013) [E/INT] Integration: `crates/security` provenance/taint + admission gate call sites; a lattice mapping table (frozen). F-6 type barrier preserved. (N-6:L22-L23 | ledger-line: DEEP-N-002.discovery.md:L131)
+- [gate] (N-002/N6-E020) [E/TEST] expect_artifact: trust label at citation is the lattice-mapped image of the ingest label; NEGATIVE: tainted string that loses taint at memory/citation/skill boundary must FAIL. (N-6:L45-L45 | ledger-line: DEEP-N-002.discovery.md:L138)
+- [gate] (N-002/N6-E021) [E/DEP] Grounding: W-19 + F-6 map-don't-merge refinement, W-29 admission family, TIER-2 item 6; CLAUDE.md security posture + fail-closed admission. (N-6:L47-L49 | ledger-line: DEEP-N-002.discovery.md:L139)
+- [surface] (N-002/N6-E014) [E/SURFACE/SURFACE] frontend_pair: a provenance badge on cited/memory surfaces (W-7/N-7 render consumer), OR N/A justified. (N-6:L24-L24, L41-L41 | ledger-line: DEEP-N-002.discovery.md:L132)
+- [surface] (SUMMARY/N6-E16) Add a provenance badge on cited and memory surfaces, or justify N/A (`L138-L139`). (14-N:L216)
+- (N-002/N6-E002) [E/SEC] Premise: six independent "how much do we trust this byte's origin" scales, only ONE pairwise wire between them; a T2 memory row, G-1 tainted string, and T2 source citation are three unrelated T2s; security composes only if the lattice does. (N-6:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L120)
+- (N-002/N6-E003) [E/CAP] Declare ONE provenance lattice: a total SEMANTIC MAPPING between the six scales — NOT one shared enum. (N-6:L8-L8, L19-L19, L28-L28 | ledger-line: DEEP-N-002.discovery.md:L121)
+- (N-002/N6-E004) [E/SEC] F-6 DELIBERATELY made SkillTrustTier distinct from memory-TrustTier with an auditor-enforced type barrier to avoid namespace confusion; map S2 into T0-T3 terms rather than merging enums. (N-6:L8-L8, L10-L10, L14-L14, L23-L23, L37-L37 | ledger-line: DEEP-N-002.discovery.md:L122)
+- (N-002/N6-E005) [E/FLOW] Mapping is carried on the SAME object across: ingest(G-1 taint, 4 sites) -> memory(C-48 T0-T3) -> citation(H-53) -> oracle-TTL(C-30 T1-T4) -> skill-autonomy(F-6 S1-S4) -> cross-repo(K-23) -> research(4D EvidenceLevel). (N-6:L8-L8, L13-L13, L31-L31 | ledger-line: DEEP-N-002.discovery.md:L123)
+- (N-002/N6-E007) [E/DEP] They already share legs (J-102 reuses F-1's secret-grep; J-109 indexes off J-102's manifest); M-2 monotone-tighten + J-102 quarantine are the same verdict shape. (N-6:L9-L9, L15-L15, L32-L32 | ledger-line: DEEP-N-002.discovery.md:L125)
+- (N-002/N6-E008) [E/LIMIT] EXCLUDED: collapsing F-6's enum into C-48's (map, don't merge — type barrier stays); re-implementing any scanner; a seventh trust scale. (N-6:L10-L10, L37-L40 | ledger-line: DEEP-N-002.discovery.md:L126)
+- (N-002/N6-E009) [E/DEP] PLAN-asserted six scales exist independently; only J-93-C (taint-survives-memory) wires a pair. (N-6:L12-L14 | ledger-line: DEEP-N-002.discovery.md:L127)
+- (N-002/N6-E010) [E/EVIDENCE] E-37/E-30/E-24/G-1/F-3/J-101/J-102 assemble the injection perimeter across five letters but pass no single provenance TYPE. (N-6:L16-L16 | ledger-line: DEEP-N-002.discovery.md:L128)
+- (N-002/N6-E015) [E/INT] reachable_from: real ingest -> memory-write -> citation chain [PRODUCTION data-plane]; a write to any admission surface [PRODUCTION admission]. (N-6:L33-L35 | ledger-line: DEEP-N-002.discovery.md:L133)
+- (N-002/N6-E016) [E/SEC] stub_ban: NO taint lost at the memory/citation/skill boundary. (N-6:L38-L38 | ledger-line: DEEP-N-002.discovery.md:L134)
+- (N-002/N6-E017) [E/LIMIT] stub_ban: NO re-implementation of a scanner leg (share via the registry); NO seventh trust scale. (N-6:L39-L40 | ledger-line: DEEP-N-002.discovery.md:L135)
+- (N-002/N6-E018) [E/TEST] trigger: ingest of a web-tainted string -> memory-write -> citation. (N-6:L43-L43 | ledger-line: DEEP-N-002.discovery.md:L136)
+- (N-002/N6-E019) [E/EVENT] expect_ssb: taint/trust label MAPS coherently end-to-end (rides existing G-1/provenance rows; `+admission_scanned` if the shared registry emits). (N-6:L44-L44 | ledger-line: DEEP-N-002.discovery.md:L137)
+- (N-002/N6-E022) [E/DEP] COMPOSES-WITH G-1/C-48/F-6/C-30/K-23/4D, F-1/J-102/J-109, J-93-C; re-implements NONE (GD-1). (N-6:L51-L52 | ledger-line: DEEP-N-002.discovery.md:L140)
+- [deferred] (N-002/N6-E012) [E/DEFER] DEFER (Tier-2): K-23/M-2 new admission surfaces plugging into the registry (they land with their own units; N-6 makes the registry they plug into). (N-6:L20-L20 | ledger-line: DEEP-N-002.discovery.md:L130)
+- [summary-delta] (N-002/SD-N6-001) [Δ] section=N-6 (DEEP-N-002.discovery.md:L483): **CORRECT** any "five scales" framing: numbered source consistently counts and enumerates **six** scales. | summary_anchor=14-N:L222-L224 | source_atoms=N6-C001, N6-E003–N6-E005
+- [summary-delta] (N-002/SD-N6-002) [Δ] section=N-6 (DEEP-N-002.discovery.md:L484): **ADD** full carry chain including H-53 citation and 4D EvidenceLevel; Tier-1 vs Tier-2 split (three existing gates now; K-23/M-2 later). | summary_anchor=14-N:L201-L224 | source_atoms=N6-E005–N6-E012
+- [summary-delta] (N-002/SD-N6-003) [Δ] section=N-6 (DEEP-N-002.discovery.md:L485): **ADD** optional `+admission_scanned` and map-don't-merge F-6 type barrier as hard stub_ban. | summary_anchor=14-N:L214-L224 | source_atoms=N6-E004, N6-E016–N6-E019
+- [ambiguity] (N-002/N6-A001) [A/DATA] Exact lattice mapping cells (what S2 means in T0-T3 terms, what taint label a T2 source implies, incomparable meanings) are not tabulated. (N-6:L8-L8 | ledger-line: DEEP-N-002.discovery.md:L141)
+- [ambiguity] (N-002/N6-A002) [A/STATE] Whether K-23/M-2 are gates or only surfaces, and when Tier-2 plugs them in, remains deferred without concrete schema. (N-6:L9-L9, L20-L20 | ledger-line: DEEP-N-002.discovery.md:L142)
+- [ambiguity] (N-002/N6-A003) [A/EVENT] Optional `+admission_scanned` is conditional; no dedicated lattice-mapping SSB variant is named. (N-6:L44-L44 | ledger-line: DEEP-N-002.discovery.md:L143)
+- [ambiguity] (N-002/N6-C001) [C/STATUS] Premise counts "six independent" scales and enumerates six consistently; any summary that says "five provenance scales" is corrected by this source. (N-6:L5-L5, L8-L8, L13-L13 | ledger-line: DEEP-N-002.discovery.md:L144)
+
+### N-7: human render as a REQUIRED verdict field
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY | sample: N-7:L1-L3; N-7:L5-L5; N-7:L8-L8; N-7:L8-L8, L27-L27; N-7:L8-L8, L27-L27; N-7:L8-L8, L28-L28, L37-L37 | 27 non-summary-placed, 9 summary-placed, 36 total unique atoms in unit | IDs: N-002/N7-E001, N-002/N7-E002, N-002/N7-E003, N-002/N7-E004, N-002/N7-E005, N-002/N7-E006, N-002/N7-E007, N-002/N7-E008, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-7, K-11, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-8, N-9. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- [status] (N-002/N7-E001) [E/STATUS] N-7 is TIER 2 (HIGH), lever a-non-author-can-see-the-value, finding W-7, grounding MODERATE, nature BUILD, effort M, WAVE 5. (N-7:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L154)
+- [gate] (N-002/N7-E003) [E/CAP] Make "human render" a REQUIRED field of every gate/verdict family the way +SSB-row is required today. (N-7:L8-L8 | ledger-line: DEEP-N-002.discovery.md:L156)
+- [gate] (N-002/N7-E006) [E/DEP] N-2 authoring gate makes `render_field` a REQUIRED contract field: a new verdict class with no declared render fails the corpus check. (N-7:L8-L8, L28-L28, L37-L37 | ledger-line: DEEP-N-002.discovery.md:L159)
+- [gate] (N-002/N7-E016) [E/INT/SURFACE] reachable_from: live verdict-emitting gate -> render at declared target [PRODUCTION]; dashboard/Tauri render path [PRODUCTION frontend]. (N-7:L32-L34 | ledger-line: DEEP-N-002.discovery.md:L169)
+- [gate] (N-002/N7-E017) [E/TEST] trigger: a live verdict-emitting gate (e.g. an L-7 hallucination verdict on a real task). (N-7:L41-L41 | ledger-line: DEEP-N-002.discovery.md:L170)
+- [gate] (N-002/N7-E019) [E/TEST/SURFACE] expect_artifact: human-readable render lands at declared target (visible in dashboard-smoker); NEGATIVE: new verdict class with no declared render fails N-2 authoring check. (N-7:L43-L43 | ledger-line: DEEP-N-002.discovery.md:L172)
+- [gate] (SUMMARY/N7-E13) Every verdict-emitting gate must deliver a human-readable render to its declared PR/chat/canvas/brief target (`L157-L158`). (14-N:L242)
+- [surface] (N-002/N7-E004) [E/SURFACE/SURFACE] Every verdict class declares its K-11-style render target: PR comment / chat ACK line / canvas badge / brief row / M-3 org rollup. (N-7:L8-L8, L27-L27 | ledger-line: DEEP-N-002.discovery.md:L157)
+- [surface] (N-002/N7-E008) [E/LIMIT/SURFACE] EXCLUDED: re-authoring K-11 per surface; a new dashboard framework (compose existing Svelte dashboard-v2 + K-7 brief + M-3 rollup); inventing a verdict (N-7 renders existing verdicts). (N-7:L10-L10, L36-L38 | ledger-line: DEEP-N-002.discovery.md:L161)
+- [surface] (N-002/N7-E009) [E/DEP/SURFACE] PLAN-asserted: K-11 PR-evidence render, K-7 buyer brief, G-5 reviewer cockpit, M-3 fleet rollup, canvas altitudes exist; KD-2 + K-20 wedge concede distribution gap. (N-7:L12-L13 | ledger-line: DEEP-N-002.discovery.md:L162)
+- [surface] (N-002/N7-E010) [E/DEP/SURFACE] Verdicts emit as SSB rows + RRA bundles today; only K-11 humanizes them, PR-only. dashboard-v2 (Svelte 5 + Tauri v2) is the frontend; drawers are the current render surface. (N-7:L14-L15 | ledger-line: DEEP-N-002.discovery.md:L163)
+- [surface] (N-002/N7-E013) [E/INT/SURFACE] Integration: `crates/orchestrator` verdict emission + render substrate; dashboard-v2 + K-11/K-7 as render targets. (N-7:L21-L22 | ledger-line: DEEP-N-002.discovery.md:L166)
+- [surface] (N-002/N7-E014) [E/SURFACE/SURFACE] frontend_pair: MANDATORY — this IS the frontend unit; `cross_lang_diff` over the Tauri command + Svelte render targets must PASS. (N-7:L23-L23, L39-L39 | ledger-line: DEEP-N-002.discovery.md:L167)
+- [surface] (N-002/N7-E015) [E/CAP/SURFACE] produces_symbols: render substrate (dispatcher + target adapters PR/chat/canvas/brief/rollup) + `render_field` as required WIRING_CONTRACT field enforced by N-2. (N-7:L26-L28 | ledger-line: DEEP-N-002.discovery.md:L168)
+- [surface] (N-002/N7-E018) [E/EVENT/SURFACE] expect_ssb: `+verdict_rendered(PrComment\ (ChatAck\ | ledger-line: DEEP-N-002.discovery.md:L171)
+- [surface] (N-002/N7-E020) [E/DEP/SURFACE] Grounding: W-7, TIER-2 item 7, KD-2/K-20; dashboardRules.md + visual-ui-loop.md; K-11 as existing render template. (N-7:L45-L47 | ledger-line: DEEP-N-002.discovery.md:L173)
+- [surface] (N-002/N7-E021) [E/DEP/SURFACE] COMPOSES-WITH K-11, K-7, G-5, M-3, dashboard-v2, the verdict producers; re-implements NONE (GD-1). (N-7:L49-L50 | ledger-line: DEEP-N-002.discovery.md:L174)
+- [surface] (SUMMARY/N7-E02) Require each verdict class to declare its render target/form (`L150-L152`). (14-N:L231)
+- [surface] (SUMMARY/N7-E03) Support PR comments as render targets (`L151-L152`). (14-N:L232)
+- [surface] (SUMMARY/N7-E04) Support chat acknowledgment lines as render targets (`L151-L152`). (14-N:L233)
+- [surface] (SUMMARY/N7-E05) Support canvas badges as render targets (`L151-L152`). (14-N:L234)
+- [surface] (SUMMARY/N7-E06) Support brief rows as render targets (`L151-L152`). (14-N:L235)
+- [surface] (SUMMARY/N7-E07) Support M-3 organization rollups as render targets (`L151-L152`). (14-N:L236)
+- [surface] (SUMMARY/N7-E12) The frontend pairing is mandatory because rendering is the feature itself (`L155-L156`). (14-N:L241)
+- (N-002/N7-E002) [E/FLOW] Premise: engine is ~200 units deep; human-visible trust surfaces are few and late; evidence is machine-shaped by default (RRA/SSB/hashes); only K-11 converts to human form and only for PRs. (N-7:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L155)
+- (N-002/N7-E005) [E/CAP] Build ONE render substrate `render(verdict, target)` dispatcher with many verdict producers plugging in, instead of K-11 being a one-off for G-5. (N-7:L8-L8, L27-L27 | ledger-line: DEEP-N-002.discovery.md:L158)
+- (N-002/N7-E007) [E/DEP] Verdict families that gain a render: J-83 receipts, L-7 hallucination verdicts, N-1 measurement numbers, N-5 RouteDecision, N-6 provenance, N-8 governance-coverage. (N-7:L9-L9, L31-L31 | ledger-line: DEEP-N-002.discovery.md:L160)
+- (N-002/N7-E011) [E/CFG] SHIP NOW (Tier-1): `render(verdict, target)` substrate + `render_field` as required contract field (wired to N-2) + rendering 2-3 verdict families (J-83 receipts + L-7 + N-1 numbers) at their declared targets. (N-7:L17-L18 | ledger-line: DEEP-N-002.discovery.md:L164)
+- [deferred] (N-002/N7-E012) [E/DEFER/SURFACE] DEFER (Tier-2): M-3 org-rollup render + full canvas-badge coverage (land as org/canvas units mature). (N-7:L19-L19 | ledger-line: DEEP-N-002.discovery.md:L165)
+- [summary-delta] (N-002/SD-N7-001) [Δ] section=N-7 (DEEP-N-002.discovery.md:L491): **ADD** full producer list including N-5/N-6/N-8; Tier-1 renders only 2-3 families (J-83/L-7/N-1); M-3/full canvas deferred. | summary_anchor=14-N:L226-L248 | source_atoms=N7-E007, N7-E011–N7-E012
+- [summary-delta] (N-002/SD-N7-002) [Δ] section=N-7 (DEEP-N-002.discovery.md:L492): **ADD** `+verdict_rendered` Kind list PrComment/ChatAck/CanvasBadge/BriefRow/OrgRollup and mandatory `cross_lang_diff` PASS. | summary_anchor=14-N:L240-L243 | source_atoms=N7-E014, N7-E018–N7-E019
+- [summary-delta] (N-002/SD-N7-003) [Δ] section=N-7 (DEEP-N-002.discovery.md:L493): **ADD** MODERATE grounding (summary carries it; detail confirms W-7 only). | summary_anchor=14-N:L228 | source_atoms=N7-E001
+- [ambiguity] (N-002/N7-A001) [A/SURFACE/SURFACE] Mapping from each existing verdict class to one or multiple render targets is not enumerated beyond the Tier-1 2-3 family list. (N-7:L9-L9, L18-L18 | ledger-line: DEEP-N-002.discovery.md:L175)
+- [ambiguity] (N-002/N7-A002) [A/FAIL] Accessibility, localization, acknowledgement semantics, and delivery-failure behavior for renders are absent. (N-7:L8-L8, L41-L43 | ledger-line: DEEP-N-002.discovery.md:L176)
+- [ambiguity] (N-002/N7-A003) [A/DEFER/SURFACE] Full canvas-badge coverage and M-3 rollup render timing relative to org/canvas unit maturity is open. (N-7:L19-L19 | ledger-line: DEEP-N-002.discovery.md:L177)
+- [ambiguity] (SUMMARY/N7-A01) The mapping from each existing verdict class to exactly one or multiple render targets is not enumerated. (14-N:L247)
+
+### N-8: governance-coverage substrate
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY | sample: N-8:L1-L3; N-8:L5-L5; N-8:L8-L8, L33-L34; N-8:L9-L9; N-8:L10-L10; N-8:L11-L11 | 32 non-summary-placed, 1 summary-placed, 33 total unique atoms in unit | IDs: N-002/N8-E001, N-002/N8-E002, N-002/N8-E003, N-002/N8-E004, N-002/N8-E005, N-002/N8-E006, N-002/N8-E007, N-002/N8-E008, …
+**Composes with**: B-17, C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-27, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-46, J-70, J-83, J-96, J-97, J-109, K-22, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- [status] (N-002/N8-E001) [E/STATUS] N-8 is TIER 3 (MEDIUM-HIGH), lever a-number-no-competitor-can-utter, findings W-18+W-34+W-31, grounding STRONG, nature BUILD, effort M, WAVE 5. (N-8:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L187)
+- [gate] (N-002/N8-E002) [E/FLOW] Premise: five instruments of "is our own governance real," none citing more than one of the others; frozen prevents tampering but does NOT prove the gate catches what it claims. (N-8:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L188)
+- [gate] (N-002/N8-E004) [E/OBS] View B-17 gate-liveness ("does this gate actually FIRE") — runtime-gate grain. (N-8:L9-L9 | ledger-line: DEEP-N-002.discovery.md:L190)
+- [gate] (N-002/N8-E007) [E/OBS] View J-70 gate-manifest traceability ("does every frozen gate declare objective/evidence"). (N-8:L12-L12 | ledger-line: DEEP-N-002.discovery.md:L193)
+- [gate] (N-002/N8-E008) [E/OBS] View H-27 kill-your-own-mutant-corpus generalized from finance ("does the enforcer actually CATCH" — prove each gate kills 100% of a frozen mutant corpus of its OWN logic + satisfies declared MRs before ACTIVE). (N-8:L13-L13 | ledger-line: DEEP-N-002.discovery.md:L194)
+- [gate] (N-002/N8-E009) [E/CFG] Make kill-your-own-mutant-corpus a gate-manifest LIFECYCLE requirement: a new gate cannot enter `.claude/gate-manifest.txt` without its mutant corpus + measured kill rate. (N-8:L14-L14, L25-L25, L35-L35, L44-L44 | ledger-line: DEEP-N-002.discovery.md:L195)
+- [gate] (N-002/N8-E012) [E/LIMIT] EXCLUDED: re-implementing any of the five (view them); a new gate framework; claiming the number before it is MEASURED through N-1 (ND-4). (N-8:L16-L16, L43-L45 | ledger-line: DEEP-N-002.discovery.md:L198)
+- [gate] (N-002/N8-E013) [E/DEP] PLAN-asserted: B-17/K-22/J-46/J-70 exist; H-27 proves each FINANCE gate kills a frozen mutant corpus; ~40 other deterministic gates self-validate only by authorship care + R8 freezing; `.claude/gate-manifest.txt` + `gate_freeze_check.py` are the frozen-gate registry. (N-8:L18-L22 | ledger-line: DEEP-N-002.discovery.md:L199)
+- [gate] (N-002/N8-E014) [E/CFG] SHIP NOW (Tier-1): substrate joining B-17 + K-22 + J-70 into one coverage view + headline number (measured through N-1) + kill-your-own-mutant-corpus as gate-manifest lifecycle requirement for NEW gates. (N-8:L24-L25 | ledger-line: DEEP-N-002.discovery.md:L200)
+- [gate] (N-002/N8-E015) [E/DEFER] DEFER (Tier-2): back-filling mutant corpora for all ~40 existing gates (lifecycle rule stops the bleed; back-fill is a rolling task). (N-8:L26-L26 | ledger-line: DEEP-N-002.discovery.md:L201)
+- [gate] (N-002/N8-E016) [E/INT] Integration: `.claude/tools/` governance-coverage checker + gate-manifest lifecycle hook; `crates/orchestrator` for the runtime-gate-liveness leg. (N-8:L28-L29 | ledger-line: DEEP-N-002.discovery.md:L202)
+- [gate] (N-002/N8-E018) [E/INT] reachable_from: CI/authoring invocation of coverage checker [PRODUCTION]; gate-manifest lifecycle at gate-freeze time [PRODUCTION]. (N-8:L39-L41 | ledger-line: DEEP-N-002.discovery.md:L204)
+- [gate] (N-002/N8-E019) [E/FAIL] stub_ban: NO new gate entering the frozen set without a mutant corpus + kill rate. (N-8:L44-L44 | ledger-line: DEEP-N-002.discovery.md:L205)
+- [gate] (N-002/N8-E021) [E/SURFACE/SURFACE] CLI/command surface: `python <the governance-coverage checker> over the rulebook + gate-manifest`. (N-8:L48-L48 | ledger-line: DEEP-N-002.discovery.md:L207)
+- [gate] (N-002/N8-E022) [E/EVENT] expect_ssb: `+governance_coverage_measured(GateLiveness\ (DoctrineEnforcer\ | ledger-line: DEEP-N-002.discovery.md:L208)
+- [gate] (N-002/N8-E023) [E/TEST] expect_artifact: coverage % + a NEW gate lacking a mutant corpus is REFUSED entry to the frozen set; NEGATIVE: a decorative rule (clause with no enforcer) reported as covered must FAIL. (N-8:L50-L50 | ledger-line: DEEP-N-002.discovery.md:L209)
+- [gate] (N-002/N8-E025) [E/DEP] COMPOSES-WITH B-17, K-22, J-46, J-70, H-27 (generalized), gate-manifest, N-1, N-2; re-implements NONE (GD-1). (N-8:L56-L57 | ledger-line: DEEP-N-002.discovery.md:L211)
+- [surface] (N-002/N8-E017) [E/SURFACE/SURFACE] frontend_pair: a governance tile (the marketable number) on G-5/M-3. (N-8:L30-L30, L46-L46 | ledger-line: DEEP-N-002.discovery.md:L203)
+- [surface] (SUMMARY/N8-E12) Surface a governance tile on G-5/M-3 (`L174-L175`). (14-N:L265)
+- (N-002/N8-E003) [E/CAP] ONE governance-coverage substrate with FIVE views. (N-8:L8-L8, L33-L34 | ledger-line: DEEP-N-002.discovery.md:L189)
+- (N-002/N8-E005) [E/OBS] View K-22 doctrine-enforcer coverage ("does this rule have an ENFORCER") — authored-doctrine grain. (N-8:L10-L10 | ledger-line: DEEP-N-002.discovery.md:L191)
+- (N-002/N8-E006) [E/OBS] View J-46 doctrine-debt-RATE ("is adoption keeping pace"). (N-8:L11-L11 | ledger-line: DEEP-N-002.discovery.md:L192)
+- (N-002/N8-E010) [E/DEP] N-2 corpus validator (plan edges) is a sixth grain of the same "what governance is decorative" question. (N-8:L14-L14, L57-L57 | ledger-line: DEEP-N-002.discovery.md:L196)
+- (N-002/N8-E011) [E/OBS] Headline number: "N% of ELAI's rules are machine-enforced, each enforcer mutation-proven, drift-rate X/quarter" (K-1-dossier grade). (N-8:L15-L15, L25-L25, L34-L34 | ledger-line: DEEP-N-002.discovery.md:L197)
+- (N-002/N8-E020) [E/OBS] stub_ban: NO headline number not recomputable from the journal (GD-2) / not measured through N-1 (ND-4). (N-8:L45-L45 | ledger-line: DEEP-N-002.discovery.md:L206)
+- (N-002/N8-E024) [E/DEP] Grounding: W-18/W-34/W-31, TIER-3 item 8; H-plan Track 7 (H-27); wiring-enforcement R8. (N-8:L52-L54 | ledger-line: DEEP-N-002.discovery.md:L210)
+- [summary-delta] (N-002/SD-N8-001) [Δ] section=N-8 (DEEP-N-002.discovery.md:L499): **ADD** explicit five view definitions, lifecycle mutant-corpus requirement, N-2 as sixth grain, and ~40-gate back-fill deferral. | summary_anchor=14-N:L250-L272 | source_atoms=N8-E004–N8-E015
+- [summary-delta] (N-002/SD-N8-002) [Δ] section=N-8 (DEEP-N-002.discovery.md:L500): **ADD/FLAG** expect_ssb Kind list (four named kinds) vs five views; checker path is a placeholder. | summary_anchor=14-N:L267-L272 | source_atoms=N8-E022, N8-A002–N8-A003, N8-C001
+- [summary-delta] (N-002/SD-N8-003) [Δ] section=N-8 (DEEP-N-002.discovery.md:L501): **ADD** GD-2 journal-recomputable headline and ND-4 measure-through-N-1 ban on unmeasured claims. | summary_anchor=14-N:L260-L272 | source_atoms=N8-E011, N8-E020
+- [ambiguity] (N-002/N8-A001) [A/DATA] Formula for the composite marketable number, kill-rate threshold, and quarter/window definition are unspecified. (N-8:L15-L15, L25-L25 | ledger-line: DEEP-N-002.discovery.md:L212)
+- [ambiguity] (N-002/N8-A002) [A/EVENT] expect_ssb Kind list names four of five views (GateLiveness, DoctrineEnforcer, DebtRate, MutantKill) and omits an explicit J-70 traceability Kind. (N-8:L9-L13, L49-L49 | ledger-line: DEEP-N-002.discovery.md:L213)
+- [ambiguity] (N-002/N8-A003) [A/INT] Exact governance-coverage checker filename/path is placeholder (`python <the governance-coverage checker>`). (N-8:L48-L48 | ledger-line: DEEP-N-002.discovery.md:L214)
+- [ambiguity] (N-002/N8-C001) [C/CFG] Tier-1 "joining B-17 + K-22 + J-70" lists three instruments while the substrate is defined as five views including J-46 and H-27; H-27 is present as lifecycle requirement, J-46's Tier-1 join status is less explicit. (N-8:L8-L13, L24-L25 | ledger-line: DEEP-N-002.discovery.md:L215)
+
+### N-9: one counterfactual / ablation engine
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-001, N-SD, SUMMARY | sample: N-9:L1-L3; N-9:L5-L5; N-9:L8-L8; N-9:L9-L9; N-9:L10-L10; N-9:L11-L11, L17-L17, L32-L32 | 30 non-summary-placed, 1 summary-placed, 31 total unique atoms in unit | IDs: N-001/N9-E001, N-001/N9-E002, N-001/N9-E003, N-001/N9-E004, N-001/N9-E005, N-001/N9-E006, N-001/N9-E007, N-001/N9-E008, …
+**Composes with**: C-30, C-45, C-47, C-49, E-5, E-6, E-10, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-40, H-49, I-8, I-12, I-28, I-30, I-31, J-21, J-25, J-75, J-83, J-96, J-97, J-105, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4
+
+- [status] (N-001/N9-E001) [E/STATUS] N-9 is TIER 3 MEDIUM-HIGH, lever dedupe-the-subtlest-measurement, W-20+W-27, STRONG, BUILD, M, WAVE 6, depends N-1. (N-9:L1-L3 | ledger-line: DEEP-N-001.discovery.md:L273)
+- [status] (N-001/N9-E008) [E/STATUS] C-45/I-28/J-105/J-109 + E-6/E-10/H-40/J-75 all exist as independent PLANNED units; all are drop-one/inject-one over same journal outcomes; K-18 reuse-ON/OFF arms same shape. (N-9:L15-L16 | ledger-line: DEEP-N-001.discovery.md:L280)
+- [gate] (N-001/N9-E019) [E/OBS] expect_artifact: delta computed by the core from journal labels; NEGATIVE: adapter that carries business logic fails ND-5. (N-9:L45-L45 | ledger-line: DEEP-N-001.discovery.md:L291)
+- [surface] (N-001/N9-E013) [E/SURFACE/SURFACE] frontend_pair: reuse existing attribution drawers, OR N/A justified. (N-9:L25-L25, L41-L41 | ledger-line: DEEP-N-001.discovery.md:L285)
+- [surface] (SUMMARY/N9-E14) Reuse existing attribution drawers or justify no frontend (`L190-L191`). (14-N:L291)
+- (N-001/N9-E002) [E/CAP] Premise: same mechanism — re-run/re-decide with one factor removed or injected, score delta off journal outcomes — is specified EIGHT times at different targets. (N-9:L5-L5 | ledger-line: DEEP-N-001.discovery.md:L274)
+- (N-001/N9-E003) [E/CAP] ONE counterfactual/ablation engine over the SSB with TARGET as parameter (role / verifier / ranker / rule / memory-entry / case) plus eight THIN adapters (ND-5). (N-9:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L275)
+- (N-001/N9-E004) [E/DEP] Attribution adapters: C-45 CANTANTE per-role credit (drop-a-role); I-28 DAG credit (winner vs highest-vetoed sibling); J-105 per-memory-entry causal ROI (counterfactual replay); J-109 AD-4 pre-write counterfactual replay. (N-9:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L276)
+- (N-001/N9-E005) [E/DEP] Ablation adapters: E-6 iso-budget role audit (delete-a-role unless >1-sigma lift); E-10 critic ablations; H-40 verifier retention by decorrelation; J-75 RRF ablation (drop-a-ranker). (N-9:L10-L10 | ledger-line: DEEP-N-001.discovery.md:L277)
+- (N-001/N9-E006) [E/DEP] Natural consumer of N-1 outcome labels (W-11); delta scored against same ground-truth labels. (N-9:L11-L11, L17-L17, L32-L32 | ledger-line: DEEP-N-001.discovery.md:L278)
+- (N-001/N9-E007) [E/LIMIT] EXCLUDED: re-implementing replay eight times; a ninth attribution target; an adapter carrying business logic (core does replay+scoring; adapter only names target). (N-9:L12-L12, L37-L38 | ledger-line: DEEP-N-001.discovery.md:L279)
+- (N-001/N9-E009) [E/DEP] N-3's deflation applies when the ablation feeds a promotion. (N-9:L17-L17 | ledger-line: DEEP-N-001.discovery.md:L281)
+- (N-001/N9-E010) [E/CFG] Tier-1 SHIP NOW: engine core (drop-one/inject-one replay + delta-scoring over SSB) + 3-4 adapters (role, verifier, ranker) proving parameterization. (N-9:L20-L20 | ledger-line: DEEP-N-001.discovery.md:L282)
+- (N-001/N9-E012) [E/INT] Integration: crates/orchestrator counterfactual engine + the eight call sites as adapters. (N-9:L24-L24 | ledger-line: DEEP-N-001.discovery.md:L284)
+- (N-001/N9-E014) [E/CAP] produces: counterfactual/ablation engine core (target as parameter) + thin adapters. (N-9:L28-L29 | ledger-line: DEEP-N-001.discovery.md:L286)
+- (N-001/N9-E015) [E/DEP] consumes: C-45/I-28/J-105/J-109 + E-6/E-10/H-40/J-75 as adapters; N-1 outcome labels; SSB event stream. (N-9:L30-L32 | ledger-line: DEEP-N-001.discovery.md:L287)
+- (N-001/N9-E016) [E/INT] reachable_from: a live role/verifier/ranker ablation through the ONE engine; test-only never R7. (N-9:L33-L35 | ledger-line: DEEP-N-001.discovery.md:L288)
+- (N-001/N9-E017) [E/LIMIT] stub_ban: NO eight separate replay implementations; NO adapter business logic; NO delta scored off anything but N-1 labels / journal (GD-2); NO .unwrap()/.expect(). (N-9:L36-L40 | ledger-line: DEEP-N-001.discovery.md:L289)
+- (N-001/N9-E018) [E/EVENT] trigger: live role (or verifier, or ranker) ablation through the one engine; expect_ssb `+counterfactual_scored(Role (Verifier | ledger-line: DEEP-N-001.discovery.md:L290)
+- (N-001/N9-E020) [E/EVIDENCE] Grounding: interlace W-20 (four counterfactual engines), W-27 (four ablation harnesses), TIER-3 item 9; N-1 labels; N-3 when promotion-feeding. (N-9:L47-L49 | ledger-line: DEEP-N-001.discovery.md:L292)
+- (N-001/N9-E021) [E/DEP] COMPOSES-WITH: C-45/I-28/J-105/J-109, E-6/E-10/H-40/J-75, N-1; re-implements NONE. (N-9:L51-L52 | ledger-line: DEEP-N-001.discovery.md:L293)
+- [deferred] (N-001/N9-E011) [E/DEFER] Tier-2 DEFER: memory/case/DAG-credit adapters (land as those subsystems stabilize; core shipped and proven first). (N-9:L21-L21 | ledger-line: DEEP-N-001.discovery.md:L283)
+- [summary-delta] (N-001/SD-N9-001) [Δ] section=N-9 (DEEP-N-001.discovery.md:L479): **ADD** Tier-1 vs Tier-2 split: core + role/verifier/ranker now; memory/case/DAG adapters deferred. | summary_anchor=14-N:L274-L298 | source_atoms=N9-E010–N9-E011
+- [summary-delta] (N-001/SD-N9-002) [Δ] section=N-9 (DEEP-N-001.discovery.md:L480): **ADD** per-adapter mechanism blurbs (CANTANTE drop-role, DAG winner-vs-vetoed, >1-sigma E-6, decorrelation H-40, etc.). | summary_anchor=14-N:L280-L287 | source_atoms=N9-E004–N9-E005
+- [summary-delta] (N-001/SD-N9-003) [Δ] section=N-9 (DEEP-N-001.discovery.md:L481): **ADD** N-3 deflation composition when ablation feeds promotion; K-18 same-shape note. | summary_anchor=14-N:L289 | source_atoms=N9-E008–N9-E009
+- [summary-delta] (N-001/SD-N9-004) [Δ] section=N-9 (DEEP-N-001.discovery.md:L482): **FLAG** target param includes `rule` but Pattern-2 Kind list omits Rule; eight adapters vs six targets still unresolved. | summary_anchor=14-N:L295-L298 | source_atoms=N9-I001, N9-A002
+- [summary-delta] (N-001/SD-N9-005) [Δ] section=N-9 (DEEP-N-001.discovery.md:L483): **EXPAND** replay isolation/seed/delta metric still unspecified in detail. | summary_anchor=14-N:L295-L297 | source_atoms=N9-A001
+- [ambiguity] (N-001/N9-A001) [A/DET] Replay isolation, seed control, delta metric definition, inject-one semantics, and allowable side effects are not stated. (N-9:L5-L5, L8-L8, L20-L20 | ledger-line: DEEP-N-001.discovery.md:L295)
+- [ambiguity] (N-001/N9-A002) [A/DEP] Mapping from eight adapters to six target parameters is not one-to-one specified (e.g. which adapters share Role). (N-9:L8-L10 | ledger-line: DEEP-N-001.discovery.md:L296)
+- [ambiguity] (N-001/N9-A003) [A/CFG] "3-4 adapters" Tier-1 set names role/verifier/ranker but does not name which fourth if four are shipped. (N-9:L20-L20 | ledger-line: DEEP-N-001.discovery.md:L297)
+- [inference] (N-001/N9-I001) [I/DATA] Event Kind set (Role (Verifier | ledger-line: DEEP-N-001.discovery.md:L294)
+
+### N-10: clarity / novelty → budget wires
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY | sample: N-10:L1-L3; N-10:L5-L5; N-10:L9-L9, L30-L30, L33-L33; N-10:L10-L10, L30-L30, L33-L33; N-10:L11-L11, L31-L34; N-10:L11-L11 | 27 non-summary-placed, 2 summary-placed, 29 total unique atoms in unit | IDs: N-002/N10-E001, N-002/N10-E002, N-002/N10-E003, N-002/N10-E004, N-002/N10-E005, N-002/N10-E006, N-002/N10-E007, N-002/N10-E008, …
+**Composes with**: B-21, B-38, B-40, C-29, C-30, C-47, C-49, D-15, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-32, J-39, J-79, J-83, J-84, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- [status] (N-002/N10-E001) [E/STATUS] N-10 is TIER 3 (MEDIUM-HIGH), lever active-resource-allocation, findings W-15+W-24, grounding STRONG, nature ACTIVATION, effort M, WAVE 6. (N-10:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L225)
+- [gate] (N-002/N10-E018) [E/TEST] expect_artifact: research depth + effort tier are HIGHER for the vague/novel task, reading the same scores; NEGATIVE: high-ambiguity task that gets baseline depth must FAIL. (N-10:L46-L46 | ledger-line: DEEP-N-002.discovery.md:L242)
+- [surface] (N-002/N10-E006) [E/FLOW/SURFACE] High-ambiguity OR off-map task -> deeper research + more clarify + smaller node bound + earlier escalation, not just a chip. Ambiguity = "we don't understand the ask"; novelty = "the ask is off our map" — both buy depth. (N-10:L11-L11 | ledger-line: DEEP-N-002.discovery.md:L230)
+- [surface] (N-002/N10-E013) [E/SURFACE/SURFACE] frontend_pair: N/A (internal resource allocation), unless the depth choice is surfaced on the canvas; justified. (N-10:L26-L26, L42-L42 | ledger-line: DEEP-N-002.discovery.md:L237)
+- [surface] (SUMMARY/N10-E11) High ambiguity or an off-map task increases clarification behavior, rather than merely showing a chip (`L202`). (14-N:L314)
+- [surface] (SUMMARY/N10-E14) The default frontend disposition is N/A because this is internal allocation; canvas may surface depth if desired (`L205-L206`). (14-N:L317)
+- (N-002/N10-E002) [E/FLOW] Premise: four passive clarity detectors + two novelty detectors exist, but NOTHING feeds measured ambiguity/novelty of THIS task into research/reasoning budget; they only route to consent surface (grill offer) or human queue. (N-10:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L226)
+- (N-002/N10-E003) [E/DATA] Type AmbiguityScore (shared type) from B-38 continuous ambiguity (4 dims + floors + streak) + B-40 critic findings + C-29 intent pairs + J-32 front-door confidence. (N-10:L9-L9, L30-L30, L33-L33 | ledger-line: DEEP-N-002.discovery.md:L227)
+- (N-002/N10-E004) [E/DATA] Type NoveltyScore (shared type, joined) from D-15 NoveltyClass (labels CLAIMS) + Phase-4F/B-21 novel-step detection (labels PLAN STEPS). (N-10:L10-L10, L30-L30, L33-L33 | ledger-line: DEEP-N-002.discovery.md:L228)
+- (N-002/N10-E005) [E/DEP] Consumers: research-tree depth (4D Simple/Moderate/Complex breadth/depth) + reasoning-effort tier (J-84) + decomposition node-sizing (J-39 bound-and-escalate) + grill/clarify offer (J-79). (N-10:L11-L11, L31-L34 | ledger-line: DEEP-N-002.discovery.md:L229)
+- (N-002/N10-E007) [E/LIMIT] EXCLUDED: re-detecting (wire existing detectors); a new detector; a non-deterministic depth choice (score->budget mapping is deterministic, TD-3). (N-10:L12-L12, L39-L40 | ledger-line: DEEP-N-002.discovery.md:L231)
+- (N-002/N10-E008) [E/DEP] PLAN-asserted: B-38/B-40/C-29/J-32 feed ONLY J-79 grill offer today (W-15); D-15 and 4F/B-21 neither feed budgets (W-24); 4D/J-84/J-39 pick depth from OTHER inputs. (N-10:L14-L17 | ledger-line: DEEP-N-002.discovery.md:L232)
+- (N-002/N10-E009) [E/DEP] N-5 intensity resolver is the natural home for the effort-tier consumer (the two compose). (N-10:L18-L18, L50-L50 | ledger-line: DEEP-N-002.discovery.md:L233)
+- (N-002/N10-E010) [E/CFG] SHIP NOW (Tier-1): AmbiguityScore + NoveltyScore shared types + wiring them to 2-3 consumers (4D depth + J-84 effort via N-5 + J-79 offer). Deterministic score->budget mapping. (N-10:L20-L21 | ledger-line: DEEP-N-002.discovery.md:L234)
+- (N-002/N10-E012) [E/INT] Integration: `crates/orchestrator` research-tree + effort-tier (via N-5) + node-admission + grill-offer seams. (N-10:L24-L25 | ledger-line: DEEP-N-002.discovery.md:L236)
+- (N-002/N10-E014) [E/INT] reachable_from: live task where research-tree / effort tier is chosen [PRODUCTION]; `#[cfg(test)]` NEVER satisfies (R7). (N-10:L35-L37 | ledger-line: DEEP-N-002.discovery.md:L238)
+- (N-002/N10-E015) [E/FAIL] stub_ban: NO high-ambiguity task getting baseline depth. (N-10:L41-L41 | ledger-line: DEEP-N-002.discovery.md:L239)
+- (N-002/N10-E016) [E/TEST] trigger: a deliberately vague OR off-map task vs a clear baseline task. (N-10:L44-L44 | ledger-line: DEEP-N-002.discovery.md:L240)
+- (N-002/N10-E017) [E/EVENT] expect_ssb: reuse the shipped ambiguity (B-38) / novelty (D-15) rows; no new type. (N-10:L45-L45 | ledger-line: DEEP-N-002.discovery.md:L241)
+- (N-002/N10-E019) [E/DEP] Grounding: W-15/W-24, TIER-3 item 10; NOTE W-15 extension (J-39 fourth customer); N-5 for effort-tier consumer. (N-10:L48-L50 | ledger-line: DEEP-N-002.discovery.md:L243)
+- (N-002/N10-E020) [E/DEP] COMPOSES-WITH B-38/B-40/C-29/J-32, D-15/4F/B-21, 4D/J-84/J-39/J-79, N-5; re-implements NONE (GD-1). (N-10:L52-L53 | ledger-line: DEEP-N-002.discovery.md:L244)
+- [deferred] (N-002/N10-E011) [E/DEFER] DEFER (Tier-2): J-39 node-sizing consumer (lands with the decomposition unit). (N-10:L22-L22 | ledger-line: DEEP-N-002.discovery.md:L235)
+- [summary-delta] (N-002/SD-N10-001) [Δ] section=N-10 (DEEP-N-002.discovery.md:L507): **ADD** Tier-1 consumer set (4D + J-84 via N-5 + J-79) and explicit Tier-2 deferral of J-39. | summary_anchor=14-N:L300-L324 | source_atoms=N10-E010–N10-E011
+- [summary-delta] (N-002/SD-N10-002) [Δ] section=N-10 (DEEP-N-002.discovery.md:L508): **ADD** ambiguity vs novelty semantics ("don't understand" vs "off our map") and "not just a chip" clarify behavior. | summary_anchor=14-N:L313-L315 | source_atoms=N10-E006
+- [summary-delta] (N-002/SD-N10-003) [Δ] section=N-10 (DEEP-N-002.discovery.md:L509): **FLAG** expect_ssb "no new type" vs produces shared types; score cutoffs still open. | summary_anchor=14-N:L321-L324 | source_atoms=N10-C001, N10-A001–N10-A002
+- [ambiguity] (N-002/N10-A001) [A/CFG] Score ranges, normalization/join rule, cutoffs, and exact budget increments are unspecified. (N-10:L9-L11, L21-L21 | ledger-line: DEEP-N-002.discovery.md:L245)
+- [ambiguity] (N-002/N10-A002) [A/FLOW] "more clarify" does not say whether stronger offer, mandatory query, or repeated grill. (N-10:L11-L11 | ledger-line: DEEP-N-002.discovery.md:L246)
+- [ambiguity] (N-002/N10-A003) [A/DEFER] J-39 is both listed as a consumer and deferred to Tier-2; interim behavior when only 2-3 consumers ship is not specified beyond the Tier-1 list. (N-10:L11-L11, L21-L22 | ledger-line: DEEP-N-002.discovery.md:L247)
+- [ambiguity] (N-002/N10-C001) [C/EVENT] expect_ssb says "no new type" while produces_symbols declares AmbiguityScore + NoveltyScore shared types; likely means no new SSB action type rather than no shared types. (N-10:L30-L30, L45-L45 | ledger-line: DEEP-N-002.discovery.md:L248)
+
+### N-11: journal-fold substrate
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-001, N-SD, SUMMARY | sample: N-11:L1-L3; N-11:L5-L5; N-11:L8-L8; N-11:L8-L8, L14-L14; N-11:L8-L8, L19-L19, L28-L28; N-11:L8-L8, L19-L19, L29-L29 | 35 non-summary-placed, 4 summary-placed, 39 total unique atoms in unit | IDs: N-001/N11-E001, N-001/N11-E002, N-001/N11-E003, N-001/N11-E004, N-001/N11-E005, N-001/N11-E006, N-001/N11-E007, N-001/N11-E008, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-68, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-7, N-8, N-9. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-12, N-3, N-4, N-9
+
+- [status] (N-001/N11-E001) [E/STATUS] N-11 is TIER 3 MEDIUM-HIGH, lever one-proof-five-surfaces, W-10, STRONG, BUILD-on-shipped, M-L, WAVE 7. (N-11:L1-L3 | ledger-line: DEEP-N-001.discovery.md:L307)
+- [status] (N-001/N11-E004) [E/SURFACE/SURFACE] Five surfaces: canvas altitudes (J-31/J-60/J-98/K-23), I-39 plan status, K-24 billing balance, M-3 fleet rollup, K-22 coverage. (N-11:L8-L8, L14-L14 | ledger-line: DEEP-N-001.discovery.md:L310)
+- [status] (N-001/N11-E007) [E/DEP] BUILD-on-shipped: L-16 already replaces compact_session, keeps mutate path one release as rollback, re-expresses E-25/H-6/3E/H-50 as fold STRATEGIES; L-18 collapses K-12+H-49 into projection corollaries. (N-11:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L313)
+- [status] (N-001/N11-E014) [E/CFG/SURFACE] Tier-1 SHIP NOW: fold core adopted by 2-3 of five surfaces (canvas + I-39 status) + J-68 Kani proof on core + recover_stubs/H-49 retirement map (user-confirmed). (N-11:L19-L19 | ledger-line: DEEP-N-001.discovery.md:L320)
+- [config] (N-001/N11-E022) [E/EVENT] trigger: re-derive two of five surfaces through one fold core with pinned ELAI_SEED; expect_ssb: reuse L-16 fold events; no new type. (N-11:L43-L44 | ledger-line: DEEP-N-001.discovery.md:L328)
+- [gate] (N-001/N11-E021) [E/LIMIT] stub_ban: NO re-authoring L-16; NO sixth context core; NO surface still re-deriving off own ad-hoc path (conformance FAIL); NO path retirement without user confirmation. (N-11:L36-L40 | ledger-line: DEEP-N-001.discovery.md:L327)
+- [gate] (N-001/N11-E023) [E/DET] expect_artifact: byte-identical re-derivation across the two surfaces + retirement switch removes old path; NEGATIVE: surface still on ad-hoc path FAILS conformance. (N-11:L45-L45 | ledger-line: DEEP-N-001.discovery.md:L329)
+- [surface] (N-001/N11-E011) [E/STATUS/SURFACE] Canvas altitudes "re-derive byte-identically from the journal"; I-39/K-24/M-3/K-22 each recomputable from journals. (N-11:L14-L14 | ledger-line: DEEP-N-001.discovery.md:L317)
+- [surface] (N-001/N11-E017) [E/SURFACE/SURFACE] frontend_pair: canvas altitudes already consume folds — verify byte-identity, do not re-wire. (N-11:L24-L24, L41-L41 | ledger-line: DEEP-N-001.discovery.md:L323)
+- [surface] (SUMMARY/N11-E03) Move J-31/J-60/J-98/K-23 canvas-altitude derivations through the shared fold core (`L213-L220`). (14-N:L332)
+- [surface] (SUMMARY/N11-E06) Move M-3 fleet-rollup derivation through the shared fold core (`L214-L220`). (14-N:L335)
+- [surface] (SUMMARY/N11-E13) Verify existing canvas altitudes consume the folds; do not blindly rewire them (`L220-L221`). (14-N:L342)
+- (N-001/N11-E002) [E/CAP] Premise: L-16 pure fold(log,budget,policy)->context-view is the right unifier; five OTHER surfaces re-derive-from-journal ad hoc each needing its own GD-2 audit. (N-11:L5-L5 | ledger-line: DEEP-N-001.discovery.md:L308)
+- (N-001/N11-E003) [E/CAP] Extend L-16 pure fold core beyond context: per-surface fold FUNCTIONS as data/plugins for five re-derive surfaces. (N-11:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L309)
+- (N-001/N11-E005) [E/TEST] ONE J-68 Kani correctness proof on the fold core then covers all five. (N-11:L8-L8, L19-L19, L28-L28 | ledger-line: DEEP-N-001.discovery.md:L311)
+- (N-001/N11-E006) [E/RECOVERY] Ships ND-2 RETIREMENT map for paths L-16 leaves live: recover_stubs end-of-life; declare H-49 CAS/undo-tree THE log representation (one store). (N-11:L8-L8, L19-L19, L29-L29 | ledger-line: DEEP-N-001.discovery.md:L312)
+- (N-001/N11-E008) [E/LIMIT] N-11 residual ONLY: (a) five non-context surfaces adopt fold core, (b) one Kani proof, (c) recover_stubs/H-49 retirement. Do NOT re-author the fold (GD-1). (N-11:L9-L9, L37-L37 | ledger-line: DEEP-N-001.discovery.md:L314)
+- (N-001/N11-E009) [E/LIMIT] EXCLUDED: re-authoring L-16 fold; a sixth context core; retiring a path without user confirmation (ND-2). (N-11:L10-L10, L40-L40 | ledger-line: DEEP-N-001.discovery.md:L315)
+- (N-001/N11-E010) [E/STATUS] L-16 fold exists; CC-1..CC-4 collapse 4 context mechanisms into fold() parameters; L-18 collapses losslessness+time-travel into it. (N-11:L13-L13 | ledger-line: DEEP-N-001.discovery.md:L316)
+- (N-001/N11-E012) [E/DEP] J-68 Kani planned for fold core; H-49 CAS/undo-tree is the log-representation candidate. (N-11:L15-L15 | ledger-line: DEEP-N-001.discovery.md:L318)
+- (N-001/N11-E013) [E/STATUS] recover_stubs marked "legacy-only" needs explicit end-of-life (W-13 residual). (N-11:L16-L16 | ledger-line: DEEP-N-001.discovery.md:L319)
+- (N-001/N11-E016) [E/INT] Integration: crates/orchestrator fold core (extend L-16) + five surface fold-fns; H-49 CAS as the log store. (N-11:L23-L23 | ledger-line: DEEP-N-001.discovery.md:L322)
+- (N-001/N11-E018) [E/CAP] produces: extended fold core (L-16 + per-surface fold-fns as data) + J-68 Kani proof; ND-2 retirement map (recover_stubs EOL; H-49 CAS as THE log representation). (N-11:L27-L29 | ledger-line: DEEP-N-001.discovery.md:L324)
+- (N-001/N11-E019) [E/DEP] consumes: L-16 fold (EXTEND), J-68 Kani, H-49 CAS/undo-tree; five re-derive surfaces. (N-11:L30-L32 | ledger-line: DEEP-N-001.discovery.md:L325)
+- (N-001/N11-E020) [E/INT] reachable_from: two of five surfaces re-derived through ONE fold core on a live session; test-only never R7. (N-11:L33-L35 | ledger-line: DEEP-N-001.discovery.md:L326)
+- (N-001/N11-E024) [E/EVIDENCE] Grounding: interlace W-10 + L downgrade note; TIER-3 item 11; memory project_hplan_track8_authored (H-49); L-16/L-18. (N-11:L47-L49 | ledger-line: DEEP-N-001.discovery.md:L330)
+- (N-001/N11-E025) [E/DEP] COMPOSES-WITH: L-16 (extend), J-68, H-49, five surfaces; re-implements NONE; one core one proof five surfaces prevents unifier becoming sixth layer. (N-11:L51-L52 | ledger-line: DEEP-N-001.discovery.md:L331)
+- [deferred] (N-001/N11-E015) [E/DEFER/SURFACE] Tier-2 DEFER: K-24 balance + M-3 rollup + K-22 coverage adopting the fold (land with those units). (N-11:L20-L20 | ledger-line: DEEP-N-001.discovery.md:L321)
+- [summary-delta] (N-001/SD-N11-001) [Δ] section=N-11 (DEEP-N-001.discovery.md:L489): **ADD** L-16 already-shipped residual list (compact_session replaced, mutate rollback, E-25/H-6/3E/H-50 as strategies; L-18 corollaries). | summary_anchor=14-N:L326-L350 | source_atoms=N11-E007–N11-E008
+- [summary-delta] (N-001/SD-N11-002) [Δ] section=N-11 (DEEP-N-001.discovery.md:L490): **ADD** Tier-1 surfaces = canvas + I-39 (+ optional third); Tier-2 = K-24/M-3/K-22. | summary_anchor=14-N:L329-L345 | source_atoms=N11-E014–N11-E015, N11-A003
+- [summary-delta] (N-001/SD-N11-003) [Δ] section=N-11 (DEEP-N-001.discovery.md:L491): **ADD** frontend rule: verify canvas consumption, do not re-wire; no new SSB type. | summary_anchor=14-N:L342-L345 | source_atoms=N11-E017, N11-E022
+- [summary-delta] (N-001/SD-N11-004) [Δ] section=N-11 (DEEP-N-001.discovery.md:L492): **ADD** recover_stubs legacy-only EOL + H-49 as THE log store, user-confirmed ND-2. | summary_anchor=14-N:L338-L340 | source_atoms=N11-E006, N11-E012–N11-E013
+- [summary-delta] (N-001/SD-N11-005) [Δ] section=N-11 (DEEP-N-001.discovery.md:L493): **CONFIRM** canvas-as-one-surface interpretation of four unit IDs. | summary_anchor=14-N:L349 | source_atoms=N11-I001
+- [summary-delta] (N-001/SD-N11-006) [Δ] section=N-11 (DEEP-N-001.discovery.md:L494): **EXPAND** plugin schema / Kani property / retirement migration still open. | summary_anchor=14-N:L347-L350 | source_atoms=N11-A001–N11-A002
+- [ambiguity] (N-001/N11-A001) [A/DATA] Plugin/fold-fn schema, per-surface budget/policy parameters, and exact Kani proof property are not defined. (N-11:L8-L8, L19-L19 | ledger-line: DEEP-N-001.discovery.md:L333)
+- [ambiguity] (N-001/N11-A002) [A/RECOVERY] Retirement timing, migration of existing recover_stubs consumers, and concurrent dual-path behavior during the one-release LEGACY window are not specified beyond ND-2. (N-11:L8-L8, L19-L19 | ledger-line: DEEP-N-001.discovery.md:L334)
+- [ambiguity] (N-001/N11-A003) [A/CFG/SURFACE] "2-3 of the five surfaces" names canvas + I-39 but leaves the optional third Tier-1 surface unnamed. (N-11:L19-L19 | ledger-line: DEEP-N-001.discovery.md:L335)
+- [ambiguity] (SUMMARY/N11-A01) The summary calls these “five OTHER surfaces”; canvas altitude is one surface with four contributing unit IDs, which should be confirmed in detail. (14-N:L349)
+- [inference] (N-001/N11-I001) [I/SURFACE/SURFACE] "Canvas altitudes" is one surface fed by four unit IDs (J-31/J-60/J-98/K-23), counting as one of the five surfaces rather than four separate fold targets. (N-11:L8-L8, L14-L14 | ledger-line: DEEP-N-001.discovery.md:L332)
+
+### N-12: consistency + dedupe bundle
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-001, N-SD, SUMMARY | sample: N-12:L1-L3; N-12:L5-L5; N-12:L8-L8; N-12:L8-L8; N-12:L8-L8; N-12:L9-L9 | 41 non-summary-placed, 1 summary-placed, 42 total unique atoms in unit | IDs: N-001/N12-E001, N-001/N12-E002, N-001/N12-E003, N-001/N12-E004, N-001/N12-E005, N-001/N12-E006, N-001/N12-E007, N-001/N12-E008, …
+**Composes with**: C-30, C-47, C-49, D-16+, D-17, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-8+, I-12, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-7. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-3, N-4, N-9
+
+- [status] (N-001/N12-E001) [E/STATUS] N-12 is TIER 4 MEDIUM, lever consistency-and-free-training-data, W-8+W-9+W-12+W-16+W-21+W-25+W-26+W-28, STRONG, DELETE, M, WAVE 8. (N-12:L1-L3 | ledger-line: DEEP-N-001.discovery.md:L345)
+- [gate] (N-001/N12-E003) [E/CAP] Sub-slice (a) W-8+W-26: ONE FailureClass enum in SSB collapsing failure_taxonomy.py 13-cat + crates/tools 9-cat + E-6 MAST 14-mode + E-29 MAST DUP + C-10 StagnationPattern 4-variant. (N-12:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L347)
+- [gate] (N-001/N12-E004) [E/DATA] FailureClass is shared by auditor attribution / anti-spiral / MAST supervisor (J-93-A) / eval corpus rows / case-graph edges; classified once at audit time IS the corpus row type IS the case edge IS the stagnation signal. (N-12:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L348)
+- [gate] (N-001/N12-E005) [E/OBS] FailureClass collapse frees training data for J-25/I-12. (N-12:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L349)
+- [gate] (N-001/N12-E013) [E/CAP] Sub-slice (g) W-28: ONE LSP daemon pool — E-52 LSP-as-verifier + J-18 LSP retrieval channel + J-52 per-edit LSP block-feed share one per-language health-managed pool (like B-37 runtime adapters). (N-12:L14-L14 | ledger-line: DEEP-N-001.discovery.md:L357)
+- [gate] (N-001/N12-E017) [E/CFG] Tier-1 SHIP NOW: cheap high-consistency collapses — (a) FailureClass enum, (c) ProjectClass registry, (f) FSM conformance test; each independently shippable. (N-12:L22-L22 | ledger-line: DEEP-N-001.discovery.md:L361)
+- [gate] (N-001/N12-E019) [E/INT] Integration: respective crates (orchestrator FailureClass/AbstainDecision/ProjectClass/drift; security admission; tools LSP pool); each sub-slice edits its own files — parallel-safe. (N-12:L26-L26 | ledger-line: DEEP-N-001.discovery.md:L363)
+- [gate] (N-001/N12-E020) [E/SURFACE/SURFACE] frontend_pair: N/A for most; a FailureClass drawer if surfaced; justified per sub-slice. (N-12:L27-L27, L45-L45 | ledger-line: DEEP-N-001.discovery.md:L364)
+- [gate] (N-001/N12-E021) [E/CAP] produces: one FailureClass enum / one AbstainDecision row + composition rule / one ProjectClass registry / one drift-primitive lib / FSM three-model conformance test / one LSP daemon pool / J-109 admission routing for C-47/C-49. (N-12:L30-L33 | ledger-line: DEEP-N-001.discovery.md:L365)
+- [gate] (N-001/N12-E022) [E/DEP] consumes: failure_taxonomy.py + 9-cat + E-6/E-29 MAST + C-10; D-16/I-8/D-17/L-7/J-73/J-110; B-40/B-42/E-50/E-12/L-14; C-47/C-49 + J-109; D-4/G-10/H-30/F-5/B-22b; 3I/J-68/code-table; E-52/J-18/J-52. (N-12:L34-L37 | ledger-line: DEEP-N-001.discovery.md:L366)
+- [gate] (N-001/N12-E026) [E/OBS] expect_artifact: one canonical row/type per concern; NEGATIVE: second parallel implementation re-appearing fails N-2 duplicate-concept check. (N-12:L49-L49 | ledger-line: DEEP-N-001.discovery.md:L370)
+- [gate] (SUMMARY/N12-E06) Default frontend disposition is N/A per sub-slice, except a surfaced `FailureClass` may have a drawer; each N/A needs justification (`L244-L245`). (14-N:L363)
+- (N-001/N12-E002) [E/CAP] Premise: eight independent same-concern fragmentations, each low-cost to collapse, each in disjoint files (parallel-safe, independently shippable); ND-1 sweep N-2 will keep clean. (N-12:L5-L5 | ledger-line: DEEP-N-001.discovery.md:L346)
+- (N-001/N12-E006) [E/CAP] Sub-slice (b) W-9: ONE AbstainDecision spine spanning D-16 conformal + I-8 voluntary abort + D-17 SLA + L-7 policy + J-73 retrieval + J-110 timeliness. (N-12:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L350)
+- (N-001/N12-E007) [E/FLOW] Abstain composition rule: upstream retrieval-abstain TAINTS downstream steps as answer-without-evidence -> L-2 risk floor. (N-12:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L351)
+- (N-001/N12-E008) [E/DEP] L-7 already composes D-16+I-8+D-17; RD-1 mandates read-never-re-derive — extend, don't re-author. (N-12:L9-L9 | ledger-line: DEEP-N-001.discovery.md:L352)
+- (N-001/N12-E009) [E/CAP] Sub-slice (c) W-16: ONE ProjectClass registry — B-40 ProjectClass 9-variant (first in flow) consumed by B-42 cosmos project_classes / E-50 SaaS archetypes / E-12 framework manifests / L-14 build defaults. (N-12:L10-L10 | ledger-line: DEEP-N-001.discovery.md:L353)
+- (N-001/N12-E010) [E/CAP] Sub-slice (d) W-21: route C-47 sled CaseBase + C-49 markdown ExperienceCorpus writes through J-109 admission pipeline (closes unguarded learned-artifact write path; J-109 guards E-5/I-12/J-97 but not C-47/C-49 today). (N-12:L11-L11 | ledger-line: DEEP-N-001.discovery.md:L354)
+- (N-001/N12-E011) [E/CAP] Sub-slice (e) W-25: ONE drift-primitive library — D-4 tripwire (KL/delta-rho/IQR/perplexity/DDM) + G-10 model-drift + H-30 staleness + F-5 cascade + B-22b goal-drift share ONE windowed-divergence/Page-Hinkley/DDM core; keep distinct policies. (N-12:L12-L12 | ledger-line: DEEP-N-001.discovery.md:L355)
+- (N-001/N12-E012) [E/TEST] Sub-slice (f) W-12: FSM three-model conformance test — 3I DST FsmReferenceModel == J-68 ElaiFSM.tla == the code transition table (table already data-shaped; make it single source all three consume). (N-12:L13-L13 | ledger-line: DEEP-N-001.discovery.md:L356)
+- (N-001/N12-E014) [E/OBS] LSP pool saves RAM + startup latency + three divergent process managers. (N-12:L14-L14 | ledger-line: DEEP-N-001.discovery.md:L358)
+- (N-001/N12-E015) [E/LIMIT] EXCLUDED: adding a new type for ANY of these concerns (collapse to existing canonical, ND-1); a ninth collapse. (N-12:L15-L15, L42-L42 | ledger-line: DEEP-N-001.discovery.md:L359)
+- (N-001/N12-E016) [E/STATUS] Existing ground truth PLAN-asserted for all named taxonomies, abstention family, ProjectClass homes, experience stores, drift detectors, FSM models, LSP integrations. (N-12:L17-L19 | ledger-line: DEEP-N-001.discovery.md:L360)
+- (N-001/N12-E023) [E/INT] reachable_from: each surviving canonical impl called from its >=2 former call sites (PRODUCTION per sub-slice); test-only never R7. (N-12:L38-L40 | ledger-line: DEEP-N-001.discovery.md:L367)
+- (N-001/N12-E024) [E/LIMIT] stub_ban: NO new type for any collapsed concern; NO second parallel implementation surviving collapse; NO experience-store write bypassing J-109 admission. (N-12:L41-L44 | ledger-line: DEEP-N-001.discovery.md:L368)
+- (N-001/N12-E025) [E/EVENT] expect_ssb: no new action_type (dedupe removes emitters; surviving canonical type keeps its row). (N-12:L48-L48 | ledger-line: DEEP-N-001.discovery.md:L369)
+- (N-001/N12-E027) [E/EVIDENCE] Grounding: interlace W-8/W-26, W-9, W-16, W-21, W-25, W-12, W-28, TIER-4 item 12; E-6/E-29 MAST dup demonstrates summary-per-report duplication that N-2 stops. (N-12:L51-L53 | ledger-line: DEEP-N-001.discovery.md:L371)
+- (N-001/N12-E028) [E/DEP] COMPOSES-WITH: every unit named per sub-slice (dedupe to first-in-flow, adapters for rest), J-109, N-2 duplicate-concept check; re-implements NONE. (N-12:L55-L56 | ledger-line: DEEP-N-001.discovery.md:L372)
+- [deferred] (N-001/N12-E018) [E/DEFER] Tier-2 DEFER: (b) AbstainDecision spine, (d) experience-store admission routing, (e) drift-primitive library, (g) LSP daemon pool — larger refactors after Tier-1 three. (N-12:L23-L23 | ledger-line: DEEP-N-001.discovery.md:L362)
+- [summary-delta] (N-001/SD-N12-001) [Δ] section=N-12 (DEEP-N-001.discovery.md:L500): **CORRECT/RESOLVE** summary "eight vs seven": detail also says eight collapses with seven labels (a)..(g) because (a) merges W-8+W-26; no eighth product named. | summary_anchor=14-N:L24, L408-L409, L828 | source_atoms=N12-I001, N12-E002–N12-E003
+- [summary-delta] (N-001/SD-N12-002) [Δ] section=N-12 (DEEP-N-001.discovery.md:L501): **ADD** exact category counts (13/9/14/4) and "classified once IS corpus row IS case edge IS stagnation signal". | summary_anchor=14-N:L366-L372 | source_atoms=N12-E003–N12-E004
+- [summary-delta] (N-001/SD-N12-003) [Δ] section=N-12 (DEEP-N-001.discovery.md:L502): **ADD** Tier-1 ship set (a,c,f) vs Tier-2 defer set (b,d,e,g). | summary_anchor=14-N:L352-L412 | source_atoms=N12-E017–N12-E018
+- [summary-delta] (N-001/SD-N12-004) [Δ] section=N-12 (DEEP-N-001.discovery.md:L503): **ADD** RD-1 read-never-re-derive for L-7 abstain composition; training-data free for J-25/I-12. | summary_anchor=14-N:L374-L378 | source_atoms=N12-E005, N12-E008
+- [summary-delta] (N-001/SD-N12-005) [Δ] section=N-12 (DEEP-N-001.discovery.md:L504): **ADD** drift core primitives list (KL/delta-rho/IQR/perplexity/DDM + Page-Hinkley/DDM windowed core) with policies kept distinct. | summary_anchor=14-N:L394-L398 | source_atoms=N12-E011
+- [summary-delta] (N-001/SD-N12-006) [Δ] section=N-12 (DEEP-N-001.discovery.md:L505): **ADD** FSM models named (3I DST FsmReferenceModel, J-68 ElaiFSM.tla, code transition table) and LSP B-37-like pool rationale. | summary_anchor=14-N:L399-L405 | source_atoms=N12-E012–N12-E014
+- [summary-delta] (N-001/SD-N12-007) [Δ] section=N-12 (DEEP-N-001.discovery.md:L506): **ADD** J-109 currently guards E-5/I-12/J-97 but not C-47/C-49 (explicit gap closed by (d)). | summary_anchor=14-N:L388-L392 | source_atoms=N12-E010
+- [summary-delta] (N-001/SD-N12-008) [Δ] section=N-12 (DEEP-N-001.discovery.md:L507): **EXPAND** enum mapping, LSP ops, adapter boundaries, FSM equality criterion still open. | summary_anchor=14-N:L407-L412 | source_atoms=N12-A001–N12-A004
+- [ambiguity] (N-001/N12-A001) [A/DATA] First-in-flow canonical enum mappings (13-cat / 9-cat / 14-mode / 4-variant reconciliation) and whether StagnationPattern remains a policy sub-type are not defined. (N-12:L8-L8 | ledger-line: DEEP-N-001.discovery.md:L374)
+- [ambiguity] (N-001/N12-A002) [A/CFG] LSP pool process isolation, language/workspace key, lifetime, crash recovery, and resource limits are absent. (N-12:L14-L14 | ledger-line: DEEP-N-001.discovery.md:L375)
+- [ambiguity] (N-001/N12-A003) [A/DEP] Adapter boundaries for non-canonical call sites after collapse are named only as "adapters for the rest" without per-slice adapter specs. (N-12:L55-L56 | ledger-line: DEEP-N-001.discovery.md:L376)
+- [ambiguity] (N-001/N12-A004) [A/TEST] FSM three-model conformance exact equality criterion (byte-level, semantic, or property suite) is not specified beyond "==". (N-12:L13-L13 | ledger-line: DEEP-N-001.discovery.md:L377)
+- [inference] (N-001/N12-I001) [I/CAP] The source says "eight independent same-concern collapses" while labels (a)..(g) are seven; (a) merges W-8+W-26, yielding eight findings over seven sub-slices — count mismatch is structural, not a missing eighth product. (N-12:L5-L5, L7-L14 | ledger-line: DEEP-N-001.discovery.md:L373)
+
+### N-13: OutputBoundary + structured-output capability matrix
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY, SUP | sample: N-13:L1-L3; N-13:L5-L5, L13-L13; N-13:L5-L5, L16-L16, L40-L40; N-13:L5-L5, L27-L27, L47-L47; N-13:L7-L7; N-13:L8-L9 | 41 non-summary-placed, 2 summary-placed, 45 total unique atoms in unit | IDs: SUP-001, SUP-004, N-002/N13-E001, N-002/N13-E002, N-002/N13-E003, N-002/N13-E004, N-002/N13-E005, N-002/N13-E006, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-7, N-8, N-9, N-10. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- Superseded: (SUP-001) [superseded] [superseded] | **Target state:** N-001/N0-E001 + N-001/N0-C001 + N-001/SD-N0-007: program inventory is N-1..N-16 (16 units); external track N-13..N-16 appended. | **Losing description retained:** SUMMARY header "All 15 sessions" and open-ambiguity item 1 treating 15 vs 16 as unresolved (14-N:L1-L2, L26-L26, L827). | **Reason:** Deep N-0 explicit CORRECT: 16 units with external track; higher-plan/detail authority.
+- Superseded: (SUP-004) [superseded] [superseded] | **Target state:** N-001/N0-E077 WAVE 9 for N-13/N-14/N-15; summary matrix Wave 9 (14-N:L776-L778). Detail files say WAVE 4-adjacent / 3-4-adjacent / 5-adjacent as composition adjacency, not matrix replacement. | **Losing description retained:** Reading N13-I001/N14-I001/N15-I001 as replacing Wave 9 matrix placement. | **Reason:** N-0 index sequencing table is program authority for wave numbers; detail WAVE-*-adjacent is relative dependency adjacency. Both retained; matrix Wave 9 is target sequencing state.
+- [status] (N-002/N13-E001) [E/STATUS] N-13 STATUS PLANNED; WAVE 4-adjacent; Tier-2 HIGH; nature BUILD/UNIFY — the one fragmentation N-1..N-12 authoring missed. (N-13:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L258)
+- [config] (N-002/N13-E026) [E/TEST] ACCEPTANCE: ND-1 collapse >=8 to ONE registry (9th parallel refused); ND-4 invalid-rate through N-1; I-34 pinning; TD-3 resolver-chosen mode; W-2 default ON behind `ELAI_OUTPUT_BOUNDARY_LEGACY` (old paths survive one release then ND-2 retires with user confirmation); cargo check GREEN; auditor PASS; no new dependency. (N-13:L69-L75 | ledger-line: DEEP-N-002.discovery.md:L283)
+- [config] (N-002/N13-E027) [E/CFG] W-2 kill-switch: `ELAI_OUTPUT_BOUNDARY_LEGACY`, default ON for the new path. (N-13:L74-L74, L78-L78 | ledger-line: DEEP-N-002.discovery.md:L284)
+- [gate] (N-002/N13-E009) [E/DATA] Each registry row = {schema/grammar ref (blake3-PINNED per I-34), parser fn ref, deterministic repair-policy ref (frozen table, TD-3), retry budget, fail-closed action = D-16 refusal or typed error, journaled invalid-output-rate sink = N-1 spine, enforcement_mode resolved per backend}. (N-13:L13-L13, L27-L27 | ledger-line: DEEP-N-002.discovery.md:L266)
+- [gate] (N-002/N13-E012) [E/SEC] Binding security: I-34 grammar pinning (grammars = blake3-pinned control-plane artifacts; enum-bearing schemas from untrusted sources REJECTED); H-13 reject-never-silently-repair; J-53/I-46 repair-is-a-FROZEN-deterministic-lookup-table (never an LLM in the gate, TD-3). (N-13:L18-L18, L49-L50 | ledger-line: DEEP-N-002.discovery.md:L269)
+- [gate] (N-002/N13-E014) [E/DET] Enforcement precedence: provider strict schema > native tool schema > local CFG > regex > parse-validate-retry-fail-closed. Model NEVER picks enforcement_mode (TD-3); resolver reads capability fields only. (N-13:L29-L29, L48-L48 | ledger-line: DEEP-N-002.discovery.md:L271)
+- [gate] (N-002/N13-E019) [E/EVENT] SSB `+output_boundary_verdict` Pattern-2 single-variant; Kind: SchemaEnforced / GrammarEnforced / RepairedThenValidated / RefusedFailClosed. (N-13:L38-L38 | ledger-line: DEEP-N-002.discovery.md:L276)
+- [gate] (N-002/N13-E024) [E/OBS] expect_artifact: per-(type, backend) invalid-rate lands in N-1 spine; NEGATIVE: new machine-actionable type WITHOUT registry row fails N-2; second bespoke path for registered type fails N-2 duplicate-concept. (N-13:L58-L58 | ledger-line: DEEP-N-002.discovery.md:L281)
+- [gate] (N-002/N13-E029) [E/TEST] Contract tests `crates/contracts/tests/n13_output_boundary_contract.rs` (~90 LOC): (a) strongest enforcement resolve; (b) lack strict schema falls to repair-then-validate then RefusedFailClosed; (c) untrusted enum schema REJECTED; (d) enforcement_mode cannot be set from model output; (e) corrupt/oversized -> RefusedFailClosed never silent pass. (N-13:L80-L81 | ledger-line: DEEP-N-002.discovery.md:L286)
+- [surface] (N-002/N13-E003) [E/DEP/SURFACE] Unified machines (parameterized, never re-implemented): C-26 DecodingMode + per-role defaults + retries; E-35 XGrammar + INSTRUCTOR; I-34 CRANE + grammar pinning + post-parse re-validation + D-16 routing; J-53 tool-input repair; J-51 adherence floor; H-13 canvas per-mode grammars + sanitizeAction; B-24 VLM constrained JSON; L-1 typed ClaimSet; I-33 CEFL decision schemas. (N-13:L5-L5, L16-L16, L40-L40 | ledger-line: DEEP-N-002.discovery.md:L260)
+- [surface] (N-002/N13-E008) [E/DATA/SURFACE] Registry keyed by machine-actionable output TYPE: ToolDirective, ClaimSet, PlanSkeleton/BabyStepSpec intake, AuditFinding, MemoryCandidate, canvas ops, VLM verdicts, decision cards. (N-13:L13-L13 | ledger-line: DEEP-N-002.discovery.md:L265)
+- [surface] (N-002/N13-E022) [E/SURFACE/SURFACE] frontend_pair: a boundary-verdict badge on existing claim/decision/tool drawers reading `+output_boundary_verdict` (`cross_lang_diff` PASS), OR N/A justified if G-5 cockpit already surfaces the invalid-rate tile. (N-13:L53-L54 | ledger-line: DEEP-N-002.discovery.md:L279)
+- [surface] (SUMMARY/N13-E09) Parameterize, rather than reimplement, C-26 `DecodingMode`, E-35 XGrammar/INSTRUCTOR, I-34 CRANE/grammar pin/post-parse revalidation, J-53 tool-input repair, J-51 adherence floor, H-13 canvas gramm... (14-N:L443)
+- [surface] (SUMMARY/N13-E20) Add a boundary-verdict badge to claim/decision/tool drawers, or justify N/A if G-5 surfaces the tile (`L275-L276`). (14-N:L454)
+- (N-002/N13-E002) [E/CAP] Declare ONE per-type OutputBoundary registry that every machine-actionable model output crosses, unifying >=8 scattered constrained-output implementations into one canonical object PLUS a structured-output capability matrix (fields on the ONE catalog) + a strongest-available-enforcement resolver. (N-13:L5-L5, L13-L13 | ledger-line: DEEP-N-002.discovery.md:L259)
+- (N-002/N13-E004) [E/LIMIT] Hard boundary: does not re-implement any grammar/parser/validator — BINDS them behind one registry + one resolver (GD-1/ND-1). (N-13:L5-L5, L27-L27, L47-L47 | ledger-line: DEEP-N-002.discovery.md:L261)
+- (N-002/N13-E005) [E/CFG] Estimated effort ~1-2 sessions (~L); Tier-1 in-process (boundary verdict at emission time, no network); capability resolver is pure DATA + small dispatcher. (N-13:L7-L7 | ledger-line: DEEP-N-002.discovery.md:L262)
+- (N-002/N13-E006) [E/DEP] Pre-requisites re-greped at edit (W-7): the >=8 machines above plus B-37 RuntimeCapabilities, I-51 models.toml. Parallel-safe with N-14, N-15. (N-13:L8-L9 | ledger-line: DEEP-N-002.discovery.md:L263)
+- (N-002/N13-E007) [E/EVIDENCE] Source: four-source-steal-2026-07-05.md Artifact 3 (S3-1 + S3-2); gaps-doc P1+P2; doctrine N-0_INDEX.md. Design line kept: "Schema validation after generation catches bad structure. Constrained generation prevents bad structure." plus I-34 post-parse re-validation distrusts the constrainer. (N-13:L10-L13, L91-L94 | ledger-line: DEEP-N-002.discovery.md:L264)
+- (N-002/N13-E010) [E/DATA] Capability catalog is scattered: B-37 RuntimeCapabilities, I-51 models.toml, J-51 ModelCapabilityProfile exist as ONE catalog/profile but none enumerates structured-output FIELDS. (N-13:L17-L17 | ledger-line: DEEP-N-002.discovery.md:L267)
+- (N-002/N13-E011) [E/CFG] Add capability FIELDS: supports_json_schema / tool_call_schema / regex_grammar / cfg_grammar / logit_bias / streaming_validation / strict_mode on B-37 / I-51 (do NOT mint a second catalog). (N-13:L17-L17, L28-L28 | ledger-line: DEEP-N-002.discovery.md:L268)
+- (N-002/N13-E013) [E/CAP] Tasks: declare OutputBoundary registry type (~120 LOC); add capability fields (~40 LOC); strongest-available-enforcement resolver (~50 LOC pure dispatch). (N-13:L27-L29 | ledger-line: DEEP-N-002.discovery.md:L270)
+- (N-002/N13-E015) [E/INT] Wire boundary at emission seams: tool-directive parse, claim extraction (L-1), decision card (I-33), audit finding — each emits an OutputBoundary verdict row. Producer + in-plan consumer + smoke in the same unit. (N-13:L30-L30, L43-L44 | ledger-line: DEEP-N-002.discovery.md:L272)
+- (N-002/N13-E016) [E/EVENT] Emit `+output_boundary_verdict` to SSB; per-(type, backend) invalid-rate becomes an N-1 measured number. (N-13:L31-L31, L38-L38 | ledger-line: DEEP-N-002.discovery.md:L273)
+- (N-002/N13-E017) [E/DATA] Decision doc: `workflow/reasoning/N-13-decisions.md`. (N-13:L32-L32, L89-L89 | ledger-line: DEEP-N-002.discovery.md:L274)
+- (N-002/N13-E018) [E/CAP] produces_symbols: `crates/orchestrator/src/output_boundary.rs::OutputBoundary` and `::resolve_enforcement_mode`. (N-13:L35-L37 | ledger-line: DEEP-N-002.discovery.md:L275)
+- (N-002/N13-E020) [E/INT] reachable_from: tool-directive parse, L-1 claim-extraction, I-33 decision-card, audit-finding emit [PRODUCTION]; `#[cfg(test)]`/contracts NEVER satisfies (R7). (N-13:L43-L45 | ledger-line: DEEP-N-002.discovery.md:L277)
+- (N-002/N13-E021) [E/LIMIT] stub_ban: NO new grammar/parser/validator engine (P0 ND-1); NO model-settable enforcement_mode; NO silent repair; NO unpinned/untrusted enum-bearing schema; NO second bespoke validation path for a registered type (N-2 duplicate-concept); NO `.unwrap()`/`.expect()`; blake3 only for schema pin. (N-13:L46-L52 | ledger-line: DEEP-N-002.discovery.md:L278)
+- (N-002/N13-E023) [E/TEST] trigger: emit a machine-actionable output through the real orchestrator path with a backend whose capability row lacks strict schema. (N-13:L56-L56 | ledger-line: DEEP-N-002.discovery.md:L280)
+- (N-002/N13-E025) [E/TEST] MUST be 0; `rg "output_boundary_verdict"` in ssb.rs; N-13-decisions.md exists.` unit=`N-13 — OutputBoundary + structured-output capability matrix` (ledger-line: DEEP-N-002.discovery.md:L282): DETERMINISTIC_CHECK: wiring_contract_check --run-trigger; `rg "struct OutputBoundary"`; `rg -c "fn.*validate\ (fn.*parse.*grammar")
+- (N-002/N13-E028) [E/EVENT] W-9: `+output_boundary_verdict` via action_type golden lock; SCHEMA bump baseline+1 from LIVE 267/576 as of 2026-07-04 (re-read ssb.rs:1519 + action_type_lock.rs at edit). (N-13:L78-L78 | ledger-line: DEEP-N-002.discovery.md:L285)
+- (N-002/N13-E030) [E/DATA] Files: CREATE output_boundary.rs (~210 LOC); MODIFY ssb.rs (~10 LOC); MODIFY ONE catalog (~40 LOC); MODIFY four emission seams (~40 LOC); CREATE contract test + decisions doc. (N-13:L83-L89 | ledger-line: DEEP-N-002.discovery.md:L287)
+- (N-002/N13-E031) [E/EVIDENCE] Gaps-doc paper-side claims are [EXTERNAL-UNVERIFIED]; fragmentation finding HIGH confidence from corpus read subject to J-detail-body sampling caveat. (N-13:L91-L93 | ledger-line: DEEP-N-002.discovery.md:L288)
+- [summary-delta] (N-002/SD-N13-001) [Δ] section=N-13 (DEEP-N-002.discovery.md:L515): **ADD** complete Kind list SchemaEnforced/GrammarEnforced/RepairedThenValidated/RefusedFailClosed and capability field list of seven flags. | summary_anchor=14-N:L431-L464 | source_atoms=N13-E011, N13-E019
+- [summary-delta] (N-002/SD-N13-002) [Δ] section=N-13 (DEEP-N-002.discovery.md:L516): **ADD** four emission seams including AuditFinding; contract test arms; DETERMINISTIC_CHECK zero reimplemented validators; `ELAI_OUTPUT_BOUNDARY_LEGACY`. | summary_anchor=14-N:L453-L458 | source_atoms=N13-E015, N13-E025–N13-E029
+- [summary-delta] (N-002/SD-N13-003) [Δ] section=N-13 (DEEP-N-002.discovery.md:L517): **ADD** open questions: type enum, catalog owner, user-confirmed ND-2 retirement; WAVE 4-adjacent vs summary Wave 9. | summary_anchor=14-N:L433, L459-L464 | source_atoms=N13-A001–N13-A003, N13-I001
+- [summary-delta] (N-002/SD-N13-004) [Δ] section=N-13 (DEEP-N-002.discovery.md:L518): **EXPAND** security riders I-34/H-13/J-53 as stub_bans with blake3-only pins. | summary_anchor=14-N:L447-L450 | source_atoms=N13-E012, N13-E021
+- [ambiguity] (N-002/N13-A001) [A/DATA] Exact enum of machine-actionable output types is open; start with ToolDirective/ClaimSet/DecisionCard/AuditFinding, extend as N-2 flags new ones. (N-13:L97-L98 | ledger-line: DEEP-N-002.discovery.md:L289)
+- [ambiguity] (N-002/N13-A002) [A/CFG] Whether B-37 RuntimeCapabilities or I-51 models.toml owns the capability fields (do NOT split across both). (N-13:L98-L98 | ledger-line: DEEP-N-002.discovery.md:L290)
+- [ambiguity] (N-002/N13-A003) [A/DEFER] ND-2 retirement of the 8 scattered paths is USER-CONFIRMED (done-gate clause 7), not auto-applied. (N-13:L99-L99 | ledger-line: DEEP-N-002.discovery.md:L291)
+- [ambiguity] (N-002/N13-A004) [A/SEC] "reject-never-silently-repair" (H-13) coexists with registry repair-policy (frozen deterministic table); the permitted distinction is only partly specified. (N-13:L18-L18, L27-L27, L49-L49 | ledger-line: DEEP-N-002.discovery.md:L292)
+- [ambiguity] (N-002/N13-A005) [A/CFG] Registry storage format, schema language, concrete retry budgets, invalid-rate window, and exact refusal payload are unspecified. (N-13:L27-L27, L58-L58 | ledger-line: DEEP-N-002.discovery.md:L293)
+- [inference] (N-002/N13-I001) [I/STATUS] Summary matrix places N-13 in Wave 9; the numbered source says WAVE 4-adjacent / Wave 9 is only the summary's sequencing table. (N-13:L3-L3 | ledger-line: DEEP-N-002.discovery.md:L294)
+
+### N-14: self-improvement edit-loop instruments (EvoPolicyGym)
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY, SUP | sample: N-14:L1-L3; N-14:L5-L5; N-14:L5-L5, L57-L57; N-14:L7-L7; N-14:L8-L9; N-14:L10-L13, L102-L103 | 40 non-summary-placed, 1 summary-placed, 42 total unique atoms in unit | IDs: SUP-004, N-002/N14-E001, N-002/N14-E002, N-002/N14-E003, N-002/N14-E004, N-002/N14-E005, N-002/N14-E006, N-002/N14-E007, …
+**Composes with**: C-30, C-47, C-49, D-6, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-45, H-47, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-7. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- Superseded: (SUP-004) [superseded] [superseded] | **Target state:** N-001/N0-E077 WAVE 9 for N-13/N-14/N-15; summary matrix Wave 9 (14-N:L776-L778). Detail files say WAVE 4-adjacent / 3-4-adjacent / 5-adjacent as composition adjacency, not matrix replacement. | **Losing description retained:** Reading N13-I001/N14-I001/N15-I001 as replacing Wave 9 matrix placement. | **Reason:** N-0 index sequencing table is program authority for wave numbers; detail WAVE-*-adjacent is relative dependency adjacency. Both retained; matrix Wave 9 is target sequencing state.
+- [status] (N-002/N14-E001) [E/STATUS] N-14 STATUS PLANNED; WAVE 3/4-adjacent; Tier-2/3; nature BUILD + ACTIVATION — feeds N-1 spine / N-3 promotion / N-5 intensity; all ADVISORY per TD-3. (N-14:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L304)
+- [config] (N-002/N14-E009) [E/DET] Classification is DETERMINISTIC + byte-stable under ELAI_SEED. NEGATIVE: whitespace/rename-only diff must NOT flip topology. (N-14:L30-L30, L60-L60, L81-L81 | ledger-line: DEEP-N-002.discovery.md:L312)
+- [config] (N-002/N14-E021) [E/TEST] trigger: real agent-loop attempt applying (a) constant-only edit then (b) restructuring edit, seeded under ELAI_SEED. (N-14:L65-L65 | ledger-line: DEEP-N-002.discovery.md:L324)
+- [config] (N-002/N14-E025) [E/CFG] ACCEPTANCE includes W-2 default ON behind `ELAI_EDIT_KIND_LEGACY` (blind persona rotation survives one release as fallback). (N-14:L84-L84 | ledger-line: DEEP-N-002.discovery.md:L328)
+- [gate] (N-002/N14-E003) [E/LIMIT] Hard boundary: EditKind is a deterministic diagnostic, NEVER a gate (paper admits AST-topology lens is conservative); ADVISORY axis only. (N-14:L5-L5, L57-L57 | ledger-line: DEEP-N-002.discovery.md:L306)
+- [gate] (N-002/N14-E019) [E/LIMIT] stub_ban: NO EditKind as BLOCKER; NO imported paper constants; NO re-implementation of C-10/I-27/promotion; NO topology flip on whitespace/rename-only; NO unwrap; blake3 only for topology hash. (N-14:L56-L61 | ledger-line: DEEP-N-002.discovery.md:L322)
+- [gate] (N-002/N14-E023) [E/TEST] expect_artifact: timing fields on I-27; SELECT-then-REPORT reports disjoint held-out fitness; NEGATIVE: whitespace/rename flip to Synthesis FAILS; promotion reporting SELECTION-slice number FAILS. (N-14:L67-L67 | ledger-line: DEEP-N-002.discovery.md:L326)
+- [gate] (N-002/N14-E024) [E/TEST] DETERMINISTIC_CHECK: wiring_contract_check; rg classify_edit_kind; rg -c "block\ (reject\ | ledger-line: DEEP-N-002.discovery.md:L327)
+- [gate] (N-002/N14-E029) [E/EVIDENCE] ADVERSARIAL caveats: n=1 per cell (no seeds/CIs — ELAI must not import the practice; runs its own I-38 floor); AST-topology conservative (ADVISORY only); memorization confound irrelevant (ELAI classifies its own edits). (N-14:L102-L103 | ledger-line: DEEP-N-002.discovery.md:L332)
+- [surface] (N-002/N14-E020) [E/SURFACE/SURFACE] frontend_pair: an edit-kind chip on existing anti-spiral / search-receipt drawer, OR N/A justified (internal advisory) if no surface consumes it yet. (N-14:L62-L63 | ledger-line: DEEP-N-002.discovery.md:L323)
+- [surface] (SUMMARY/N14-E20) Add an edit-kind chip to the anti-spiral/receipt drawer, or justify internal-advisory N/A (`L297-L298`). (14-N:L489)
+- (N-002/N14-E002) [E/CAP] Four instruments from EvoPolicyGym (arXiv:2607.02440): (1) stripped-AST EditKind classifier {synthesis-edit vs parametric-edit}; (2) synthesis-vs-tuning TASK-DEMAND as routing/intensity axis; (3) two-stage hidden SELECT-then-REPORT promotion rule; (4) improvement-event-timing fields on the convergence curve. (N-14:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L305)
+- (N-002/N14-E004) [E/CFG] Effort ~1-2 sessions (~M-L); Tier-1 in-process (tree-sitter AST hashing + journal reads; no network). Four legs share one seam (score-bearing attempt row) and ship as one vertical slice. (N-14:L7-L7 | ledger-line: DEEP-N-002.discovery.md:L307)
+- (N-002/N14-E005) [E/DEP] Pre-requisites: verdict/attempt SSB rows, C-10 StagnationPattern + B-22b persona rotation, I-4, I-22, J-10, I-27 ConvergenceCurveMeasured, H-45/H-47, D-6 held-out, L-21, H-7, J-84, N-1, N-3, N-5; tree-sitter already in crates/knowledge. Parallel-safe with N-13, N-15. (N-14:L8-L9 | ledger-line: DEEP-N-002.discovery.md:L308)
+- (N-002/N14-E006) [E/EVIDENCE] Source: four-source-steal Artifact 2 (S2-1/S2-2/S2-3/S2-5); paper WebSearch-verified 2026-07-05. Paper headline: leaders convert synthesis edits at 41-48% hit rate; weak models churn structure at 3-10% while competitive on tuning 25-38%. (N-14:L10-L13, L102-L103 | ledger-line: DEEP-N-002.discovery.md:L309)
+- (N-002/N14-E007) [E/DATA] SYNTHESIS edit: previously-unseen policy-bundle AST TOPOLOGY after numeric constants are stripped. PARAMETRIC edit: changes the bundle while preserving stripped topology. (N-14:L13-L13, L30-L30 | ledger-line: DEEP-N-002.discovery.md:L310)
+- (N-002/N14-E008) [E/CAP] EditKind classifier (~90 LOC): blake3 of changed file-set's AST topology with numeric constants + identifiers normalized (tree-sitter; do NOT add a parser dep). unchanged topology + changed bundle => ParametricEdit; new topology => SynthesisEdit; rollbacks/retests are CandidateMgmt events, not edit kinds. (N-14:L30-L30, L40-L40 | ledger-line: DEEP-N-002.discovery.md:L311)
+- (N-002/N14-E010) [E/DATA] Join {edit_kind, improved: bool} onto every score-bearing attempt row. (N-14:L30-L30 | ledger-line: DEEP-N-002.discovery.md:L313)
+- (N-002/N14-E011) [E/FLOW] Wire EditKind as ADVISORY evidence into: C-10/B-22b persona choice (structure-churn-without-traction -> Architect/Simplifier; wrong-structure-tuning -> Contrarian/rethink, replacing blind rotation); I-4 receipts; I-22 progress shaping (decay faster on repeated no-hit synthesis churn); J-10 insight backprop (label which edit KIND produced the win). (N-14:L31-L31 | ledger-line: DEEP-N-002.discovery.md:L314)
+- (N-002/N14-E012) [E/CFG] Synthesis-vs-tuning TASK-DEMAND axis: classify upcoming step's edit intent and feed into N-5 intensity resolver + H-7 architect/editor split + L-21 intensity + J-84 effort: synthesis-demand -> architect lane + full verification stack; tuning-demand -> editor lane eligible + parameter-sweep-shaped retries. ELAI-MEASURED thresholds only (ID-5); paper Table 4/8 grounds demand but never imports constants. (N-14:L32-L32, L58-L58 | ledger-line: DEEP-N-002.discovery.md:L315)
+- (N-002/N14-E013) [E/FLOW] Two-stage SELECT-then-REPORT (~30 LOC on H-45/H-47): selection on hidden validation slice (never agent-visible, budget-bound via H-19/N-3); reported fitness from DISJOINT held-out slice; ties resolved deterministically. Composes D-6 per-family tagging. (N-14:L33-L33 | ledger-line: DEEP-N-002.discovery.md:L316)
+- (N-002/N14-E014) [E/DATA] Improvement-event-timing fields on I-27: per improvement event {budget-consumed-at-jump, jump-magnitude, plateau-length}. Makes budget-to-first-improvement a per-config number. (N-14:L34-L34 | ledger-line: DEEP-N-002.discovery.md:L317)
+- (N-002/N14-E015) [E/EVENT] Emit join via one SSB field on existing attempt row (prefer-reuse) OR `+edit_kind_classified` Pattern-2 if needed; Kind: Synthesis / Parametric / CandidateMgmt. Route labels through N-1 fold (ND-4). (N-14:L35-L35, L44-L44 | ledger-line: DEEP-N-002.discovery.md:L318)
+- (N-002/N14-E016) [E/DATA] Decision doc: `workflow/reasoning/N-14-decisions.md`. (N-14:L36-L36, L100-L100 | ledger-line: DEEP-N-002.discovery.md:L319)
+- (N-002/N14-E017) [E/CAP] produces_symbols: `edit_kind.rs::classify_edit_kind`, `::classify_task_demand`, two-stage SELECT-then-REPORT rule, improvement-event-timing fields. (N-14:L39-L44 | ledger-line: DEEP-N-002.discovery.md:L320)
+- (N-002/N14-E018) [E/INT] reachable_from: score-bearing attempt/verdict emission in agent loop [PRODUCTION]; routing decision seam in task_runner [PRODUCTION]; tests NEVER satisfy R7. (N-14:L52-L55 | ledger-line: DEEP-N-002.discovery.md:L321)
+- (N-002/N14-E022) [E/TEST] expect_ssb: (a) Parametric, (b) Synthesis; repeated no-hit synthesis churn shifts persona to Architect/Simplifier (not blind rotation). (N-14:L66-L66 | ledger-line: DEEP-N-002.discovery.md:L325)
+- (N-002/N14-E026) [E/EVENT] W-9 SCHEMA baseline+0..1 from LIVE 267/576 as of 2026-07-04, re-read at edit (prefer reuse of attempt field). (N-14:L88-L88 | ledger-line: DEEP-N-002.discovery.md:L329)
+- (N-002/N14-E027) [E/TEST] Contract tests n14_edit_kind_contract.rs: constant-only->Parametric; restructure->Synthesis; whitespace/rename unchanged; persona shift; SELECT-then-REPORT disjoint; malformed/unparseable degrades to CandidateMgmt never false Synthesis. (N-14:L90-L91 | ledger-line: DEEP-N-002.discovery.md:L330)
+- (N-002/N14-E028) [E/DATA] Files: CREATE edit_kind.rs (~140 LOC); MODIFY anti-spiral persona seam, I-27, H-45/H-47, N-5/H-7/L-21/J-84, ssb.rs; CREATE contract test + decisions. (N-14:L93-L100 | ledger-line: DEEP-N-002.discovery.md:L331)
+- (N-002/N14-E030) [E/DEP] Sequences behind EvoPolicyGym bench candidate (S2-4, recorded as K-2 bench note). (N-14:L113-L113 | ledger-line: DEEP-N-002.discovery.md:L333)
+- [summary-delta] (N-002/SD-N14-001) [Δ] section=N-14 (DEEP-N-002.discovery.md:L524): **ADD** CandidateMgmt event class, exact timing fields, `ELAI_EDIT_KIND_LEGACY`, and advisory-only rg ban on block/reject/deny. | summary_anchor=14-N:L466-L502 | source_atoms=N14-E008, N14-E014–N14-E015, N14-E024–N14-E025
+- [summary-delta] (N-002/SD-N14-002) [Δ] section=N-14 (DEEP-N-002.discovery.md:L525): **ADD** persona mapping (structure-churn→Architect/Simplifier; wrong-structure-tuning→Contrarian/rethink) and synthesis/tuning lane routing. | summary_anchor=14-N:L476-L479 | source_atoms=N14-E011–N14-E012
+- [summary-delta] (N-002/SD-N14-003) [Δ] section=N-14 (DEEP-N-002.discovery.md:L526): **ADD** adversarial n=1/I-38 floor caveat and open questions (attempt-row reuse, literal normalization, per-step vs cache). | summary_anchor=14-N:L496-L502 | source_atoms=N14-E029, N14-C001, N14-A001–N14-A003
+- [summary-delta] (N-002/SD-N14-004) [Δ] section=N-14 (DEEP-N-002.discovery.md:L527): **FLAG** WAVE 3/4-adjacent in source vs Wave 9 in summary matrix. | summary_anchor=14-N:L468, L777 | source_atoms=N14-I001
+- [ambiguity] (N-002/N14-A001) [A/DATA] Which attempt/verdict SSB row already carries a per-attempt payload for the join (prefer reuse vs +edit_kind_classified) is open. (N-14:L108-L108 | ledger-line: DEEP-N-002.discovery.md:L335)
+- [ambiguity] (N-002/N14-A002) [A/CFG] Whether task-demand classification runs per-step or is cached per plan node is open. (N-14:L109-L109 | ledger-line: DEEP-N-002.discovery.md:L336)
+- [ambiguity] (N-002/N14-A003) [A/DET] Whether string literals normalize in the AST topology set (source of false Parametric if mechanism is encoded in a literal) is open. (N-14:L110-L110 | ledger-line: DEEP-N-002.discovery.md:L337)
+- [ambiguity] (N-002/N14-A004) [A/CFG] Supported languages, tree-sitter fallback for parse errors, churn window, and persona-switch thresholds are unspecified. (N-14:L30-L32, L91-L91 | ledger-line: DEEP-N-002.discovery.md:L338)
+- [ambiguity] (N-002/N14-C001) [C/EVIDENCE] Paper conversion-rate figures (41-48% / 3-10% / 25-38%) are context only under ID-5; never become ELAI thresholds. (N-14:L13-L13, L32-L32, L58-L58, L102-L103 | ledger-line: DEEP-N-002.discovery.md:L334)
+- [inference] (N-002/N14-I001) [I/STATUS] Summary places N-14 in Wave 9; numbered source says WAVE 3/4-adjacent. (N-14:L3-L3 | ledger-line: DEEP-N-002.discovery.md:L339)
+
+### N-15: anti-affirmation stability measurement
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY, SUP | sample: N-15:L1-L3; N-15:L5-L5; N-15:L5-L5, L49-L49; N-15:L7-L7; N-15:L8-L9; N-15:L10-L10, L94-L95 | 33 non-summary-placed, 3 summary-placed, 37 total unique atoms in unit | IDs: SUP-004, N-002/N15-E001, N-002/N15-E002, N-002/N15-E003, N-002/N15-E004, N-002/N15-E005, N-002/N15-E006, N-002/N15-E007, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-7, N-8, N-9, N-10. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- Superseded: (SUP-004) [superseded] [superseded] | **Target state:** N-001/N0-E077 WAVE 9 for N-13/N-14/N-15; summary matrix Wave 9 (14-N:L776-L778). Detail files say WAVE 4-adjacent / 3-4-adjacent / 5-adjacent as composition adjacency, not matrix replacement. | **Losing description retained:** Reading N13-I001/N14-I001/N15-I001 as replacing Wave 9 matrix placement. | **Reason:** N-0 index sequencing table is program authority for wave numbers; detail WAVE-*-adjacent is relative dependency adjacency. Both retained; matrix Wave 9 is target sequencing state.
+- [status] (N-002/N15-E001) [E/STATUS/SURFACE] N-15 STATUS PLANNED; WAVE 5-adjacent; Tier-3; nature BUILD/ACTIVATION — feeds D-23 sycophancy bench + N-1 spine; residue structural sycophancy defenses do not cover. (N-15:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L349)
+- [config] (N-002/N15-E009) [E/CAP/SURFACE] Advisory framing-invariance check (~70 LOC): when advisory panel emits N samples, shuffle option/section order; if VERDICT flips, log framing-unstable and ZERO its weight for the run. GD-4: measure FP rate on >=3 real runs before default-ON. (N-15:L28-L28, L52-L52 | ledger-line: DEEP-N-002.discovery.md:L357)
+- [config] (N-002/N15-E017) [E/LIMIT] stub_ban: NO decision/gate/promotion consuming framing-instability as BLOCKER; NO imported paper number as done-gate threshold (50%-more-affirmation is context); NO re-implementation of D-23/I-33/D-14; NO default-ON before FP bound on >=3 runs; NO unwrap. (N-15:L48-L53 | ledger-line: DEEP-N-002.discovery.md:L365)
+- [config] (N-002/N15-E020) [E/TEST] expect: flip emits FramingUnstable + weight zeroed; assertion-pull emits adoption-rate rows with/without D-14; rates land in N-1 and feed D-23's >=70%/<=15% gates; NEGATIVE: presentation-stable advisory logged unstable FAILS FP; default-ON with no FP bound FAILS GD-4. (N-15:L58-L59 | ledger-line: DEEP-N-002.discovery.md:L368)
+- [config] (N-002/N15-E022) [E/CFG] ACCEPTANCE W-2: default ON behind `ELAI_FRAMING_INVARIANCE_LEGACY`. (N-15:L76-L76 | ledger-line: DEEP-N-002.discovery.md:L370)
+- [gate] (N-002/N15-E003) [E/LIMIT] Hard boundary: advisory-only lanes; no decision gate, promotion, or merge consumes this as a blocker; it zeroes an ADVISORY weight and produces a MEASURED number. (N-15:L5-L5, L49-L49 | ledger-line: DEEP-N-002.discovery.md:L351)
+- [gate] (N-002/N15-E010) [E/DATA] Two D-23 fixture classes (~40 LOC DATA + oracle-by-construction): (a) option-order inversion — same facts, reordered options, decision must NOT flip; (b) assertion-pull — "I think X" prefix on false X, measure adoption WITH and WITHOUT D-14 probe. Feed D-23 detection/FP gates + E-54; do NOT re-implement D-23 runner. (N-15:L29-L29 | ledger-line: DEEP-N-002.discovery.md:L358)
+- [gate] (N-002/N15-E021) [E/TEST] DETERMINISTIC_CHECK: wiring_contract_check; rg check_framing_stability; rg -c "gate\ (block\ | ledger-line: DEEP-N-002.discovery.md:L369)
+- [surface] (N-002/N15-E002) [E/CAP/SURFACE] (1) framing/order-invariance extended from decision-type calls (I-33) to ADVISORY panels: present shuffled option/section order across N advisory samples; flip under presentation-only permutation => log framing-unstable and zero weight for the run. (2) two new D-23 fixture classes: option-order inversion (HBR framing) + assertion-pull (Stanford "I think X"). (N-15:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L350)
+- [surface] (N-002/N15-E007) [E/SEC/SURFACE] Two-halves honesty (GD-5): inside a black-box model sycophancy cannot be annulled from the harness; at system boundary ELAI achieves structural irrelevance (TD-3; I-17 L1 hard-veto; K-16 RR-2; I-33 candidate set; H-31; D-14; E-4). Residue is advisory prose a human reads directly. (N-15:L13-L13 | ledger-line: DEEP-N-002.discovery.md:L355)
+- [surface] (N-002/N15-E008) [E/DEP/SURFACE] Decision-grain framing defense I-33 covers DECISION-type calls, not advisory panels. I-24 pattern is applied to framing instead of style. Uncovered advisory lanes: B-41, J-45, L-11, I-41. (N-15:L16-L18 | ledger-line: DEEP-N-002.discovery.md:L356)
+- [surface] (N-002/N15-E011) [E/OBS/SURFACE] Route framing-instability rate + two fixture detection numbers through N-1 spine (ND-4); surface framing-stability number as N-8 governance-coverage view input ("advisories are framing-stable at rate X"). (N-15:L30-L30 | ledger-line: DEEP-N-002.discovery.md:L359)
+- [surface] (N-002/N15-E015) [E/INT/SURFACE] reachable_from: advisory-panel emission (B-41 / J-45) [PRODUCTION]; D-23 `elai bench sycophancy` runner seam [PRODUCTION]; tests NEVER satisfy R7. (N-15:L44-L47 | ledger-line: DEEP-N-002.discovery.md:L363)
+- [surface] (N-002/N15-E016) [E/SURFACE/SURFACE] CLI/bench surface: `elai bench sycophancy` with the two new fixture classes. (N-15:L47-L47, L58-L58 | ledger-line: DEEP-N-002.discovery.md:L364)
+- [surface] (N-002/N15-E018) [E/SURFACE/SURFACE] frontend_pair: framing-stability tile on G-5 cockpit / N-8 governance view reading `+framing_stability_measured`, OR N/A if sycophancy-bench tile already surfaces it. (N-15:L54-L55 | ledger-line: DEEP-N-002.discovery.md:L366)
+- [surface] (N-002/N15-E019) [E/TEST/SURFACE] trigger: run advisory panel on presentation-order-sensitive input, seeded; then `elai bench sycophancy` with two fixture classes. (N-15:L57-L58 | ledger-line: DEEP-N-002.discovery.md:L367)
+- [surface] (SUMMARY/N15-E01) Limit the new mechanism to advisory prose, because I-17 L1 veto, I-33 externalized candidates, H-31 judge firewall, D-14 inverted framing, E-4 chat drift, and TD-3 already make sycophancy structura... (14-N:L508)
+- [surface] (SUMMARY/N15-E17) Surface a framing-stability tile on G-5/N-8, or justify N/A if an existing sycophancy-bench tile provides it (`L319-L320`). (14-N:L524)
+- [surface] (SUMMARY/N15-E18) `elai bench sycophancy` runs the two fixture classes (`L321-L323`). (14-N:L525)
+- (N-002/N15-E004) [E/CFG] Effort ~1 session (~M); Tier-1 in-process for framing permutation; fixtures are DATA feeding D-23's existing runner. (N-15:L7-L7 | ledger-line: DEEP-N-002.discovery.md:L352)
+- (N-002/N15-E005) [E/DEP] Pre-requisites: I-33 CEFL, I-24 scorer-neutralization, J-45, B-41, L-11, I-41, D-23 (>=70% detection / <=15% FP), E-54 matched-pair, D-14 inverted-framing, E-4 chat affirmation-drift, N-1. Parallel-safe with N-13, N-14. (N-15:L8-L9 | ledger-line: DEEP-N-002.discovery.md:L353)
+- (N-002/N15-E006) [E/EVIDENCE] Source Artifact 4 S4-2/S4-3; papers arXiv:2510.01395 Stanford (models affirm 50% more than humans, N=1604) grounds assertion-pull; HBR/NYU framing-sensitivity grounds option-order. (N-15:L10-L10, L94-L95 | ledger-line: DEEP-N-002.discovery.md:L354)
+- (N-002/N15-E012) [E/EVENT] Emit `+framing_stability_measured` Pattern-2 Kind: Stable / FramingUnstable / AssertionPulled OR reuse D-23 detection row Kind (prefer-reuse). (N-15:L31-L31, L38-L38 | ledger-line: DEEP-N-002.discovery.md:L360)
+- (N-002/N15-E013) [E/DATA] Decision doc: `workflow/reasoning/N-15-decisions.md` (two-halves honesty, advisory-only boundary, D-14 probe-cost/coverage under GD-4). (N-15:L32-L32, L92-L92 | ledger-line: DEEP-N-002.discovery.md:L361)
+- (N-002/N15-E014) [E/CAP] produces_symbols: `framing_invariance.rs::check_framing_stability`; two fixture classes in crates/knowledge or D-23 corpus; SSB framing row. (N-15:L35-L38 | ledger-line: DEEP-N-002.discovery.md:L362)
+- (N-002/N15-E023) [E/EVENT] W-9 SCHEMA baseline+0..1 from LIVE 267/576 as of 2026-07-04. (N-15:L80-L80 | ledger-line: DEEP-N-002.discovery.md:L371)
+- (N-002/N15-E024) [E/TEST] Contract tests n15_framing_invariance_contract.rs: flip->FramingUnstable+zero weight; stable->Stable no FP; option-order flip DETECTED; assertion-pull higher adoption WITHOUT D-14 than WITH; single-sample advisory degrades to Stable-unknown never silent false FramingUnstable. (N-15:L82-L83 | ledger-line: DEEP-N-002.discovery.md:L372)
+- (N-002/N15-E025) [E/DATA] Files: CREATE framing_invariance.rs (~90 LOC); CREATE/MODIFY D-23 corpus; MODIFY B-41/J-45/L-11/I-41 seams; MODIFY ssb.rs; MODIFY N-8 governance view; CREATE contract test + decisions. (N-15:L85-L92 | ledger-line: DEEP-N-002.discovery.md:L373)
+- (N-002/N15-E026) [E/EVIDENCE] HBR/NYU underlying piece is [EXTERNAL] until fetched — fixture is ELAI-measured regardless. Anthropic CoT-unfaithfulness ids are K-16 RR-1 grounding, not consumed here. (N-15:L94-L95 | ledger-line: DEEP-N-002.discovery.md:L374)
+- [summary-delta] (N-002/SD-N15-001) [Δ] section=N-15 (DEEP-N-002.discovery.md:L533): **ADD** Kind list Stable/FramingUnstable/AssertionPulled; Stable-unknown degradation for single-sample; `ELAI_FRAMING_INVARIANCE_LEGACY`. | summary_anchor=14-N:L504-L534 | source_atoms=N15-E012, N15-E022, N15-E024
+- [summary-delta] (N-002/SD-N15-002) [Δ] section=N-15 (DEEP-N-002.discovery.md:L534): **ADD** two-halves GD-5 honesty framing, D-14 probe cost note, optional N-7 render note default. | summary_anchor=14-N:L508-L534 | source_atoms=N15-E007, N15-A002–N15-A003
+- [summary-delta] (N-002/SD-N15-003) [Δ] section=N-15 (DEEP-N-002.discovery.md:L535): **ADD** N-8 governance view input and G-5/N-8 tile; WAVE 5-adjacent vs summary Wave 9. | summary_anchor=14-N:L520-L524, L778 | source_atoms=N15-E011, N15-E018, N15-I001
+- [ambiguity] (N-002/N15-A001) [A/CFG] Sample count N, permutation scheme, verdict-equivalence definition, stability threshold, and weight scope beyond "for the run" are open. (N-15:L28-L28, L101-L101 | ledger-line: DEEP-N-002.discovery.md:L375)
+- [ambiguity] (N-002/N15-A002) [A/CFG] D-14 probe doubles model-call cost; coverage policy (which claims get probed) is the FP/cost knob under GD-4 — default coverage decided at authoring from measured FP/cost curve. (N-15:L100-L100 | ledger-line: DEEP-N-002.discovery.md:L376)
+- [ambiguity] (N-002/N15-A003) [A/SURFACE/SURFACE] Whether framing-instability should also emit a human-render note (N-7); default zero-weight + spine number, add render only if N-7 has shipped. (N-15:L102-L102 | ledger-line: DEEP-N-002.discovery.md:L377)
+- [inference] (N-002/N15-I001) [I/STATUS] Summary places N-15 in Wave 9; numbered source says WAVE 5-adjacent. (N-15:L3-L3 | ledger-line: DEEP-N-002.discovery.md:L378)
+
+### N-16: governance closure (evaluator-refutation, lambda floor, adjudicator-ritual)
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers N-002, N-SD, SUMMARY, SUP | sample: N-16:L1-L3; N-16:L5-L5; N-16:L7-L7; N-16:L7-L7; N-16:L11-L11, L25-L25, L34-L34; N-16:L11-L11, L19-L19 | 31 non-summary-placed, 1 summary-placed, 33 total unique atoms in unit | IDs: SUP-001, N-002/N16-E001, N-002/N16-E002, N-002/N16-E003, N-002/N16-E004, N-002/N16-E005, N-002/N16-E006, N-002/N16-E007, …
+**Composes with**: C-30, C-47, C-49, D-17, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-27, H-49, I-8, I-12, I-24, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-7. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- Superseded: (SUP-001) [superseded] [superseded] | **Target state:** N-001/N0-E001 + N-001/N0-C001 + N-001/SD-N0-007: program inventory is N-1..N-16 (16 units); external track N-13..N-16 appended. | **Losing description retained:** SUMMARY header "All 15 sessions" and open-ambiguity item 1 treating 15 vs 16 as unresolved (14-N:L1-L2, L26-L26, L827). | **Reason:** Deep N-0 explicit CORRECT: 16 units with external track; higher-plan/detail authority.
+- [status] (N-002/N16-E001) [E/STATUS] N-16 is EXTERNAL-STEAL (DeepReason 2026-07-08), lever is-our-own-adjudication-still-real, verdicts S4+S6+S7, grounding STRONG (steal-deepreason; ELAI anchors PLAN-asserted re-grep W-7), nature EXTENSION(N-8)+BUILD, effort M, WAVE 9. (N-16:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L388)
+- [status] (N-002/N16-E012) [E/DEP] PLAN-asserted: N-8 five views [PLANNED]; F-5 staleness cascade [WIRED-class]; H-27 + I-24/N-15; SSB verdict rows; gate-manifest + gate_freeze_check.py; N-1; D-17 refusal SLA; R4 off-agent evidence. (N-16:L16-L22 | ledger-line: DEEP-N-002.discovery.md:L399)
+- [gate] (N-002/N16-E002) [E/EVIDENCE] PROOF_SPINE (PSR-2): feeds PS-2 (composed gate-tax vs locked ceiling, K-4) transitively: S7 measures fraction of shipped units whose declared VERIFY legs never ran; S4 keeps gate verdicts from standing on a since-refuted evaluator. N-16 is the honesty check ON the number PS-2 sells. (N-16:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L389)
+- [gate] (N-002/N16-E006) [E/EVENT] Refutation event sources: failed H-27 mutant corpus; I-24/N-15 bias detection; frozen-tool bug fix. (N-16:L11-L11, L19-L19 | ledger-line: DEEP-N-002.discovery.md:L393)
+- [gate] (N-002/N16-E010) [E/OBS] S7 ADJUDICATOR-RITUAL METRICS: entropy over auditor finding-CLASSES per window (new surfaces vs re-litigating same nodes) + fraction of shipped units whose declared VERIFY legs never ran (criticism debt) + rate at which gates THEMSELVES get challenged/amended (validity-node-attack-rate ~= 0 translation). Feeds N-8's marketable governance number. (N-16:L13-L13, L36-L36 | ledger-line: DEEP-N-002.discovery.md:L397)
+- [gate] (N-002/N16-E011) [E/LIMIT] EXCLUDED: Dung grounded-extension adjudicator + reinstatement as general mechanism; any of the three ACTING as a gate that emits PASS; claiming a governance number before MEASURED through N-1. (N-16:L14-L14 | ledger-line: DEEP-N-002.discovery.md:L398)
+- [gate] (N-002/N16-E014) [E/DEFER] DEFER (Tier-2): back-filling version-hashes onto historical verdict rows; gate-amend-rate leg of S7 (needs >=1 quarter of gate-manifest history). (N-16:L26-L26 | ledger-line: DEEP-N-002.discovery.md:L401)
+- [gate] (N-002/N16-E021) [E/TEST] expect_artifact: refuted evaluator's past verdicts in advisory re-audit queue (NOT deleted); lambda under floor fires retrieval/escalation brake; shipped unit whose VERIFY leg never ran counted as criticism debt. NEGATIVE: silent delete FAILS; lambda/ritual as PASS FAILS; number without N-1 FAILS. (N-16:L51-L51 | ledger-line: DEEP-N-002.discovery.md:L408)
+- [gate] (N-002/N16-E023) [E/DEP] COMPOSES-WITH N-8 (EXTENDED), F-5, H-27 + I-24 + N-15, gate-manifest, N-1, D-17, R4; re-implements NONE. (N-16:L58-L59 | ledger-line: DEEP-N-002.discovery.md:L410)
+- [surface] (N-002/N16-E009) [E/FAIL/SURFACE] lambda below a floor forces retrieval/research/escalation (a BRAKE), and is NEVER a pass signal; detects STALLED/closed-loop dynamics, not wrong-but-stable consensus. One SSB-derived tile + one threshold; journal-recomputable. (N-16:L12-L12, L35-L35 | ledger-line: DEEP-N-002.discovery.md:L396)
+- [surface] (N-002/N16-E013) [E/CFG/SURFACE] SHIP NOW (Tier-1, in-process): evaluator-id+version-hash field + S4 quarantine cascade; S6 lambda tile + floor + brake (advisory); S7 finding-class entropy + VERIFY-leg-ran rate. All observe-only (GD-4) until FP bound measured on >=3 runs. (N-16:L24-L25 | ledger-line: DEEP-N-002.discovery.md:L400)
+- [surface] (N-002/N16-E016) [E/SURFACE/SURFACE] frontend_pair: three numbers on the N-8 / G-5 / M-3 governance tile — lambda gauge + quarantine-queue count + ritual-entropy band. (N-16:L30-L30, L47-L47 | ledger-line: DEEP-N-002.discovery.md:L403)
+- [surface] (SUMMARY/N16-E30) Add a lambda gauge, quarantine-queue count, and ritual-entropy band to the N-8/G-5/M-3 governance tile (`L348-L349`). (14-N:L569)
+- (N-002/N16-E003) [E/FLOW] Premise: GENERATOR capture covered by anti-spiral + L-23; ADJUDICATOR capture — criticism ritualizes while statuses stay formally correct, and verdicts keep standing after the standard is refuted — is residue N-8's five views do NOT catch. (N-16:L7-L7 | ledger-line: DEEP-N-002.discovery.md:L390)
+- (N-002/N16-E004) [E/CAP] N-16 adds three missing views over the SAME "what part of our own governance is decorative" question N-8 asks: sixth/seventh/eighth views over one join, not a new framework (ND-1). All three are ADVISORY alarms that force retrieval/re-audit/escalation, never PASS signals (TD-3, HG-4); measured through N-1 (ND-4); ELAI-measured thresholds only (ID-5). (N-16:L7-L7 | ledger-line: DEEP-N-002.discovery.md:L391)
+- (N-002/N16-E005) [E/CAP] S4 EVALUATOR-REFUTATION => VERDICT-COLLAPSE: every SSB verdict row carries evaluator-id + version-hash; a registered evaluator-refutation event triggers F-5-style staleness cascade over exactly the verdicts that evaluator issued: QUARANTINE into advisory re-audit queue, NEVER delete (append-only). (N-16:L11-L11, L25-L25, L34-L34 | ledger-line: DEEP-N-002.discovery.md:L392)
+- (N-002/N16-E007) [E/LIMIT] Takes only the valuable consequence of Dung reinstatement WITHOUT the argument-graph adjudicator (REJECTED, steal §4.3). (N-16:L11-L11, L14-L14, L44-L44 | ledger-line: DEEP-N-002.discovery.md:L394)
+- (N-002/N16-E008) [E/OBS] S6 LAMBDA EXOGENOUS-GROUNDING FLOOR: windowed fraction of accepted claims/verdicts whose support bottoms out in an EXOGENOUS anchor (program check, off-agent artifact, retrieval evidence, human ruling) vs a model-judged rubric. (N-16:L12-L12 | ledger-line: DEEP-N-002.discovery.md:L395)
+- (N-002/N16-E015) [E/INT] Integration: crates/orchestrator (verdict-row field + F-5 cascade hook + lambda/ritual derivations) + `.claude/tools` governance-coverage checker gains three views; N-1 spine sink. (N-16:L28-L29 | ledger-line: DEEP-N-002.discovery.md:L402)
+- (N-002/N16-E017) [E/INT] reachable_from: registered evaluator-refutation event > F-5 verdict-collapse sweep [PRODUCTION]; CI/authoring governance-coverage checker > S6/S7 derivations [PRODUCTION]; tests NEVER satisfy R7. (N-16:L39-L42 | ledger-line: DEEP-N-002.discovery.md:L404)
+- (N-002/N16-E018) [E/LIMIT] stub_ban: NO Dung adjudicator; NO deletion of quarantined verdict; NO lambda/ritual number emitting PASS; NO number claimed before N-1 measurement; NO re-implementation of N-8/F-5/H-27/I-24; NO unwrap; blake3 not sha2. (N-16:L43-L46 | ledger-line: DEEP-N-002.discovery.md:L405)
+- (N-002/N16-E019) [E/TEST] trigger: register an evaluator-refutation event then run governance-coverage checker over rulebook + verdict stream. (N-16:L49-L49 | ledger-line: DEEP-N-002.discovery.md:L406)
+- (N-002/N16-E020) [E/EVENT] expect_ssb: `+evaluator_closure_swept` Pattern-2 Kind EvaluatorRefuted/VerdictQuarantined/Reinstated + `+grounding_ratio_measured` Kind AboveFloor/BelowFloorBraked; S7 prefer-reuse `governance_coverage_measured` (+Kind AdjudicatorRitual); baseline+2 from LIVE 267/576 as of 2026-07-04. (N-16:L50-L50 | ledger-line: DEEP-N-002.discovery.md:L407)
+- (N-002/N16-E022) [E/DEP] Grounding: steal-deepreason S4/S6/S7 + DeepReason spec §11 [EXTERNAL/DESIGN-RATIONALE, ID-5]; ELAI anchors re-grepped at edit; TD-3/ID-5/R4/R8/GD-2/ND-1/ND-4. (N-16:L53-L56 | ledger-line: DEEP-N-002.discovery.md:L409)
+- [summary-delta] (N-002/SD-N16-001) [Δ] section=N-16 (DEEP-N-002.discovery.md:L541): **ADD** PROOF_SPINE/PS-2 honesty-check role; Kind lists for evaluator_closure_swept and grounding_ratio_measured; AdjudicatorRitual reuse on governance_coverage_measured; baseline+2. | summary_anchor=14-N:L536-L581 | source_atoms=N16-E002, N16-E020
+- [summary-delta] (N-002/SD-N16-002) [Δ] section=N-16 (DEEP-N-002.discovery.md:L542): **ADD** GD-4 observe-only until FP bound on >=3 runs; Tier-2 back-fill of historical version-hashes and gate-amend-rate deferral. | summary_anchor=14-N:L563-L581 | source_atoms=N16-E013–N16-E014
+- [summary-delta] (N-002/SD-N16-003) [Δ] section=N-16 (DEEP-N-002.discovery.md:L543): **ADD** frontend triple: lambda gauge + quarantine-queue count + ritual-entropy band; Reinstated Kind without release criteria (flag). | summary_anchor=14-N:L569-L581 | source_atoms=N16-E016, N16-A004
+- [summary-delta] (N-002/SD-N16-004) [Δ] section=N-16 (DEEP-N-002.discovery.md:L544): **ADD** D-17 as brake escalation target and R4 as exogenous-anchor definition. | summary_anchor=14-N:L567 | source_atoms=N16-E009, N16-E012
+- [ambiguity] (N-002/N16-A001) [A/CFG] Window length, lambda numerator/denominator edge cases, floor value, brake duration, re-audit release criteria, evaluator identity migration, and entropy formula are unspecified. (N-16:L12-L13, L25-L25 | ledger-line: DEEP-N-002.discovery.md:L411)
+- [ambiguity] (N-002/N16-A002) [A/EVENT] "frozen-tool bug fix" event registration path and version-hash algorithm are unspecified. (N-16:L11-L11 | ledger-line: DEEP-N-002.discovery.md:L412)
+- [ambiguity] (N-002/N16-A003) [A/STATUS] "PLAN-asserted, re-grep W-7" explicitly lowers confidence in local anchor verification even though steal grounding is STRONG. (N-16:L3-L3, L16-L22 | ledger-line: DEEP-N-002.discovery.md:L413)
+- [ambiguity] (N-002/N16-A004) [A/EVENT] Kind `Reinstated` is named in expect_ssb without defining when/how a quarantined verdict is reinstated. (N-16:L50-L50 | ledger-line: DEEP-N-002.discovery.md:L414)
+
+### N-registers: cross-unit IX / SD / AC registers
+
+**Status**: planned (register / orientation inventory)
+**Anchors**: ledgers N-AC, N-IX | sample: DEEP-N-001.discovery.md:L385; DEEP-N-001.discovery.md:L386; DEEP-N-001.discovery.md:L387; DEEP-N-001.discovery.md:L388; DEEP-N-001.discovery.md:L389; DEEP-N-001.discovery.md:L390 | 62 non-summary-placed, 0 summary-placed, 62 total unique atoms in unit | IDs: N-001/IX-001, N-001/IX-002, N-001/IX-003, N-001/IX-004, N-001/IX-005, N-001/IX-006, N-001/IX-007, N-001/IX-008, …
+**Composes with**: C-30, C-47, C-49, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-7, N-8, N-9, N-10. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- [status] (N-002/AC-011) [status drift] Summary Wave-9 placement for N-13/N-14/N-15 vs numbered WAVE 4-adjacent / 3-4-adjacent / 5-adjacent labels. | refs=N13-I001; N14-I001; N15-I001 (DEEP-N-002.discovery.md:L455)
+- (N-002/AC-003) [correction] N-6 is six scales, not five; Tier-2 K-23/M-2 plug-in schema open. | refs=N6-C001, N6-A001–N6-A003 (DEEP-N-002.discovery.md:L447)
+- [deferred] (N-001/AC-004) [dependency] I-1 unshipped behavior for N-5/N-9 deferred shims is named but unspecified. | refs=N0-A003 (DEEP-N-001.discovery.md:L416)
+- [interaction] (N-001/IX-001) [E] N-1 is the Wave-1 keystone: every later number claim and GD-4 FP gate must measure through its spine and ModelCapabilityProfile sink (ND-4). | evidence=N0-E031, N0-E069, N1-E001–N1-E006, N1-E030 (DEEP-N-001.discovery.md:L385)
+- [interaction] (N-001/IX-002) [E] N-3 depends on N-1 outcome labels as ground truth for deflation and is Wave 3 after the spine. | evidence=N0-E036, N0-E071, N3-E001, N3-E013 (DEEP-N-001.discovery.md:L386)
+- [interaction] (N-001/IX-003) [E] N-9 depends on N-1 labels for delta scoring and applies N-3 deflation when ablation feeds promotion. | evidence=N0-E042, N9-E001, N9-E006, N9-E009 (DEEP-N-001.discovery.md:L387)
+- [interaction] (N-001/IX-004) [E] N-4 and N-3 co-occupy Wave 3 on measured ground; N-4 is independent of N-1 in its own metadata but program ND-4 still routes any claimed cost/cheaper number through the spine. | evidence=N0-E071, N4-E001, N4-E012, N0-E031 (DEEP-N-001.discovery.md:L388)
+- [interaction] (N-001/IX-005) [E] N-11 Wave 7 extends L-16 rather than inventing a fold; N-0 landmine forbids re-authoring the fold and narrows residual to recover_stubs + H-49 store. | evidence=N0-E044, N0-E087, N11-E007–N11-E008 (DEEP-N-001.discovery.md:L389)
+- [interaction] (N-001/IX-006) [E] N-12 Wave 8 is the ND-1 sweep whose ongoing anti-refork enforcement is N-2's duplicate-concept check (N-2 is out of this chunk but named as consumer/keeper). | evidence=N0-E045, N0-E076, N12-E002, N12-E026, N12-E028 (DEEP-N-001.discovery.md:L390)
+- [interaction] (N-001/IX-007) [E] W-1..W-10 + GD-1..GD-5 + ND-1..ND-5 + eight-clause DONE definition apply to every unit in this chunk. | evidence=N0-E012–N0-E033 (DEEP-N-001.discovery.md:L391)
+- [interaction] (N-001/IX-008) [E] Action-type registry: N-1 +calibration_bootstrap_superseded; N-3 +promotion_deflated; N-4 +receipt_memo; N-9 +counterfactual_scored; N-11 and N-12 add none. | evidence=N0-E052, N0-E054–N0-E055, N0-E060, N0-E062–N0-E063, N1-E027, N3-E022, N4-E026, N9-E018, N11-E022, N12-E025 (DEEP-N-001.discovery.md:L392)
+- [interaction] (N-001/IX-009) [E/SURFACE] Production reachability invariant R7 is repeated per unit: CLI bench (N-1), real SHADOW->ACTIVE (N-3), live J-83 gate (N-4), live ablation (N-9), live fold re-derive (N-11), multi-call-site surviving impls (N-12). | evidence=N1-E025, N3-E020, N4-E024, N9-E016, N11-E020, N12-E023 (DEEP-N-001.discovery.md:L393)
+- [interaction] (N-001/IX-010) [E/SURFACE] User-facing surfaces in this chunk: MeasurementPanel or G-5 (N-1); deflation column on promotion drawers (N-3); memo-hit on belief/claim drawer (N-4); attribution drawers reuse (N-9); canvas altitude fold verification (N-11); optional FailureClass drawer (N-12); CLI `elai bench <family>` (N-1). | evidence=N1-E019–N1-E020, N3-E017, N4-E021, N9-E013, N11-E017, N12-E020 (DEEP-N-001.discovery.md:L394)
+- [interaction] (N-001/IX-011) [E] Retirement/user-confirm: W-2 LEGACY one-release + ND-2 maps bind N-11 recover_stubs/H-49 retirement and any unifier that supersedes live paths. | evidence=N0-E014, N0-E029, N0-E083, N11-E006, N11-E021 (DEEP-N-001.discovery.md:L395)
+- [interaction] (N-001/IX-012) [E] GD-2 determinism: N-1 fixture, N-9 journal-label deltas, N-11 pinned-seed byte-identical folds all recompute from SSB/journal under seed. | evidence=N0-E024, N1-E017, N9-E017, N11-E022–N11-E023 (DEEP-N-001.discovery.md:L396)
+- [interaction] (N-001/IX-013) [E] Fail-closed family: ND-4 foreign knee store (N-1); missing N / ignore-trial ACTIVE (N-3); F-5-stale memo Hit (N-4); fat adapter (N-9); ad-hoc fold path (N-11); parallel reappearance / admission bypass (N-12). | evidence=N1-E028, N3-E021–N3-E023, N4-E025–N4-E027, N9-E017–N9-E019, N11-E021–N11-E023, N12-E024–N12-E026 (DEEP-N-001.discovery.md:L397)
+- [interaction] (N-001/IX-014) [E] N-4 memo composes C-30 cache shape, J-96 case nodes, J-21 identity, and F-5 invalidation; I-8 is the negative-space twin already caching failures. | evidence=N4-E007–N4-E010, N4-E015–N4-E017 (DEEP-N-001.discovery.md:L398)
+- [interaction] (N-001/IX-015) [E] N-3 re-keys H-17/H-18/H-19 and hardens eight promotion consumers; I-30/I-31 are the Track-17 precedent. | evidence=N3-E003–N3-E008, N3-E014 (DEEP-N-001.discovery.md:L399)
+- [interaction] (N-001/IX-016) [E] N-9 unifies four attribution + four ablation engines into one core; Tier-1 proves with role/verifier/ranker only. | evidence=N9-E003–N9-E005, N9-E010–N9-E011 (DEEP-N-001.discovery.md:L400)
+- [interaction] (N-001/IX-017) [E] N-12(a) FailureClass feeds auditor, anti-spiral, MAST, corpus rows, and case edges as one classification event — training-data free for J-25/I-12. | evidence=N12-E003–N12-E005 (DEEP-N-001.discovery.md:L401)
+- [interaction] (N-001/IX-018) [E] N-12(b) abstain taint composition raises L-2 risk floor on answer-without-evidence after upstream retrieval abstain. | evidence=N12-E006–N12-E007 (DEEP-N-001.discovery.md:L402)
+- [interaction] (N-001/IX-019) [E] N-12(d) closes the C-47/C-49 write path that J-109 already guards for E-5/I-12/J-97. | evidence=N12-E010 (DEEP-N-001.discovery.md:L403)
+- [interaction] (N-001/IX-020) [E] Blake3-only hashing is global (N-0 hard rule) and restated on N-1 and N-4 claim-identity paths. | evidence=N0-E080, N1-E026, N4-E025 (DEEP-N-001.discovery.md:L404)
+- [interaction] (N-001/IX-021) [E] Schema baseline 267/576 must be re-read at edit; no unit may hard-code the bump. | evidence=N0-E051, N0-E064, N0-E021 (DEEP-N-001.discovery.md:L405)
+- [interaction] (N-001/IX-022) [I] N-4's "measurably cheaper" second pass is the kind of number ND-4 would require to route through N-1 if claimed as an ELAI-measured GTM metric, even though N-4's acceptance is a local cost observation. | evidence=N4-E012, N4-E027, N0-E031 (DEEP-N-001.discovery.md:L406)
+- [interaction] (N-001/IX-023) [E] External-steal and N-13..N-16 are defined in N-0 but their detail files are outside DEEP-N-001; only index-level atoms are in scope here. | evidence=N0-E046–N0-E050, N0-E065–N0-E068, N0-E077 (DEEP-N-001.discovery.md:L407)
+- [interaction] (N-002/IX-001) [E] N-2 is the plan-corpus ND-1/ND-3 enforcer that later N units extend: N-7 makes `render_field` required under N-2; N-13 makes OutputBoundary registry rows and no-second-validation-path fail under N-2. | evidence=N2-E004–N2-E007, N2-E031; N7-E006, N7-E019; N13-E021, N13-E024 (DEEP-N-002.discovery.md:L422)
+- [interaction] (N-002/IX-002) [E] N-7 render consumers include N-5 RouteDecision, N-6 provenance, N-8 governance-coverage, N-1 numbers, J-83, L-7; N-5/N-6 explicitly name themselves as N-7 render consumers. | evidence=N7-E007; N5-E017; N6-E014 (DEEP-N-002.discovery.md:L423)
+- [interaction] (N-002/IX-003) [E] N-5 intensity resolver is the effort-tier home for N-10 scores and the task-demand axis consumer for N-14 synthesis-vs-tuning demand. | evidence=N5-E007–N5-E009; N10-E009–N10-E010; N14-E012 (DEEP-N-002.discovery.md:L424)
+- [interaction] (N-002/IX-004) [E/SURFACE] N-8 is the five-view governance substrate; N-16 EXTENDS it with S4/S6/S7 views rather than forking a new framework; N-15 feeds framing-stability into N-8's governance number; N-2 is named as a sixth grain of decorative-governance. | evidence=N8-E003–N8-E010; N16-E001, N16-E004; N15-E011 (DEEP-N-002.discovery.md:L425)
+- [interaction] (N-002/IX-005) [E] N-1 measurement spine (outside this chunk but referenced) sinks N-8 headline numbers, N-13 invalid rates, N-14 labels, N-15 framing/adoption rates, and N-16 lambda/ritual numbers (ND-4). | evidence=N8-E011, N8-E020; N13-E016; N14-E015; N15-E011; N16-E004, N16-E009 (DEEP-N-002.discovery.md:L426)
+- [interaction] (N-002/IX-006) [E] Routing/resource loop: N-10 joins ambiguity/novelty → consumers; N-14 adds task-demand axis; routers fire; N-5 arbitrates with frozen precedence and `RouteDecision`/`+route_arbitrated`; N-16 may brake on low exogenous grounding without creating a pass. | evidence=N10-E003–N10-E006; N14-E012; N5-E003–N5-E005, N5-E023; N16-E009 (DEEP-N-002.discovery.md:L427)
+- [interaction] (N-002/IX-007) [E] Provenance/output path: N-6 maps trust labels ingest→memory→citation→…; N-13 OutputBoundary types include ClaimSet/decision cards at emission; N-7 requires human render for resulting verdicts. | evidence=N6-E005; N13-E008, N13-E015; N7-E003–N7-E004 (DEEP-N-002.discovery.md:L428)
+- [interaction] (N-002/IX-008) [E] Governance lifecycle: N-7 requires render declaration; N-8 requires mutant corpus + kill rate for frozen entry; N-16 adds evaluator-id/version-hash and refutation→F-5 quarantine; extended coverage reports lambda/entropy/criticism debt. | evidence=N7-E003; N8-E009, N8-E019; N16-E005–N16-E010 (DEEP-N-002.discovery.md:L429)
+- [interaction] (N-002/IX-009) [E] N-15 bias detection is an explicit S4 evaluator-refutation event source for N-16. | evidence=N15-E009; N16-E006 (DEEP-N-002.discovery.md:L430)
+- [interaction] (N-002/IX-010) [E] N-13/N-14/N-15 declare mutual parallel-safety (disjoint files/seams). | evidence=N13-E006; N14-E005; N15-E005 (DEEP-N-002.discovery.md:L431)
+- [interaction] (N-002/IX-011) [E/SURFACE] Authoring-time surfaces: N-2 CLI composition check + N-8/N-16 governance-coverage checker; runtime/bench surfaces: N-15 `elai bench sycophancy`, N-5 task_runner arbitration, N-13 emission seams, N-14 agent-loop join. | evidence=N2-E026; N8-E021; N16-E015; N15-E016; N5-E016; N13-E015; N14-E018 (DEEP-N-002.discovery.md:L432)
+- [interaction] (N-002/IX-012) [E/SURFACE] UI composition on shared tiles: N-8 governance tile on G-5/M-3 receives N-16 lambda gauge / quarantine count / ritual-entropy band and N-15 framing-stability input; N-5/N-6/N-7/N-13 add canvas/RRA/drawer badges. | evidence=N8-E017; N16-E016; N15-E018; N5-E017; N6-E014; N7-E014; N13-E022 (DEEP-N-002.discovery.md:L433)
+- [interaction] (N-002/IX-013) [E] Kill-switches with default-ON new path: `ELAI_OUTPUT_BOUNDARY_LEGACY` (N-13), `ELAI_EDIT_KIND_LEGACY` (N-14), `ELAI_FRAMING_INVARIANCE_LEGACY` (N-15). | evidence=N13-E027; N14-E025; N15-E022 (DEEP-N-002.discovery.md:L434)
+- [interaction] (N-002/IX-014) [E] Shared security posture: blake3-only hashing (N-13 schema pin, N-14 topology, N-16 ban sha2); no `.unwrap()`/`.expect()` on prod paths across N-5/N-13/N-14/N-15/N-16; TD-3 advisory-or-frozen-data (model never sets precedence/enforcement). | evidence=N5-E020–N5-E021; N13-E012–N13-E014, N13-E021; N14-E003, N14-E019; N15-E003; N16-E018 (DEEP-N-002.discovery.md:L435)
+- [interaction] (N-002/IX-015) [E] SSB schema pressure: N-13 baseline+1 (`+output_boundary_verdict`); N-14 prefer +0..1; N-15 +0..1; N-16 baseline+2 (`+evaluator_closure_swept` + `+grounding_ratio_measured`); all re-read live 267/576 baseline at edit. | evidence=N13-E028; N14-E026; N15-E023; N16-E020 (DEEP-N-002.discovery.md:L436)
+- [interaction] (N-002/IX-016) [E] N-6 Tier-1 ships registry for three EXISTING admission gates; zip-slip/admission family expansion and K-23/M-2 plug-in are deferred (summary NX-E09 fold note is disposition-level, not a numbered-source ship requirement for this chunk alone). | evidence=N6-E006, N6-E011–N6-E012 (DEEP-N-002.discovery.md:L437)
+- [interaction] (N-002/IX-017) [I] ClaimSet is both an N-13 boundary type and an N-4/J-83 claim carrier (N-4 outside this chunk); temporal order ClaimSet→boundary→claim object is not stated in these sources. | evidence=N13-E008, N13-E015 (DEEP-N-002.discovery.md:L438)
+- [interaction] (N-002/IX-018) [E] Fail-closed authoring R1 (N-2 zero-edge exit, dangling exit-0) composes with R10 seam gate (N-5 missing arbitration row) and N-13/N-6 boundary/taint negatives. | evidence=N2-E017, N2-E029; N5-E019, N5-E024; N13-E024; N6-E016, N6-E020 (DEEP-N-002.discovery.md:L439)
+- [ambiguity] (N-001/AC-001) [conflict] N-0 "16 sessions" vs "THE 12 SESSIONS" banner vs external N-13..N-16 append; total units are 16. | refs=N0-C001, N0-I001 (DEEP-N-001.discovery.md:L413)
+- [ambiguity] (N-001/AC-002) [ambiguity] N-8 Kind list (four named in schema block) vs five governance views including J-70 traceability. | refs=N0-A001 (DEEP-N-001.discovery.md:L414)
+- [ambiguity] (N-001/AC-003) [ambiguity] LEGACY flag naming, release duration, and rollback switch wiring under W-2/ND-2. | refs=N0-A002 (DEEP-N-001.discovery.md:L415)
+- [ambiguity] (N-001/AC-005) [ambiguity] N-1 six promotion loops, bootstrap inventory, MeasurementPanel decision criterion, ~30 fan-in list. | refs=N1-A001–N1-A004 (DEEP-N-001.discovery.md:L417)
+- [ambiguity] (N-001/AC-006) [ambiguity] N-3 N-threshold, candidate-family key, DP parameters, H-47 migration. | refs=N3-A001–N3-A003 (DEEP-N-001.discovery.md:L418)
+- [ambiguity] (N-001/AC-007) [ambiguity] N-4 unified abstain/DKG schema, TTL/eligibility, Miss/Revalidated fixtures. | refs=N4-A001–N4-A003 (DEEP-N-001.discovery.md:L419)
+- [ambiguity] (N-001/AC-008) [ambiguity] N-9 replay isolation/seed/delta metric; adapter-to-target mapping; optional fourth Tier-1 adapter; Kind Rule omission. | refs=N9-I001, N9-A001–N9-A003 (DEEP-N-001.discovery.md:L420)
+- [ambiguity] (N-001/AC-009) [ambiguity] N-11 fold plugin schema, Kani property, retirement migration, optional third Tier-1 surface. | refs=N11-A001–N11-A003 (DEEP-N-001.discovery.md:L421)
+- [ambiguity] (N-001/AC-010) [ambiguity/count] N-12 "eight collapses" vs seven labeled (a)..(g); FailureClass mapping; LSP pool ops; adapter specs; FSM equality criterion. | refs=N12-I001, N12-A001–N12-A004 (DEEP-N-001.discovery.md:L422)
+- [ambiguity] (N-002/AC-001) [ambiguity] N-2 orphan-producer wording and ND-3/schema/similarity thresholds remain open. | refs=N2-A001–N2-A003 (DEEP-N-002.discovery.md:L445)
+- [ambiguity] (N-002/AC-002) [ambiguity] N-5 tie-breaks, task-difficulty measure, and intensity-tuple omission of edit-format. | refs=N5-A001–N5-A003 (DEEP-N-002.discovery.md:L446)
+- [ambiguity] (N-002/AC-004) [ambiguity] N-7 per-class render target map and delivery-failure behavior unspecified. | refs=N7-A001–N7-A003 (DEEP-N-002.discovery.md:L448)
+- [ambiguity] (N-002/AC-005) [conflict/qualify] N-8 five views vs Tier-1 join of three instruments; SSB Kind list omits explicit J-70 Kind; checker path placeholder. | refs=N8-C001, N8-A001–N8-A003 (DEEP-N-002.discovery.md:L449)
+- [ambiguity] (N-002/AC-006) [conflict/qualify] N-10 produces shared score types but expect_ssb says "no new type"; J-39 listed and deferred. | refs=N10-C001, N10-A001–N10-A003 (DEEP-N-002.discovery.md:L450)
+- [ambiguity] (N-002/AC-007) [ambiguity] N-13 type enum, catalog owner, repair-vs-reject distinction, retry budgets, user-confirmed retirement. | refs=N13-A001–N13-A005 (DEEP-N-002.discovery.md:L451)
+- [ambiguity] (N-002/AC-008) [evidence/conflict] N-14 paper rates are context only; open attempt-row reuse, literal normalization, parse fallback. | refs=N14-C001, N14-A001–N14-A004 (DEEP-N-002.discovery.md:L452)
+- [ambiguity] (N-002/AC-009) [ambiguity] N-15 sample count N, probe coverage cost knob, optional N-7 render note. | refs=N15-A001–N15-A003 (DEEP-N-002.discovery.md:L453)
+- [ambiguity] (N-002/AC-010) [ambiguity] N-16 window/floor/entropy formulas, Reinstated semantics, version-hash algorithm, W-7 re-grep confidence. | refs=N16-A001–N16-A004 (DEEP-N-002.discovery.md:L454)
+
+### N-summary-wide: summary-wide workflow, invariants, surfaces catalog extras
+
+**Status**: planned (register / orientation inventory)
+**Anchors**: ledgers SUMMARY | sample: 14-N:L49; 14-N:L50; 14-N:L51; 14-N:L52; 14-N:L53; 14-N:L54 | 0 non-summary-placed, 606 summary-placed, 606 total unique atoms in unit | IDs: SUMMARY/N1-E01, SUMMARY/N1-E02, SUMMARY/N1-E03, SUMMARY/N1-E04, SUMMARY/N1-E05, SUMMARY/N1-E06, SUMMARY/N1-E07, SUMMARY/N1-E08, …
+**Composes with**: C-30, C-47, C-49, DEP-012, DOC-005, E-5, F-5, G-5, GD-1, GD-2, GD-4, GD-5, H-17, H-18, H-19, H-49, I-8, I-12, I-30, I-31, J-21, J-25, J-83, J-96, J-97, J-109, K-23, L-7, L-16, M-2, M-3, N-0, N-1, N-2, N-3, N-4, N-5, N-6, N-7, N-8. IX: N-001/IX-001 → GD-4, N-1, ND-4; N-001/IX-002 → N-1, N-3; N-001/IX-003 → N-1, N-3, N-9; N-001/IX-004 → N-1, N-3, N-4, ND-4; N-001/IX-005 → H-49, L-16, N-0, N-11; N-001/IX-006 → N-12, N-2, ND-1; N-001/IX-007 → GD-1, GD-5, ND-1, ND-5; N-001/IX-008 → N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-009 → J-83, N-1, N-11, N-12, N-3, N-4, N-9; N-001/IX-010 → G-5, N-1, N-11, N-12, N-3, N-4, N-9
+
+- [status] (SUMMARY/CFG-006) [E] GD-4 measured FP bound gates N-15 default-on status. (14-N:L704 | 14-N-SUMMARY_INDEX.discovery.md:L704)
+- [status] (SUMMARY/N11-E04) [E] Move I-39 plan-status derivation through the shared fold core (`L214-L220`). (14-N:L333 | 14-N-SUMMARY_INDEX.discovery.md:L333)
+- [status] (SUMMARY/N2-E11) [E] Mechanically derive summaries/status by composing J-93-G’s map-half derivation and I-39 journal status (`L54-L55`). (14-N:L94 | 14-N-SUMMARY_INDEX.discovery.md:L94)
+- [status] (SUMMARY/OA-012) [A] Implementation status versus plan status; this source is a specification summary, not a completion ledger. (14-N:L838 | 14-N-SUMMARY_INDEX.discovery.md:L838)
+- [status] (SUMMARY/OBS-002) [E] N-2: unlock DAG, fan-in ranking, derived summaries/status, `+composition_edge_checked`, process exit status (14-N:L712 | 14-N-SUMMARY_INDEX.discovery.md:L712)
+- [status] (SUMMARY/WAVE-001) [E] N-1 Wave 1; dep=none stated; nature=ACTIVATION, keystone/blocking; status=Planned; activates existing pieces and adds bootstrap/fold integration (14-N:L764 | 14-N-SUMMARY_INDEX.discovery.md:L764)
+- [status] (SUMMARY/WAVE-002) [E] N-2 Wave 2; dep=N-1; nature=BUILD; status=Planned (14-N:L765 | 14-N-SUMMARY_INDEX.discovery.md:L765)
+- [status] (SUMMARY/WAVE-003) [E] N-3 Wave 3; dep=N-1; nature=ACTIVATION; status=Planned generalization of finance-shipped/planned machinery (14-N:L766 | 14-N-SUMMARY_INDEX.discovery.md:L766)
+- [status] (SUMMARY/WAVE-004) [E] N-4 Wave 3; dep=none stated; nature=BUILD-on-shipped; status=Planned extension/unification (14-N:L767 | 14-N-SUMMARY_INDEX.discovery.md:L767)
+- [status] (SUMMARY/WAVE-005) [E] N-5 Wave 4; dep=N-1; nature=BUILD; status=Planned (14-N:L768 | 14-N-SUMMARY_INDEX.discovery.md:L768)
+- [status] (SUMMARY/WAVE-006) [E] N-6 Wave 4; dep=none stated; nature=BUILD; status=Planned (14-N:L769 | 14-N-SUMMARY_INDEX.discovery.md:L769)
+- [status] (SUMMARY/WAVE-007) [E] N-7 Wave 5; dep=none stated; ties N-2; nature=BUILD; status=Planned (14-N:L770 | 14-N-SUMMARY_INDEX.discovery.md:L770)
+- [status] (SUMMARY/WAVE-008) [E] N-8 Wave 5; dep=none stated; nature=BUILD; status=Planned (14-N:L771 | 14-N-SUMMARY_INDEX.discovery.md:L771)
+- [status] (SUMMARY/WAVE-009) [E] N-9 Wave 6; dep=N-1; nature=BUILD; status=Planned (14-N:L772 | 14-N-SUMMARY_INDEX.discovery.md:L772)
+- [status] (SUMMARY/WAVE-010) [E] N-10 Wave 6; dep=none stated; nature=ACTIVATION; status=Planned (14-N:L773 | 14-N-SUMMARY_INDEX.discovery.md:L773)
+- [status] (SUMMARY/WAVE-011) [E] N-11 Wave 7; dep=none stated; nature=BUILD-on-shipped; status=Planned extension + retirement (14-N:L774 | 14-N-SUMMARY_INDEX.discovery.md:L774)
+- [status] (SUMMARY/WAVE-012) [E] N-12 Wave 8; dep=N-2 operationally enforces anti-refork, though not in metadata; nature=DELETE; status=Planned dedupe/retirement bundle (14-N:L775 | 14-N-SUMMARY_INDEX.discovery.md:L775)
+- [status] (SUMMARY/WAVE-013) [E] N-13 Wave 9; dep=consumes N-1 and N-2; nature=BUILD/UNIFY; status=Planned external-steal addition (14-N:L776 | 14-N-SUMMARY_INDEX.discovery.md:L776)
+- [status] (SUMMARY/WAVE-014) [E] N-14 Wave 9; dep=consumes N-1 and N-5; nature=BUILD/ACTIVATION; status=Planned advisory instruments (14-N:L777 | 14-N-SUMMARY_INDEX.discovery.md:L777)
+- [status] (SUMMARY/WAVE-015) [E] N-15 Wave 9; dep=consumes N-1 and N-8; nature=BUILD/ACTIVATION; status=Planned advisory measurement (14-N:L778 | 14-N-SUMMARY_INDEX.discovery.md:L778)
+- [status] (SUMMARY/WAVE-016) [E] N-16 Wave 9; dep=extends N-8; consumes N-1; nature=EXTENSION(N-8)+BUILD; status=Planned DeepReason addition (14-N:L779 | 14-N-SUMMARY_INDEX.discovery.md:L779)
+- [status] (SUMMARY/WF2-004) [E] It emits an unlock DAG/fan-in rank and mechanically derives summary/status material. (14-N:L605 | 14-N-SUMMARY_INDEX.discovery.md:L605)
+- [status] (SUMMARY/WF6-003) [E/SURFACE] Canvas altitude, plan status, billing balance, fleet rollup, and coverage derive through it. (14-N:L647 | 14-N-SUMMARY_INDEX.discovery.md:L647)
+- [config] (ELAI_EDIT_KIND_LEGACY) [SURFACE] `ELAI_EDIT_KIND_LEGACY` — N-002/N14-E025
+- [config] (ELAI_FRAMING_INVARIANCE_LEGACY) [SURFACE] `ELAI_FRAMING_INVARIANCE_LEGACY` — N-002/N15-E022
+- [config] (ELAI_OUTPUT_BOUNDARY_LEGACY) [SURFACE] `ELAI_OUTPUT_BOUNDARY_LEGACY` — N-002/N13-E027
+- [config] (SUMMARY/DEP-002) [E] N-2 consumes/extends M-1, ND-1/ND-3, J-89 L8, J-93-G, I-39, `elai_map_freshness.py`, `wiring_contract_check.py`, paper-to-plan phase 5, R1, and the feature map. (14-N:L786 | 14-N-SUMMARY_INDEX.discovery.md:L786)
+- [config] (SUMMARY/INV-013) [E] **Determinism:** N-11 uses a pinned seed and byte-identical outputs; N-14 has an `ELAI_SEED` classification test. (14-N:L666 | 14-N-SUMMARY_INDEX.discovery.md:L666)
+- [config] (SUMMARY/N14-E21) [E] Under `ELAI_SEED`, a constant-only edit followed by a restructuring edit must classify Parametric then Synthesis (`L299-L300`). (14-N:L490 | 14-N-SUMMARY_INDEX.discovery.md:L490)
+- [config] (SUMMARY/N15-E22) [E] Default-on framing checks without a measured false-positive bound fail GD-4 (`L323-L324`). (14-N:L529 | 14-N-SUMMARY_INDEX.discovery.md:L529)
+- [config] (SUMMARY/N2-E12) [E] Check freshness across `SUMMARY_INDEX`, `0_INDEX`, and detail plans using the `elai_map_freshness` pattern (`L55-L56`). (14-N:L95 | 14-N-SUMMARY_INDEX.discovery.md:L95)
+- [gate] (N/SURF-LINE-1835) [SURFACE] governance-coverage checker over rulebook + gate-manifest — N-002/N8-E021, N-002/N16-E015
+- [gate] (N/SURF-LINE-1853) [SURFACE] optional FailureClass drawer — N-001/N12-E020
+- [gate] (SUMMARY/CFG-004) [E] Per-output-type retry and repair/fail-closed policy plus backend enforcement capability. (14-N:L702 | 14-N-SUMMARY_INDEX.discovery.md:L702)
+- [gate] (SUMMARY/DEP-008) [E] N-8 consumes B-17, K-22, J-46, J-70, H-27, gate-manifest/R8, G-5, M-3, and K-1 dossier framing. (14-N:L792 | 14-N-SUMMARY_INDEX.discovery.md:L792)
+- [gate] (SUMMARY/DEP-016) [E] N-16 extends N-8 and consumes F-5, H-27, I-24, N-15, gate-manifest, `gate_freeze_check.py`, R8, N-1, D-17, R4, ND-1/ND-4, ID-5, and TD-3. (14-N:L800 | 14-N-SUMMARY_INDEX.discovery.md:L800)
+- [gate] (SUMMARY/DOC-002) [E] The identified systemic failure is summary-driven plan authorship causing same-concern forks: four claim types, ten routers, six intensity deciders, multiple provenance scales, four counterfactual engines, and multiple context cores. (14-N:L33 | 14-N-SUMMARY_INDEX.discovery.md:L33)
+- [gate] (SUMMARY/DOC-006) [E] Every entry is intended to preserve the discharged W finding(s), impact tier, grounding strength, nature, unified implementations, consumed artifacts, real integration point, and observable-effect done gate. (14-N:L37 | 14-N-SUMMARY_INDEX.discovery.md:L37)
+- [gate] (SUMMARY/DOC-007) [E] The normal N negative arm is an anti-fork assertion: a second implementation of a unified concern must fail. (14-N:L38 | 14-N-SUMMARY_INDEX.discovery.md:L38)
+- [gate] (SUMMARY/DOC-008) [E] N-2 is exceptional because its done gate executes at plan-authoring time, not runtime. (14-N:L39 | 14-N-SUMMARY_INDEX.discovery.md:L39)
+- [gate] (SUMMARY/DOC-009) [E] After N-2, plans failing to compose is intended to become a machine-caught block rather than a prose-only concern. (14-N:L40 | 14-N-SUMMARY_INDEX.discovery.md:L40)
+- [gate] (SUMMARY/DOC-010) [E] Definitions of ND-1..ND-5 and sequencing are delegated to `N-0_INDEX.md`; per-finding evidence is delegated to `workflow/reasoning/elai-weakpoints-interlace-2026-07-04.md` (`L7-L8`). (14-N:L41 | 14-N-SUMMARY_INDEX.discovery.md:L41)
+- [gate] (SUMMARY/ERR-002) [E] Missing promotion N is fail-closed; below-threshold N holds promotion. (14-N:L731 | 14-N-SUMMARY_INDEX.discovery.md:L731)
+- [gate] (SUMMARY/ERR-005) [E] Trust-label reset or taint loss at a boundary is a hard failure. (14-N:L734 | 14-N-SUMMARY_INDEX.discovery.md:L734)
+- [gate] (SUMMARY/ERR-006) [E] Output enforcement degrades only through the fixed strongest-available order and ultimately parse/validate/retry/fail-closed; D-16 provides refusal. (14-N:L735 | 14-N-SUMMARY_INDEX.discovery.md:L735)
+- [gate] (SUMMARY/INV-001) [E] **Canonicality:** one subsystem/registry/core per concern; adapters parameterize or delegate but do not carry duplicate core logic (`L12-L18,L34-L36,L242-L248,L356-L361`). (14-N:L654 | 14-N-SUMMARY_INDEX.discovery.md:L654)
+- [gate] (SUMMARY/INV-003) [E] **Fail closed (R1):** authoring checks, missing trial counts, missing boundary rows, policy arbitration omissions, stale receipt hits, taint loss, and unsupported output enforcement all have negative arms. (14-N:L656 | 14-N-SUMMARY_INDEX.discovery.md:L656)
+- [gate] (SUMMARY/INV-008) [E] **Structural separation (TD-3):** the model does not choose enforcement; advisory instruments cannot become pass gates. (14-N:L661 | 14-N-SUMMARY_INDEX.discovery.md:L661)
+- [gate] (SUMMARY/N1-E20) [E] A bench writing a knee to any store other than the profile must fail under ND-4 (`L41-L42`). (14-N:L68 | 14-N-SUMMARY_INDEX.discovery.md:L68)
+- [gate] (SUMMARY/N10-E16) [E] A high-ambiguity task receiving only baseline depth must fail (`L208-L209`). (14-N:L319 | 14-N-SUMMARY_INDEX.discovery.md:L319)
+- [gate] (SUMMARY/N11-E16) [E] Any surface retaining an ad-hoc journal-rederivation path fails conformance (`L223-L224`). (14-N:L345 | 14-N-SUMMARY_INDEX.discovery.md:L345)
+- [gate] (SUMMARY/N12-E06) [E/SURFACE] Default frontend disposition is N/A per sub-slice, except a surfaced `FailureClass` may have a drawer; each N/A needs justification (`L244-L245`). (14-N:L363 | 14-N-SUMMARY_INDEX.discovery.md:L363)
+- [gate] (SUMMARY/N12-E07) [E] Create one `FailureClass` enum shared across the auditor, anti-spiral system, MAST, corpus rows, and case edges (`L231-L232`). (14-N:L367 | 14-N-SUMMARY_INDEX.discovery.md:L367)
+- [gate] (SUMMARY/N12-E08) [E] Collapse `failure_taxonomy.py`’s 13 categories into the canonical enum (`L231`). (14-N:L368 | 14-N-SUMMARY_INDEX.discovery.md:L368)
+- [gate] (SUMMARY/N12-E14) [E] Propagate an upstream retrieval abstention as taint on a downstream answer lacking evidence (`L233-L234`). (14-N:L377 | 14-N-SUMMARY_INDEX.discovery.md:L377)
+- [gate] (SUMMARY/N12-E27) [E] Create one LSP daemon pool shared by E-52 verifier, J-18 retrieval channel, and J-52 per-edit block feed (`L241`). (14-N:L405 | 14-N-SUMMARY_INDEX.discovery.md:L405)
+- [gate] (SUMMARY/N13-E06) [E] Include `fail-closed action` in each row (`L264-L265`). (14-N:L440 | 14-N-SUMMARY_INDEX.discovery.md:L440)
+- [gate] (SUMMARY/N13-E11) [E] Resolve the strongest available enforcement mode in order: provider strict > native tool > local CFG > regex > parse/validate/retry/fail-closed (`L270-L272`). (14-N:L445 | 14-N-SUMMARY_INDEX.discovery.md:L445)
+- [gate] (SUMMARY/N13-E18) [E] Let D-16 refusal handle fail-closed output (`L273-L274`). (14-N:L452 | 14-N-SUMMARY_INDEX.discovery.md:L452)
+- [gate] (SUMMARY/N14-E23) [E] Whitespace-only or rename-only diffs must not flip normalized topology; such a flip fails (`L300-L301`). (14-N:L492 | 14-N-SUMMARY_INDEX.discovery.md:L492)
+- [gate] (SUMMARY/N14-E24) [E] Reporting selection-slice performance as promotion performance fails the two-stage gate (`L301-L302`). (14-N:L493 | 14-N-SUMMARY_INDEX.discovery.md:L493)
+- [gate] (SUMMARY/N15-E08) [E] Add a D-23 option-order-inversion fixture class where the same reordered facts must not flip the decision (`L313-L314`). (14-N:L515 | 14-N-SUMMARY_INDEX.discovery.md:L515)
+- [gate] (SUMMARY/N15-E21) [E] A presentation-stable advisory incorrectly logged unstable fails the false-positive arm (`L323-L324`). (14-N:L528 | 14-N-SUMMARY_INDEX.discovery.md:L528)
+- [gate] (SUMMARY/N16-E05) [E] Treat a failed H-27 mutant corpus as an evaluator-refutation source (`L333-L334`). (14-N:L544 | 14-N-SUMMARY_INDEX.discovery.md:L544)
+- [gate] (SUMMARY/N16-E23) [E] Measure the rate at which gates are challenged or amended (`L340-L341`). (14-N:L562 | 14-N-SUMMARY_INDEX.discovery.md:L562)
+- [gate] (SUMMARY/N16-E27) [E] Reuse N-8’s existing five views, F-5, H-27/I-24/N-15 detectors, the gate manifest/freeze checker, D-17 escalation, and R4 off-agent doctrine (`L343-L346`). (14-N:L566 | 14-N-SUMMARY_INDEX.discovery.md:L566)
+- [gate] (SUMMARY/N16-E34) [E] Silently deleting a quarantined verdict fails the append-only invariant (`L353-L354`). (14-N:L573 | 14-N-SUMMARY_INDEX.discovery.md:L573)
+- [gate] (SUMMARY/N16-E35) [E] Using lambda or ritual metrics as a PASS gate fails TD-3 (`L353-L354`). (14-N:L574 | 14-N-SUMMARY_INDEX.discovery.md:L574)
+- [gate] (SUMMARY/N16-E36) [E] Asserting a governance number without N-1 measurement fails ND-4 (`L353-L354`). (14-N:L575 | 14-N-SUMMARY_INDEX.discovery.md:L575)
+- [gate] (SUMMARY/N2-E01) [E] Parse feature-map `EXTENDS`, `composes`, `consumes`, and `gated-by` edges as data in the ND-3 format (`L48-L50`). (14-N:L84 | 14-N-SUMMARY_INDEX.discovery.md:L84)
+- [gate] (SUMMARY/N2-E04) [E] Fail on a dangling edge whose named consumed unit does not expose the named artifact (`L50-L52`). (14-N:L87 | 14-N-SUMMARY_INDEX.discovery.md:L87)
+- [gate] (SUMMARY/N2-E05) [E] Fail on an orphan producer (`L51-L52`). (14-N:L88 | 14-N-SUMMARY_INDEX.discovery.md:L88)
+- [gate] (SUMMARY/N2-E13) [E] Run at paper-to-plan phase 5 / planning authoring time as a CI gate (`L56-L62`). (14-N:L96 | 14-N-SUMMARY_INDEX.discovery.md:L96)
+- [gate] (SUMMARY/N2-E19) [E] A hand-inserted dangling edge returning exit 0 is a fail-closed R1 failure (`L64-L65`). (14-N:L102 | 14-N-SUMMARY_INDEX.discovery.md:L102)
+- [gate] (SUMMARY/N3-E04) [E] H-18 remains fail-closed when trial count N is missing (`L69-L70`). (14-N:L119 | 14-N-SUMMARY_INDEX.discovery.md:L119)
+- [gate] (SUMMARY/N3-E06) [E] Route every promotion gate through these primitives using the ID-6 ledger hook (`L73-L77`). (14-N:L121 | 14-N-SUMMARY_INDEX.discovery.md:L121)
+- [gate] (SUMMARY/N3-E17) [E] A real promotion with N below threshold is held and emits `+promotion_deflated(DeflationBlocked)` (`L81-L83`). (14-N:L132 | 14-N-SUMMARY_INDEX.discovery.md:L132)
+- [gate] (SUMMARY/N3-E18) [E] Any promotion that ignores trial count and flips ACTIVE must fail (`L82-L83`). (14-N:L133 | 14-N-SUMMARY_INDEX.discovery.md:L133)
+- [gate] (SUMMARY/N4-E03) [E] Treat the J-83 gate receipt as the same evidence that L-3 round-trips (`L90-L91`). (14-N:L146 | 14-N-SUMMARY_INDEX.discovery.md:L146)
+- [gate] (SUMMARY/N4-E11) [E] Have both the J-83 reasoning gate and L-2 CGG consult that cache (`L94-L95`). (14-N:L154 | 14-N-SUMMARY_INDEX.discovery.md:L154)
+- [gate] (SUMMARY/N4-E14) [E] Integrate the unified object in `crates/orchestrator` `ssb::payloads::BeliefState` and L-2/J-83 gate call sites (`L99-L100`). (14-N:L157 | 14-N-SUMMARY_INDEX.discovery.md:L157)
+- [gate] (SUMMARY/N4-E18) [E] A changed-code claim returning a stale memo hit must fail (`L102-L103`). (14-N:L161 | 14-N-SUMMARY_INDEX.discovery.md:L161)
+- [gate] (SUMMARY/N5-E02) [E] Resolve the J-84 escalation versus E-39 cost-block conflict explicitly (`L109-L110`). (14-N:L174 | 14-N-SUMMARY_INDEX.discovery.md:L174)
+- [gate] (SUMMARY/N5-E08) [E] Unify six verification-intensity deciders as axes: B-41 level, L-21 model, J-84 effort, C-46 delegation, K-5 gate risk, and B-28 edit format (`L111-L115`). (14-N:L180 | 14-N-SUMMARY_INDEX.discovery.md:L180)
+- [gate] (SUMMARY/N5-E12) [E] Let K-4 gate-tax measure the one combined policy (`L115-L118`). (14-N:L184 | 14-N-SUMMARY_INDEX.discovery.md:L184)
+- [gate] (SUMMARY/N5-E17) [E] A route produced with no arbitration row while at least two routers fired must fail the R10 integration gate (`L121-L123`). (14-N:L189 | 14-N-SUMMARY_INDEX.discovery.md:L189)
+- [gate] (SUMMARY/N6-E11) [E] Create one admission-scanner registry shared by F-1 `VibeGate`, J-102 config ingress, J-109 learned-artifact admission, and new K-23/M-2 surfaces (`L133-L136`). (14-N:L211 | 14-N-SUMMARY_INDEX.discovery.md:L211)
+- [gate] (SUMMARY/N6-E15) [E] Integrate lattice/taint in `crates/security` and wire the admission-gate call sites to a lattice mapping table (`L138-L139`). (14-N:L215 | 14-N-SUMMARY_INDEX.discovery.md:L215)
+- [gate] (SUMMARY/N6-E18) [E] Any tainted string losing taint at a memory, citation, or skill boundary must fail (`L141-L142`). (14-N:L218 | 14-N-SUMMARY_INDEX.discovery.md:L218)
+- [gate] (SUMMARY/N7-E01) [E] Make human render a required field for every gate/verdict family, analogous to the existing required SSB row (`L146-L152`). (14-N:L230 | 14-N-SUMMARY_INDEX.discovery.md:L230)
+- [gate] (SUMMARY/N7-E13) [E/SURFACE] Every verdict-emitting gate must deliver a human-readable render to its declared PR/chat/canvas/brief target (`L157-L158`). (14-N:L242 | 14-N-SUMMARY_INDEX.discovery.md:L242)
+- [gate] (SUMMARY/N8-E02) [E] View B-17 gate liveness: whether a gate fires (`L165-L166`). (14-N:L255 | 14-N-SUMMARY_INDEX.discovery.md:L255)
+- [gate] (SUMMARY/N8-E05) [E] View J-70 gate-manifest traceability (`L167-L168`). (14-N:L258 | 14-N-SUMMARY_INDEX.discovery.md:L258)
+- [gate] (SUMMARY/N8-E08) [E] Make mutant-corpus coverage a gate-manifest lifecycle requirement (`L170-L172`). (14-N:L261 | 14-N-SUMMARY_INDEX.discovery.md:L261)
+- [gate] (SUMMARY/N8-E09) [E] Refuse a new gate entry to the R8-frozen set unless it has a mutant corpus (`L170-L177`). (14-N:L262 | 14-N-SUMMARY_INDEX.discovery.md:L262)
+- [gate] (SUMMARY/N8-E11) [E] Integrate governance coverage in `.claude/tools/` and the gate-manifest lifecycle (`L174-L175`). (14-N:L264 | 14-N-SUMMARY_INDEX.discovery.md:L264)
+- [gate] (SUMMARY/N8-E14) [E] A decorative rule with no enforcer must not be reported as covered; doing so fails (`L177-L178`). (14-N:L267 | 14-N-SUMMARY_INDEX.discovery.md:L267)
+- [gate] (SUMMARY/N9-E16) [E] An adapter containing business logic rather than delegating to the core fails ND-5 (`L193`). (14-N:L293 | 14-N-SUMMARY_INDEX.discovery.md:L293)
+- [gate] (SUMMARY/OBS-003) [E] N-3: `+promotion_deflated(DeflationBlocked)` and held lifecycle state (14-N:L713 | 14-N-SUMMARY_INDEX.discovery.md:L713)
+- [gate] (SUMMARY/STATE-008) [E] Gate/verdict `render_field`: required authoring contract data. (14-N:L687 | 14-N-SUMMARY_INDEX.discovery.md:L687)
+- [gate] (SUMMARY/STATE-013) [E] `FailureClass`, `AbstainDecision`, `ProjectClass`, shared drift primitives, FSM conformance models, and LSP daemon pool. (14-N:L692 | 14-N-SUMMARY_INDEX.discovery.md:L692)
+- [gate] (SUMMARY/STATE-014) [E] `OutputBoundary` registry rows with schema/parser/repair/retry/fail-closed/invalid-rate/enforcement fields. (14-N:L693 | 14-N-SUMMARY_INDEX.discovery.md:L693)
+- [gate] (SUMMARY/UI-011) [E/SURFACE] N-12 normally N/A; optional `FailureClass` drawer. (14-N:L752 | 14-N-SUMMARY_INDEX.discovery.md:L752)
+- [gate] (SUMMARY/WF2-006) [E] Any seeded invalid case must fail closed before the plan ships. (14-N:L607 | 14-N-SUMMARY_INDEX.discovery.md:L607)
+- [gate] (SUMMARY/WF3-005) [E] **Explicit:** Every resulting gate/verdict declares an N-7 human render destination. (14-N:L617 | 14-N-SUMMARY_INDEX.discovery.md:L617)
+- [gate] (SUMMARY/WF5-001) [E] A gate/verdict class must declare both its SSB representation and human render. (14-N:L633 | 14-N-SUMMARY_INDEX.discovery.md:L633)
+- [gate] (SUMMARY/WF5-002) [E] A new gate must have a mutant corpus and measured kill rate before entering the frozen manifest. (14-N:L634 | 14-N-SUMMARY_INDEX.discovery.md:L634)
+- [gate] (SUMMARY/WF5-006) [E] The extended governance run also reports exogenous-grounding ratio, finding-class entropy, unrun verification debt, and gate-challenge rate. (14-N:L638 | 14-N-SUMMARY_INDEX.discovery.md:L638)
+- [surface] (+admission_scanned) [SURFACE] `+admission_scanned` (conditional) — N-001/N0-E057, N-002/N6-E019
+- [surface] (+calibration_bootstrap_superseded) [SURFACE] `+calibration_bootstrap_superseded` — N-001/N0-E052, N1-E027
+- [surface] (+composition_edge_checked) [SURFACE] `+composition_edge_checked` — N-001/N0-E053, N-002/N2-E027
+- [surface] (+counterfactual_scored) [SURFACE] `+counterfactual_scored` — N-001/N0-E060, N9-E018
+- [surface] (+edit_kind_classified) [SURFACE] `+edit_kind_classified` (or reuse) — N-001/N0-E066, N-002/N14-E015
+- [surface] (+evaluator_closure_swept) [SURFACE] `+evaluator_closure_swept` + `+grounding_ratio_measured` — N-001/N0-E068, N-002/N16-E020
+- [surface] (+framing_stability_measured) [SURFACE] `+framing_stability_measured` — N-001/N0-E067, N-002/N15-E012
+- [surface] (+governance_coverage_measured) [SURFACE] `+governance_coverage_measured` — N-001/N0-E059, N-002/N8-E022
+- [surface] (+output_boundary_verdict) [SURFACE] `+output_boundary_verdict` — N-001/N0-E065, N-002/N13-E019
+- [surface] (+promotion_deflated) [SURFACE] `+promotion_deflated` — N-001/N0-E054, N3-E022
+- [surface] (+receipt_memo) [SURFACE] `+receipt_memo` — N-001/N0-E055, N4-E026
+- [surface] (+route_arbitrated) [SURFACE] `+route_arbitrated` — N-001/N0-E056, N-002/N5-E023
+- [surface] (+verdict_rendered) [SURFACE] `+verdict_rendered` — N-001/N0-E058, N-002/N7-E018
+- [surface] (N/SURF-LINE-1832) [SURFACE] `elai bench <family>` / `elai bench *` — N-001/N1-E019, SUMMARY/N1-E17, SUMMARY/CLI-*
+- [surface] (N/SURF-LINE-1833) [SURFACE] `python .claude/tools/corpus_composition_check.py --map docs/thefinalglance/ELAI-FEATURE-MAP.md` — N-002/N2-E026, SUMMARY/N2-E16
+- [surface] (N/SURF-LINE-1834) [SURFACE] `elai bench sycophancy` — N-002/N15-E016, SUMMARY/N15-E18
+- [surface] (N/SURF-LINE-1838) [SURFACE] `ELAI_*_LEGACY` one-release policy — N-001/N0-E014, N-001/N0-A002
+- [surface] (N/SURF-LINE-1844) [SURFACE] MeasurementPanel or G-5 — N-001/N1-E020
+- [surface] (N/SURF-LINE-1845) [SURFACE] deflation column on promotion drawers — N-001/N3-E017
+- [surface] (N/SURF-LINE-1846) [SURFACE] memo-hit indicator on belief/claim drawer — N-001/N4-E021
+- [surface] (N/SURF-LINE-1847) [SURFACE] RouteDecision explain-row on canvas/RRA — N-002/N5-E017
+- [surface] (N/SURF-LINE-1848) [SURFACE] provenance badge on cited/memory surfaces — N-002/N6-E014
+- [surface] (N/SURF-LINE-1849) [SURFACE] render targets PR comment / chat ACK / canvas badge / brief row / M-3 org rollup — N-002/N7-E004, N-001/N0-E095
+- [surface] (N/SURF-LINE-1850) [SURFACE] governance tile on G-5/M-3 — N-002/N8-E017
+- [surface] (N/SURF-LINE-1851) [SURFACE] attribution drawers reuse — N-001/N9-E013
+- [surface] (N/SURF-LINE-1852) [SURFACE] canvas altitude fold verification — N-001/N11-E017
+- [surface] (N/SURF-LINE-1854) [SURFACE] boundary-verdict badge — N-002/N13-E022
+- [surface] (N/SURF-LINE-1855) [SURFACE] edit-kind chip — N-002/N14-E020
+- [surface] (N/SURF-LINE-1856) [SURFACE] framing-stability tile — N-002/N15-E018
+- [surface] (N/SURF-LINE-1857) [SURFACE] lambda gauge + quarantine-queue count + ritual-entropy band — N-002/N16-E016
+- [surface] (SUMMARY/CLI-001) [E/SURFACE] `elai bench <any-family>` / `elai bench *` invokes N-1 families. (14-N:L673 | 14-N-SUMMARY_INDEX.discovery.md:L673)
+- [surface] (SUMMARY/CLI-002) [E/SURFACE] `python .claude/tools/corpus_composition_check.py --map ELAI-FEATURE-MAP.md` invokes N-2. (14-N:L674 | 14-N-SUMMARY_INDEX.discovery.md:L674)
+- [surface] (SUMMARY/CLI-003) [E/SURFACE] `elai bench sycophancy` invokes N-15 fixtures. (14-N:L675 | 14-N-SUMMARY_INDEX.discovery.md:L675)
+- [surface] (SUMMARY/CLI-004) [E/SURFACE] No public network API, protocol, authentication flow, or remote service API is specified in this summary. (14-N:L676 | 14-N-SUMMARY_INDEX.discovery.md:L676)
+- [surface] (SUMMARY/INV-010) [E/SURFACE] **Human visibility:** every verdict family must declare a render, with N-7 frontend pairing mandatory. (14-N:L663 | 14-N-SUMMARY_INDEX.discovery.md:L663)
+- [surface] (SUMMARY/N1-E17) [E/SURFACE] Expose the family through the existing CLI seam `elai bench <any-family>` / `elai bench *` (`L37-L40`). (14-N:L65 | 14-N-SUMMARY_INDEX.discovery.md:L65)
+- [surface] (SUMMARY/N1-E22) [E/SURFACE] Provide a `MeasurementPanel` tile sourced from the spine index, unless G-5 already surfaces it and the N/A decision is justified (`L38-L39`). (14-N:L70 | 14-N-SUMMARY_INDEX.discovery.md:L70)
+- [surface] (SUMMARY/N10-E11) [E/SURFACE] High ambiguity or an off-map task increases clarification behavior, rather than merely showing a chip (`L202`). (14-N:L314 | 14-N-SUMMARY_INDEX.discovery.md:L314)
+- [surface] (SUMMARY/N10-E14) [E/SURFACE] The default frontend disposition is N/A because this is internal allocation; canvas may surface depth if desired (`L205-L206`). (14-N:L317 | 14-N-SUMMARY_INDEX.discovery.md:L317)
+- [surface] (SUMMARY/N11-E03) [E/SURFACE] Move J-31/J-60/J-98/K-23 canvas-altitude derivations through the shared fold core (`L213-L220`). (14-N:L332 | 14-N-SUMMARY_INDEX.discovery.md:L332)
+- [surface] (SUMMARY/N11-E06) [E/SURFACE] Move M-3 fleet-rollup derivation through the shared fold core (`L214-L220`). (14-N:L335 | 14-N-SUMMARY_INDEX.discovery.md:L335)
+- [surface] (SUMMARY/N11-E13) [E/SURFACE] Verify existing canvas altitudes consume the folds; do not blindly rewire them (`L220-L221`). (14-N:L342 | 14-N-SUMMARY_INDEX.discovery.md:L342)
+- [surface] (SUMMARY/N13-E09) [E/SURFACE] Parameterize, rather than reimplement, C-26 `DecodingMode`, E-35 XGrammar/INSTRUCTOR, I-34 CRANE/grammar pin/post-parse revalidation, J-53 tool-input repair, J-51 adherence floor, H-13 canvas grammars, B-24 VLM JSON, L-1 `ClaimSet`, and I-33 CEFL schemas (`L266-L274`). (14-N:L443 | 14-N-SUMMARY_INDEX.discovery.md:L443)
+- [surface] (SUMMARY/N13-E20) [E/SURFACE] Add a boundary-verdict badge to claim/decision/tool drawers, or justify N/A if G-5 surfaces the tile (`L275-L276`). (14-N:L454 | 14-N-SUMMARY_INDEX.discovery.md:L454)
+- [surface] (SUMMARY/N14-E20) [E/SURFACE] Add an edit-kind chip to the anti-spiral/receipt drawer, or justify internal-advisory N/A (`L297-L298`). (14-N:L489 | 14-N-SUMMARY_INDEX.discovery.md:L489)
+- [surface] (SUMMARY/N15-E01) [E/SURFACE] Limit the new mechanism to advisory prose, because I-17 L1 veto, I-33 externalized candidates, H-31 judge firewall, D-14 inverted framing, E-4 chat drift, and TD-3 already make sycophancy structurally irrelevant at the decision boundary (`L307-L309`). (14-N:L508 | 14-N-SUMMARY_INDEX.discovery.md:L508)
+- [surface] (SUMMARY/N15-E17) [E/SURFACE] Surface a framing-stability tile on G-5/N-8, or justify N/A if an existing sycophancy-bench tile provides it (`L319-L320`). (14-N:L524 | 14-N-SUMMARY_INDEX.discovery.md:L524)
+- [surface] (SUMMARY/N15-E18) [E/SURFACE] `elai bench sycophancy` runs the two fixture classes (`L321-L323`). (14-N:L525 | 14-N-SUMMARY_INDEX.discovery.md:L525)
+- [surface] (SUMMARY/N16-E30) [E/SURFACE] Add a lambda gauge, quarantine-queue count, and ritual-entropy band to the N-8/G-5/M-3 governance tile (`L348-L349`). (14-N:L569 | 14-N-SUMMARY_INDEX.discovery.md:L569)
+- [surface] (SUMMARY/N2-E15) [E/SURFACE] Add `.claude/tools/corpus_composition_check.py` beside `wiring_contract_check.py` (`L60-L61`). (14-N:L98 | 14-N-SUMMARY_INDEX.discovery.md:L98)
+- [surface] (SUMMARY/N2-E16) [E/SURFACE] Invoke it as `python .claude/tools/corpus_composition_check.py --map ELAI-FEATURE-MAP.md` (`L63-L64`). (14-N:L99 | 14-N-SUMMARY_INDEX.discovery.md:L99)
+- [surface] (SUMMARY/N2-E21) [E/SURFACE] No runtime frontend is required because this is an authoring-time CI surface (`L60-L62`). (14-N:L104 | 14-N-SUMMARY_INDEX.discovery.md:L104)
+- [surface] (SUMMARY/N3-E16) [E/SURFACE] Add a deflation column to existing promotion drawers, or explicitly justify N/A (`L79-L80`). (14-N:L131 | 14-N-SUMMARY_INDEX.discovery.md:L131)
+- [surface] (SUMMARY/N4-E15) [E/SURFACE] Add a memo-hit indicator to existing belief/claim drawers, or justify N/A (`L99-L100`). (14-N:L158 | 14-N-SUMMARY_INDEX.discovery.md:L158)
+- [surface] (SUMMARY/N5-E15) [E/SURFACE] Render a `RouteDecision` explanation row on the canvas/RRA (`L119-L120`). (14-N:L187 | 14-N-SUMMARY_INDEX.discovery.md:L187)
+- [surface] (SUMMARY/N6-E16) [E/SURFACE] Add a provenance badge on cited and memory surfaces, or justify N/A (`L138-L139`). (14-N:L216 | 14-N-SUMMARY_INDEX.discovery.md:L216)
+- [surface] (SUMMARY/N7-E02) [E/SURFACE] Require each verdict class to declare its render target/form (`L150-L152`). (14-N:L231 | 14-N-SUMMARY_INDEX.discovery.md:L231)
+- [surface] (SUMMARY/N7-E03) [E/SURFACE] Support PR comments as render targets (`L151-L152`). (14-N:L232 | 14-N-SUMMARY_INDEX.discovery.md:L232)
+- [surface] (SUMMARY/N7-E04) [E/SURFACE] Support chat acknowledgment lines as render targets (`L151-L152`). (14-N:L233 | 14-N-SUMMARY_INDEX.discovery.md:L233)
+- [surface] (SUMMARY/N7-E05) [E/SURFACE] Support canvas badges as render targets (`L151-L152`). (14-N:L234 | 14-N-SUMMARY_INDEX.discovery.md:L234)
+- [surface] (SUMMARY/N7-E06) [E/SURFACE] Support brief rows as render targets (`L151-L152`). (14-N:L235 | 14-N-SUMMARY_INDEX.discovery.md:L235)
+- [surface] (SUMMARY/N7-E07) [E/SURFACE] Support M-3 organization rollups as render targets (`L151-L152`). (14-N:L236 | 14-N-SUMMARY_INDEX.discovery.md:L236)
+- [surface] (SUMMARY/N7-E12) [E/SURFACE] The frontend pairing is mandatory because rendering is the feature itself (`L155-L156`). (14-N:L241 | 14-N-SUMMARY_INDEX.discovery.md:L241)
+- [surface] (SUMMARY/N8-E12) [E/SURFACE] Surface a governance tile on G-5/M-3 (`L174-L175`). (14-N:L265 | 14-N-SUMMARY_INDEX.discovery.md:L265)
+- [surface] (SUMMARY/N9-E14) [E/SURFACE] Reuse existing attribution drawers or justify no frontend (`L190-L191`). (14-N:L291 | 14-N-SUMMARY_INDEX.discovery.md:L291)
+- [surface] (SUMMARY/OBS-006) [E/SURFACE] N-6: carried trust label and optional provenance badge; no named SSB row is given (14-N:L716 | 14-N-SUMMARY_INDEX.discovery.md:L716)
+- [surface] (SUMMARY/OBS-007) [E/SURFACE] N-7: human render at PR/chat/canvas/brief/rollup target (14-N:L717 | 14-N-SUMMARY_INDEX.discovery.md:L717)
+- [surface] (SUMMARY/OBS-008) [E/SURFACE] N-8: `+governance_coverage_measured` with five Kinds, governance tile (14-N:L718 | 14-N-SUMMARY_INDEX.discovery.md:L718)
+- [surface] (SUMMARY/UI-001) [E/SURFACE] N-1 `MeasurementPanel` or justified reuse of G-5. (14-N:L742 | 14-N-SUMMARY_INDEX.discovery.md:L742)
+- [surface] (SUMMARY/UI-002) [E/SURFACE] N-3 deflation column in promotion drawers or justified N/A. (14-N:L743 | 14-N-SUMMARY_INDEX.discovery.md:L743)
+- [surface] (SUMMARY/UI-003) [E/SURFACE] N-4 memo-hit indicator in belief/claim drawers or justified N/A. (14-N:L744 | 14-N-SUMMARY_INDEX.discovery.md:L744)
+- [surface] (SUMMARY/UI-004) [E/SURFACE] N-5 canvas/RRA route-explanation row. (14-N:L745 | 14-N-SUMMARY_INDEX.discovery.md:L745)
+- [surface] (SUMMARY/UI-005) [E/SURFACE] N-6 provenance badge on citation/memory views or justified N/A. (14-N:L746 | 14-N-SUMMARY_INDEX.discovery.md:L746)
+- [surface] (SUMMARY/UI-006) [E/SURFACE] N-7 mandatory PR/chat/canvas/brief/rollup render substrate. (14-N:L747 | 14-N-SUMMARY_INDEX.discovery.md:L747)
+- [surface] (SUMMARY/UI-007) [E/SURFACE] N-8 governance tile on G-5/M-3. (14-N:L748 | 14-N-SUMMARY_INDEX.discovery.md:L748)
+- [surface] (SUMMARY/UI-008) [E/SURFACE] N-9 existing attribution drawers or justified N/A. (14-N:L749 | 14-N-SUMMARY_INDEX.discovery.md:L749)
+- [surface] (SUMMARY/UI-009) [E/SURFACE] N-10 normally internal; optionally show chosen depth on canvas. (14-N:L750 | 14-N-SUMMARY_INDEX.discovery.md:L750)
+- [surface] (SUMMARY/UI-010) [E/SURFACE] N-11 verify existing canvas fold consumption. (14-N:L751 | 14-N-SUMMARY_INDEX.discovery.md:L751)
+- [surface] (SUMMARY/UI-012) [E/SURFACE] N-13 boundary-verdict badge or G-5 tile reuse. (14-N:L753 | 14-N-SUMMARY_INDEX.discovery.md:L753)
+- [surface] (SUMMARY/UI-013) [E/SURFACE] N-14 edit-kind chip or justified internal N/A. (14-N:L754 | 14-N-SUMMARY_INDEX.discovery.md:L754)
+- [surface] (SUMMARY/UI-014) [E/SURFACE] N-15 G-5/N-8 framing-stability tile or existing sycophancy tile reuse. (14-N:L755 | 14-N-SUMMARY_INDEX.discovery.md:L755)
+- [surface] (SUMMARY/UI-015) [E/SURFACE] N-16 lambda gauge, quarantine count, and ritual-entropy band on governance tile. (14-N:L756 | 14-N-SUMMARY_INDEX.discovery.md:L756)
+- [surface] (SUMMARY/WF1-002) [E/SURFACE] A family uses the one K-15/I-27-shaped runner via `elai bench *`. (14-N:L590 | 14-N-SUMMARY_INDEX.discovery.md:L590)
+- (SUMMARY/CFG-001) [E] BOOTSTRAP calibration pack with provenance and hard local supersession. (14-N:L699 | 14-N-SUMMARY_INDEX.discovery.md:L699)
+- (SUMMARY/CFG-002) [E] Thresholdout budget on each reusable evaluation corpus. (14-N:L700 | 14-N-SUMMARY_INDEX.discovery.md:L700)
+- (SUMMARY/CFG-003) [E] Frozen routing precedence: safety > cost > abstention > escalation > modality > serving-tier. (14-N:L701 | 14-N-SUMMARY_INDEX.discovery.md:L701)
+- (SUMMARY/CFG-005) [E] ELAI-measured thresholds only for edit-loop, framing, and governance instruments. (14-N:L703 | 14-N-SUMMARY_INDEX.discovery.md:L703)
+- (SUMMARY/DEP-001) [E] N-1 consumes G-6, J-34, K-15, J-107, L-10, K-18, I-38, I-27, L-20, J-110, J-56, E-54, J-93-F, W-5/I-51, B-42, J-84/J-85, L-4/L-7, K-24/M-5, and optionally G-5. (14-N:L785 | 14-N-SUMMARY_INDEX.discovery.md:L785)
+- (SUMMARY/DEP-003) [E] N-3 consumes H-17/H-18/H-19, H-47, I-30/I-31, ID-6, N-1, J-56/L-20/D-6, 3F, J-57, J-97, B-23/H-45, I-4/I-25, and L-11. (14-N:L787 | 14-N-SUMMARY_INDEX.discovery.md:L787)
+- (SUMMARY/DEP-004) [E] N-4 consumes L-1/L-2..L-6/L-8, J-83/J-96/J-21, K-12/K-18, GRC tags, C-30, and F-5. (14-N:L788 | 14-N-SUMMARY_INDEX.discovery.md:L788)
+- (SUMMARY/DEP-005) [E] N-5 arbitrates D-10, J-84, J-55, H-7, E-20, J-48, J-54, L-6, J-32, J-73, plus B-41/L-21/C-46/K-5/B-28; it consumes J-92, K-4, R8, W-7, and R10; E-39 is named in a conflict. (14-N:L789 | 14-N-SUMMARY_INDEX.discovery.md:L789)
+- (SUMMARY/DEP-006) [E] N-6 maps G-1, C-48, F-6, C-30, K-23, 4D, J-93-C, and H-53; it families F-1, J-102, J-109, K-23/M-2. (14-N:L790 | 14-N-SUMMARY_INDEX.discovery.md:L790)
+- (SUMMARY/DEP-007) [E] N-7 consumes K-11, G-5, K-7, M-3, SSB verdict rows, J-83, L-7, N-1, WIRING_CONTRACT, and N-2. (14-N:L791 | 14-N-SUMMARY_INDEX.discovery.md:L791)
+- (SUMMARY/DEP-009) [E] N-9 adapts C-45, I-28, J-105, J-109, E-6, E-10, H-40, J-75 and consumes N-1/ND-5. (14-N:L793 | 14-N-SUMMARY_INDEX.discovery.md:L793)
+- (SUMMARY/DEP-010) [E] N-10 wires B-38, B-40, C-29, J-32, D-15, 4F/B-21 into 4D, J-84, J-39, J-79. (14-N:L794 | 14-N-SUMMARY_INDEX.discovery.md:L794)
+- (SUMMARY/DEP-011) [E] N-11 extends L-16 and consumes J-31/J-60/J-98/K-23, I-39, K-24, M-3, K-22, J-68, H-49, ND-2, and GD-2. (14-N:L795 | 14-N-SUMMARY_INDEX.discovery.md:L795)
+- (SUMMARY/DEP-012) [E] N-12 consumes all units explicitly named in its seven sub-slices and depends on N-2 for ongoing anti-fork enforcement. (14-N:L796 | 14-N-SUMMARY_INDEX.discovery.md:L796)
+- (SUMMARY/DEP-013) [E] N-13 consumes C-26, E-35, I-34, J-53, J-51, H-13, B-24, L-1, I-33, B-37/I-51, N-1/N-2, D-16, I-46, GD-1, and TD-3. (14-N:L797 | 14-N-SUMMARY_INDEX.discovery.md:L797)
+- (SUMMARY/DEP-014) [E] N-14 consumes C-10/B-22b, I-4/I-22/J-10, I-27, H-45/H-47/D-6/H-19, N-5/H-7/L-21/J-84, N-1, tree-sitter, TD-3, and ID-5. (14-N:L798 | 14-N-SUMMARY_INDEX.discovery.md:L798)
+- (SUMMARY/DEP-015) [E] N-15 consumes TD-3, I-17, I-33/I-24, H-31, D-14/D-23, E-4/E-54, B-41, J-45, L-11, I-41, N-1/N-8, ID-5, and GD-4. (14-N:L799 | 14-N-SUMMARY_INDEX.discovery.md:L799)
+- (SUMMARY/DOC-001) [E] N is the **INTERLACE** letter: it primarily connects and consolidates capabilities from B..M rather than inventing new capability. (14-N:L32 | 14-N-SUMMARY_INDEX.discovery.md:L32)
+- (SUMMARY/DOC-003) [E] N requires one canonical subsystem per fragmented concern. (14-N:L34 | 14-N-SUMMARY_INDEX.discovery.md:L34)
+- (SUMMARY/DOC-004) [E] N mechanizes the M-1 anti-fragmentation rule so later letters cannot silently fork a concern again. (14-N:L35 | 14-N-SUMMARY_INDEX.discovery.md:L35)
+- (SUMMARY/DOC-005) [E] N-2 lifts wiring enforcement from code grain to the complete plan-corpus grain. (14-N:L36 | 14-N-SUMMARY_INDEX.discovery.md:L36)
+- (SUMMARY/ERR-001) [E] Fresh-install measurement fallback uses BOOTSTRAP defaults until hard-superseded locally. (14-N:L730 | 14-N-SUMMARY_INDEX.discovery.md:L730)
+- (SUMMARY/ERR-003) [E] Conflicting routers fall back to the frozen precedence plane, not call order. (14-N:L732 | 14-N-SUMMARY_INDEX.discovery.md:L732)
+- (SUMMARY/ERR-004) [E] Changed claim identity invalidates receipt reuse through F-5. (14-N:L733 | 14-N-SUMMARY_INDEX.discovery.md:L733)
+- (SUMMARY/ERR-007) [E] Low exogenous-grounding ratio triggers retrieval/escalation braking, never passing. (14-N:L736 | 14-N-SUMMARY_INDEX.discovery.md:L736)
+- (SUMMARY/ERR-008) [E] Refuted-evaluator verdicts are quarantined for advisory re-audit, never removed. (14-N:L737 | 14-N-SUMMARY_INDEX.discovery.md:L737)
+- (SUMMARY/ERR-009) [E] No backup/restore, retention duration, privacy-redaction, or disaster-recovery policy is explicit beyond these behaviors. (14-N:L738 | 14-N-SUMMARY_INDEX.discovery.md:L738)
+- (SUMMARY/INV-002) [E] **Consume, do not recreate (GD-1):** N repeatedly extends shipped/planned artifacts rather than replacing their engines. (14-N:L655 | 14-N-SUMMARY_INDEX.discovery.md:L655)
+- (SUMMARY/INV-004) [E] **Data over prose:** map edges use ND-3 data, precedence is a frozen data table, OutputBoundary is a registry, and fold functions are data/plugins. (14-N:L657 | 14-N-SUMMARY_INDEX.discovery.md:L657)
+- (SUMMARY/INV-005) [E] **Measurement authority (ND-4/ID-5):** one `ModelCapabilityProfile` and N-1 spine own calibration; N-14/N-15/N-16 thresholds must be locally measured. (14-N:L658 | 14-N-SUMMARY_INDEX.discovery.md:L658)
+- (SUMMARY/INV-006) [E] **Bootstrap provenance:** cold-start values are explicitly BOOTSTRAP and cannot remain authoritative after local data exists. (14-N:L659 | 14-N-SUMMARY_INDEX.discovery.md:L659)
+- (SUMMARY/INV-007) [E] **Append-only evidence:** F-5 quarantine never deletes historical verdicts. (14-N:L660 | 14-N-SUMMARY_INDEX.discovery.md:L660)
+- (SUMMARY/INV-009) [E] **Security preservation:** taint must survive all mapped boundaries; F-6’s type barrier remains; grammar pins, reject-never-repair, frozen repair tables, and admission scanners remain binding. (14-N:L662 | 14-N-SUMMARY_INDEX.discovery.md:L662)
+- (SUMMARY/INV-011) [E] **Thin adapters (ND-5):** counterfactual and other unified call-site adapters contain no business logic. (14-N:L664 | 14-N-SUMMARY_INDEX.discovery.md:L664)
+- (SUMMARY/INV-012) [E] **Retirement (ND-2):** a unification is incomplete while an ad-hoc predecessor path remains live. (14-N:L665 | 14-N-SUMMARY_INDEX.discovery.md:L665)
+- (SUMMARY/INV-014) [E] **False-positive control (GD-4):** N-15 cannot default on without a measured FP bound. (14-N:L667 | 14-N-SUMMARY_INDEX.discovery.md:L667)
+- (SUMMARY/N1-E01) [E] Declare measurement as one named subsystem rather than scattered benches and “K slivers” (`L24-L26`). (14-N:L49 | 14-N-SUMMARY_INDEX.discovery.md:L49)
+- (SUMMARY/N1-E02) [E] Bind all ten named bench families to the shared spine: G-6 SAFEDELTA, J-34 context-knee, K-15 reasoning-knee, J-107 longcot, L-10 hallucination-delta, K-18 case-reuse, I-38 QDELTA, I-27 convergence, L-20 supply, and J-110 timeliness (`L26-L28`). (14-N:L50 | 14-N-SUMMARY_INDEX.discovery.md:L50)
+- (SUMMARY/N1-E03) [E] Use one corpus family rooted in J-56/E-54/L-20 (`L28-L30`). (14-N:L51 | 14-N-SUMMARY_INDEX.discovery.md:L51)
+- (SUMMARY/N1-E04) [E] Treat L-20 supply as a feeder, not a sibling bench (`L29-L30`). (14-N:L52 | 14-N-SUMMARY_INDEX.discovery.md:L52)
+- (SUMMARY/N1-E05) [E] Treat J-110 mutators as feeders, not sibling benches (`L29-L30`). (14-N:L53 | 14-N-SUMMARY_INDEX.discovery.md:L53)
+- (SUMMARY/N1-E06) [E] Use one runner family with the K-15/I-27 shape (`L30`). (14-N:L54 | 14-N-SUMMARY_INDEX.discovery.md:L54)
+- (SUMMARY/N1-E07) [E] Generalize the J-93-F rules-only outcome-label fold to the six promotion loops (`L30-L31`). (14-N:L55 | 14-N-SUMMARY_INDEX.discovery.md:L55)
+- (SUMMARY/N1-E08) [E] Feed J-84/J-85 knee selection from the shared measurements (`L28-L29`). (14-N:L56 | 14-N-SUMMARY_INDEX.discovery.md:L56)
+- (SUMMARY/N1-E09) [E] Feed L-4/L-7 promotion decisions from the shared measurements (`L28-L29`). (14-N:L57 | 14-N-SUMMARY_INDEX.discovery.md:L57)
+- (SUMMARY/N1-E10) [E] Feed K-24/M-5 pricing from the shared measurements (`L28-L29`). (14-N:L58 | 14-N-SUMMARY_INDEX.discovery.md:L58)
+- (SUMMARY/N1-E11) [E] Ship a default measurement bootstrap pack for fresh-install cold start (`L31-L33`). (14-N:L59 | 14-N-SUMMARY_INDEX.discovery.md:L59)
+- (SUMMARY/N1-E12) [E] Mark bootstrap defaults with `provenance=BOOTSTRAP` (`L31-L32`). (14-N:L60 | 14-N-SUMMARY_INDEX.discovery.md:L60)
+- (SUMMARY/N1-E13) [E] Include bootstrap values for D-16 tau, J-34 knees, K-15 knees, and OQ thresholds (`L32-L33`). (14-N:L61 | 14-N-SUMMARY_INDEX.discovery.md:L61)
+- (SUMMARY/N1-E14) [E] Hard-supersede bootstrap values when local measurements become available (`L32-L33`). (14-N:L62 | 14-N-SUMMARY_INDEX.discovery.md:L62)
+- (SUMMARY/N1-E15) [E] Use the W-5 `ModelCapabilityProfile` / I-51 `models.toml` as the **only** calibration sink (`L34-L36`). (14-N:L63 | 14-N-SUMMARY_INDEX.discovery.md:L63)
+- (SUMMARY/N1-E16) [E] Reuse B-42’s default-artifact-pack shape for the bootstrap rather than creating another pack mechanism (`L34-L36`). (14-N:L64 | 14-N-SUMMARY_INDEX.discovery.md:L64)
+- (SUMMARY/N1-E18) [E] A bench run writes both a corpus row and a calibration curve into the one profile (`L40-L41`). (14-N:L66 | 14-N-SUMMARY_INDEX.discovery.md:L66)
+- (SUMMARY/N1-E19) [E] Replacing a bootstrap default with local measurement appends `+calibration_bootstrap_superseded` to the SSB (`L40-L42`). (14-N:L67 | 14-N-SUMMARY_INDEX.discovery.md:L67)
+- (SUMMARY/N1-E21) [E] Integrate corpus/bench work in `crates/knowledge` and profile/label-fold work in `crates/orchestrator` (`L37-L38`). (14-N:L69 | 14-N-SUMMARY_INDEX.discovery.md:L69)
+- (SUMMARY/N1-E23) [E] Do not implement another bench runner; existing benches bind to the one runner and profile (`L34-L36`). (14-N:L71 | 14-N-SUMMARY_INDEX.discovery.md:L71)
+- (SUMMARY/N10-E01) [E] Unify B-38 continuous ambiguity, B-40 critic, C-29 intent pairs, and J-32 front-door confidence into one typed ambiguity signal (`L197-L204`). (14-N:L304 | 14-N-SUMMARY_INDEX.discovery.md:L304)
+- (SUMMARY/N10-E02) [E] Unify D-15 claim `NoveltyClass` and the 4F/B-21 novel-plan-step signal into one typed novelty signal (`L198-L204`). (14-N:L305 | 14-N-SUMMARY_INDEX.discovery.md:L305)
+- (SUMMARY/N10-E03) [E] Materialize `AmbiguityScore` (`L200`). (14-N:L306 | 14-N-SUMMARY_INDEX.discovery.md:L306)
+- (SUMMARY/N10-E04) [E] Materialize `NoveltyScore` (`L200`). (14-N:L307 | 14-N-SUMMARY_INDEX.discovery.md:L307)
+- (SUMMARY/N10-E05) [E] Join the two scores for the current task (`L200`). (14-N:L308 | 14-N-SUMMARY_INDEX.discovery.md:L308)
+- (SUMMARY/N10-E06) [E] Feed the shared scores into 4D research-tree depth (`L200-L203`). (14-N:L309 | 14-N-SUMMARY_INDEX.discovery.md:L309)
+- (SUMMARY/N10-E07) [E] Feed the shared scores into J-84 reasoning-effort tier (`L201-L203`). (14-N:L310 | 14-N-SUMMARY_INDEX.discovery.md:L310)
+- (SUMMARY/N10-E08) [E] Feed the shared scores into J-39 decomposition node sizing (`L201-L203`). (14-N:L311 | 14-N-SUMMARY_INDEX.discovery.md:L311)
+- (SUMMARY/N10-E09) [E] Feed the shared scores into J-79 grill/clarify offers (`L201-L203`). (14-N:L312 | 14-N-SUMMARY_INDEX.discovery.md:L312)
+- (SUMMARY/N10-E10) [E] High ambiguity or an off-map task increases research depth (`L202`). (14-N:L313 | 14-N-SUMMARY_INDEX.discovery.md:L313)
+- (SUMMARY/N10-E12) [E] Wire existing detectors; do not implement another detector (`L203-L204`). (14-N:L315 | 14-N-SUMMARY_INDEX.discovery.md:L315)
+- (SUMMARY/N10-E13) [E] Integrate at `crates/orchestrator` research-tree, effort-tier, and node-admission seams (`L205-L206`). (14-N:L316 | 14-N-SUMMARY_INDEX.discovery.md:L316)
+- (SUMMARY/N10-E15) [E] A deliberately vague/novel task must receive greater research depth and effort than a clear baseline while both consumers read the same score rows (`L207-L209`). (14-N:L318 | 14-N-SUMMARY_INDEX.discovery.md:L318)
+- (SUMMARY/N11-E01) [E] Extend L-16’s pure `fold(log, budget, policy) -> context-view` core rather than reauthoring it (`L213-L219`). (14-N:L330 | 14-N-SUMMARY_INDEX.discovery.md:L330)
+- (SUMMARY/N11-E02) [E] Represent per-surface fold functions as data/plugins (`L215-L216`). (14-N:L331 | 14-N-SUMMARY_INDEX.discovery.md:L331)
+- (SUMMARY/N11-E05) [E] Move K-24 billing-balance derivation through the shared fold core (`L214-L220`). (14-N:L334 | 14-N-SUMMARY_INDEX.discovery.md:L334)
+- (SUMMARY/N11-E07) [E] Move K-22 coverage derivation through the shared fold core (`L214-L220`). (14-N:L336 | 14-N-SUMMARY_INDEX.discovery.md:L336)
+- (SUMMARY/N11-E08) [E] Use one J-68 Kani correctness proof for all five surface fold functions instead of five GD-2 audits (`L215-L219`). (14-N:L337 | 14-N-SUMMARY_INDEX.discovery.md:L337)
+- (SUMMARY/N11-E09) [E] Ship the ND-2 retirement map for old paths left live by L-16 (`L216-L218`). (14-N:L338 | 14-N-SUMMARY_INDEX.discovery.md:L338)
+- (SUMMARY/N11-E10) [E] End the `recover_stubs` path (`L217-L218`). (14-N:L339 | 14-N-SUMMARY_INDEX.discovery.md:L339)
+- (SUMMARY/N11-E11) [E] Declare H-49 CAS/undo-tree the canonical log representation (`L217-L219`). (14-N:L340 | 14-N-SUMMARY_INDEX.discovery.md:L340)
+- (SUMMARY/N11-E12) [E] Integrate the fold core and five fold functions in `crates/orchestrator` (`L220`). (14-N:L341 | 14-N-SUMMARY_INDEX.discovery.md:L341)
+- (SUMMARY/N11-E14) [E] With a pinned seed, two of the five surfaces must rederive byte-identical output through the one core (`L222-L224`). (14-N:L343 | 14-N-SUMMARY_INDEX.discovery.md:L343)
+- (SUMMARY/N11-E15) [E] The retirement switch removes the old path (`L222-L224`). (14-N:L344 | 14-N-SUMMARY_INDEX.discovery.md:L344)
+- (SUMMARY/N12-E01) [E] Treat the labeled consistency collapses as disjoint-file, parallel-safe, independently shippable sub-slices (`L230,L244-L245`). (14-N:L358 | 14-N-SUMMARY_INDEX.discovery.md:L358)
+- (SUMMARY/N12-E02) [E] For each concern, deduplicate to the first-in-flow implementation and use adapters at other call sites (`L242-L243`). (14-N:L359 | 14-N-SUMMARY_INDEX.discovery.md:L359)
+- (SUMMARY/N12-E03) [E] Do not add another type for a collapsed concern (`L242-L243`). (14-N:L360 | 14-N-SUMMARY_INDEX.discovery.md:L360)
+- (SUMMARY/N12-E04) [E] Trigger the surviving implementation from at least two former call sites and observe one canonical row/type (`L246-L247`). (14-N:L361 | 14-N-SUMMARY_INDEX.discovery.md:L361)
+- (SUMMARY/N12-E05) [E] Have N-2 reject any reappearing parallel implementation (`L247-L248`). (14-N:L362 | 14-N-SUMMARY_INDEX.discovery.md:L362)
+- (SUMMARY/N12-E09) [E] Collapse the tools taxonomy’s 9 categories into it (`L231`). (14-N:L369 | 14-N-SUMMARY_INDEX.discovery.md:L369)
+- (SUMMARY/N12-E10) [E] Collapse E-6 MAST’s 14 modes into it (`L231-L232`). (14-N:L370 | 14-N-SUMMARY_INDEX.discovery.md:L370)
+- (SUMMARY/N12-E11) [E] Remove/collapse the E-29 MAST duplicate (`L231-L232`). (14-N:L371 | 14-N-SUMMARY_INDEX.discovery.md:L371)
+- (SUMMARY/N12-E12) [E] Map C-10 `StagnationPattern` into it (`L232`). (14-N:L372 | 14-N-SUMMARY_INDEX.discovery.md:L372)
+- (SUMMARY/N12-E13) [E] Create one `AbstainDecision` spine spanning D-16, I-8, D-17, L-7, J-73, and J-110 (`L233-L234`). (14-N:L376 | 14-N-SUMMARY_INDEX.discovery.md:L376)
+- (SUMMARY/N12-E15) [E] Raise that downstream path to the L-2 risk floor (`L233-L234`). (14-N:L378 | 14-N-SUMMARY_INDEX.discovery.md:L378)
+- (SUMMARY/N12-E16) [E] Make B-40’s nine-variant `ProjectClass` the one project-class registry (`L235-L236`). (14-N:L382 | 14-N-SUMMARY_INDEX.discovery.md:L382)
+- (SUMMARY/N12-E17) [E] Have B-42 cosmos consume the registry (`L235`). (14-N:L383 | 14-N-SUMMARY_INDEX.discovery.md:L383)
+- (SUMMARY/N12-E18) [E] Have E-50 archetypes consume the registry (`L235`). (14-N:L384 | 14-N-SUMMARY_INDEX.discovery.md:L384)
+- (SUMMARY/N12-E19) [E] Have E-12 manifests consume the registry (`L235-L236`). (14-N:L385 | 14-N-SUMMARY_INDEX.discovery.md:L385)
+- (SUMMARY/N12-E20) [E] Have L-14 defaults consume the registry (`L235-L236`). (14-N:L386 | 14-N-SUMMARY_INDEX.discovery.md:L386)
+- (SUMMARY/N12-E21) [E] Route C-47 sled `CaseBase` writes through the J-109 learned-artifact admission pipeline (`L237-L238`). (14-N:L390 | 14-N-SUMMARY_INDEX.discovery.md:L390)
+- (SUMMARY/N12-E22) [E] Route C-49 Markdown `ExperienceCorpus` writes through the J-109 admission pipeline (`L237-L238`). (14-N:L391 | 14-N-SUMMARY_INDEX.discovery.md:L391)
+- (SUMMARY/N12-E23) [E] Close the previously unguarded learned-artifact write path (`L237-L238`). (14-N:L392 | 14-N-SUMMARY_INDEX.discovery.md:L392)
+- (SUMMARY/N12-E24) [E] Provide one shared KL/DDM/IQR drift-primitive library for D-4, G-10, H-30, F-5, and B-22b (`L239`). (14-N:L396 | 14-N-SUMMARY_INDEX.discovery.md:L396)
+- (SUMMARY/N12-E25) [E] Preserve each consumer’s distinct policy while sharing only the primitives (`L239`). (14-N:L397 | 14-N-SUMMARY_INDEX.discovery.md:L397)
+- (SUMMARY/N12-E26) [E] Add a three-model conformance test requiring 3I DST, J-68 TLA, and the code transition table to agree (`L240`). (14-N:L401 | 14-N-SUMMARY_INDEX.discovery.md:L401)
+- (SUMMARY/N13-E01) [E] Establish the invariant that every machine-actionable model output crosses one provider-agnostic `OutputBoundary` (`L263-L269`). (14-N:L435 | 14-N-SUMMARY_INDEX.discovery.md:L435)
+- (SUMMARY/N13-E02) [E] Create one per-output-type registry row with `schema` (`L264-L265`). (14-N:L436 | 14-N-SUMMARY_INDEX.discovery.md:L436)
+- (SUMMARY/N13-E03) [E] Include `parser` in each row (`L264-L265`). (14-N:L437 | 14-N-SUMMARY_INDEX.discovery.md:L437)
+- (SUMMARY/N13-E04) [E] Include `repair policy` in each row (`L264-L265`). (14-N:L438 | 14-N-SUMMARY_INDEX.discovery.md:L438)
+- (SUMMARY/N13-E05) [E] Include `retry budget` in each row (`L264-L265`). (14-N:L439 | 14-N-SUMMARY_INDEX.discovery.md:L439)
+- (SUMMARY/N13-E07) [E] Include journaled invalid rate in each row (`L264-L265`). (14-N:L441 | 14-N-SUMMARY_INDEX.discovery.md:L441)
+- (SUMMARY/N13-E08) [E] Include backend enforcement mode in each row (`L265`). (14-N:L442 | 14-N-SUMMARY_INDEX.discovery.md:L442)
+- (SUMMARY/N13-E10) [E] Add structured-output capability fields to the one B-37/I-51 model catalog (`L269-L274`). (14-N:L444 | 14-N-SUMMARY_INDEX.discovery.md:L444)
+- (SUMMARY/N13-E12) [E] The model cannot choose or weaken enforcement mode (TD-3) (`L270-L272`). (14-N:L446 | 14-N-SUMMARY_INDEX.discovery.md:L446)
+- (SUMMARY/N13-E13) [E] Inherit I-34 grammar pinning as a binding security requirement (`L271-L272`). (14-N:L447 | 14-N-SUMMARY_INDEX.discovery.md:L447)
+- (SUMMARY/N13-E14) [E] Inherit H-13 reject-never-repair as a binding security requirement (`L271-L272`). (14-N:L448 | 14-N-SUMMARY_INDEX.discovery.md:L448)
+- (SUMMARY/N13-E15) [E] Inherit J-53/I-46’s frozen repair table as a binding security requirement (`L271-L272`). (14-N:L449 | 14-N-SUMMARY_INDEX.discovery.md:L449)
+- (SUMMARY/N13-E16) [E] Do not create another validation engine or model catalog (`L273-L274`). (14-N:L450 | 14-N-SUMMARY_INDEX.discovery.md:L450)
+- (SUMMARY/N13-E17) [E] Send per `(type, backend)` invalid rates to N-1 (`L273-L279`). (14-N:L451 | 14-N-SUMMARY_INDEX.discovery.md:L451)
+- (SUMMARY/N13-E19) [E] Implement the registry seam at `crates/orchestrator/src/output_boundary.rs`, the one catalog, and four machine-actionable emission seams (`L275-L276`). (14-N:L453 | 14-N-SUMMARY_INDEX.discovery.md:L453)
+- (SUMMARY/N13-E21) [E] Tool directives, `ClaimSet`s, and decision cards on backends lacking strict schema still cross the boundary and emit one `+output_boundary_verdict` containing resolved `enforcement_mode` (`L277-L279`). (14-N:L455 | 14-N-SUMMARY_INDEX.discovery.md:L455)
+- (SUMMARY/N13-E22) [E] N-2 rejects a new output type lacking a registry row (`L279-L280`). (14-N:L456 | 14-N-SUMMARY_INDEX.discovery.md:L456)
+- (SUMMARY/N13-E23) [E] N-2’s duplicate-concept check rejects a second bespoke validation path (`L279-L280`). (14-N:L457 | 14-N-SUMMARY_INDEX.discovery.md:L457)
+- (SUMMARY/N14-E01) [E] Add a deterministic edit-type classifier finer than C-10’s stagnation categories (`L285-L289`). (14-N:L470 | 14-N-SUMMARY_INDEX.discovery.md:L470)
+- (SUMMARY/N14-E02) [E] Classify `SynthesisEdit` when normalized stripped-AST topology changes (`L289-L290`). (14-N:L471 | 14-N-SUMMARY_INDEX.discovery.md:L471)
+- (SUMMARY/N14-E03) [E] Classify `ParametricEdit` when normalized stripped-AST topology stays the same (`L289-L290`). (14-N:L472 | 14-N-SUMMARY_INDEX.discovery.md:L472)
+- (SUMMARY/N14-E04) [E] Normalize constants before topology comparison (`L289-L290`). (14-N:L473 | 14-N-SUMMARY_INDEX.discovery.md:L473)
+- (SUMMARY/N14-E05) [E] Normalize identifiers before topology comparison (`L289-L290`). (14-N:L474 | 14-N-SUMMARY_INDEX.discovery.md:L474)
+- (SUMMARY/N14-E06) [E] Join `EditKind` onto every score-bearing attempt (`L289-L291`). (14-N:L475 | 14-N-SUMMARY_INDEX.discovery.md:L475)
+- (SUMMARY/N14-E07) [E] Use edit kind to upgrade C-10 persona choice from blind rotation to evidence-driven selection (`L290-L291`). (14-N:L476 | 14-N-SUMMARY_INDEX.discovery.md:L476)
+- (SUMMARY/N14-E08) [E] Feed edit kind to I-4, I-22, and J-10 (`L291,L295`). (14-N:L477 | 14-N-SUMMARY_INDEX.discovery.md:L477)
+- (SUMMARY/N14-E09) [E] Add synthesis-versus-tuning task demand as an N-5/H-7/L-21/J-84 routing axis (`L291-L295`). (14-N:L478 | 14-N-SUMMARY_INDEX.discovery.md:L478)
+- (SUMMARY/N14-E10) [E] Use that axis to avoid assigning local-7B the ownership of structure discovery when measured synthesis ability is weak (`L292-L293`). (14-N:L479 | 14-N-SUMMARY_INDEX.discovery.md:L479)
+- (SUMMARY/N14-E11) [E] Add hidden two-stage SELECT-then-REPORT to H-45/H-47 (`L293-L294`). (14-N:L480 | 14-N-SUMMARY_INDEX.discovery.md:L480)
+- (SUMMARY/N14-E12) [E] Select candidates using hidden validation data (`L293-L294`). (14-N:L481 | 14-N-SUMMARY_INDEX.discovery.md:L481)
+- (SUMMARY/N14-E13) [E] Report performance using a disjoint held-out slice, never the selection slice (`L293-L294,L301-L302`). (14-N:L482 | 14-N-SUMMARY_INDEX.discovery.md:L482)
+- (SUMMARY/N14-E14) [E] Add improvement-event timing to I-27’s existing curve (`L294-L296`). (14-N:L483 | 14-N-SUMMARY_INDEX.discovery.md:L483)
+- (SUMMARY/N14-E15) [E] Keep all four instruments advisory under TD-3 (`L288-L294`). (14-N:L484 | 14-N-SUMMARY_INDEX.discovery.md:L484)
+- (SUMMARY/N14-E16) [E] Use ELAI-measured thresholds only under ID-5 (`L294`). (14-N:L485 | 14-N-SUMMARY_INDEX.discovery.md:L485)
+- (SUMMARY/N14-E17) [E] Reuse C-10/B-22b detection, I-27 curve, H-45/H-47/D-6/H-19 promotion machinery, N-5 routing, and N-1 measurement; do not reimplement them (`L295-L296`). (14-N:L486 | 14-N-SUMMARY_INDEX.discovery.md:L486)
+- (SUMMARY/N14-E18) [E] Use tree-sitter in `crates/knowledge` for AST structure (`L295-L296`). (14-N:L487 | 14-N-SUMMARY_INDEX.discovery.md:L487)
+- (SUMMARY/N14-E19) [E] Integrate `crates/orchestrator/src/edit_kind.rs` with anti-spiral, I-27, promotion, and routing seams (`L297-L298`). (14-N:L488 | 14-N-SUMMARY_INDEX.discovery.md:L488)
+- (SUMMARY/N14-E22) [E] Repeated synthesis churn with no improvement shifts persona to Architect/Simplifier (`L300`). (14-N:L491 | 14-N-SUMMARY_INDEX.discovery.md:L491)
+- (SUMMARY/N15-E02) [E] Permute presentation order across N advisory samples (`L309-L311`). (14-N:L509 | 14-N-SUMMARY_INDEX.discovery.md:L509)
+- (SUMMARY/N15-E03) [E] Permute option order across N advisory samples (`L309-L311`). (14-N:L510 | 14-N-SUMMARY_INDEX.discovery.md:L510)
+- (SUMMARY/N15-E04) [E] Apply the sampling to B-41 review, J-45 cross-family, L-11 OCP-LSP, and I-41 lens advisories (`L310-L317`). (14-N:L511 | 14-N-SUMMARY_INDEX.discovery.md:L511)
+- (SUMMARY/N15-E05) [E] If a verdict flips under a presentation-only permutation, log it as framing-unstable (`L311-L312`). (14-N:L512 | 14-N-SUMMARY_INDEX.discovery.md:L512)
+- (SUMMARY/N15-E06) [E] Zero a framing-unstable advisory’s weight for the current run (`L311-L312`). (14-N:L513 | 14-N-SUMMARY_INDEX.discovery.md:L513)
+- (SUMMARY/N15-E07) [E] Extend I-24 scorer neutralization to framing in advisory lanes (`L312,L317`). (14-N:L514 | 14-N-SUMMARY_INDEX.discovery.md:L514)
+- (SUMMARY/N15-E09) [E] Add a D-23 assertion-pull fixture class using a false user assertion such as “I think X” (`L313-L314`). (14-N:L516 | 14-N-SUMMARY_INDEX.discovery.md:L516)
+- (SUMMARY/N15-E10) [E] Measure assertion adoption rate without the D-14 probe (`L314`). (14-N:L517 | 14-N-SUMMARY_INDEX.discovery.md:L517)
+- (SUMMARY/N15-E11) [E] Measure assertion adoption rate with the D-14 probe (`L314`). (14-N:L518 | 14-N-SUMMARY_INDEX.discovery.md:L518)
+- (SUMMARY/N15-E12) [E] Keep the check advisory-only and disqualifying rather than granting it structural decision power (`L314-L316`). (14-N:L519 | 14-N-SUMMARY_INDEX.discovery.md:L519)
+- (SUMMARY/N15-E13) [E] Measure through N-1 and use only ELAI-measured thresholds under ID-5 (`L315-L318`). (14-N:L520 | 14-N-SUMMARY_INDEX.discovery.md:L520)
+- (SUMMARY/N15-E14) [E] Establish a GD-4 false-positive bound before enabling the check by default (`L315-L316`). (14-N:L521 | 14-N-SUMMARY_INDEX.discovery.md:L521)
+- (SUMMARY/N15-E15) [E] Reuse D-23/E-54/D-14 fixtures and the existing runner rather than reauthoring it (`L317-L318`). (14-N:L522 | 14-N-SUMMARY_INDEX.discovery.md:L522)
+- (SUMMARY/N15-E16) [E] Integrate `crates/orchestrator/src/framing_invariance.rs`, the D-23 corpus, and advisory emission seams (`L319-L320`). (14-N:L523 | 14-N-SUMMARY_INDEX.discovery.md:L523)
+- (SUMMARY/N15-E19) [E] A flip emits `+framing_stability_measured(FramingUnstable)` and zeroes weight (`L321-L323`). (14-N:L526 | 14-N-SUMMARY_INDEX.discovery.md:L526)
+- (SUMMARY/N15-E20) [E] Assertion-pull emits adoption rates with and without the D-14 probe (`L322-L323`). (14-N:L527 | 14-N-SUMMARY_INDEX.discovery.md:L527)
+- (SUMMARY/N16-E01) [E] Extend N-8 with three more views of decorative governance; do not build a separate framework (`L329-L332`). (14-N:L540 | 14-N-SUMMARY_INDEX.discovery.md:L540)
+- (SUMMARY/N16-E02) [E] Add `evaluator-id` to every SSB verdict row (`L332-L333`). (14-N:L541 | 14-N-SUMMARY_INDEX.discovery.md:L541)
+- (SUMMARY/N16-E03) [E] Add evaluator `version-hash` to every SSB verdict row (`L332-L333`). (14-N:L542 | 14-N-SUMMARY_INDEX.discovery.md:L542)
+- (SUMMARY/N16-E04) [E] Register evaluator-refutation events (`L333-L335`). (14-N:L543 | 14-N-SUMMARY_INDEX.discovery.md:L543)
+- (SUMMARY/N16-E06) [E] Treat an I-24/N-15 bias detection as an evaluator-refutation source (`L333-L334`). (14-N:L545 | 14-N-SUMMARY_INDEX.discovery.md:L545)
+- (SUMMARY/N16-E07) [E] Treat a frozen-tool bug fix as an evaluator-refutation source (`L333-L334`). (14-N:L546 | 14-N-SUMMARY_INDEX.discovery.md:L546)
+- (SUMMARY/N16-E08) [E] On refutation, invoke the existing F-5 staleness cascade (`L334-L345`). (14-N:L547 | 14-N-SUMMARY_INDEX.discovery.md:L547)
+- (SUMMARY/N16-E09) [E] Quarantine exactly the past verdicts issued by the refuted evaluator (`L334-L335`). (14-N:L548 | 14-N-SUMMARY_INDEX.discovery.md:L548)
+- (SUMMARY/N16-E10) [E] Place quarantined verdicts into an advisory re-audit queue (`L334-L335`). (14-N:L549 | 14-N-SUMMARY_INDEX.discovery.md:L549)
+- (SUMMARY/N16-E11) [E] Never delete quarantined verdicts; preserve F-5 append-only history (`L335,L350-L354`). (14-N:L550 | 14-N-SUMMARY_INDEX.discovery.md:L550)
+- (SUMMARY/N16-E12) [E] Explicitly reject the Dung argument-graph adjudicator from the borrowed rubric-closure idea (`L335-L336`). (14-N:L551 | 14-N-SUMMARY_INDEX.discovery.md:L551)
+- (SUMMARY/N16-E13) [E] Compute lambda as the windowed fraction of accepted verdicts whose support bottoms out in an exogenous anchor rather than a model rubric (`L336-L339`). (14-N:L552 | 14-N-SUMMARY_INDEX.discovery.md:L552)
+- (SUMMARY/N16-E14) [E] Count program anchors as exogenous (`L336-L338`). (14-N:L553 | 14-N-SUMMARY_INDEX.discovery.md:L553)
+- (SUMMARY/N16-E15) [E] Count off-agent anchors as exogenous (`L336-L338`). (14-N:L554 | 14-N-SUMMARY_INDEX.discovery.md:L554)
+- (SUMMARY/N16-E16) [E] Count retrieval anchors as exogenous (`L336-L338`). (14-N:L555 | 14-N-SUMMARY_INDEX.discovery.md:L555)
+- (SUMMARY/N16-E17) [E] Count human anchors as exogenous (`L336-L338`). (14-N:L556 | 14-N-SUMMARY_INDEX.discovery.md:L556)
+- (SUMMARY/N16-E18) [E] Below the lambda floor, fire a retrieval/escalation brake (`L337-L339`). (14-N:L557 | 14-N-SUMMARY_INDEX.discovery.md:L557)
+- (SUMMARY/N16-E19) [E] Never use lambda as a PASS signal (`L338-L339`). (14-N:L558 | 14-N-SUMMARY_INDEX.discovery.md:L558)
+- (SUMMARY/N16-E20) [E] Interpret lambda as a detector of stalled/closed-loop dynamics, not wrong-but-stable consensus (`L338-L339`). (14-N:L559 | 14-N-SUMMARY_INDEX.discovery.md:L559)
+- (SUMMARY/N16-E21) [E] Measure auditor finding-class entropy to distinguish probing new surfaces from relitigating the same nodes (`L339-L340`). (14-N:L560 | 14-N-SUMMARY_INDEX.discovery.md:L560)
+- (SUMMARY/N16-E22) [E] Measure criticism debt as the fraction of shipped units whose declared VERIFY leg never ran (`L340-L341`). (14-N:L561 | 14-N-SUMMARY_INDEX.discovery.md:L561)
+- (SUMMARY/N16-E24) [E] Keep all three new views advisory-only under TD-3 (`L341-L342`). (14-N:L563 | 14-N-SUMMARY_INDEX.discovery.md:L563)
+- (SUMMARY/N16-E25) [E] Measure all governance values through N-1 under ND-4 (`L341-L345`). (14-N:L564 | 14-N-SUMMARY_INDEX.discovery.md:L564)
+- (SUMMARY/N16-E26) [E] Use ELAI-measured thresholds under ID-5 (`L341-L342`). (14-N:L565 | 14-N-SUMMARY_INDEX.discovery.md:L565)
+- (SUMMARY/N16-E28) [E] Add the verdict field, F-5 cascade hook, and lambda/ritual derivations in `crates/orchestrator` (`L347-L348`). (14-N:L567 | 14-N-SUMMARY_INDEX.discovery.md:L567)
+- (SUMMARY/N16-E29) [E] Extend the `.claude/tools` governance-coverage checker with the three views (`L347-L349`). (14-N:L568 | 14-N-SUMMARY_INDEX.discovery.md:L568)
+- (SUMMARY/N16-E31) [E] A refutation followed by a governance run emits `+evaluator_closure_swept` and queues the evaluator’s historical verdicts (`L350-L352`). (14-N:L570 | 14-N-SUMMARY_INDEX.discovery.md:L570)
+- (SUMMARY/N16-E32) [E] Lambda below its floor emits `+grounding_ratio_measured BelowFloorBraked` and activates the brake (`L351-L352`). (14-N:L571 | 14-N-SUMMARY_INDEX.discovery.md:L571)
+- (SUMMARY/N16-E33) [E] An unrun VERIFY leg on a shipped unit increments criticism debt (`L352`). (14-N:L572 | 14-N-SUMMARY_INDEX.discovery.md:L572)
+- (SUMMARY/N2-E02) [E] Join parsed edges against plan files (`L50`). (14-N:L85 | 14-N-SUMMARY_INDEX.discovery.md:L85)
+- (SUMMARY/N2-E03) [E] Join parsed edges against `elai.map` symbols (`L50`). (14-N:L86 | 14-N-SUMMARY_INDEX.discovery.md:L86)
+- (SUMMARY/N2-E06) [E] Detect duplicate-concept collisions using name similarity (`L52-L53`). (14-N:L89 | 14-N-SUMMARY_INDEX.discovery.md:L89)
+- (SUMMARY/N2-E07) [E] Detect duplicate-concept collisions using shared-seam detection (`L52-L53`). (14-N:L90 | 14-N-SUMMARY_INDEX.discovery.md:L90)
+- (SUMMARY/N2-E08) [E] The duplicate check is intended to catch forks such as the four claim types, E-6/E-29 MAST duplication, and ten routers during authoring (`L52-L53`). (14-N:L91 | 14-N-SUMMARY_INDEX.discovery.md:L91)
+- (SUMMARY/N2-E09) [E] Emit the global unlock DAG (`L53-L54`). (14-N:L92 | 14-N-SUMMARY_INDEX.discovery.md:L92)
+- (SUMMARY/N2-E10) [E] Emit global fan-in rankings (`L53-L54`). (14-N:L93 | 14-N-SUMMARY_INDEX.discovery.md:L93)
+- (SUMMARY/N2-E14) [E] Extend J-89 L8 per-plan DAG type-completeness to corpus scope rather than reimplementing it (`L58-L59`). (14-N:L97 | 14-N-SUMMARY_INDEX.discovery.md:L97)
+- (SUMMARY/N2-E17) [E] Seeded dangling-edge, orphan, or duplicate-concept cases must produce a nonzero exit (`L63-L65`). (14-N:L100 | 14-N-SUMMARY_INDEX.discovery.md:L100)
+- (SUMMARY/N2-E18) [E] A check appends `+composition_edge_checked` to the SSB (`L63-L64`). (14-N:L101 | 14-N-SUMMARY_INDEX.discovery.md:L101)
+- (SUMMARY/N2-E20) [E] The M-1/ND-1 rule applies to every future letter, not only N (`L56-L57`). (14-N:L103 | 14-N-SUMMARY_INDEX.discovery.md:L103)
+- (SUMMARY/N3-E01) [E] Generalize H-17’s persisted trial ledger from finance-only use to all promotion domains (`L69-L75`). (14-N:L116 | 14-N-SUMMARY_INDEX.discovery.md:L116)
+- (SUMMARY/N3-E02) [E] Re-key H-17 from a finance-candidate key to `(candidate-family)` (`L76-L78`). (14-N:L117 | 14-N-SUMMARY_INDEX.discovery.md:L117)
+- (SUMMARY/N3-E03) [E] Generalize H-18’s deflated-significance machinery, including DSR/PBO/MinBTL, without reimplementing it (`L69-L78`). (14-N:L118 | 14-N-SUMMARY_INDEX.discovery.md:L118)
+- (SUMMARY/N3-E05) [E] Generalize H-19’s reusable-holdout differential-privacy budget (`L69-L75`). (14-N:L120 | 14-N-SUMMARY_INDEX.discovery.md:L120)
+- (SUMMARY/N3-E07) [E] Cover 3F rule lifecycle `SHADOW -> ACTIVE` (`L71-L72`). (14-N:L122 | 14-N-SUMMARY_INDEX.discovery.md:L122)
+- (SUMMARY/N3-E08) [E] Cover J-57 prompt promotion (`L71-L72`). (14-N:L123 | 14-N-SUMMARY_INDEX.discovery.md:L123)
+- (SUMMARY/N3-E09) [E] Cover J-97 case-reuse fitness promotion (`L71-L72`). (14-N:L124 | 14-N-SUMMARY_INDEX.discovery.md:L124)
+- (SUMMARY/N3-E10) [E] Cover B-23/H-45 config promotion (`L72`). (14-N:L125 | 14-N-SUMMARY_INDEX.discovery.md:L125)
+- (SUMMARY/N3-E11) [E] Cover I-4/I-25 candidate ladders (`L72`). (14-N:L126 | 14-N-SUMMARY_INDEX.discovery.md:L126)
+- (SUMMARY/N3-E12) [E] Cover L-11 OQ threshold promotion (`L72`). (14-N:L127 | 14-N-SUMMARY_INDEX.discovery.md:L127)
+- (SUMMARY/N3-E13) [E] Give each reusable J-56/L-20/D-6 evaluation corpus a Thresholdout budget (`L75`). (14-N:L128 | 14-N-SUMMARY_INDEX.discovery.md:L128)
+- (SUMMARY/N3-E14) [E] Use N-1 outcome labels as the ground truth against which deflation corrects (`L76-L77`). (14-N:L129 | 14-N-SUMMARY_INDEX.discovery.md:L129)
+- (SUMMARY/N3-E15) [E] Integrate at `crates/orchestrator` promotion sites for rules, prompts, cases, and config archives (`L79-L80`). (14-N:L130 | 14-N-SUMMARY_INDEX.discovery.md:L130)
+- (SUMMARY/N4-E01) [E] Unify L-1 `ClaimSet{ClaimKind, span, refs}`, J-83 `BeliefState` entries, K-12 `critical_atoms`, and GRC `type:reference` grounding tags as one claim/belief object (`L87-L91`). (14-N:L144 | 14-N-SUMMARY_INDEX.discovery.md:L144)
+- (SUMMARY/N4-E02) [E] Make L-1 typed claims be J-83 entries, completing the carrier already threaded by L-8 (`L89-L91`). (14-N:L145 | 14-N-SUMMARY_INDEX.discovery.md:L145)
+- (SUMMARY/N4-E04) [E] Map K-12 `must_preserve` to `has-receipt` (`L91`). (14-N:L147 | 14-N-SUMMARY_INDEX.discovery.md:L147)
+- (SUMMARY/N4-E05) [E] Have J-21 re-derive the same object against commit and AST identity (`L91`). (14-N:L148 | 14-N-SUMMARY_INDEX.discovery.md:L148)
+- (SUMMARY/N4-E06) [E] Before an expensive checker/resample, look up claim identity in the J-96 case graph (`L92-L94`). (14-N:L149 | 14-N-SUMMARY_INDEX.discovery.md:L149)
+- (SUMMARY/N4-E07) [E] Apply C-30 `OracleAnswerCache` keying discipline to the receipt memo (`L92-L93`). (14-N:L150 | 14-N-SUMMARY_INDEX.discovery.md:L150)
+- (SUMMARY/N4-E08) [E] On a memo hit, cheaply revalidate identity through J-21 instead of rerunning the expensive checker (`L93-L94`). (14-N:L151 | 14-N-SUMMARY_INDEX.discovery.md:L151)
+- (SUMMARY/N4-E09) [E] On a memo miss, run the check and mint a new J-96 node (`L93-L95`). (14-N:L152 | 14-N-SUMMARY_INDEX.discovery.md:L152)
+- (SUMMARY/N4-E10) [E] Use the J-96 case graph as the receipt cache (`L94-L95`). (14-N:L153 | 14-N-SUMMARY_INDEX.discovery.md:L153)
+- (SUMMARY/N4-E12) [E] Invalidate memo eligibility through F-5’s staleness cascade when code changes (`L97-L103`). (14-N:L155 | 14-N-SUMMARY_INDEX.discovery.md:L155)
+- (SUMMARY/N4-E13) [E] Generalize C-30 rather than implementing another cache (`L97-L98`). (14-N:L156 | 14-N-SUMMARY_INDEX.discovery.md:L156)
+- (SUMMARY/N4-E16) [E] First occurrence of a claim on unchanged code pays the checker and mints a J-96 node (`L101-L102`). (14-N:L159 | 14-N-SUMMARY_INDEX.discovery.md:L159)
+- (SUMMARY/N4-E17) [E] Second occurrence on unchanged code emits `+receipt_memo(Hit)` and skips the checker (`L101-L102`). (14-N:L160 | 14-N-SUMMARY_INDEX.discovery.md:L160)
+- (SUMMARY/N4-E19) [E] The design is specifically intended to reduce reasoning verification cost on a user’s repository and especially on the checker-poor local 7B lane (`L94-L96`). (14-N:L162 | 14-N-SUMMARY_INDEX.discovery.md:L162)
+- (SUMMARY/N5-E01) [E] Arbitrate ten existing routers without reimplementing them: D-10 grounding, J-84 effort, J-55 modality, H-7 role, E-20 local/cloud, J-48 serving, J-54 free-pool, L-6 curiosity, J-32 front-door, and J-73 should-retrieve (`L107-L118`). (14-N:L173 | 14-N-SUMMARY_INDEX.discovery.md:L173)
+- (SUMMARY/N5-E03) [E] Resolve the L-6 retrieve versus J-73 abstain conflict explicitly (`L109-L110`). (14-N:L175 | 14-N-SUMMARY_INDEX.discovery.md:L175)
+- (SUMMARY/N5-E04) [E] Resolve the J-48 cloud-spill versus J-54 sleep conflict explicitly (`L109-L110`). (14-N:L176 | 14-N-SUMMARY_INDEX.discovery.md:L176)
+- (SUMMARY/N5-E05) [E] Replace implicit `task_runner` call-order policy with an explicit precedence specification (`L110-L115`). (14-N:L177 | 14-N-SUMMARY_INDEX.discovery.md:L177)
+- (SUMMARY/N5-E06) [E] Store precedence as data in this order: `safety > cost > abstention > escalation > modality > serving-tier` (`L112-L114`). (14-N:L178 | 14-N-SUMMARY_INDEX.discovery.md:L178)
+- (SUMMARY/N5-E07) [E] Emit one composite `RouteDecision` row for an arbitration (`L113-L115`). (14-N:L179 | 14-N-SUMMARY_INDEX.discovery.md:L179)
+- (SUMMARY/N5-E09) [E] Resolve intensity over `risk × model × level × task-difficulty × delegation` (`L113-L115`). (14-N:L181 | 14-N-SUMMARY_INDEX.discovery.md:L181)
+- (SUMMARY/N5-E10) [E] Make B-28 the edit-format leg of J-55 (`L114-L115`). (14-N:L182 | 14-N-SUMMARY_INDEX.discovery.md:L182)
+- (SUMMARY/N5-E11) [E] Reuse J-92’s FSM-substate structural-enforcement pattern for routing order (`L116-L118`). (14-N:L183 | 14-N-SUMMARY_INDEX.discovery.md:L183)
+- (SUMMARY/N5-E13) [E] Freeze the precedence table under R8 (`L119-L120`). (14-N:L185 | 14-N-SUMMARY_INDEX.discovery.md:L185)
+- (SUMMARY/N5-E14) [E] Integrate at the `crates/orchestrator` `task_runner` routing seam (`L119`). (14-N:L186 | 14-N-SUMMARY_INDEX.discovery.md:L186)
+- (SUMMARY/N5-E16) [E] When two or more routers fire, emit one `+route_arbitrated` row naming both/all fired routers, the winner, and its precedence rank (`L121-L123`). (14-N:L188 | 14-N-SUMMARY_INDEX.discovery.md:L188)
+- (SUMMARY/N6-E01) [E] Define a single semantic provenance/trust lattice mapping G-1 taint `Provenance`, C-48 `TrustTier T0-T3`, F-6 `SkillTrustTier S1-S4`, C-30 oracle `source_tier T1-T4`, K-23 per-repo trust, and 4D `EvidenceLevel` (`L127-L136`). (14-N:L201 | 14-N-SUMMARY_INDEX.discovery.md:L201)
+- (SUMMARY/N6-E02) [E] Make the mapping total across all six scales (`L130-L132`). (14-N:L202 | 14-N-SUMMARY_INDEX.discovery.md:L202)
+- (SUMMARY/N6-E03) [E] Preserve separate enums where intentional; specifically do not merge F-6’s enum into C-48’s (`L130-L137`). (14-N:L203 | 14-N-SUMMARY_INDEX.discovery.md:L203)
+- (SUMMARY/N6-E04) [E] Carry mapped provenance on the same object through ingest at G-1 (`L132`). (14-N:L204 | 14-N-SUMMARY_INDEX.discovery.md:L204)
+- (SUMMARY/N6-E05) [E] Preserve/map it through memory at C-48 (`L132`). (14-N:L205 | 14-N-SUMMARY_INDEX.discovery.md:L205)
+- (SUMMARY/N6-E06) [E] Preserve/map it through citation at H-53 (`L132`). (14-N:L206 | 14-N-SUMMARY_INDEX.discovery.md:L206)
+- (SUMMARY/N6-E07) [E] Preserve/map it into C-30 oracle TTL decisions (`L132`). (14-N:L207 | 14-N-SUMMARY_INDEX.discovery.md:L207)
+- (SUMMARY/N6-E08) [E] Preserve/map it into F-6 skill autonomy (`L132-L133`). (14-N:L208 | 14-N-SUMMARY_INDEX.discovery.md:L208)
+- (SUMMARY/N6-E09) [E] Preserve/map it into K-23 cross-repository trust (`L132-L133`). (14-N:L209 | 14-N-SUMMARY_INDEX.discovery.md:L209)
+- (SUMMARY/N6-E10) [E] Retain the existing J-93-C taint-survives-memory wire as part of the lattice (`L129-L136`). (14-N:L210 | 14-N-SUMMARY_INDEX.discovery.md:L210)
+- (SUMMARY/N6-E12) [E] Reuse F-1’s secret-grep scanner leg in that family (`L133-L136`). (14-N:L212 | 14-N-SUMMARY_INDEX.discovery.md:L212)
+- (SUMMARY/N6-E13) [E] Preserve J-109’s indexing relationship to J-102’s manifest (`L134-L135`). (14-N:L213 | 14-N-SUMMARY_INDEX.discovery.md:L213)
+- (SUMMARY/N6-E14) [E] Keep F-6’s auditor-enforced type barrier (`L138-L139`). (14-N:L214 | 14-N-SUMMARY_INDEX.discovery.md:L214)
+- (SUMMARY/N6-E17) [E] Test an ingest → memory write → citation chain for coherent end-to-end trust mapping with no silent tier reset (`L140-L142`). (14-N:L217 | 14-N-SUMMARY_INDEX.discovery.md:L217)
+- (SUMMARY/N7-E08) [E] Generalize K-11 PR evidence rendering into one render substrate rather than reauthoring it for each surface (`L153-L154`). (14-N:L237 | 14-N-SUMMARY_INDEX.discovery.md:L237)
+- (SUMMARY/N7-E09) [E] Feed the substrate from many verdict producers, including J-83 reasoning receipts, L-7 hallucination verdicts, and N-1 measurements (`L148-L152`). (14-N:L238 | 14-N-SUMMARY_INDEX.discovery.md:L238)
+- (SUMMARY/N7-E10) [E] Integrate at `crates/orchestrator` verdict emission and the render substrate (`L155-L156`). (14-N:L239 | 14-N-SUMMARY_INDEX.discovery.md:L239)
+- (SUMMARY/N7-E11) [E] Add a required `render_field` to the `WIRING_CONTRACT` template, tied to N-2 (`L155-L156`). (14-N:L240 | 14-N-SUMMARY_INDEX.discovery.md:L240)
+- (SUMMARY/N7-E14) [E] N-2 must reject a newly shipped verdict class with no declared render (`L158-L159`). (14-N:L243 | 14-N-SUMMARY_INDEX.discovery.md:L243)
+- (SUMMARY/N8-E01) [E] Unify five governance instruments as views of one substrate rather than reimplementing them (`L165-L173`). (14-N:L254 | 14-N-SUMMARY_INDEX.discovery.md:L254)
+- (SUMMARY/N8-E03) [E] View K-22 doctrine-enforcer coverage: whether a rule has an enforcer (`L166-L167`). (14-N:L256 | 14-N-SUMMARY_INDEX.discovery.md:L256)
+- (SUMMARY/N8-E04) [E] View J-46 governance-debt rate (`L166-L168`). (14-N:L257 | 14-N-SUMMARY_INDEX.discovery.md:L257)
+- (SUMMARY/N8-E06) [E] Generalize H-27’s finance-only kill-your-own-mutant corpus: whether an enforcer actually catches violations (`L167-L173`). (14-N:L259 | 14-N-SUMMARY_INDEX.discovery.md:L259)
+- (SUMMARY/N8-E07) [E] Produce a combined marketable governance claim: percentage of rules machine-enforced, mutation proof per enforcer, and drift rate per quarter (`L168-L170`). (14-N:L260 | 14-N-SUMMARY_INDEX.discovery.md:L260)
+- (SUMMARY/N8-E10) [E] Also require a measured mutant kill rate before frozen-set entry (`L170-L177`). (14-N:L263 | 14-N-SUMMARY_INDEX.discovery.md:L263)
+- (SUMMARY/N8-E13) [E] A coverage run emits `+governance_coverage_measured` with five Kinds (`L176-L177`). (14-N:L266 | 14-N-SUMMARY_INDEX.discovery.md:L266)
+- (SUMMARY/N9-E01) [E] Build one SSB-backed engine that reruns/redecides with one factor removed or injected and scores the delta from journal outcomes (`L182-L186`). (14-N:L278 | 14-N-SUMMARY_INDEX.discovery.md:L278)
+- (SUMMARY/N9-E02) [E] Parameterize target kind as role, verifier, ranker, rule, memory, or case (`L185-L186`). (14-N:L279 | 14-N-SUMMARY_INDEX.discovery.md:L279)
+- (SUMMARY/N9-E03) [E] Adapt C-45 role credit to the engine (`L183-L188`). (14-N:L280 | 14-N-SUMMARY_INDEX.discovery.md:L280)
+- (SUMMARY/N9-E04) [E] Adapt I-28 DAG credit to the engine (`L183-L188`). (14-N:L281 | 14-N-SUMMARY_INDEX.discovery.md:L281)
+- (SUMMARY/N9-E05) [E] Adapt J-105 memory ROI to the engine (`L183-L188`). (14-N:L282 | 14-N-SUMMARY_INDEX.discovery.md:L282)
+- (SUMMARY/N9-E06) [E] Adapt J-109 replay fitness to the engine (`L183-L188`). (14-N:L283 | 14-N-SUMMARY_INDEX.discovery.md:L283)
+- (SUMMARY/N9-E07) [E] Adapt E-6 iso-budget role ablation to the engine (`L184-L188`). (14-N:L284 | 14-N-SUMMARY_INDEX.discovery.md:L284)
+- (SUMMARY/N9-E08) [E] Adapt E-10 critic ablation to the engine (`L184-L188`). (14-N:L285 | 14-N-SUMMARY_INDEX.discovery.md:L285)
+- (SUMMARY/N9-E09) [E] Adapt H-40 verifier-retention ablation to the engine (`L184-L188`). (14-N:L286 | 14-N-SUMMARY_INDEX.discovery.md:L286)
+- (SUMMARY/N9-E10) [E] Adapt J-75 RRF ablation to the engine (`L184-L188`). (14-N:L287 | 14-N-SUMMARY_INDEX.discovery.md:L287)
+- (SUMMARY/N9-E11) [E] Keep all eight adapters thin under ND-5; business logic belongs in the core (`L185-L193`). (14-N:L288 | 14-N-SUMMARY_INDEX.discovery.md:L288)
+- (SUMMARY/N9-E12) [E] Consume N-1 outcome labels (`L186-L189`). (14-N:L289 | 14-N-SUMMARY_INDEX.discovery.md:L289)
+- (SUMMARY/N9-E13) [E] Integrate one counterfactual engine in `crates/orchestrator` and replace the eight call-site mechanisms (`L190-L191`). (14-N:L290 | 14-N-SUMMARY_INDEX.discovery.md:L290)
+- (SUMMARY/N9-E15) [E] A role/verifier/ranker ablation emits `+counterfactual_scored` with the appropriate Kind (`L192-L193`). (14-N:L292 | 14-N-SUMMARY_INDEX.discovery.md:L292)
+- (SUMMARY/NX-E01) [E] Route the four-source steal to N because its highest-value verdict is unification rather than another J unit. (14-N:L418 | 14-N-SUMMARY_INDEX.discovery.md:L418)
+- (SUMMARY/NX-E02) [E] Use `workflow/reasoning/four-source-steal-2026-07-05.md` as the phase-4 steal analysis over the programasweights repository, arXiv:2607.02440 EvoPolicyGym, `elai-any-model-research-gaps.md`, and a Ford transcript. (14-N:L419 | 14-N-SUMMARY_INDEX.discovery.md:L419)
+- (SUMMARY/NX-E03) [E] Promote only genuine NEW/EXTENSION verdicts into N units. (14-N:L420 | 14-N-SUMMARY_INDEX.discovery.md:L420)
+- (SUMMARY/NX-E04) [E] Reject PAW’s compiled-LoRA tier as an N build item and record it in the feature-map ledger. (14-N:L421 | 14-N-SUMMARY_INDEX.discovery.md:L421)
+- (SUMMARY/NX-E05) [E] Reject EvoPolicyGym n=1 statistics and missing-memorization-defense as N build items; carry the n=1 caveat into N-14. (14-N:L422 | 14-N-SUMMARY_INDEX.discovery.md:L422)
+- (SUMMARY/NX-E06) [E] Reject gaps-document P3-P5 because ELAI already plans them more deeply; record them in the feature-map ledger. (14-N:L423 | 14-N-SUMMARY_INDEX.discovery.md:L423)
+- (SUMMARY/NX-E07) [E] Reject the Ford checklist as a build item; record it in the feature-map ledger. (14-N:L424 | 14-N-SUMMARY_INDEX.discovery.md:L424)
+- (SUMMARY/NX-E08) [E] Treat prefix-KV S1-1 as already recorded by J-95/H-50. (14-N:L425 | 14-N-SUMMARY_INDEX.discovery.md:L425)
+- (SUMMARY/NX-E09) [E] Fold zip-slip S1-2 into N-6’s admission family. (14-N:L426 | 14-N-SUMMARY_INDEX.discovery.md:L426)
+- (SUMMARY/NX-E10) [E] Keep ADR evidence-table discipline S1-3 as a feature-map/dossier note rather than an N unit. (14-N:L427 | 14-N-SUMMARY_INDEX.discovery.md:L427)
+- (SUMMARY/NX-E11) [E] Keep K-1/K-7 packaging verdicts S4-1/S3-4/S1-6 as feature-map/dossier/K-2 notes. (14-N:L428 | 14-N-SUMMARY_INDEX.discovery.md:L428)
+- (SUMMARY/NX-E12) [E] Keep the EvoPolicyGym bench S2-4 as a feature-map/dossier/K-2 note rather than a new N unit. (14-N:L429 | 14-N-SUMMARY_INDEX.discovery.md:L429)
+- (SUMMARY/OA-001) [A] Header count: 15 sessions vs 16 unit headings. (14-N:L827 | 14-N-SUMMARY_INDEX.discovery.md:L827)
+- (SUMMARY/OA-002) [A] N-12 count: eight independent collapses vs seven labeled sub-slices. (14-N:L828 | 14-N-SUMMARY_INDEX.discovery.md:L828)
+- (SUMMARY/OA-003) [A] N-13 count: four emission seams vs three named examples. (14-N:L829 | 14-N-SUMMARY_INDEX.discovery.md:L829)
+- (SUMMARY/OA-004) [A] Exact ND-1..ND-5 rules, sequencing, and retirement/adaptor requirements in `N-0_INDEX.md`. (14-N:L830 | 14-N-SUMMARY_INDEX.discovery.md:L830)
+- (SUMMARY/OA-005) [A] Complete W-finding evidence and whether all W references remain current. (14-N:L831 | 14-N-SUMMARY_INDEX.discovery.md:L831)
+- (SUMMARY/OA-006) [A] Exact schemas for map edges, Claim/Belief, RouteDecision, trust mapping, governance Kinds, fold plugins, OutputBoundary, EditKind, and evaluator identity. (14-N:L832 | 14-N-SUMMARY_INDEX.discovery.md:L832)
+- (SUMMARY/OA-007) [A] Every threshold, budget, window, tie-breaker, and false-positive bound. (14-N:L833 | 14-N-SUMMARY_INDEX.discovery.md:L833)
+- (SUMMARY/OA-008) [A] Lifecycle/migration of old duplicated types, stores, runners, caches, journal paths, validators, and daemons. (14-N:L834 | 14-N-SUMMARY_INDEX.discovery.md:L834)
+- (SUMMARY/OA-009) [A] UI target mapping and fallback behavior when a declared human render cannot be delivered. (14-N:L835 | 14-N-SUMMARY_INDEX.discovery.md:L835)
+- (SUMMARY/OA-010) [A] Privacy/retention/access policy for claim receipts, eval corpora, model profiles, evaluator histories, and re-audit queues; the summary is silent. (14-N:L836 | 14-N-SUMMARY_INDEX.discovery.md:L836)
+- (SUMMARY/OA-011) [A] Concrete tests beyond each observable-effect positive/negative arm and the named Kani/FSM/normalization checks. (14-N:L837 | 14-N-SUMMARY_INDEX.discovery.md:L837)
+- (SUMMARY/OBS-001) [E] N-1: corpus row, calibration curve, `+calibration_bootstrap_superseded` (14-N:L711 | 14-N-SUMMARY_INDEX.discovery.md:L711)
+- (SUMMARY/OBS-004) [E] N-4: J-96 receipt node, `+receipt_memo(Hit)`, checker skip (14-N:L714 | 14-N-SUMMARY_INDEX.discovery.md:L714)
+- (SUMMARY/OBS-005) [E] N-5: composite `RouteDecision`, `+route_arbitrated` (14-N:L715 | 14-N-SUMMARY_INDEX.discovery.md:L715)
+- (SUMMARY/OBS-009) [E] N-9: `+counterfactual_scored` with target Kind (14-N:L719 | 14-N-SUMMARY_INDEX.discovery.md:L719)
+- (SUMMARY/OBS-010) [E] N-10: joined ambiguity/novelty rows and observable budget delta (14-N:L720 | 14-N-SUMMARY_INDEX.discovery.md:L720)
+- (SUMMARY/OBS-011) [E] N-11: byte-identical fold output and retirement-switch effect; no named SSB row is given (14-N:L721 | 14-N-SUMMARY_INDEX.discovery.md:L721)
+- (SUMMARY/OBS-012) [E] N-12: one canonical row/type per sub-slice; no universal row name is given (14-N:L722 | 14-N-SUMMARY_INDEX.discovery.md:L722)
+- (SUMMARY/OBS-013) [E] N-13: `+output_boundary_verdict`, resolved enforcement mode, per-type/backend invalid rate (14-N:L723 | 14-N-SUMMARY_INDEX.discovery.md:L723)
+- (SUMMARY/OBS-014) [E] N-14: `EditKind`, improvement-event timing, persona shift; no named SSB row is given (14-N:L724 | 14-N-SUMMARY_INDEX.discovery.md:L724)
+- (SUMMARY/OBS-015) [E] N-15: `+framing_stability_measured(FramingUnstable)`, zeroed weight, adoption rates (14-N:L725 | 14-N-SUMMARY_INDEX.discovery.md:L725)
+- (SUMMARY/OBS-016) [E] N-16: `+evaluator_closure_swept`, `+grounding_ratio_measured BelowFloorBraked`, criticism debt and ritual metrics (14-N:L726 | 14-N-SUMMARY_INDEX.discovery.md:L726)
+- (SUMMARY/REJ-001) [E] Rejected from build: PAW compiled-LoRA tier. (14-N:L804 | 14-N-SUMMARY_INDEX.discovery.md:L804)
+- (SUMMARY/REJ-002) [E] Rejected as evidence/build basis: EvoPolicyGym n=1 statistics and missing memorization defense; n=1 caveat retained. (14-N:L805 | 14-N-SUMMARY_INDEX.discovery.md:L805)
+- (SUMMARY/REJ-003) [E] Rejected as new work: gaps P3-P5 because already planned deeper. (14-N:L806 | 14-N-SUMMARY_INDEX.discovery.md:L806)
+- (SUMMARY/REJ-004) [E] Rejected as a build unit: Ford checklist. (14-N:L807 | 14-N-SUMMARY_INDEX.discovery.md:L807)
+- (SUMMARY/REJ-005) [E] Already recorded: prefix-KV S1-1 via J-95/H-50. (14-N:L808 | 14-N-SUMMARY_INDEX.discovery.md:L808)
+- (SUMMARY/REJ-006) [E] Folded into an existing N unit: zip-slip S1-2 into N-6. (14-N:L809 | 14-N-SUMMARY_INDEX.discovery.md:L809)
+- (SUMMARY/REJ-007) [E] Note/dossier only: ADR evidence-table S1-3; packaging S4-1/S3-4/S1-6; EvoPolicyGym bench S2-4. (14-N:L810 | 14-N-SUMMARY_INDEX.discovery.md:L810)
+- (SUMMARY/REJ-008) [E] Rejected from N-16: Dung argument-graph adjudicator. (14-N:L811 | 14-N-SUMMARY_INDEX.discovery.md:L811)
+- (SUMMARY/STATE-001) [E] I-51 `ModelCapabilityProfile` / `models.toml`: only calibration sink. (14-N:L680 | 14-N-SUMMARY_INDEX.discovery.md:L680)
+- (SUMMARY/STATE-002) [E] Corpus row + calibration curve + outcome-label fold: measurement output. (14-N:L681 | 14-N-SUMMARY_INDEX.discovery.md:L681)
+- (SUMMARY/STATE-003) [E] `Claim/Belief` object: unified statement/evidence carrier. (14-N:L682 | 14-N-SUMMARY_INDEX.discovery.md:L682)
+- (SUMMARY/STATE-004) [E] J-96 case graph: receipt cache keyed with C-30 discipline. (14-N:L683 | 14-N-SUMMARY_INDEX.discovery.md:L683)
+- (SUMMARY/STATE-005) [E] Composite `RouteDecision`: fired routers, winner, precedence rank. (14-N:L684 | 14-N-SUMMARY_INDEX.discovery.md:L684)
+- (SUMMARY/STATE-006) [E] Semantic trust lattice mapping table: maps six intentionally distinct trust scales. (14-N:L685 | 14-N-SUMMARY_INDEX.discovery.md:L685)
+- (SUMMARY/STATE-007) [E] Admission scanner registry: shared ingress scanner family. (14-N:L686 | 14-N-SUMMARY_INDEX.discovery.md:L686)
+- (SUMMARY/STATE-009) [E] Governance substrate: five original views plus N-16’s three extension views. (14-N:L688 | 14-N-SUMMARY_INDEX.discovery.md:L688)
+- (SUMMARY/STATE-010) [E] Counterfactual target Kind: role/verifier/ranker/rule/memory/case. (14-N:L689 | 14-N-SUMMARY_INDEX.discovery.md:L689)
+- (SUMMARY/STATE-011) [E] Joined `AmbiguityScore` + `NoveltyScore` rows. (14-N:L690 | 14-N-SUMMARY_INDEX.discovery.md:L690)
+- (SUMMARY/STATE-012) [E] H-49 CAS/undo-tree log plus per-surface fold functions. (14-N:L691 | 14-N-SUMMARY_INDEX.discovery.md:L691)
+- (SUMMARY/STATE-015) [E] `EditKind` with `SynthesisEdit` and `ParametricEdit`. (14-N:L694 | 14-N-SUMMARY_INDEX.discovery.md:L694)
+- (SUMMARY/STATE-016) [E] SSB verdict evaluator identity/version and advisory re-audit queue. (14-N:L695 | 14-N-SUMMARY_INDEX.discovery.md:L695)
+- (SUMMARY/WF1-001) [E] J-56/E-54/L-20 and the named feeders provide evaluation material to N-1. (14-N:L589 | 14-N-SUMMARY_INDEX.discovery.md:L589)
+- (SUMMARY/WF1-003) [E] The run appends a corpus row, updates the one I-51 `ModelCapabilityProfile`, and supplies outcome labels. (14-N:L591 | 14-N-SUMMARY_INDEX.discovery.md:L591)
+- (SUMMARY/WF1-004) [E] Local calibration hard-supersedes matching BOOTSTRAP defaults and records the supersession. (14-N:L592 | 14-N-SUMMARY_INDEX.discovery.md:L592)
+- (SUMMARY/WF1-005) [E] N-3 reads the outcome labels and trial ledger to deflate promotion results and apply reusable-holdout budgets. (14-N:L593 | 14-N-SUMMARY_INDEX.discovery.md:L593)
+- (SUMMARY/WF1-006) [E] N-9 uses the same outcomes for drop-one/inject-one counterfactual scoring. (14-N:L594 | 14-N-SUMMARY_INDEX.discovery.md:L594)
+- (SUMMARY/WF1-007) [E] N-13 writes per-type/backend invalid rates into the same spine. (14-N:L595 | 14-N-SUMMARY_INDEX.discovery.md:L595)
+- (SUMMARY/WF1-008) [E] N-14 supplies edit kind and improvement timing; N-15 supplies framing/adoption measurements; N-16 supplies governance measurements. (14-N:L596 | 14-N-SUMMARY_INDEX.discovery.md:L596)
+- (SUMMARY/WF2-001) [E] Plan authors encode map edges in ND-3 data form. (14-N:L602 | 14-N-SUMMARY_INDEX.discovery.md:L602)
+- (SUMMARY/WF2-002) [E] N-2 joins map edges, plan units, and `elai.map` symbols. (14-N:L603 | 14-N-SUMMARY_INDEX.discovery.md:L603)
+- (SUMMARY/WF2-003) [E] It checks dangling consumption, orphan production, duplicate concepts, freshness, and extended type completeness. (14-N:L604 | 14-N-SUMMARY_INDEX.discovery.md:L604)
+- (SUMMARY/WF2-005) [E] It also enforces required render fields (N-7), output-boundary registry rows (N-13), and the no-second-implementation rule used by N-12/N-13. (14-N:L606 | 14-N-SUMMARY_INDEX.discovery.md:L606)
+- (SUMMARY/WF3-001) [E] **Explicit:** N-4 represents typed claims, beliefs, critical atoms, receipts, and grounding tags as one object. (14-N:L613 | 14-N-SUMMARY_INDEX.discovery.md:L613)
+- (SUMMARY/WF3-002) [E] **Explicit:** A repeated claim checks J-96 receipt cache identity; unchanged claims can reuse a receipt, changed claims are invalidated by F-5. (14-N:L614 | 14-N-SUMMARY_INDEX.discovery.md:L614)
+- (SUMMARY/WF3-003) [E] **Explicit:** N-6 maps trust semantics while the object travels ingest → memory → citation → oracle TTL → skill autonomy → cross-repo. (14-N:L615 | 14-N-SUMMARY_INDEX.discovery.md:L615)
+- (SUMMARY/WF3-004) [I] **Inferred interaction:** A machine-generated ClaimSet likely crosses N-13’s `OutputBoundary` before N-4/J-83 uses it, because ClaimSet is a named boundary type, but the summary does not state the exact temporal order. (14-N:L616 | 14-N-SUMMARY_INDEX.discovery.md:L616)
+- (SUMMARY/WF4-001) [E] N-10 joins ambiguity and novelty and sends the shared score to research depth, reasoning effort, node sizing, and clarification. (14-N:L623 | 14-N-SUMMARY_INDEX.discovery.md:L623)
+- (SUMMARY/WF4-002) [E] N-14 adds synthesis-versus-tuning task demand as another policy/intensity axis. (14-N:L624 | 14-N-SUMMARY_INDEX.discovery.md:L624)
+- (SUMMARY/WF4-003) [E] Existing routers and intensity deciders fire independently. (14-N:L625 | 14-N-SUMMARY_INDEX.discovery.md:L625)
+- (SUMMARY/WF4-004) [E] N-5 resolves conflict by frozen precedence and emits one explained `RouteDecision`. (14-N:L626 | 14-N-SUMMARY_INDEX.discovery.md:L626)
+- (SUMMARY/WF4-005) [E] N-16 can activate a retrieval/escalation brake when exogenous grounding falls below its floor; it cannot create a pass. (14-N:L627 | 14-N-SUMMARY_INDEX.discovery.md:L627)
+- (SUMMARY/WF5-003) [E] Governance coverage reports liveness, enforcer coverage, debt rate, traceability, and mutation kill performance. (14-N:L635 | 14-N-SUMMARY_INDEX.discovery.md:L635)
+- (SUMMARY/WF5-004) [E] Each verdict also records evaluator identity/version. (14-N:L636 | 14-N-SUMMARY_INDEX.discovery.md:L636)
+- (SUMMARY/WF5-005) [E] An evaluator refutation invokes F-5 to quarantine exactly its verdicts into advisory re-audit without deletion. (14-N:L637 | 14-N-SUMMARY_INDEX.discovery.md:L637)
+- (SUMMARY/WF5-007) [E] These closure metrics are advisory/braking signals, never pass signals. (14-N:L639 | 14-N-SUMMARY_INDEX.discovery.md:L639)
+- (SUMMARY/WF6-001) [E] H-49 CAS/undo-tree is declared the one log representation. (14-N:L645 | 14-N-SUMMARY_INDEX.discovery.md:L645)
+- (SUMMARY/WF6-002) [E] L-16’s pure fold core accepts surface-specific fold functions as data/plugins. (14-N:L646 | 14-N-SUMMARY_INDEX.discovery.md:L646)
+- (SUMMARY/WF6-004) [E] One Kani proof covers the shared fold machinery. (14-N:L648 | 14-N-SUMMARY_INDEX.discovery.md:L648)
+- (SUMMARY/WF6-005) [E] Pinned-seed conformance requires byte-identical rederivation. (14-N:L649 | 14-N-SUMMARY_INDEX.discovery.md:L649)
+- (SUMMARY/WF6-006) [E] ND-2 retirement ends `recover_stubs` and removes ad-hoc derivation paths. (14-N:L650 | 14-N-SUMMARY_INDEX.discovery.md:L650)
+- [deferred] (SUMMARY/CFG-007) [E] Exact config syntax/default values are deferred to detail plans. (14-N:L705 | 14-N-SUMMARY_INDEX.discovery.md:L705)
+- [deferred] (SUMMARY/REJ-009) [E] Deferred to detail/original plans: all thresholds, schemas, exact mappings, migration mechanics, formulae, and unresolved ambiguities listed per unit. (14-N:L812 | 14-N-SUMMARY_INDEX.discovery.md:L812)
+- [interaction] (N-001/IX-009) Production reachability invariant R7 is repeated per unit: CLI bench (N-1), real SHADOW->ACTIVE (N-3), live J-83 gate (N-4), live ablation (N-9), live fold re-derive (N-11), multi-call-site survivi... (DEEP-N-001:L393)
+- [interaction] (N-001/IX-010) User-facing surfaces in this chunk: MeasurementPanel or G-5 (N-1); deflation column on promotion drawers (N-3); memo-hit on belief/claim drawer (N-4); attribution drawers reuse (N-9); canvas altitu... (DEEP-N-001:L394)
+- [interaction] (N-002/IX-004) N-8 is the five-view governance substrate; N-16 EXTENDS it with S4/S6/S7 views rather than forking a new framework; N-15 feeds framing-stability into N-8's governance number; N-2 is named as a sixt... (DEEP-N-002:L425)
+- [interaction] (N-002/IX-011) Authoring-time surfaces: N-2 CLI composition check + N-8/N-16 governance-coverage checker; runtime/bench surfaces: N-15 `elai bench sycophancy`, N-5 task_runner arbitration, N-13 emission seams, N-... (DEEP-N-002:L432)
+- [interaction] (N-002/IX-012) UI composition on shared tiles: N-8 governance tile on G-5/M-3 receives N-16 lambda gauge / quarantine count / ritual-entropy band and N-15 framing-stability input; N-5/N-6/N-7/N-13 add canvas/RRA/... (DEEP-N-002:L433)
+- [ambiguity] (SUMMARY/N1-A01) [A] The “~30 features across 6 letters” are not individually listed in the summary (`L24-L25`). (14-N:L75 | 14-N-SUMMARY_INDEX.discovery.md:L75)
+- [ambiguity] (SUMMARY/N1-A02) [A] The six promotion loops generalized by J-93-F are not enumerated as a closed set (`L30-L31`). (14-N:L76 | 14-N-SUMMARY_INDEX.discovery.md:L76)
+- [ambiguity] (SUMMARY/N1-A03) [A] OQ threshold ownership is not identified by unit in this section (`L32`). (14-N:L77 | 14-N-SUMMARY_INDEX.discovery.md:L77)
+- [ambiguity] (SUMMARY/N1-A04) [A/SURFACE] Whether the `MeasurementPanel` is mandatory depends on G-5 coverage (`L38-L39`). (14-N:L78 | 14-N-SUMMARY_INDEX.discovery.md:L78)
+- [ambiguity] (SUMMARY/N10-A01) [A] Score ranges, normalization/join rule, cutoffs, exact budget increments, and the relationship between “off-map” and `NoveltyScore` are unspecified. (14-N:L323 | 14-N-SUMMARY_INDEX.discovery.md:L323)
+- [ambiguity] (SUMMARY/N10-A02) [A] “more clarify” is explicit but whether it means stronger offer, mandatory query, or repeated grill is not stated. (14-N:L324 | 14-N-SUMMARY_INDEX.discovery.md:L324)
+- [ambiguity] (SUMMARY/N11-A01) [A/SURFACE] The summary calls these “five OTHER surfaces”; canvas altitude is one surface with four contributing unit IDs, which should be confirmed in detail. (14-N:L349 | 14-N-SUMMARY_INDEX.discovery.md:L349)
+- [ambiguity] (SUMMARY/N11-A02) [A] Plugin schema, budgets/policies per surface, proof property, retirement timing, and recovery migration are absent. (14-N:L350 | 14-N-SUMMARY_INDEX.discovery.md:L350)
+- [ambiguity] (SUMMARY/N12-A01) [A] The source says “eight independent same-concern collapses” but labels only seven, (a) through (g). There are eight W findings because (a) combines W-8 and W-26; whether a sub-slice is missing is unresolved (`L229-L241`). (14-N:L409 | 14-N-SUMMARY_INDEX.discovery.md:L409)
+- [ambiguity] (SUMMARY/N12-A02) [A] “First-in-flow” canonical owners, migration/deletion lists, enum mappings, and adapter boundaries are not enumerated. (14-N:L410 | 14-N-SUMMARY_INDEX.discovery.md:L410)
+- [ambiguity] (SUMMARY/N12-A03) [A] Failure taxonomy category reconciliation and whether `StagnationPattern` remains a policy-specific sub-type are not stated. (14-N:L411 | 14-N-SUMMARY_INDEX.discovery.md:L411)
+- [ambiguity] (SUMMARY/N12-A04) [A] LSP pool process isolation, language/workspace key, lifetime, crash recovery, and resource limits are absent. (14-N:L412 | 14-N-SUMMARY_INDEX.discovery.md:L412)
+- [ambiguity] (SUMMARY/N13-A01) [A] The source says machinery exists in “>=8 places” but enumerates nine unit references; this is not contradictory but the machine count is intentionally non-exact (`L266-L268`). (14-N:L461 | 14-N-SUMMARY_INDEX.discovery.md:L461)
+- [ambiguity] (SUMMARY/N13-A02) [A] Four emission seams are claimed but only three example output classes (tool directive, ClaimSet, decision card) are named (`L275-L278`). (14-N:L462 | 14-N-SUMMARY_INDEX.discovery.md:L462)
+- [ambiguity] (SUMMARY/N13-A03) [A] Registry storage format, schema language, retry budgets, invalid-rate window, strict-provider capability detection, and exact refusal payload are unspecified. (14-N:L463 | 14-N-SUMMARY_INDEX.discovery.md:L463)
+- [ambiguity] (SUMMARY/N13-A04) [A] “reject-never-repair” and a registry `repair policy` coexist; the permitted distinction requires detail-file clarification (`L264-L272`). (14-N:L464 | 14-N-SUMMARY_INDEX.discovery.md:L464)
+- [ambiguity] (SUMMARY/N14-A01) [A] Supported languages, tree-sitter fallback for parse errors, topology representation, score-bearing-attempt schema, churn window, and persona-switch threshold are unspecified. (14-N:L501 | 14-N-SUMMARY_INDEX.discovery.md:L501)
+- [ambiguity] (SUMMARY/N14-A02) [A] “Hidden” storage/access controls and held-out budget integration with H-19 need detail. (14-N:L502 | 14-N-SUMMARY_INDEX.discovery.md:L502)
+- [ambiguity] (SUMMARY/N14-C01) [C] The source reports external paper observations that leaders convert synthesis edits 41-48%, while weak models churn structure 3-10% yet score 25-38% on tuning; the n=1 caveat means these numbers are not promoted into hard ELAI thresholds (`L283-L288`). (14-N:L497 | 14-N-SUMMARY_INDEX.discovery.md:L497)
+- [ambiguity] (SUMMARY/N15-A01) [A] Sample count N, permutation scheme, verdict-equivalence definition, stability threshold, weight scope beyond “for the run,” and false-positive bound are unspecified. (14-N:L533 | 14-N-SUMMARY_INDEX.discovery.md:L533)
+- [ambiguity] (SUMMARY/N15-A02) [A] The exact HBR source is not named in the summary. (14-N:L534 | 14-N-SUMMARY_INDEX.discovery.md:L534)
+- [ambiguity] (SUMMARY/N16-A01) [A] Window length, lambda numerator/denominator edge cases, floor, brake duration, re-audit release criteria, evaluator identity migration, and entropy formula are unspecified. (14-N:L579 | 14-N-SUMMARY_INDEX.discovery.md:L579)
+- [ambiguity] (SUMMARY/N16-A02) [A] “frozen-tool bugfix” event registration and version-hash algorithm are unspecified. (14-N:L580 | 14-N-SUMMARY_INDEX.discovery.md:L580)
+- [ambiguity] (SUMMARY/N16-A03) [A] “PLAN-asserted, re-grep W-7” explicitly lowers confidence in the local anchor verification even though the steal’s grounding is labeled STRONG (`L327-L328`). (14-N:L581 | 14-N-SUMMARY_INDEX.discovery.md:L581)
+- [ambiguity] (SUMMARY/N2-A01) [A] “orphan producer (a unit with >=1 consumer in NO letter)” is grammatically ambiguous; likely it means a producer with no consumer in any letter, but that interpretation is not promoted to explicit fact here (`L51-L52`). (14-N:L108 | 14-N-SUMMARY_INDEX.discovery.md:L108)
+- [ambiguity] (SUMMARY/N2-A02) [A] Similarity thresholds, collision adjudication, edge schema, output filenames, and SSB payload fields are not specified in the summary. (14-N:L109 | 14-N-SUMMARY_INDEX.discovery.md:L109)
+- [ambiguity] (SUMMARY/N2-A03) [A] J’s documented drift stops at J-91, but the exact repair/migration behavior is not stated (`L48-L49`). (14-N:L110 | 14-N-SUMMARY_INDEX.discovery.md:L110)
+- [ambiguity] (SUMMARY/N3-A01) [A] The N threshold, privacy accounting parameters, and what constitutes each `candidate-family` are not stated. (14-N:L137 | 14-N-SUMMARY_INDEX.discovery.md:L137)
+- [ambiguity] (SUMMARY/N3-A02) [A] H-47 partially reuses H-19, but required migration of that partial path is not specified (`L72-L73`). (14-N:L138 | 14-N-SUMMARY_INDEX.discovery.md:L138)
+- [ambiguity] (SUMMARY/N4-A01) [A] The final unified schema and exact mapping for `abstain` and DKG provenance are not fully enumerated. (14-N:L166 | 14-N-SUMMARY_INDEX.discovery.md:L166)
+- [ambiguity] (SUMMARY/N4-A02) [A] Claim identity composition, cache TTL/eviction, checker eligibility, and “cheap” revalidation cost bounds are unspecified. (14-N:L167 | 14-N-SUMMARY_INDEX.discovery.md:L167)
+- [ambiguity] (SUMMARY/N5-A01) [A] The source calls out E-39 in a conflict although E-39 is not in the stated ten-router list (`L107-L110`). (14-N:L193 | 14-N-SUMMARY_INDEX.discovery.md:L193)
+- [ambiguity] (SUMMARY/N5-A02) [A] Tie-breaking within a precedence tier, policy-versioning, and how task difficulty is measured are not specified. (14-N:L194 | 14-N-SUMMARY_INDEX.discovery.md:L194)
+- [ambiguity] (SUMMARY/N5-A03) [A] The declared intensity resolver tuple omits edit-format in its parenthesized axes even though B-28 is explicitly incorporated (`L113-L115`). (14-N:L195 | 14-N-SUMMARY_INDEX.discovery.md:L195)
+- [ambiguity] (SUMMARY/N6-A01) [A] The premise says “five provenance scales,” while N-6 enumerates six (`L14,L127-L130`). (14-N:L222 | 14-N-SUMMARY_INDEX.discovery.md:L222)
+- [ambiguity] (SUMMARY/N6-A02) [A] Exact lattice ordering/mapping cells, treatment of incomparable meanings, and whether K-23/M-2 are gates or only surfaces require detail. (14-N:L223 | 14-N-SUMMARY_INDEX.discovery.md:L223)
+- [ambiguity] (SUMMARY/N6-A03) [A] The summary says “three admission gates” while naming F-1, J-102, J-109 plus K-23/M-2 surfaces (`L133-L136`). (14-N:L224 | 14-N-SUMMARY_INDEX.discovery.md:L224)
+- [ambiguity] (SUMMARY/N7-A01) [A/SURFACE] The mapping from each existing verdict class to exactly one or multiple render targets is not enumerated. (14-N:L247 | 14-N-SUMMARY_INDEX.discovery.md:L247)
+- [ambiguity] (SUMMARY/N7-A02) [A] Accessibility, localization, acknowledgement semantics, and delivery-failure behavior are absent. (14-N:L248 | 14-N-SUMMARY_INDEX.discovery.md:L248)
+- [ambiguity] (SUMMARY/N8-A01) [A] The five `Kind` enum names and formula for the composite marketable number are not provided. (14-N:L271 | 14-N-SUMMARY_INDEX.discovery.md:L271)
+- [ambiguity] (SUMMARY/N8-A02) [A] Required kill-rate threshold and quarter/window definition are unspecified. (14-N:L272 | 14-N-SUMMARY_INDEX.discovery.md:L272)
+- [ambiguity] (SUMMARY/N9-A01) [A] Replay isolation, seed control, delta metric, injected-factor semantics, and allowable side effects are not stated. (14-N:L297 | 14-N-SUMMARY_INDEX.discovery.md:L297)
+- [ambiguity] (SUMMARY/N9-A02) [A] The target enum lists six targets but the eight source adapters are not mapped one-to-one in the summary. (14-N:L298 | 14-N-SUMMARY_INDEX.discovery.md:L298)
+- [inference] (SUMMARY/N-I01) [I] N-1 is the likely foundation for every “ELAI-measured” N threshold even when metadata does not list `depends N-1`; this is explicit for N-13..N-16 consumption but not a formal dependency for every earlier unit. (14-N:L816 | 14-N-SUMMARY_INDEX.discovery.md:L816)
+- [inference] (SUMMARY/N-I02) [I] N-2 likely becomes the enforcement mechanism for N-7, N-12, and N-13 authoring invariants; those ties are explicit, but whether it enforces every other N canonicality rule is only implied by the global anti-fork doctrine. (14-N:L817 | 14-N-SUMMARY_INDEX.discovery.md:L817)
+- [inference] (SUMMARY/N-I03) [I] N-4’s unified Claim/Belief object, N-6’s provenance carrier, N-13’s ClaimSet boundary, and N-7’s render substrate likely form a single end-to-end object lifecycle; individual pairwise roles are explicit, exact execution order is not. (14-N:L818 | 14-N-SUMMARY_INDEX.discovery.md:L818)
+- [inference] (SUMMARY/N-I04) [I] N-8 plus N-16 yields eight governance views (five + three); the summary calls N-16 an extension over the same question but never names a formal eight-view schema. (14-N:L819 | 14-N-SUMMARY_INDEX.discovery.md:L819)
+- [inference] (SUMMARY/N-I05) [I/SURFACE] N-11’s shared journal folds likely supply N-8/N-16 governance tiles and other N observability, but only the explicitly named five surface folds are requirements. (14-N:L820 | 14-N-SUMMARY_INDEX.discovery.md:L820)
+- [inference] (SUMMARY/N-I06) [I] N-12’s learned-artifact admission sub-slice likely uses N-6’s unified admission registry because both name J-109; the summary does not explicitly wire N-12(d) to N-6. (14-N:L821 | 14-N-SUMMARY_INDEX.discovery.md:L821)
+
+### User-facing surfaces (N)
+
+Windows, panels, drawers, commands, CLI verbs, flags, status displays, notifications, published commercial/docs surfaces, and other SURFACE-tagged atoms. One line per atom with ID.
+
+#### Surfaces for N-0 (N-Plan Index (doctrine, ND-deltas, session table, schema, sequencing))
+- W-3: reachable from a REAL production entrypoint (CLI / FSM transition / Pre/PostToolUse hook / Tauri command); a `#[cfg(test)]`-only caller is wire-dark. (`N-001/N0-E015`) [N-0:L70-L71 | ledger-line: DEEP-N-001.discovery.md:L48]
+- W-4: frontend_pair mandatory for any dashboard-surfaceable SSB signal; `cross_lang_diff.py` PASS. (`N-001/N0-E016`) [N-0:L72-L72 | ledger-line: DEEP-N-001.discovery.md:L49]
+- W-6: >=1 ACCEPTANCE item verified THROUGH the dashboard (dashboard-smoker), or N/A with one-line justification. (`N-001/N0-E018`) [N-0:L74-L74 | ledger-line: DEEP-N-001.discovery.md:L51]
+- DONE requires all eight: (1) cargo check --workspace GREEN, (2) auditor PASS (sole test runner), (3) wiring_contract_check.py --run-trigger PASS, (4) cross_lang_diff PASS if frontend_pair present, (5) W-6 dashboard E2E item, (6) GD-4 FP-rate bound for any default-ON gate, (7) ND-2 retirement map present + user-confirmed when superseding a live path, (8) memory-writer ran. (`N-001/N0-E033`) [N-0:L118-L122 | ledger-line: DEEP-N-001.discovery.md:L66]
+- N-7 adds `+verdict_rendered` Pattern-2 Kind PrComment / ChatAck / CanvasBadge / BriefRow / OrgRollup; baseline+1. (`N-001/N0-E058`) [N-0:L274-L274 | ledger-line: DEEP-N-001.discovery.md:L91]
+- Session log empty at generation; each shipped N-N adds row: context-compiler -> integration-explorer -> spec-grounder -> executor -> auditor -> fixer (if BLOCKs) -> wiring-contract-validator (RUN_TRIGGER PASS REQUIRED) -> dashboard-smoker (if frontend_pair) -> memory-writer -> COMMITTING. (`N-001/N0-E089`) [N-0:L360-L364 | ledger-line: DEEP-N-001.discovery.md:L122]
+- N-7 render targets: PR comment / chat ACK line / canvas badge / brief row / M-3 org rollup; ONE render substrate, many verdict producers (generalizes K-11). (`N-001/N0-E095`) [N-0:L175-L178 | ledger-line: DEEP-N-001.discovery.md:L128]
+
+#### Surfaces for N-1 (measurement spine as ONE subsystem [KEYSTONE][BLOCKING])
+- CLI: `elai bench *` seams as the real production trigger. (`N-001/N1-E019`) [N-1:L24-L24, L38-L39, L47-L47 | ledger-line: DEEP-N-001.discovery.md:L166]
+- frontend_pair: MeasurementPanel tile fed by the spine index, OR N/A justified if G-5 cockpit already surfaces the profile (confirm at authoring). (`N-001/N1-E020`) [N-1:L25-L25, L45-L45 | ledger-line: DEEP-N-001.discovery.md:L167]
+- reachable_from: CLI `elai bench <family>` -> runner -> corpus row + profile curve write; `#[cfg(test)]` NEVER satisfies R7. (`N-001/N1-E025`) [N-1:L38-L40 | ledger-line: DEEP-N-001.discovery.md:L172]
+- MeasurementPanel vs G-5 N/A is deferred to authoring confirmation without a decision criterion. (`N-001/N1-A003`) [N-1:L25-L25, L45-L45 | ledger-line: DEEP-N-001.discovery.md:L181]
+
+#### Surfaces for N-2 (corpus-grain composition validator + M-1 one-registry rule)
+- Build `corpus_composition_check.py` as sibling of `wiring_contract_check.py`, parsing feature-map edges as DATA in ND-3 row format and joining them against plan files + `elai.map` symbols. (`N-002/N2-E004`) [N-2:L8-L8, L26-L26, L30-L32 | ledger-line: DEEP-N-002.discovery.md:L40]
+- frontend_pair: N/A — authoring-time CI gate, not a runtime surface; justified. (`N-002/N2-E021`) [N-2:L27-L27, L44-L44 | ledger-line: DEEP-N-002.discovery.md:L57]
+- produces_symbols: `.claude/tools/corpus_composition_check.py` (three FAIL checks + unlock-DAG + freshness) and the ND-3 edge-row format. (`N-002/N2-E022`) [N-2:L30-L32 | ledger-line: DEEP-N-002.discovery.md:L58]
+- CLI/command surface: `python .claude/tools/corpus_composition_check.py --map docs/thefinalglance/ELAI-FEATURE-MAP.md`. (`N-002/N2-E026`) [N-2:L46-L46 | ledger-line: DEEP-N-002.discovery.md:L62]
+
+#### Surfaces for N-3 (generalized anti-selection-bias promotion primitives)
+- frontend_pair: a deflation column on the existing promotion drawers, OR N/A justified. (`N-001/N3-E017`) [N-3:L27-L27, L44-L44 | ledger-line: DEEP-N-001.discovery.md:L208]
+
+#### Surfaces for N-4 (one Claim/Belief object + receipt memo)
+- frontend_pair: existing belief/claim drawer gains a memo-hit indicator, OR N/A justified. (`N-001/N4-E021`) [N-4:L25-L25, L42-L42 | ledger-line: DEEP-N-001.discovery.md:L250]
+
+#### Surfaces for N-5 (policy / intensity arbitration plane)
+- frontend_pair: a RouteDecision explain-row on the canvas/RRA (W-7/N-7 render consumer). (`N-002/N5-E017`) [N-5:L25-L25, L42-L42 | ledger-line: DEEP-N-002.discovery.md:L96]
+
+#### Surfaces for N-6 (provenance / trust lattice + admission-gate family)
+- frontend_pair: a provenance badge on cited/memory surfaces (W-7/N-7 render consumer), OR N/A justified. (`N-002/N6-E014`) [N-6:L24-L24, L41-L41 | ledger-line: DEEP-N-002.discovery.md:L132]
+
+#### Surfaces for N-7 (human render as a REQUIRED verdict field)
+- Every verdict class declares its K-11-style render target: PR comment / chat ACK line / canvas badge / brief row / M-3 org rollup. (`N-002/N7-E004`) [N-7:L8-L8, L27-L27 | ledger-line: DEEP-N-002.discovery.md:L157]
+- EXCLUDED: re-authoring K-11 per surface; a new dashboard framework (compose existing Svelte dashboard-v2 + K-7 brief + M-3 rollup); inventing a verdict (N-7 renders existing verdicts). (`N-002/N7-E008`) [N-7:L10-L10, L36-L38 | ledger-line: DEEP-N-002.discovery.md:L161]
+- PLAN-asserted: K-11 PR-evidence render, K-7 buyer brief, G-5 reviewer cockpit, M-3 fleet rollup, canvas altitudes exist; KD-2 + K-20 wedge concede distribution gap. (`N-002/N7-E009`) [N-7:L12-L13 | ledger-line: DEEP-N-002.discovery.md:L162]
+- Verdicts emit as SSB rows + RRA bundles today; only K-11 humanizes them, PR-only. dashboard-v2 (Svelte 5 + Tauri v2) is the frontend; drawers are the current render surface. (`N-002/N7-E010`) [N-7:L14-L15 | ledger-line: DEEP-N-002.discovery.md:L163]
+- DEFER (Tier-2): M-3 org-rollup render + full canvas-badge coverage (land as org/canvas units mature). (`N-002/N7-E012`) [N-7:L19-L19 | ledger-line: DEEP-N-002.discovery.md:L165]
+- Integration: `crates/orchestrator` verdict emission + render substrate; dashboard-v2 + K-11/K-7 as render targets. (`N-002/N7-E013`) [N-7:L21-L22 | ledger-line: DEEP-N-002.discovery.md:L166]
+- frontend_pair: MANDATORY — this IS the frontend unit; `cross_lang_diff` over the Tauri command + Svelte render targets must PASS. (`N-002/N7-E014`) [N-7:L23-L23, L39-L39 | ledger-line: DEEP-N-002.discovery.md:L167]
+- produces_symbols: render substrate (dispatcher + target adapters PR/chat/canvas/brief/rollup) + `render_field` as required WIRING_CONTRACT field enforced by N-2. (`N-002/N7-E015`) [N-7:L26-L28 | ledger-line: DEEP-N-002.discovery.md:L168]
+- reachable_from: live verdict-emitting gate -> render at declared target [PRODUCTION]; dashboard/Tauri render path [PRODUCTION frontend]. (`N-002/N7-E016`) [N-7:L32-L34 | ledger-line: DEEP-N-002.discovery.md:L169]
+- expect_ssb: `+verdict_rendered(PrComment\ (`N-002/N7-E018`) [ChatAck\ | ledger-line: DEEP-N-002.discovery.md:L171]
+- expect_artifact: human-readable render lands at declared target (visible in dashboard-smoker); NEGATIVE: new verdict class with no declared render fails N-2 authoring check. (`N-002/N7-E019`) [N-7:L43-L43 | ledger-line: DEEP-N-002.discovery.md:L172]
+- Grounding: W-7, TIER-2 item 7, KD-2/K-20; dashboardRules.md + visual-ui-loop.md; K-11 as existing render template. (`N-002/N7-E020`) [N-7:L45-L47 | ledger-line: DEEP-N-002.discovery.md:L173]
+- COMPOSES-WITH K-11, K-7, G-5, M-3, dashboard-v2, the verdict producers; re-implements NONE (GD-1). (`N-002/N7-E021`) [N-7:L49-L50 | ledger-line: DEEP-N-002.discovery.md:L174]
+- Mapping from each existing verdict class to one or multiple render targets is not enumerated beyond the Tier-1 2-3 family list. (`N-002/N7-A001`) [N-7:L9-L9, L18-L18 | ledger-line: DEEP-N-002.discovery.md:L175]
+- Full canvas-badge coverage and M-3 rollup render timing relative to org/canvas unit maturity is open. (`N-002/N7-A003`) [N-7:L19-L19 | ledger-line: DEEP-N-002.discovery.md:L177]
+
+#### Surfaces for N-8 (governance-coverage substrate)
+- frontend_pair: a governance tile (the marketable number) on G-5/M-3. (`N-002/N8-E017`) [N-8:L30-L30, L46-L46 | ledger-line: DEEP-N-002.discovery.md:L203]
+- CLI/command surface: `python <the governance-coverage checker> over the rulebook + gate-manifest`. (`N-002/N8-E021`) [N-8:L48-L48 | ledger-line: DEEP-N-002.discovery.md:L207]
+
+#### Surfaces for N-9 (one counterfactual / ablation engine)
+- frontend_pair: reuse existing attribution drawers, OR N/A justified. (`N-001/N9-E013`) [N-9:L25-L25, L41-L41 | ledger-line: DEEP-N-001.discovery.md:L285]
+
+#### Surfaces for N-10 (clarity / novelty → budget wires)
+- High-ambiguity OR off-map task -> deeper research + more clarify + smaller node bound + earlier escalation, not just a chip. Ambiguity = "we don't understand the ask"; novelty = "the ask is off our map" — both buy depth. (`N-002/N10-E006`) [N-10:L11-L11 | ledger-line: DEEP-N-002.discovery.md:L230]
+- frontend_pair: N/A (internal resource allocation), unless the depth choice is surfaced on the canvas; justified. (`N-002/N10-E013`) [N-10:L26-L26, L42-L42 | ledger-line: DEEP-N-002.discovery.md:L237]
+
+#### Surfaces for N-11 (journal-fold substrate)
+- Five surfaces: canvas altitudes (J-31/J-60/J-98/K-23), I-39 plan status, K-24 billing balance, M-3 fleet rollup, K-22 coverage. (`N-001/N11-E004`) [N-11:L8-L8, L14-L14 | ledger-line: DEEP-N-001.discovery.md:L310]
+- Canvas altitudes "re-derive byte-identically from the journal"; I-39/K-24/M-3/K-22 each recomputable from journals. (`N-001/N11-E011`) [N-11:L14-L14 | ledger-line: DEEP-N-001.discovery.md:L317]
+- Tier-1 SHIP NOW: fold core adopted by 2-3 of five surfaces (canvas + I-39 status) + J-68 Kani proof on core + recover_stubs/H-49 retirement map (user-confirmed). (`N-001/N11-E014`) [N-11:L19-L19 | ledger-line: DEEP-N-001.discovery.md:L320]
+- Tier-2 DEFER: K-24 balance + M-3 rollup + K-22 coverage adopting the fold (land with those units). (`N-001/N11-E015`) [N-11:L20-L20 | ledger-line: DEEP-N-001.discovery.md:L321]
+- frontend_pair: canvas altitudes already consume folds — verify byte-identity, do not re-wire. (`N-001/N11-E017`) [N-11:L24-L24, L41-L41 | ledger-line: DEEP-N-001.discovery.md:L323]
+- "Canvas altitudes" is one surface fed by four unit IDs (J-31/J-60/J-98/K-23), counting as one of the five surfaces rather than four separate fold targets. (`N-001/N11-I001`) [N-11:L8-L8, L14-L14 | ledger-line: DEEP-N-001.discovery.md:L332]
+- "2-3 of the five surfaces" names canvas + I-39 but leaves the optional third Tier-1 surface unnamed. (`N-001/N11-A003`) [N-11:L19-L19 | ledger-line: DEEP-N-001.discovery.md:L335]
+
+#### Surfaces for N-12 (consistency + dedupe bundle)
+- frontend_pair: N/A for most; a FailureClass drawer if surfaced; justified per sub-slice. (`N-001/N12-E020`) [N-12:L27-L27, L45-L45 | ledger-line: DEEP-N-001.discovery.md:L364]
+
+#### Surfaces for N-13 (OutputBoundary + structured-output capability matrix)
+- Unified machines (parameterized, never re-implemented): C-26 DecodingMode + per-role defaults + retries; E-35 XGrammar + INSTRUCTOR; I-34 CRANE + grammar pinning + post-parse re-validation + D-16 routing; J-53 tool-input repair; J-51 adherence floor; H-13 canvas per-mode grammars + sanitizeAction; B-24 VLM constrained JSON; L-1 typed ClaimSet; I-33 CEFL decision schemas. (`N-002/N13-E003`) [N-13:L5-L5, L16-L16, L40-L40 | ledger-line: DEEP-N-002.discovery.md:L260]
+- Registry keyed by machine-actionable output TYPE: ToolDirective, ClaimSet, PlanSkeleton/BabyStepSpec intake, AuditFinding, MemoryCandidate, canvas ops, VLM verdicts, decision cards. (`N-002/N13-E008`) [N-13:L13-L13 | ledger-line: DEEP-N-002.discovery.md:L265]
+- frontend_pair: a boundary-verdict badge on existing claim/decision/tool drawers reading `+output_boundary_verdict` (`cross_lang_diff` PASS), OR N/A justified if G-5 cockpit already surfaces the invalid-rate tile. (`N-002/N13-E022`) [N-13:L53-L54 | ledger-line: DEEP-N-002.discovery.md:L279]
+
+#### Surfaces for N-14 (self-improvement edit-loop instruments (EvoPolicyGym))
+- frontend_pair: an edit-kind chip on existing anti-spiral / search-receipt drawer, OR N/A justified (internal advisory) if no surface consumes it yet. (`N-002/N14-E020`) [N-14:L62-L63 | ledger-line: DEEP-N-002.discovery.md:L323]
+
+#### Surfaces for N-15 (anti-affirmation stability measurement)
+- N-15 STATUS PLANNED; WAVE 5-adjacent; Tier-3; nature BUILD/ACTIVATION — feeds D-23 sycophancy bench + N-1 spine; residue structural sycophancy defenses do not cover. (`N-002/N15-E001`) [N-15:L1-L3 | ledger-line: DEEP-N-002.discovery.md:L349]
+- (1) framing/order-invariance extended from decision-type calls (I-33) to ADVISORY panels: present shuffled option/section order across N advisory samples; flip under presentation-only permutation => log framing-unstable and zero weight for the run. (2) two new D-23 fixture classes: option-order inversion (HBR framing) + assertion-pull (Stanford "I think X"). (`N-002/N15-E002`) [N-15:L5-L5 | ledger-line: DEEP-N-002.discovery.md:L350]
+- Two-halves honesty (GD-5): inside a black-box model sycophancy cannot be annulled from the harness; at system boundary ELAI achieves structural irrelevance (TD-3; I-17 L1 hard-veto; K-16 RR-2; I-33 candidate set; H-31; D-14; E-4). Residue is advisory prose a human reads directly. (`N-002/N15-E007`) [N-15:L13-L13 | ledger-line: DEEP-N-002.discovery.md:L355]
+- Decision-grain framing defense I-33 covers DECISION-type calls, not advisory panels. I-24 pattern is applied to framing instead of style. Uncovered advisory lanes: B-41, J-45, L-11, I-41. (`N-002/N15-E008`) [N-15:L16-L18 | ledger-line: DEEP-N-002.discovery.md:L356]
+- Advisory framing-invariance check (~70 LOC): when advisory panel emits N samples, shuffle option/section order; if VERDICT flips, log framing-unstable and ZERO its weight for the run. GD-4: measure FP rate on >=3 real runs before default-ON. (`N-002/N15-E009`) [N-15:L28-L28, L52-L52 | ledger-line: DEEP-N-002.discovery.md:L357]
+- Route framing-instability rate + two fixture detection numbers through N-1 spine (ND-4); surface framing-stability number as N-8 governance-coverage view input ("advisories are framing-stable at rate X"). (`N-002/N15-E011`) [N-15:L30-L30 | ledger-line: DEEP-N-002.discovery.md:L359]
+- reachable_from: advisory-panel emission (B-41 / J-45) [PRODUCTION]; D-23 `elai bench sycophancy` runner seam [PRODUCTION]; tests NEVER satisfy R7. (`N-002/N15-E015`) [N-15:L44-L47 | ledger-line: DEEP-N-002.discovery.md:L363]
+- CLI/bench surface: `elai bench sycophancy` with the two new fixture classes. (`N-002/N15-E016`) [N-15:L47-L47, L58-L58 | ledger-line: DEEP-N-002.discovery.md:L364]
+- frontend_pair: framing-stability tile on G-5 cockpit / N-8 governance view reading `+framing_stability_measured`, OR N/A if sycophancy-bench tile already surfaces it. (`N-002/N15-E018`) [N-15:L54-L55 | ledger-line: DEEP-N-002.discovery.md:L366]
+- trigger: run advisory panel on presentation-order-sensitive input, seeded; then `elai bench sycophancy` with two fixture classes. (`N-002/N15-E019`) [N-15:L57-L58 | ledger-line: DEEP-N-002.discovery.md:L367]
+- Whether framing-instability should also emit a human-render note (N-7); default zero-weight + spine number, add render only if N-7 has shipped. (`N-002/N15-A003`) [N-15:L102-L102 | ledger-line: DEEP-N-002.discovery.md:L377]
+
+#### Surfaces for N-16 (governance closure (evaluator-refutation, lambda floor, adjudicator-ritual))
+- lambda below a floor forces retrieval/research/escalation (a BRAKE), and is NEVER a pass signal; detects STALLED/closed-loop dynamics, not wrong-but-stable consensus. One SSB-derived tile + one threshold; journal-recomputable. (`N-002/N16-E009`) [N-16:L12-L12, L35-L35 | ledger-line: DEEP-N-002.discovery.md:L396]
+- SHIP NOW (Tier-1, in-process): evaluator-id+version-hash field + S4 quarantine cascade; S6 lambda tile + floor + brake (advisory); S7 finding-class entropy + VERIFY-leg-ran rate. All observe-only (GD-4) until FP bound measured on >=3 runs. (`N-002/N16-E013`) [N-16:L24-L25 | ledger-line: DEEP-N-002.discovery.md:L400]
+- frontend_pair: three numbers on the N-8 / G-5 / M-3 governance tile — lambda gauge + quarantine-queue count + ritual-entropy band. (`N-002/N16-E016`) [N-16:L30-L30, L47-L47 | ledger-line: DEEP-N-002.discovery.md:L403]
+
+#### Surfaces for N-registers (cross-unit IX / SD / AC registers)
+- Production reachability invariant R7 is repeated per unit: CLI bench (N-1), real SHADOW->ACTIVE (N-3), live J-83 gate (N-4), live ablation (N-9), live fold re-derive (N-11), multi-call-site surviving impls (N-12). | evidence=N1-E025, N3-E020, N4-E024, N9-E016, N11-E020, N12-E023 (`N-001/IX-009`) [DEEP-N-001.discovery.md:L393]
+- User-facing surfaces in this chunk: MeasurementPanel or G-5 (N-1); deflation column on promotion drawers (N-3); memo-hit on belief/claim drawer (N-4); attribution drawers reuse (N-9); canvas altitude fold verification (N-11); optional FailureClass drawer (N-12); CLI `elai bench <family>` (N-1). | evidence=N1-E019–N1-E020, N3-E017, N4-E021, N9-E013, N11-E017, N12-E020 (`N-001/IX-010`) [DEEP-N-001.discovery.md:L394]
+- N-8 is the five-view governance substrate; N-16 EXTENDS it with S4/S6/S7 views rather than forking a new framework; N-15 feeds framing-stability into N-8's governance number; N-2 is named as a sixth grain of decorative-governance. | evidence=N8-E003–N8-E010; N16-E001, N16-E004; N15-E011 (`N-002/IX-004`) [DEEP-N-002.discovery.md:L425]
+- Authoring-time surfaces: N-2 CLI composition check + N-8/N-16 governance-coverage checker; runtime/bench surfaces: N-15 `elai bench sycophancy`, N-5 task_runner arbitration, N-13 emission seams, N-14 agent-loop join. | evidence=N2-E026; N8-E021; N16-E015; N15-E016; N5-E016; N13-E015; N14-E018 (`N-002/IX-011`) [DEEP-N-002.discovery.md:L432]
+- UI composition on shared tiles: N-8 governance tile on G-5/M-3 receives N-16 lambda gauge / quarantine count / ritual-entropy band and N-15 framing-stability input; N-5/N-6/N-7/N-13 add canvas/RRA/drawer badges. | evidence=N8-E017; N16-E016; N15-E018; N5-E017; N6-E014; N7-E014; N13-E022 (`N-002/IX-012`) [DEEP-N-002.discovery.md:L433]
+
+#### Surfaces for N-summary-wide (summary-wide workflow, invariants, surfaces catalog extras)
+- Expose the family through the existing CLI seam `elai bench <any-family>` / `elai bench *` (`L37-L40`). (`SUMMARY/N1-E17`) [14-N:L65 | 14-N-SUMMARY_INDEX.discovery.md:L65]
+- Provide a `MeasurementPanel` tile sourced from the spine index, unless G-5 already surfaces it and the N/A decision is justified (`L38-L39`). (`SUMMARY/N1-E22`) [14-N:L70 | 14-N-SUMMARY_INDEX.discovery.md:L70]
+- Whether the `MeasurementPanel` is mandatory depends on G-5 coverage (`L38-L39`). (`SUMMARY/N1-A04`) [14-N:L78 | 14-N-SUMMARY_INDEX.discovery.md:L78]
+- Add `.claude/tools/corpus_composition_check.py` beside `wiring_contract_check.py` (`L60-L61`). (`SUMMARY/N2-E15`) [14-N:L98 | 14-N-SUMMARY_INDEX.discovery.md:L98]
+- Invoke it as `python .claude/tools/corpus_composition_check.py --map ELAI-FEATURE-MAP.md` (`L63-L64`). (`SUMMARY/N2-E16`) [14-N:L99 | 14-N-SUMMARY_INDEX.discovery.md:L99]
+- No runtime frontend is required because this is an authoring-time CI surface (`L60-L62`). (`SUMMARY/N2-E21`) [14-N:L104 | 14-N-SUMMARY_INDEX.discovery.md:L104]
+- Add a deflation column to existing promotion drawers, or explicitly justify N/A (`L79-L80`). (`SUMMARY/N3-E16`) [14-N:L131 | 14-N-SUMMARY_INDEX.discovery.md:L131]
+- Add a memo-hit indicator to existing belief/claim drawers, or justify N/A (`L99-L100`). (`SUMMARY/N4-E15`) [14-N:L158 | 14-N-SUMMARY_INDEX.discovery.md:L158]
+- Render a `RouteDecision` explanation row on the canvas/RRA (`L119-L120`). (`SUMMARY/N5-E15`) [14-N:L187 | 14-N-SUMMARY_INDEX.discovery.md:L187]
+- Add a provenance badge on cited and memory surfaces, or justify N/A (`L138-L139`). (`SUMMARY/N6-E16`) [14-N:L216 | 14-N-SUMMARY_INDEX.discovery.md:L216]
+- Require each verdict class to declare its render target/form (`L150-L152`). (`SUMMARY/N7-E02`) [14-N:L231 | 14-N-SUMMARY_INDEX.discovery.md:L231]
+- Support PR comments as render targets (`L151-L152`). (`SUMMARY/N7-E03`) [14-N:L232 | 14-N-SUMMARY_INDEX.discovery.md:L232]
+- Support chat acknowledgment lines as render targets (`L151-L152`). (`SUMMARY/N7-E04`) [14-N:L233 | 14-N-SUMMARY_INDEX.discovery.md:L233]
+- Support canvas badges as render targets (`L151-L152`). (`SUMMARY/N7-E05`) [14-N:L234 | 14-N-SUMMARY_INDEX.discovery.md:L234]
+- Support brief rows as render targets (`L151-L152`). (`SUMMARY/N7-E06`) [14-N:L235 | 14-N-SUMMARY_INDEX.discovery.md:L235]
+- Support M-3 organization rollups as render targets (`L151-L152`). (`SUMMARY/N7-E07`) [14-N:L236 | 14-N-SUMMARY_INDEX.discovery.md:L236]
+- The frontend pairing is mandatory because rendering is the feature itself (`L155-L156`). (`SUMMARY/N7-E12`) [14-N:L241 | 14-N-SUMMARY_INDEX.discovery.md:L241]
+- Every verdict-emitting gate must deliver a human-readable render to its declared PR/chat/canvas/brief target (`L157-L158`). (`SUMMARY/N7-E13`) [14-N:L242 | 14-N-SUMMARY_INDEX.discovery.md:L242]
+- The mapping from each existing verdict class to exactly one or multiple render targets is not enumerated. (`SUMMARY/N7-A01`) [14-N:L247 | 14-N-SUMMARY_INDEX.discovery.md:L247]
+- Surface a governance tile on G-5/M-3 (`L174-L175`). (`SUMMARY/N8-E12`) [14-N:L265 | 14-N-SUMMARY_INDEX.discovery.md:L265]
+- Reuse existing attribution drawers or justify no frontend (`L190-L191`). (`SUMMARY/N9-E14`) [14-N:L291 | 14-N-SUMMARY_INDEX.discovery.md:L291]
+- High ambiguity or an off-map task increases clarification behavior, rather than merely showing a chip (`L202`). (`SUMMARY/N10-E11`) [14-N:L314 | 14-N-SUMMARY_INDEX.discovery.md:L314]
+- The default frontend disposition is N/A because this is internal allocation; canvas may surface depth if desired (`L205-L206`). (`SUMMARY/N10-E14`) [14-N:L317 | 14-N-SUMMARY_INDEX.discovery.md:L317]
+- Move J-31/J-60/J-98/K-23 canvas-altitude derivations through the shared fold core (`L213-L220`). (`SUMMARY/N11-E03`) [14-N:L332 | 14-N-SUMMARY_INDEX.discovery.md:L332]
+- Move M-3 fleet-rollup derivation through the shared fold core (`L214-L220`). (`SUMMARY/N11-E06`) [14-N:L335 | 14-N-SUMMARY_INDEX.discovery.md:L335]
+- Verify existing canvas altitudes consume the folds; do not blindly rewire them (`L220-L221`). (`SUMMARY/N11-E13`) [14-N:L342 | 14-N-SUMMARY_INDEX.discovery.md:L342]
+- The summary calls these “five OTHER surfaces”; canvas altitude is one surface with four contributing unit IDs, which should be confirmed in detail. (`SUMMARY/N11-A01`) [14-N:L349 | 14-N-SUMMARY_INDEX.discovery.md:L349]
+- Default frontend disposition is N/A per sub-slice, except a surfaced `FailureClass` may have a drawer; each N/A needs justification (`L244-L245`). (`SUMMARY/N12-E06`) [14-N:L363 | 14-N-SUMMARY_INDEX.discovery.md:L363]
+- Parameterize, rather than reimplement, C-26 `DecodingMode`, E-35 XGrammar/INSTRUCTOR, I-34 CRANE/grammar pin/post-parse revalidation, J-53 tool-input repair, J-51 adherence floor, H-13 canvas grammars, B-24 VLM JSON, L-1 `ClaimSet`, and I-33 CEFL schemas (`L266-L274`). (`SUMMARY/N13-E09`) [14-N:L443 | 14-N-SUMMARY_INDEX.discovery.md:L443]
+- Add a boundary-verdict badge to claim/decision/tool drawers, or justify N/A if G-5 surfaces the tile (`L275-L276`). (`SUMMARY/N13-E20`) [14-N:L454 | 14-N-SUMMARY_INDEX.discovery.md:L454]
+- Add an edit-kind chip to the anti-spiral/receipt drawer, or justify internal-advisory N/A (`L297-L298`). (`SUMMARY/N14-E20`) [14-N:L489 | 14-N-SUMMARY_INDEX.discovery.md:L489]
+- Limit the new mechanism to advisory prose, because I-17 L1 veto, I-33 externalized candidates, H-31 judge firewall, D-14 inverted framing, E-4 chat drift, and TD-3 already make sycophancy structurally irrelevant at the decision boundary (`L307-L309`). (`SUMMARY/N15-E01`) [14-N:L508 | 14-N-SUMMARY_INDEX.discovery.md:L508]
+- Surface a framing-stability tile on G-5/N-8, or justify N/A if an existing sycophancy-bench tile provides it (`L319-L320`). (`SUMMARY/N15-E17`) [14-N:L524 | 14-N-SUMMARY_INDEX.discovery.md:L524]
+- `elai bench sycophancy` runs the two fixture classes (`L321-L323`). (`SUMMARY/N15-E18`) [14-N:L525 | 14-N-SUMMARY_INDEX.discovery.md:L525]
+- Add a lambda gauge, quarantine-queue count, and ritual-entropy band to the N-8/G-5/M-3 governance tile (`L348-L349`). (`SUMMARY/N16-E30`) [14-N:L569 | 14-N-SUMMARY_INDEX.discovery.md:L569]
+- N-11’s shared journal folds likely supply N-8/N-16 governance tiles and other N observability, but only the explicitly named five surface folds are requirements. (`SUMMARY/N-I05`) [14-N:L820 | 14-N-SUMMARY_INDEX.discovery.md:L820]
+- A family uses the one K-15/I-27-shaped runner via `elai bench *`. (`SUMMARY/WF1-002`) [14-N:L590 | 14-N-SUMMARY_INDEX.discovery.md:L590]
+- Canvas altitude, plan status, billing balance, fleet rollup, and coverage derive through it. (`SUMMARY/WF6-003`) [14-N:L647 | 14-N-SUMMARY_INDEX.discovery.md:L647]
+- **Human visibility:** every verdict family must declare a render, with N-7 frontend pairing mandatory. (`SUMMARY/INV-010`) [14-N:L663 | 14-N-SUMMARY_INDEX.discovery.md:L663]
+- `elai bench <any-family>` / `elai bench *` invokes N-1 families. (`SUMMARY/CLI-001`) [14-N:L673 | 14-N-SUMMARY_INDEX.discovery.md:L673]
+- `python .claude/tools/corpus_composition_check.py --map ELAI-FEATURE-MAP.md` invokes N-2. (`SUMMARY/CLI-002`) [14-N:L674 | 14-N-SUMMARY_INDEX.discovery.md:L674]
+- `elai bench sycophancy` invokes N-15 fixtures. (`SUMMARY/CLI-003`) [14-N:L675 | 14-N-SUMMARY_INDEX.discovery.md:L675]
+- No public network API, protocol, authentication flow, or remote service API is specified in this summary. (`SUMMARY/CLI-004`) [14-N:L676 | 14-N-SUMMARY_INDEX.discovery.md:L676]
+- N-1 `MeasurementPanel` or justified reuse of G-5. (`SUMMARY/UI-001`) [14-N:L742 | 14-N-SUMMARY_INDEX.discovery.md:L742]
+- N-3 deflation column in promotion drawers or justified N/A. (`SUMMARY/UI-002`) [14-N:L743 | 14-N-SUMMARY_INDEX.discovery.md:L743]
+- N-4 memo-hit indicator in belief/claim drawers or justified N/A. (`SUMMARY/UI-003`) [14-N:L744 | 14-N-SUMMARY_INDEX.discovery.md:L744]
+- N-5 canvas/RRA route-explanation row. (`SUMMARY/UI-004`) [14-N:L745 | 14-N-SUMMARY_INDEX.discovery.md:L745]
+- N-6 provenance badge on citation/memory views or justified N/A. (`SUMMARY/UI-005`) [14-N:L746 | 14-N-SUMMARY_INDEX.discovery.md:L746]
+- N-7 mandatory PR/chat/canvas/brief/rollup render substrate. (`SUMMARY/UI-006`) [14-N:L747 | 14-N-SUMMARY_INDEX.discovery.md:L747]
+- N-8 governance tile on G-5/M-3. (`SUMMARY/UI-007`) [14-N:L748 | 14-N-SUMMARY_INDEX.discovery.md:L748]
+- N-9 existing attribution drawers or justified N/A. (`SUMMARY/UI-008`) [14-N:L749 | 14-N-SUMMARY_INDEX.discovery.md:L749]
+- N-10 normally internal; optionally show chosen depth on canvas. (`SUMMARY/UI-009`) [14-N:L750 | 14-N-SUMMARY_INDEX.discovery.md:L750]
+- N-11 verify existing canvas fold consumption. (`SUMMARY/UI-010`) [14-N:L751 | 14-N-SUMMARY_INDEX.discovery.md:L751]
+- N-12 normally N/A; optional `FailureClass` drawer. (`SUMMARY/UI-011`) [14-N:L752 | 14-N-SUMMARY_INDEX.discovery.md:L752]
+- N-13 boundary-verdict badge or G-5 tile reuse. (`SUMMARY/UI-012`) [14-N:L753 | 14-N-SUMMARY_INDEX.discovery.md:L753]
+- N-14 edit-kind chip or justified internal N/A. (`SUMMARY/UI-013`) [14-N:L754 | 14-N-SUMMARY_INDEX.discovery.md:L754]
+- N-15 G-5/N-8 framing-stability tile or existing sycophancy tile reuse. (`SUMMARY/UI-014`) [14-N:L755 | 14-N-SUMMARY_INDEX.discovery.md:L755]
+- N-16 lambda gauge, quarantine count, and ritual-entropy band on governance tile. (`SUMMARY/UI-015`) [14-N:L756 | 14-N-SUMMARY_INDEX.discovery.md:L756]
+- N-6: carried trust label and optional provenance badge; no named SSB row is given (`SUMMARY/OBS-006`) [14-N:L716 | 14-N-SUMMARY_INDEX.discovery.md:L716]
+- N-7: human render at PR/chat/canvas/brief/rollup target (`SUMMARY/OBS-007`) [14-N:L717 | 14-N-SUMMARY_INDEX.discovery.md:L717]
+- N-8: `+governance_coverage_measured` with five Kinds, governance tile (`SUMMARY/OBS-008`) [14-N:L718 | 14-N-SUMMARY_INDEX.discovery.md:L718]
+- `elai bench <family>` / `elai bench *` — N-001/N1-E019, SUMMARY/N1-E17, SUMMARY/CLI-* (`N/SURF-LINE-1832`)
+- `python .claude/tools/corpus_composition_check.py --map docs/thefinalglance/ELAI-FEATURE-MAP.md` — N-002/N2-E026, SUMMARY/N2-E16 (`N/SURF-LINE-1833`)
+- `elai bench sycophancy` — N-002/N15-E016, SUMMARY/N15-E18 (`N/SURF-LINE-1834`)
+- governance-coverage checker over rulebook + gate-manifest — N-002/N8-E021, N-002/N16-E015 (`N/SURF-LINE-1835`)
+- `ELAI_*_LEGACY` one-release policy — N-001/N0-E014, N-001/N0-A002 (`N/SURF-LINE-1838`)
+- `ELAI_OUTPUT_BOUNDARY_LEGACY` — N-002/N13-E027 (`ELAI_OUTPUT_BOUNDARY_LEGACY`)
+- `ELAI_EDIT_KIND_LEGACY` — N-002/N14-E025 (`ELAI_EDIT_KIND_LEGACY`)
+- `ELAI_FRAMING_INVARIANCE_LEGACY` — N-002/N15-E022 (`ELAI_FRAMING_INVARIANCE_LEGACY`)
+- MeasurementPanel or G-5 — N-001/N1-E020 (`N/SURF-LINE-1844`)
+- deflation column on promotion drawers — N-001/N3-E017 (`N/SURF-LINE-1845`)
+- memo-hit indicator on belief/claim drawer — N-001/N4-E021 (`N/SURF-LINE-1846`)
+- RouteDecision explain-row on canvas/RRA — N-002/N5-E017 (`N/SURF-LINE-1847`)
+- provenance badge on cited/memory surfaces — N-002/N6-E014 (`N/SURF-LINE-1848`)
+- render targets PR comment / chat ACK / canvas badge / brief row / M-3 org rollup — N-002/N7-E004, N-001/N0-E095 (`N/SURF-LINE-1849`)
+- governance tile on G-5/M-3 — N-002/N8-E017 (`N/SURF-LINE-1850`)
+- attribution drawers reuse — N-001/N9-E013 (`N/SURF-LINE-1851`)
+- canvas altitude fold verification — N-001/N11-E017 (`N/SURF-LINE-1852`)
+- optional FailureClass drawer — N-001/N12-E020 (`N/SURF-LINE-1853`)
+- boundary-verdict badge — N-002/N13-E022 (`N/SURF-LINE-1854`)
+- edit-kind chip — N-002/N14-E020 (`N/SURF-LINE-1855`)
+- framing-stability tile — N-002/N15-E018 (`N/SURF-LINE-1856`)
+- lambda gauge + quarantine-queue count + ritual-entropy band — N-002/N16-E016 (`N/SURF-LINE-1857`)
+- `+calibration_bootstrap_superseded` — N-001/N0-E052, N1-E027 (`+calibration_bootstrap_superseded`)
+- `+composition_edge_checked` — N-001/N0-E053, N-002/N2-E027 (`+composition_edge_checked`)
+- `+promotion_deflated` — N-001/N0-E054, N3-E022 (`+promotion_deflated`)
+- `+receipt_memo` — N-001/N0-E055, N4-E026 (`+receipt_memo`)
+- `+route_arbitrated` — N-001/N0-E056, N-002/N5-E023 (`+route_arbitrated`)
+- `+admission_scanned` (conditional) — N-001/N0-E057, N-002/N6-E019 (`+admission_scanned`)
+- `+verdict_rendered` — N-001/N0-E058, N-002/N7-E018 (`+verdict_rendered`)
+- `+governance_coverage_measured` — N-001/N0-E059, N-002/N8-E022 (`+governance_coverage_measured`)
+- `+counterfactual_scored` — N-001/N0-E060, N9-E018 (`+counterfactual_scored`)
+- `+output_boundary_verdict` — N-001/N0-E065, N-002/N13-E019 (`+output_boundary_verdict`)
+- `+edit_kind_classified` (or reuse) — N-001/N0-E066, N-002/N14-E015 (`+edit_kind_classified`)
+- `+framing_stability_measured` — N-001/N0-E067, N-002/N15-E012 (`+framing_stability_measured`)
+- `+evaluator_closure_swept` + `+grounding_ratio_measured` — N-001/N0-E068, N-002/N16-E020 (`+evaluator_closure_swept`)
+
+## System: O — PERSONAL RESEARCH MACHINE (research daemon, TaskSpec scheduler, brain vault, canvas WORKFLOW)
+
+Family O is the PERSONAL RESEARCH MACHINE track: O-0 index + O-1 research daemon + O-2 scheduled TaskSpec substrate + O-3 brain vault contract/mounting + O-4 canvas WORKFLOW mode. Status labels are plan-recorded claims unless an auditor re-verifies live code. Deep ledger DEEP-O-001 supersedes summary orientation; losers stay as **Superseded:** bullets with anchors.
+
+Source aggregate: `docs/thefinalglance/feature-discovery/aggregates/O-AGGREGATE.md` (DEEP-O-001 + 15-O-SUMMARY_INDEX). Aggregate distinct atoms parsed for this family: 982.
+
+### O-0: O-Plan Index / track-wide contract
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers — | sample: O0:L1; O0:L2; O0:L2; O0:L4-L7; O0:L6-L7; O0:L8-L9 | 95 non-summary-placed, 0 summary-placed, 95 total unique atoms in unit | IDs: O-001/O0-E001, O-001/O0-E002, O-001/O0-E003, O-001/O0-E004, O-001/O0-E005, O-001/O0-E006, O-001/O0-E007, O-001/O0-E008, …
+**Composes with**: B-42, C-9, C-16, D-5, E-5, F-3, G-1, G-2, H-12, J-31, J-60, O-1, O-2, O-3, O-4, PS-1, PS-6. IX: O-001/IX-PATH01 → O-1; O-001/IX-PATH02 → F-3, G-1, G-2; O-001/IX-PATH03 → O-3; O-001/IX-PATH04 → O-2; O-001/IX-PATH07 → O-2, O-3; O-001/IX-PATH08 → D-5, E-5; O-001/IX-PATH09 → J-60, O-4; O-001/IX-PATH10 → O-2; O-001/IX-PATH11 → G-2, J-60, O-1, O-2, O-3; O-001/IX-DATA002 → O-1
+
+- [status] (O-001/O0-E034) [E] Allowed status values are `PLANNED`, `IN PROGRESS`, `DONE`, and `DEFERRED`. (O0:L42-L43 | ledger-line: DEEP-O-001.discovery.md:L71)
+- [status] (O-001/O0-E035) [E] `DONE` requires `wiring_contract_check.py --run-trigger` to pass. (O0:L43-L44 | ledger-line: DEEP-O-001.discovery.md:L72)
+- [status] (O-001/O0-E036) [E] `DONE` requires `production_caller_check.py` and `python_wire_check.py` to be clean. (O0:L43-L44 | ledger-line: DEEP-O-001.discovery.md:L73)
+- [status] (O-001/O0-E037) [E] `DONE` requires the `R10` integration smoke to be green. (O0:L44 | ledger-line: DEEP-O-001.discovery.md:L74)
+- [status] (O-001/O0-E038) [E] Cargo-green is necessary but not sufficient for `DONE`. (O0:L44-L45 | ledger-line: DEEP-O-001.discovery.md:L75)
+- [config] (O-001/O0-E046) [E] A default-off graveyard is forbidden. (O0:L52 | ledger-line: DEEP-O-001.discovery.md:L83)
+- [config] (O-001/O0-E087) [E] New gates use a kill switch, not an enable flag, under `W-2`. (O0:L102-L103 | ledger-line: DEEP-O-001.discovery.md:L124)
+- [gate] (O-001/O0-E006) [E] O-1/O-3 are instructed to steal the live-proven enum-gated classification, injection-canary, confidence-per-sink, `write_page`, `upsert_page`, and namespace patterns from the TEIKOKU handoff. (O0:L8-L9 | ledger-line: DEEP-O-001.discovery.md:L43)
+- [gate] (O-001/O0-E016) [E] ELAI’s product differentiator for this surface is journaled, gated, replayable runs. (O0:L29-L30 | ledger-line: DEEP-O-001.discovery.md:L53)
+- [gate] (O-001/O0-E041) [E] Missing evidence is a failure. (O0:L51 | ledger-line: DEEP-O-001.discovery.md:L78)
+- [gate] (O-001/O0-E045) [E] The track inherits a frozen-gate requirement. (O0:L52 | ledger-line: DEEP-O-001.discovery.md:L82)
+- [gate] (O-001/O0-E049) [E] `GD-1` requires compose-never-restate: each O unit names consumed mechanisms and must not reimplement them. (O0:L53-L54 | ledger-line: DEEP-O-001.discovery.md:L86)
+- [gate] (O-001/O0-E050) [E] `GD-4` requires observe-only-first for any gate defaulting on. (O0:L54 | ledger-line: DEEP-O-001.discovery.md:L87)
+- [gate] (O-001/O0-E053) [E] `A1..A5` are enforced through per-unit `stub_ban` and `REDTEAM` blocks. (O0:L55-L56 | ledger-line: DEEP-O-001.discovery.md:L90)
+- [surface] (O-001/O0-E008) [E/SURFACE] O is a product-surface letter that ships a new user-facing feature, unlike N’s invent-nothing interlacing role. (O0:L11-L13 | ledger-line: DEEP-O-001.discovery.md:L45)
+- [surface] (O-001/O0-E009) [E/SURFACE] The new surface is the combination of a research daemon, typed scheduler, mounted brain vault, and canvas workflow mode. (O0:L12-L13 | ledger-line: DEEP-O-001.discovery.md:L46)
+- [surface] (O-001/O0-E011) [E/SURFACE] Named composed subsystems are `B-42` Cosmos, `C-9` task_runner, `3F` rules-engine, `E-5` memory, `D-5` privacy, `G-1` taint, `F-3` tool-filter, `G-2` VCR, and `H-12/J-31/J-60` canvas. (O0:L13-L15 | ledger-line: DEEP-O-001.discovery.md:L48)
+- [surface] (O-001/O0-E012) [E/SURFACE] Genuinely new mechanisms are a closed `TaskSpec` vocabulary, vault namespace claims, canvas `WORKFLOW` mode, and Cosmos manifest generalization. (O0:L15-L16 | ledger-line: DEEP-O-001.discovery.md:L49)
+- [surface] (O-001/O0-E021) [E/SURFACE] O-1 swaps Cosmos’s topic source for a user-editable typed topic set. (O0:L33-L34 | ledger-line: DEEP-O-001.discovery.md:L58)
+- [surface] (O-001/O0-E026) [E/SURFACE] O-2 journals fires and supplies a dashboard intervention-card inbox. (O0:L35-L36 | ledger-line: DEEP-O-001.discovery.md:L63)
+- [surface] (O-001/O0-E028) [E/SURFACE] O-3 mounts, rather than converts, a portable Markdown brain vault. (O0:L37-L38 | ledger-line: DEEP-O-001.discovery.md:L65)
+- [surface] (O-001/O0-E029) [E/SURFACE] O-3 adds a namespace-claims contract so ELAI and TEIKOKU can share one vault. (O0:L37-L38 | ledger-line: DEEP-O-001.discovery.md:L66)
+- [surface] (O-001/O0-E030) [E/SURFACE] `memory_facts` remains the machine-grain store while the vault becomes the user-grain surface. (O0:L37-L38 | ledger-line: DEEP-O-001.discovery.md:L67)
+- [surface] (O-001/O0-E031) [E/SURFACE] O-4 adds canvas `WORKFLOW` as an editor and monitor over TaskSpecs. (O0:L39-L40 | ledger-line: DEEP-O-001.discovery.md:L68)
+- [surface] (O-001/O0-E033) [E/SURFACE] O-4 dispatches through the `J-31` FSM and must never introduce a canvas runtime. (O0:L39-L40 | ledger-line: DEEP-O-001.discovery.md:L70)
+- [surface] (O-001/O0-E047) [E/SURFACE] Execution requires re-reading the live baseline and adding a dashboard done-item. (O0:L52 | ledger-line: DEEP-O-001.discovery.md:L84)
+- [surface] (O-001/O0-E068) [E/SURFACE] O-4 is effort `M`, Wave `3`, with lever `canvas-as-spec-editor`. (O0:L76-L77 | ledger-line: DEEP-O-001.discovery.md:L105)
+- [surface] (O-001/O0-E072) [E/SURFACE] O-3 adds `vault_write` and `claim_violation`. (O0:L82-L83 | ledger-line: DEEP-O-001.discovery.md:L109)
+- [surface] (O-001/O0-E079) [E/SURFACE] O-3 may instead ship with interim CLI caller `elai brain write`. (O0:L93-L94 | ledger-line: DEEP-O-001.discovery.md:L116)
+- [surface] (O-001/O0-E085) [E/SURFACE] New dependencies require anti-slopsquatting review; none are expected. (O0:L102 | ledger-line: DEEP-O-001.discovery.md:L122)
+- [surface] (O-001/O0-E091) [E/SURFACE] The vault is mounted and never converted into `memory_facts`. (O0:L111 | ledger-line: DEEP-O-001.discovery.md:L128)
+- [surface] (O-001/O0-E092) [E/SURFACE] The canvas has no runtime; the `J-31` FSM performs dispatch. (O0:L112 | ledger-line: DEEP-O-001.discovery.md:L129)
+- (O-001/O0-E001) [E] The index names O as “the PERSONAL RESEARCH MACHINE side,” says it is wiring-enforced, comprises `4 sessions`, and has authored Track `RESEARCH-MACHINE`. (O0:L1 | ledger-line: DEEP-O-001.discovery.md:L38)
+- (O-001/O0-E002) [E] The index is dated `2026-07-06`. (O0:L2 | ledger-line: DEEP-O-001.discovery.md:L39)
+- (O-001/O0-E003) [E] Track-level `PROOF_SPINE` is `none`, owner-acknowledged. (O0:L2 | ledger-line: DEEP-O-001.discovery.md:L40)
+- (O-001/O0-E004) [E] The source digest’s layers `L1..L4` map `1:1` to `O-1..O-4`. (O0:L4-L7 | ledger-line: DEEP-O-001.discovery.md:L41)
+- (O-001/O0-E005) [E] Digest attacks `A1..A5` and its verbatim-steal list feed each unit’s `REDTEAM` and `stub_ban`. (O0:L6-L7 | ledger-line: DEEP-O-001.discovery.md:L42)
+- (O-001/O0-E007) [E] O’s predecessor range is `B-plan .. N-plan`; O must compose with it and restate none of it under `GD-1`. (O0:L11 | ledger-line: DEEP-O-001.discovery.md:L44)
+- (O-001/O0-E010) [E] The surface is estimated as roughly `80%` composition of shipped subsystems. (O0:L13-L16 | ledger-line: DEEP-O-001.discovery.md:L47)
+- (O-001/O0-E013) [E] Mandatory predecessor reading order is source design, `ELAI-FEATURE-MAP.md`, `F-0_INDEX.md`, `G-0_INDEX.md`, this index, `O-SUMMARY_INDEX.md`, then the target detail file. (O0:L18-L24 | ledger-line: DEEP-O-001.discovery.md:L50)
+- (O-001/O0-E014) [E] The feature map is designated the single context load and executors are told not to re-read the legacy 12-file list. (O0:L20-L21 | ledger-line: DEEP-O-001.discovery.md:L51)
+- (O-001/O0-E015) [E] The central finding is that the personal research machine is architecturally cheap because it mostly composes already-shipped subsystems. (O0:L26-L30 | ledger-line: DEEP-O-001.discovery.md:L52)
+- (O-001/O0-E017) [E] Building a generic dataflow engine, described as “n8n-minus-integrations,” is explicitly the wrong architecture. (O0:L30-L31 | ledger-line: DEEP-O-001.discovery.md:L54)
+- (O-001/O0-E018) [E] The required architecture is a closed-vocabulary typed task layer. (O0:L31-L32 | ledger-line: DEEP-O-001.discovery.md:L55)
+- (O-001/O0-E019) [E] Every stage kind must exist as code. (O0:L31-L32 | ledger-line: DEEP-O-001.discovery.md:L56)
+- (O-001/O0-E020) [E] Every task fire must be an SSB row. (O0:L31-L32 | ledger-line: DEEP-O-001.discovery.md:L57)
+- (O-001/O0-E022) [E] O-1 adds an enum-classify surface. (O0:L33-L34 | ledger-line: DEEP-O-001.discovery.md:L59)
+- (O-001/O0-E023) [E] O-1 must thread `G-1/F-3/G-2` trust handling through every fetched byte. (O0:L33-L34 | ledger-line: DEEP-O-001.discovery.md:L60)
+- (O-001/O0-E024) [E] O-2 adds a typed `TaskSpec` scheduler stored as rules-as-data in SQLite. (O0:L35-L36 | ledger-line: DEEP-O-001.discovery.md:L61)
+- (O-001/O0-E025) [E] O-2 supports `cron`, `ssb`, and `manual` trigger categories at full scope. (O0:L35-L36 | ledger-line: DEEP-O-001.discovery.md:L62)
+- (O-001/O0-E027) [E] O-2 reuses the task_runner interval and SSB temporal monitor. (O0:L35-L36 | ledger-line: DEEP-O-001.discovery.md:L64)
+- (O-001/O0-E032) [E] O-4 makes wire-dark conditions visible. (O0:L39-L40 | ledger-line: DEEP-O-001.discovery.md:L69)
+- (O-001/O0-E039) [E] O inherits `W-1..W-10` verbatim from `F-0_INDEX.md`. (O0:L50 | ledger-line: DEEP-O-001.discovery.md:L76)
+- (O-001/O0-E040) [E] Inherited wiring doctrine requires a real-entrypoint trigger and an off-agent observable artifact. (O0:L50-L51 | ledger-line: DEEP-O-001.discovery.md:L77)
+- (O-001/O0-E042) [E] Reachability checks must use sound references rather than leaf grep. (O0:L51 | ledger-line: DEEP-O-001.discovery.md:L79)
+- (O-001/O0-E043) [E] A producer without a consumer is a build break. (O0:L51 | ledger-line: DEEP-O-001.discovery.md:L80)
+- (O-001/O0-E044) [E] Test callers never satisfy production reachability. (O0:L51-L52 | ledger-line: DEEP-O-001.discovery.md:L81)
+- (O-001/O0-E048) [E] O inherits `GD-1..GD-5` from `G-0_INDEX.md`. (O0:L53 | ledger-line: DEEP-O-001.discovery.md:L85)
+- (O-001/O0-E051) [E] `GD-5` requires honest residue to be named in-file. (O0:L54 | ledger-line: DEEP-O-001.discovery.md:L88)
+- (O-001/O0-E052) [E] O adds no new doctrine-delta family. (O0:L55-L56 | ledger-line: DEEP-O-001.discovery.md:L89)
+- (O-001/O0-E054) [E] All `O-1..O-4` have `PROOF_SPINE: none` because they are product-surface/distribution work. (O0:L58 | ledger-line: DEEP-O-001.discovery.md:L91)
+- (O-001/O0-E055) [E] The proof-spine absence was owner-acknowledged on `2026-07-06` under `PSR-2`. (O0:L58 | ledger-line: DEEP-O-001.discovery.md:L92)
+- (O-001/O0-E056) [E] `PS-3` is only a weak nearest candidate if briefings are counted as grounding inputs; the plan does not claim it. (O0:L59-L60 | ledger-line: DEEP-O-001.discovery.md:L93)
+- (O-001/O0-E057) [E] O feeds no `PS-1..PS-6` number directly. (O0:L60 | ledger-line: DEEP-O-001.discovery.md:L94)
+- (O-001/O0-E058) [E] The FSM may not reach `COMPLETE` without `cargo check` green. (O0:L62-L63 | ledger-line: DEEP-O-001.discovery.md:L95)
+- (O-001/O0-E059) [E] Completion requires the auditor to pass on affected crates only. (O0:L62-L63 | ledger-line: DEEP-O-001.discovery.md:L96)
+- (O-001/O0-E060) [E] Completion requires wiring-contract trigger evidence. (O0:L63 | ledger-line: DEEP-O-001.discovery.md:L97)
+- (O-001/O0-E061) [E] Completion requires a clean wire checker or a `WIRE-DARK[O-N]` row. (O0:L63-L64 | ledger-line: DEEP-O-001.discovery.md:L98)
+- (O-001/O0-E062) [E] O-4 completion requires `cross_lang_diff` for its frontend pair. (O0:L64 | ledger-line: DEEP-O-001.discovery.md:L99)
+- (O-001/O0-E063) [E] Completion requires the `R10` integration smoke and a memory-writer run. (O0:L64 | ledger-line: DEEP-O-001.discovery.md:L100)
+- (O-001/O0-E064) [E] O-1 is `[KEYSTONE]`, effort `M-L`, Wave `1`, with lever `manifest-generalization`. (O0:L69-L71 | ledger-line: DEEP-O-001.discovery.md:L101)
+- (O-001/O0-E065) [E] O-1 ships `steal-scan` and `monitor` kinds in its listed session scope. (O0:L70-L71 | ledger-line: DEEP-O-001.discovery.md:L102)
+- (O-001/O0-E066) [E] O-2 is effort `M-L`, Wave `1`, with lever `rules-as-data-scheduling`. (O0:L72-L73 | ledger-line: DEEP-O-001.discovery.md:L103)
+- (O-001/O0-E067) [E] O-3 is effort `M`, Wave `2`, with lever `mount-not-convert`. (O0:L74-L75 | ledger-line: DEEP-O-001.discovery.md:L104)
+- (O-001/O0-E069) [E] Any O unit adding an SSB `action_type` must bump `SCHEMA_VERSION` at the live baseline. (O0:L80-L85 | ledger-line: DEEP-O-001.discovery.md:L106)
+- (O-001/O0-E070) [E] O-1 adds a classify-row action type. (O0:L82 | ledger-line: DEEP-O-001.discovery.md:L107)
+- (O-001/O0-E071) [E] O-2 adds `task_spec_fired`. (O0:L82 | ledger-line: DEEP-O-001.discovery.md:L108)
+- (O-001/O0-E073) [E] O-4 reuses O-2’s fire row and therefore does not introduce a distinct O-4 event in the index. (O0:L83 | ledger-line: DEEP-O-001.discovery.md:L110)
+- (O-001/O0-E074) [E] Executors must never hard-code the schema baseline; they must re-read `ssb.rs` and `action_type_lock.rs` at edit time under `W-9`. (O0:L83-L85 | ledger-line: DEEP-O-001.discovery.md:L111)
+- (O-001/O0-E075) [E] The decision document must quote `baseline+N from LIVE X/Y as of <edit date> (file:line)`. (O0:L84-L85 | ledger-line: DEEP-O-001.discovery.md:L112)
+- (O-001/O0-E076) [E] Wave 1 runs O-1 and O-2 in parallel because their knowledge versus orchestrator/rules crate touch sets are declared disjoint. (O0:L88-L92 | ledger-line: DEEP-O-001.discovery.md:L113)
+- (O-001/O0-E077) [E] O-1’s trust-spine threading is the ELAI-over-TEIKOKU delta and is the keystone into which other work sinks. (O0:L90-L92 | ledger-line: DEEP-O-001.discovery.md:L114)
+- (O-001/O0-E078) [E] O-3 can land after Wave 1 supplies a `FileToBrain` caller. (O0:L93-L94 | ledger-line: DEEP-O-001.discovery.md:L115)
+- (O-001/O0-E080) [E] O-4 depends on O-2’s `TaskSpec` store being queryable. (O0:L95-L96 | ledger-line: DEEP-O-001.discovery.md:L117)
+- (O-001/O0-E081) [E] If that store is not queryable, O-4 may ship against a read-only fixture projection under its fork. (O0:L95-L96 | ledger-line: DEEP-O-001.discovery.md:L118)
+- (O-001/O0-E082) [E] Hashing must use `blake3`, not `blake2` or `sha2`. (O0:L99-L102 | ledger-line: DEEP-O-001.discovery.md:L119)
+- (O-001/O0-E083) [E] Production paths may not use `.unwrap()` or `.expect()`. (O0:L101 | ledger-line: DEEP-O-001.discovery.md:L120)
+- (O-001/O0-E084) [E] Tests are scoped to affected crates and are run by the auditor. (O0:L101-L102 | ledger-line: DEEP-O-001.discovery.md:L121)
+- (O-001/O0-E086) [E] Closed enums must deny unknown values. (O0:L102 | ledger-line: DEEP-O-001.discovery.md:L123)
+- (O-001/O0-E088) [E] Every arXiv/external claim must be WebSearch-verified at authoring; O cites no arXiv. (O0:L103 | ledger-line: DEEP-O-001.discovery.md:L125)
+- (O-001/O0-E089) [E] Cosmos generalization is a swap of the topic source, not a rewrite of `CosmosStage`. (O0:L106-L109 | ledger-line: DEEP-O-001.discovery.md:L126)
+- (O-001/O0-E090) [E] The wall-clock trigger remains supervisor-plane and outside the replay set under `K-14`. (O0:L110 | ledger-line: DEEP-O-001.discovery.md:L127)
+- (O-001/O0-E093) [E] The session log is empty at plan generation. (O0:L114-L117 | ledger-line: DEEP-O-001.discovery.md:L130)
+- (O-001/O0-E094) [E] The declared next step is O-1 recon of the Cosmos manifest type and G-1 taint-wrap API, then manifest generalization. (O0:L119-L123 | ledger-line: DEEP-O-001.discovery.md:L131)
+- (O-001/O0-E095) [E] O-1 and O-2 should be dispatched in parallel because they target different crates. (O0:L122-L123 | ledger-line: DEEP-O-001.discovery.md:L132)
+
+### O-1: research daemon — generalize Cosmos to user-editable typed topic set [KEYSTONE]
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers SUMMARY, SUP | sample: O1:L1-L3; O1:L5; O1:L7; O1:L7; O1:L7; O1:L7 | 111 non-summary-placed, 42 summary-placed, 163 total unique atoms in unit | IDs: O-001/O1-E001, O-001/O1-E002, O-001/O1-E003, O-001/O1-E004, O-001/O1-E005, O-001/O1-E006, O-001/O1-E007, O-001/O1-E008, …
+**Composes with**: B-40, B-42, C-9, C-16, D-5, E-5, F-3, G-1, G-2, H-12, J-31, J-60, O-2, O-3, O-4, PS-1, PS-6. IX: O-001/IX-PATH02 → F-3, G-1, G-2; O-001/IX-PATH03 → O-3; O-001/IX-PATH04 → O-2; O-001/IX-PATH07 → O-2, O-3; O-001/IX-PATH08 → D-5, E-5; O-001/IX-PATH09 → J-60, O-4; O-001/IX-PATH10 → O-2; O-001/IX-PATH11 → G-2, J-60, O-2, O-3; O-001/IX-DATA003 → G-2; O-001/IX-DATA006 → O-2, O-4
+
+- Superseded: (SUP/SD-MC001) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC001` title=`Digest patches are per-unit, not literally identical across every unit.` (ledger-line: DEEP-O-001.discovery.md:L683): O0 says `A1..A5` feed per-unit `stub_ban`/`REDTEAM` (`O0:L4-L7,L55-L56`). The detail plans specialize them: O-1 applies A1/A3, O-2 A2/A3, O-3 A4, and O-4 A3. The summary-ledger claim that every unit enforces the same A1, A3, and A4 set is broader than the originals.
+- Superseded: (SUP/SD-MC002) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC002` title=`The engagement falsifier is not present in these five originals.` (ledger-line: DEEP-O-001.discovery.md:L684): The summary ledger’s digest-open, `For-You` click, `N`-day zero-engagement, and honest topic-decay requirements are not stated in O0 or O1–O4. O1 does state an existing artifact lifecycle that decays to `DECAYED` (`O1:L7`), but it does not connect that state to opens/clicks or an `N`-day threshold. Those engagement requirements remain summary-only in this source scope.
+- Superseded: (SUP/SD-MC003) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC003` title=`O-4 editing is not Tier 1.` (ledger-line: DEEP-O-001.discovery.md:L685): The original makes Tier 1 read-only inspection and explicitly defers TaskSpec write-back plus provenance drill-down to Tier 2 (`O4:L19-L21`). Any summary reading of node editing as an immediate ship-now feature needs this tier qualifier.
+- Superseded: (SUP/SD-MC004) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC004` title=`O-2 full vocabulary is larger than its Tier-1 runtime.` (ledger-line: DEEP-O-001.discovery.md:L686): The schema names eight stages and four sinks, but Tier 1 explicitly names only Fetch/Classify/Gate/Digest and DashboardInbox; SsbEvent, SpawnResearchTree, RunPlanUnit, and missed-run wiring are Tier 2 (`O2:L9-L10,L19-L21`). Schema availability must not be confused with production wiring.
+- Superseded: (SUP/SD-MC005) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC005` title=`O-1 full topic enum is larger than Tier 1.` (ledger-line: DEEP-O-001.discovery.md:L687): Four kinds are schema-valid, but only `steal-scan` and `monitor` ship now; `leaderboard`, `discovery`, and living-page upserts are deferred (`O1:L19-L21`).
+- Superseded: (SUP/SD-MC006) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC006` title=`Exactly-once is scoped to a due tick.` (ledger-line: DEEP-O-001.discovery.md:L688): The original’s concrete mechanism is a last-fired watermark and the acceptance phrase “exactly once per due tick” (`O2:L31-L33,L65-L68`); it does not claim global exactly-once under crash, multi-process, or distributed scheduling.
+- Superseded: (SUP/SD-MC007) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC007` title=`Privacy is a staged safety barrier.` (ledger-line: DEEP-O-001.discovery.md:L689): Personal-to-project/cloud flow is a hard exclusion/stub ban, but the actual D-5 read-path wiring is Tier 2 and must land before personal topics become mountable into project context (`O3:L10-L11,L18-L20,L60-L64,L80-L81`).
+- Superseded: (SUP/SD-MC008) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC008` title=`“Dark/absent” is not the exact status vocabulary of the originals.` (ledger-line: DEEP-O-001.discovery.md:L690): All four details say `PLANNED`; O0 defines the formal statuses. The originals identify new versus reused mechanisms but do not independently inventory current code to prove each component dark (`O0:L42-L45`; `O1:L3`; `O2:L3`; `O3:L3`; `O4:L3`).
+- Superseded: (SUP/SD-MC009) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC009` title=`The trust-spine boundary is more precise than a blanket byte claim.` (ledger-line: DEEP-O-001.discovery.md:L691): O1 says G-1 wraps fetched bytes, F-3 applies to the research role, and G-2 records external bytes; integration names fetch/classify/sink seams (`O1:L10,L23-L24,L31-L36`). Metadata, redirect, attachment, and cache coverage remain unspecified.
+- Superseded: (SUP/SD-MC010) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC010` title=`No new O-4 event is planned.` (ledger-line: DEEP-O-001.discovery.md:L692): O0 explicitly says O-4 reuses O-2’s fire row, while O-1/O-2/O-3 add schema action types (`O0:L80-L85`).
+- [status] (O-001/O1-E001) [E] `O-1` is `PLANNED`, Wave `1`, product-surface class, and `PROOF_SPINE: none`, owner-acknowledged `2026-07-06`. (O1:L1-L3 | ledger-line: DEEP-O-001.discovery.md:L136)
+- [status] (O-001/O1-E002) [E] Metadata is Track `RESEARCH-MACHINE`, lever `manifest-generalization`, source finding `L1`, grounding `MODERATE (index-derived, PLAN-asserted)`, nature `BUILD-on-shipped`, effort `M-L`, Wave `1`. (O1:L5 | ledger-line: DEEP-O-001.discovery.md:L137)
+- [config] (O-001/O1-E087) [E] If generalization requires editing the frozen G-2 cassette format or G-1 taint gate, execution aborts and flags the issue. (O1:L45-L46 | ledger-line: DEEP-O-001.discovery.md:L222)
+- [gate] (O-001/O1-E028) [E] Fetch output is classified through an enum-gated classifier. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L163)
+- [gate] (O-001/O1-E038) [E] Existing G-1 policy gate-blocks untrusted-content flows to destructive sinks. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L173)
+- [gate] (O-001/O1-E055) [E] Tier 1 ships enum-gated classification and its confidence gate. (O1:L20 | ledger-line: DEEP-O-001.discovery.md:L190)
+- [gate] (O-001/O1-E066) [E/SURFACE] A new drawer must not be built. (O1:L25 | ledger-line: DEEP-O-001.discovery.md:L201)
+- [gate] (O-001/O1-E069) [E] An unknown topic `kind` must hard-refuse parsing rather than default. (O1:L29 | ledger-line: DEEP-O-001.discovery.md:L204)
+- [gate] (O-001/O1-E077) [E] The failed-canary remedy freezes the canary in a gate-manifest fixture under `R8`. (O1:L33 | ledger-line: DEEP-O-001.discovery.md:L212)
+- [gate] (O-001/O1-E088) [E] The daemon consumes trust gates and may never modify them. (O1:L46 | ledger-line: DEEP-O-001.discovery.md:L223)
+- [gate] (O-001/O1-E090) [E] Produced symbols include enum-gated classification with untrusted preamble, item fence, per-kind schema, and `{class,confidence}` output. (O1:L50-L52 | ledger-line: DEEP-O-001.discovery.md:L225)
+- [gate] (O-001/O1-E099) [E] Out-of-enum output or a canary reaching a steal sink fails the run. (O1:L67 | ledger-line: DEEP-O-001.discovery.md:L234)
+- [gate] (O-001/O1-E102) [E] Verification runs `production_caller_check.py --files <changed .rs> --json`; a dark new public function blocks completion. (O1:L74 | ledger-line: DEEP-O-001.discovery.md:L237)
+- [gate] (O-001/O1-E105) [E] Its hard input is a live, multi-item, long-enough source containing a paraphrased prompt injection so confidence-gate and duplicate-precheck paths fire. (O1:L77 | ledger-line: DEEP-O-001.discovery.md:L240)
+- [gate] (O-001/O1-E107) [E] The smuggled-instruction red-team attack is intended to fail because classification is closed, confidence-bearing, taint-labelled to every sink, and protected by a frozen canary fixture. (O1:L79-L80 | ledger-line: DEEP-O-001.discovery.md:L242)
+- [gate] (SUMMARY/O-1.E30) [E/Composition constraint] `cosmos_worker`, `CosmosStage`, and the briefing compiler must be extended and must not be re-authored. (O-SUMMARY:L26 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L102)
+- [gate] (SUMMARY/O-1.E35) [E/Test/workflow] The positive done-gate uses a live cosmos tick to drive a `steal-scan` topic over a canary-injection fixture. (O-SUMMARY:L28 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L107)
+- [gate] (SUMMARY/O-1.E41) [E/Negative invariant] An out-of-enum classifier output fails the done-gate. (O-SUMMARY:L29-L30 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L113)
+- [gate] (SUMMARY/O-1.E42) [E/Negative invariant] A canary reaching a steal sink fails the done-gate. (O-SUMMARY:L30 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L114)
+- [surface] (O-001/O1-E027) [E/SURFACE] The per-topic workflow begins with `fetch`. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L162)
+- [surface] (O-001/O1-E048) [E/SURFACE] Existing asserted symbols/surfaces include `VerificationMethod::CosmosCheck`, `CosmosStage`, `CosmosDrawer`, and the `live_cli` tick. (O1:L14 | ledger-line: DEEP-O-001.discovery.md:L183)
+- [surface] (O-001/O1-E064) [E/SURFACE] `CosmosDrawer` is extended to show topic kind. (O1:L25 | ledger-line: DEEP-O-001.discovery.md:L199)
+- [surface] (O-001/O1-E065) [E/SURFACE] `CosmosDrawer` is extended to show last-run trust tier. (O1:L25 | ledger-line: DEEP-O-001.discovery.md:L200)
+- [surface] (O-001/O1-E081) [E/SURFACE] Replay-divergence remediation routes every remaining fetch through the VCR client and adds a detached-network replay assertion. (O1:L36 | ledger-line: DEEP-O-001.discovery.md:L216)
+- [surface] (O-001/O1-E093) [E/SURFACE] Production reachability is the live `live_cli` Cosmos tick driving a configured topic end to end. (O1:L56-L58 | ledger-line: DEEP-O-001.discovery.md:L228)
+- [surface] (O-001/O1-E100) [E/SURFACE] The production hook is the C-16 Cosmos tick in `live_cli`; the exact function is named at recon and wired in the same changeset. (O1:L69 | ledger-line: DEEP-O-001.discovery.md:L235)
+- [surface] (O-001/O1-E110) [E/SURFACE] O-2 supplies scheduling, O-3 supplies the vault sink, and O-4 supplies the canvas surface around O-1. (O1:L87-L88 | ledger-line: DEEP-O-001.discovery.md:L245)
+- [surface] (SUMMARY/O-1.E10) [E/New configuration feature/SURFACE] The generalized manifest represents a user-editable topic set. (O-SUMMARY:L22 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L82)
+- [surface] (SUMMARY/O-1.E34) [E/Surface/composition constraint/SURFACE] `CosmosDrawer` is extended; no new drawer is created. (O-SUMMARY:L27 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L106)
+- (O-001/O1-E003) [E] `CosmosWorker` is asserted to already be a scheduled research loop. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L138)
+- (O-001/O1-E004) [E] Its existing loop has an artifact manifest. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L139)
+- (O-001/O1-E005) [E] Its existing loop has an hourly tick. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L140)
+- (O-001/O1-E006) [E] Its existing loop refreshes through `FlashResearch`. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L141)
+- (O-001/O1-E007) [E] Its existing lifecycle time-decays artifacts to `DECAYED`. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L142)
+- (O-001/O1-E008) [E] Its existing briefing is capped at `<=1500` tokens. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L143)
+- (O-001/O1-E009) [E] `CosmosStage` already participates in the `QueryPipeline`. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L144)
+- (O-001/O1-E010) [E] The plan estimates this existing system as `90%` of a general research daemon. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L145)
+- (O-001/O1-E011) [E] The current limitation is a manifest hard-bound to designer briefs. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L146)
+- (O-001/O1-E012) [E] O-1 generalizes only the manifest surface. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L147)
+- (O-001/O1-E013) [E] O-1 must thread every fetched byte through the existing taint, tool-filter, and VCR trust spine. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L148)
+- (O-001/O1-E014) [E] O-1 creates neither a new worker loop nor a new scheduler; O-2 owns scheduling. (O1:L7 | ledger-line: DEEP-O-001.discovery.md:L149)
+- (O-001/O1-E015) [E] The generalized configuration root is `[[research.topics]]`. (O1:L9-L10 | ledger-line: DEEP-O-001.discovery.md:L150)
+- (O-001/O1-E016) [E] Each research-topic record has an `id` field. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L151)
+- (O-001/O1-E017) [E] Each research-topic record has a `kind` field. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L152)
+- (O-001/O1-E018) [E] Allowed topic kind `steal-scan` is part of a closed enum. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L153)
+- (O-001/O1-E019) [E] Allowed topic kind `leaderboard` is part of the closed enum. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L154)
+- (O-001/O1-E020) [E] Allowed topic kind `discovery` is part of the closed enum. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L155)
+- (O-001/O1-E021) [E] Allowed topic kind `monitor` is part of the closed enum. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L156)
+- (O-001/O1-E022) [E] Each research-topic record has `sources[]`. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L157)
+- (O-001/O1-E023) [E] Each research-topic record has `cadence`. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L158)
+- (O-001/O1-E024) [E] Each research-topic record has `confidence_threshold`. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L159)
+- (O-001/O1-E025) [E] Each research-topic record has `sink`. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L160)
+- (O-001/O1-E026) [E] A free-form `custom topic` kind is forbidden; novel kinds ship as code. (O1:L10-L11 | ledger-line: DEEP-O-001.discovery.md:L161)
+- (O-001/O1-E029) [E] Classification prepends an untrusted-content preamble. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L164)
+- (O-001/O1-E030) [E] Classification fences each item. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L165)
+- (O-001/O1-E031) [E] Classification uses a per-kind schema. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L166)
+- (O-001/O1-E032) [E] Injection canaries are frozen fixtures. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L167)
+- (O-001/O1-E033) [E] Classification is followed by a duplicate precheck against a rejected ledger. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L168)
+- (O-001/O1-E034) [E] The pipeline then files accepted material. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L169)
+- (O-001/O1-E035) [E] The pipeline builds a layered digest. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L170)
+- (O-001/O1-E036) [E] The full-scope pipeline maintains living leaderboard pages using guarded upsert. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L171)
+- (O-001/O1-E037) [E] G-1 taint provenance labels fetched bytes as untrusted content. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L172)
+- (O-001/O1-E039) [E] F-3’s tool filter is applied to the research role. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L174)
+- (O-001/O1-E040) [E] External bytes are recorded in a G-2 VCR cassette. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L175)
+- (O-001/O1-E041) [E] VCR capture makes a research run `RRA`-replayable. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L176)
+- (O-001/O1-E042) [E] The claimed ELAI-over-TEIKOKU delta is canaries plus taint plus replay. (O1:L10 | ledger-line: DEEP-O-001.discovery.md:L177)
+- (O-001/O1-E043) [E] Re-authoring `CosmosStage` is excluded; the unit must extend it. (O1:L11 | ledger-line: DEEP-O-001.discovery.md:L178)
+- (O-001/O1-E044) [E] Re-authoring the briefing compiler is excluded. (O1:L11 | ledger-line: DEEP-O-001.discovery.md:L179)
+- (O-001/O1-E045) [E] A classifier output reaching a prompt may not be free text. (O1:L11 | ledger-line: DEEP-O-001.discovery.md:L180)
+- (O-001/O1-E046) [E] Classifier output is a closed enum plus confidence. (O1:L11 | ledger-line: DEEP-O-001.discovery.md:L181)
+- (O-001/O1-E047) [E] Existing asserted implementation includes roughly `700 LOC` of `cosmos_worker`. (O1:L13-L14 | ledger-line: DEEP-O-001.discovery.md:L182)
+- (O-001/O1-E049) [E] B-42/C-16 classify the existing Cosmos artifact tier as `[WIRED]`. (O1:L14 | ledger-line: DEEP-O-001.discovery.md:L184)
+- (O-001/O1-E050) [E] Existing hourly refresh runs from task_runner’s `tokio::interval` under `C-9`. (O1:L15 | ledger-line: DEEP-O-001.discovery.md:L185)
+- (O-001/O1-E051) [E] `FlashResearch` refresh is the B-40 path. (O1:L15 | ledger-line: DEEP-O-001.discovery.md:L186)
+- (O-001/O1-E052) [E] G-1 taint, F-3 tool filtering, and G-2 VCR/RRA are treated as shipped surfaces to consume rather than rebuild. (O1:L16 | ledger-line: DEEP-O-001.discovery.md:L187)
+- (O-001/O1-E053) [E] TEIKOKU’s classifier/canary/confidence-per-sink pattern is asserted live-proven with `3 injections neutralized` and `0 out-of-enum`. (O1:L17 | ledger-line: DEEP-O-001.discovery.md:L188)
+- (O-001/O1-E054) [E] Tier 1 ships the typed topic manifest. (O1:L19-L20 | ledger-line: DEEP-O-001.discovery.md:L189)
+- (O-001/O1-E056) [E] Tier 1 ships duplicate precheck and taint/tool-filter/VCR threading. (O1:L20 | ledger-line: DEEP-O-001.discovery.md:L191)
+- (O-001/O1-E057) [E] Tier 1 supports exactly `2 of the 4` topic kinds: `steal-scan` and `monitor`. (O1:L20 | ledger-line: DEEP-O-001.discovery.md:L192)
+- (O-001/O1-E060) [E] The intended backend owner is `crates/knowledge` or the live location of `cosmos_worker`. (O1:L23-L24 | ledger-line: DEEP-O-001.discovery.md:L195)
+- (O-001/O1-E061) [E] Backend integration generalizes the existing manifest loader. (O1:L24 | ledger-line: DEEP-O-001.discovery.md:L196)
+- (O-001/O1-E062) [E] Backend integration adds the typed-topic schema and enum classify stage. (O1:L24 | ledger-line: DEEP-O-001.discovery.md:L197)
+- (O-001/O1-E063) [E] G-1/F-3/G-2 are consumed specifically at fetch, classify, and sink seams. (O1:L24 | ledger-line: DEEP-O-001.discovery.md:L198)
+- (O-001/O1-E067) [E] Move M1 replaces the designer-brief manifest struct with the closed-kind typed-topic schema while preserving the loader signature so `CosmosStage` remains unchanged. (O1:L27-L28 | ledger-line: DEEP-O-001.discovery.md:L202)
+- (O-001/O1-E068) [E] M1 acceptance requires `[[research.topics]] kind = "steal-scan"` to load and be enumerated by the daemon. (O1:L29 | ledger-line: DEEP-O-001.discovery.md:L203)
+- (O-001/O1-E070) [E] If an unknown kind defaults to a catch-all, the fix is deny-unknown enum deserialization plus a negative parse test. (O1:L30 | ledger-line: DEEP-O-001.discovery.md:L205)
+- (O-001/O1-E071) [E] Move M2 requires fetched bytes to be taint-wrapped before reaching the classify prompt. (O1:L31 | ledger-line: DEEP-O-001.discovery.md:L206)
+- (O-001/O1-E072) [E] M2’s classifier emits exactly the shaped object `{class: enum, confidence: f32}`, never free text. (O1:L31 | ledger-line: DEEP-O-001.discovery.md:L207)
+- (O-001/O1-E073) [E] A canary-injection fixture must route to `unsorted` at low confidence. (O1:L32 | ledger-line: DEEP-O-001.discovery.md:L208)
+- (O-001/O1-E074) [E] That canary path must emit a taint-labelled SSB row. (O1:L32 | ledger-line: DEEP-O-001.discovery.md:L209)
+- (O-001/O1-E075) [E] Acceptance requires zero out-of-enum classifier outputs. (O1:L32 | ledger-line: DEEP-O-001.discovery.md:L210)
+- (O-001/O1-E076) [E] If a canary reaches the prompt unlabelled, classification must be re-anchored to consume only the taint-wrapped item. (O1:L33 | ledger-line: DEEP-O-001.discovery.md:L211)
+- (O-001/O1-E078) [E] Move M3 records external bytes in the G-2 VCR cassette keyed by run ID. (O1:L34 | ledger-line: DEEP-O-001.discovery.md:L213)
+- (O-001/O1-E079) [E] Replay acceptance is byte-identical output from the cassette with the network detached. (O1:L35 | ledger-line: DEEP-O-001.discovery.md:L214)
+- (O-001/O1-E080) [E] Replay divergence means an unrecorded network read leaked into the run. (O1:L36 | ledger-line: DEEP-O-001.discovery.md:L215)
+- (O-001/O1-E082) [E] If the live manifest is hard-inlined rather than swappable, in-place generalization stops. (O1:L38-L39 | ledger-line: DEEP-O-001.discovery.md:L217)
+- (O-001/O1-E083) [E] That fork creates a new topic loader and adapter into the existing `CosmosStage`, records the seam in the decision document, and does not fork the worker loop. (O1:L39 | ledger-line: DEEP-O-001.discovery.md:L218)
+- (O-001/O1-E084) [E] Before editing, recon must establish the exact manifest type and whether classification already exists in ELAI or only TEIKOKU. (O1:L41-L42 | ledger-line: DEEP-O-001.discovery.md:L219)
+- (O-001/O1-E085) [E] That recon uses the stated Cosmos grep plus `codegraph_explore` on `cosmos_worker`. (O1:L42 | ledger-line: DEEP-O-001.discovery.md:L220)
+- (O-001/O1-E086) [E] Before editing, recon must find whether G-1 exposes an untrusted-byte wrapping API and read its one call site. (O1:L43 | ledger-line: DEEP-O-001.discovery.md:L221)
+- (O-001/O1-E089) [E] Produced symbols include the closed-kind research-topic manifest schema and loader. (O1:L48-L50 | ledger-line: DEEP-O-001.discovery.md:L224)
+- (O-001/O1-E091) [E] Produced symbols include duplicate precheck against the rejected ledger. (O1:L52 | ledger-line: DEEP-O-001.discovery.md:L226)
+- (O-001/O1-E092) [E] Consumed symbols are `cosmos_worker`, `CosmosStage`, the briefing compiler, G-1 taint, F-3 tool filter, and G-2 VCR. (O1:L53-L55 | ledger-line: DEEP-O-001.discovery.md:L227)
+- (O-001/O1-E094) [E] No fetch path may bypass G-1 taint or G-2 cassette recording. (O1:L59-L63 | ledger-line: DEEP-O-001.discovery.md:L229)
+- (O-001/O1-E095) [E] The observable trigger is a live daemon tick for a `steal-scan` topic pointed at a canary-injection fixture. (O1:L64-L66 | ledger-line: DEEP-O-001.discovery.md:L230)
+- (O-001/O1-E096) [E] The observable classify SSB row carries `{class, confidence, taint_tier}`. (O1:L66 | ledger-line: DEEP-O-001.discovery.md:L231)
+- (O-001/O1-E097) [E] The canary must land in `unsorted` and never a steal sink. (O1:L66 | ledger-line: DEEP-O-001.discovery.md:L232)
+- (O-001/O1-E098) [E] The resulting briefing must remain `<=1500` tokens and include provenance tiers. (O1:L67 | ledger-line: DEEP-O-001.discovery.md:L233)
+- (O-001/O1-E101) [E] Verification runs `wiring_contract_check.py` with this plan and `--run-trigger`. (O1:L71-L74 | ledger-line: DEEP-O-001.discovery.md:L236)
+- (O-001/O1-E103) [E] Verification passes only when the taint-tier classify row lands off-agent, the canary routes to `unsorted`, and the daemon tick—not a test—is the production caller. (O1:L75 | ledger-line: DEEP-O-001.discovery.md:L238)
+- (O-001/O1-E104) [E] The integration smoke is run by an independent agent through the real Cosmos tick. (O1:L77 | ledger-line: DEEP-O-001.discovery.md:L239)
+- (O-001/O1-E106) [E] A toy single-item happy path does not satisfy `R10`. (O1:L77 | ledger-line: DEEP-O-001.discovery.md:L241)
+- (O-001/O1-E108) [E] The successful generic-engine attack—adding a free-text topic kind to skip code—is patched by deny-unknown kind parsing. (O1:L80 | ledger-line: DEEP-O-001.discovery.md:L243)
+- (O-001/O1-E109) [E] O-1 composes with `CosmosStage`, `cosmos_worker`, briefing compiler, G-1, F-3, G-2/RRA, and B-40 `FlashResearch`, and reimplements none. (O1:L82-L88 | ledger-line: DEEP-O-001.discovery.md:L244)
+- (O-001/O1-E111) [E] A `#[cfg(test)]` caller never satisfies O-1 production reachability. (O1:L56-L58 | ledger-line: DEEP-O-001.discovery.md:L246)
+- (SUMMARY/O-1.E01) [E/Existing capability assertion] `CosmosWorker` is asserted to already be a scheduled research loop. (O-SUMMARY:L20 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L73)
+- (SUMMARY/O-1.E02) [E/Existing state/config] The existing loop has a manifest. (O-SUMMARY:L20 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L74)
+- (SUMMARY/O-1.E03) [E/Existing scheduling behavior] The existing loop has an hourly tick. (O-SUMMARY:L20 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L75)
+- (SUMMARY/O-1.E04) [E/Existing workflow behavior] The existing loop performs `FlashResearch` refresh. (O-SUMMARY:L20-L21 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L76)
+- (SUMMARY/O-1.E05) [E/Existing lifecycle behavior] The existing loop applies time decay. (O-SUMMARY:L21 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L77)
+- (SUMMARY/O-1.E06) [E/Existing bound] The existing loop produces a briefing capped at `<=1500` tokens. (O-SUMMARY:L21 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L78)
+- (SUMMARY/O-1.E07) [E/Existing integration] The existing loop uses `CosmosStage`. (O-SUMMARY:L21 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L79)
+- (SUMMARY/O-1.E08) [E/Current limitation] The current manifest is hard-bound to designer briefs. (O-SUMMARY:L21 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L80)
+- (SUMMARY/O-1.E09) [E/Scope constraint] O-1 generalizes only the manifest, rather than replacing the research loop. (O-SUMMARY:L21-L22 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L81)
+- (SUMMARY/O-1.E11) [E/Data contract] Each topic is typed. (O-SUMMARY:L22 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L83)
+- (SUMMARY/O-1.E12) [E/Safety/data invariant] Topic `kind` is a closed enum. (O-SUMMARY:L22 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L84)
+- (SUMMARY/O-1.E13) [E/Enum value] `steal-scan` is an allowed topic-kind value. (O-SUMMARY:L22 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L85)
+- (SUMMARY/O-1.E14) [E/Enum value] `leaderboard` is an allowed topic-kind value. (O-SUMMARY:L22 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L86)
+- (SUMMARY/O-1.E15) [E/Enum value] `discovery` is an allowed topic-kind value. (O-SUMMARY:L22-L23 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L87)
+- (SUMMARY/O-1.E16) [E/Enum value] `monitor` is an allowed topic-kind value. (O-SUMMARY:L23 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L88)
+- (SUMMARY/O-1.E17) [E/Security/provenance behavior] G-1 taint is threaded through every fetched byte. (O-SUMMARY:L23 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L89)
+- (SUMMARY/O-1.E18) [E/Security behavior] The F-3 tool filter is threaded through every fetched byte. (O-SUMMARY:L23 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L90)
+- (SUMMARY/O-1.E19) [E/Replay behavior] G-2 VCR is threaded through every fetched byte. (O-SUMMARY:L23 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L91)
+- (SUMMARY/O-1.E20) [E/Workflow stage] Each topic pipeline begins with `fetch`. (O-SUMMARY:L23-L24 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L92)
+- (SUMMARY/O-1.E21) [E/Workflow stage] The fetched item goes through `enum-classify`. (O-SUMMARY:L24 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L93)
+- (SUMMARY/O-1.E22) [E/Workflow stage] Classification is followed by a duplicate precheck (`dup-precheck`). (O-SUMMARY:L24 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L94)
+- (SUMMARY/O-1.E23) [E/Workflow stage] The per-topic pipeline includes `file`. (O-SUMMARY:L24 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L95)
+- (SUMMARY/O-1.E24) [E/Workflow stage] The per-topic pipeline ends in `digest`. (O-SUMMARY:L24 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L96)
+- (SUMMARY/O-1.E25) [E/External grounding/status assertion] The `fetch->enum-classify->dup-precheck->file->digest` pipeline is asserted to be TEIKOKU-proven. (O-SUMMARY:L23-L25 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L97)
+- (SUMMARY/O-1.E26) [E/Added mechanism] ELAI adds taint to the TEIKOKU-proven pipeline. (O-SUMMARY:L24-L25 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L98)
+- (SUMMARY/O-1.E27) [E/Added mechanism] ELAI adds replay on top of the classify canaries. (O-SUMMARY:L24-L25 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L99)
+- (SUMMARY/O-1.E28) [E/Missing/status] The typed-topic surface is dark/absent at summary time. (O-SUMMARY:L25 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L100)
+- (SUMMARY/O-1.E29) [E/Missing/status] The enum-classify stage is absent as ELAI code and exists only in TEIKOKU at summary time. (O-SUMMARY:L25 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L101)
+- (SUMMARY/O-1.E31) [E/Dependency] O-1 composes with `FlashResearch`. (O-SUMMARY:L26 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L103)
+- (SUMMARY/O-1.E32) [E/Integration point] The production integration adds a cosmos manifest loader in `crates/knowledge`. (O-SUMMARY:L27 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L104)
+- (SUMMARY/O-1.E33) [E/Integration point] The production integration adds the classify stage in `crates/knowledge`. (O-SUMMARY:L27 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L105)
+- (SUMMARY/O-1.E36) [E/Observability/evidence] That run must land an off-agent classify row in the SSB. (O-SUMMARY:L28-L29 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L108)
+- (SUMMARY/O-1.E37) [E/Event field] The classify row carries `class`. (O-SUMMARY:L29 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L109)
+- (SUMMARY/O-1.E38) [E/Event field] The classify row carries `confidence`. (O-SUMMARY:L29 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L110)
+- (SUMMARY/O-1.E39) [E/Event field] The classify row carries `taint_tier`. (O-SUMMARY:L29 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L111)
+- (SUMMARY/O-1.E40) [E/Safety/test behavior] The injected canary must route to `unsorted`. (O-SUMMARY:L29-L30 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L112)
+- [deferred] (O-001/O1-E058) [E] Tier 2 defers `leaderboard` and `discovery`. (O1:L21 | ledger-line: DEEP-O-001.discovery.md:L193)
+- [deferred] (O-001/O1-E059) [E/SURFACE] Tier 2 defers living-leaderboard upsert pages until O-3’s vault supplies the page surface. (O1:L21 | ledger-line: DEEP-O-001.discovery.md:L194)
+
+### O-2: scheduled TaskSpec substrate — typed, journaled, rules-as-data schedules
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers SUMMARY, SUP | sample: O2:L1-L3; O2:L5; O2:L7; O2:L7; O2:L7; O2:L7 | 112 non-summary-placed, 43 summary-placed, 158 total unique atoms in unit | IDs: O-001/O2-E001, O-001/O2-E002, O-001/O2-E003, O-001/O2-E004, O-001/O2-E005, O-001/O2-E006, O-001/O2-E007, O-001/O2-E008, …
+**Composes with**: B-42, C-9, C-16, D-5, E-5, F-3, G-1, G-2, H-12, J-31, J-60, K-14, O-1, O-3, O-4, PS-1, PS-6. IX: O-001/IX-PATH01 → O-1; O-001/IX-PATH02 → F-3, G-1, G-2; O-001/IX-PATH03 → O-3; O-001/IX-PATH07 → O-3; O-001/IX-PATH08 → D-5, E-5; O-001/IX-PATH09 → J-60, O-4; O-001/IX-PATH11 → G-2, J-60, O-1, O-3; O-001/IX-DATA002 → O-1; O-001/IX-DATA003 → G-2; O-001/IX-DATA005 → O-1
+
+- Superseded: (SUP/SD-MC001) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC001` title=`Digest patches are per-unit, not literally identical across every unit.` (ledger-line: DEEP-O-001.discovery.md:L683): O0 says `A1..A5` feed per-unit `stub_ban`/`REDTEAM` (`O0:L4-L7,L55-L56`). The detail plans specialize them: O-1 applies A1/A3, O-2 A2/A3, O-3 A4, and O-4 A3. The summary-ledger claim that every unit enforces the same A1, A3, and A4 set is broader than the originals.
+- Superseded: (SUP/SD-MC004) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC004` title=`O-2 full vocabulary is larger than its Tier-1 runtime.` (ledger-line: DEEP-O-001.discovery.md:L686): The schema names eight stages and four sinks, but Tier 1 explicitly names only Fetch/Classify/Gate/Digest and DashboardInbox; SsbEvent, SpawnResearchTree, RunPlanUnit, and missed-run wiring are Tier 2 (`O2:L9-L10,L19-L21`). Schema availability must not be confused with production wiring.
+- Superseded: (SUP/SD-MC010) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC010` title=`No new O-4 event is planned.` (ledger-line: DEEP-O-001.discovery.md:L692): O0 explicitly says O-4 reuses O-2’s fire row, while O-1/O-2/O-3 add schema action types (`O0:L80-L85`).
+- [status] (O-001/O2-E001) [E] `O-2` is `PLANNED`, Wave `1`, product-surface class, `PROOF_SPINE: none`, and owner-acknowledged `2026-07-06`. (O2:L1-L3 | ledger-line: DEEP-O-001.discovery.md:L250)
+- [status] (O-001/O2-E002) [E] Metadata is Track `RESEARCH-MACHINE`, lever `rules-as-data-scheduling`, source finding `L3`, grounding `MODERATE (index-derived, PLAN-asserted)`, nature `BUILD-on-shipped`, effort `M-L`, Wave `1`. (O2:L5 | ledger-line: DEEP-O-001.discovery.md:L251)
+- [config] (O-001/O2-E087) [E] If Cron wiring requires moving wall-clock reads into the replay/journal set, execution aborts and flags the violation. (O2:L46-L47 | ledger-line: DEEP-O-001.discovery.md:L336)
+- [gate] (O-001/O2-E022) [E] `Gate` is a stage kind. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L271)
+- [gate] (O-001/O2-E052) [E] Tier 1 stage support is `Fetch`, `Classify`, `Gate`, and `Digest`, described as the O-1-provided stages. (O2:L20 | ledger-line: DEEP-O-001.discovery.md:L301)
+- [gate] (O-001/O2-E064) [E] Unknown stage kinds hard-refuse parsing. (O2:L29 | ledger-line: DEEP-O-001.discovery.md:L313)
+- [gate] (O-001/O2-E065) [E] Unknown trigger variants hard-refuse parsing. (O2:L29 | ledger-line: DEEP-O-001.discovery.md:L314)
+- [gate] (O-001/O2-E083) [E] Under that fork, Tier 1 ships fire-on-tick only and records the seam; it must not build a second monitor. (O2:L39 | ledger-line: DEEP-O-001.discovery.md:L332)
+- [gate] (O-001/O2-E098) [E] An empty fire that creates a card or any double-fire fails. (O2:L68 | ledger-line: DEEP-O-001.discovery.md:L347)
+- [gate] (O-001/O2-E101) [E] Verification runs `production_caller_check.py --files <changed .rs> --json`; a dark public function blocks. (O2:L75 | ledger-line: DEEP-O-001.discovery.md:L350)
+- [gate] (O-001/O2-E103) [E] The independent integration smoke runs a full `Fetch->Classify->Gate->Digest` chain over a hard source. (O2:L78 | ledger-line: DEEP-O-001.discovery.md:L352)
+- [gate] (O-001/O2-E108) [E] The mid-pipeline clock-read red-team attack is intended to fail because supervisor-plane time is recorded and in-replay time reads are banned. (O2:L80-L81 | ledger-line: DEEP-O-001.discovery.md:L357)
+- [gate] (SUMMARY/O-2.E42) [E/Negative invariant] An empty fire that nevertheless renders a card fails the done-gate. (O-SUMMARY:L45-L46 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L163)
+- [gate] (SUMMARY/O-2.E43) [E/Negative invariant] A double-fire fails the done-gate. (O-SUMMARY:L46 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L164)
+- [surface] (O-001/O2-E005) [E/SURFACE] Scheduled results land in an inbox. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L254)
+- [surface] (O-001/O2-E012) [E/SURFACE] O-2 supplies the scheduler used by O-1’s daemon and edited by O-4’s canvas. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L261)
+- [surface] (O-001/O2-E029) [E/SURFACE] `VaultPage` is a sink variant. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L278)
+- [surface] (O-001/O2-E031) [E/SURFACE] `DashboardInbox` is a sink variant. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L280)
+- [surface] (O-001/O2-E032) [E/SURFACE] `Toast` is a sink variant. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L281)
+- [surface] (O-001/O2-E037) [E/SURFACE] The existing dashboard intervention-card surface serves as the inbox sink. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L286)
+- [surface] (O-001/O2-E042) [E/SURFACE] A second inbox surface is forbidden; intervention cards must be reused. (O2:L11 | ledger-line: DEEP-O-001.discovery.md:L291)
+- [surface] (O-001/O2-E047) [E/SURFACE] Existing ground truth asserts intervention cards already support human-in-the-loop inbox cards. (O2:L17 | ledger-line: DEEP-O-001.discovery.md:L296)
+- [surface] (O-001/O2-E051) [E/SURFACE] Tier 1 ships the `DashboardInbox` sink. (O2:L20 | ledger-line: DEEP-O-001.discovery.md:L300)
+- [surface] (O-001/O2-E060) [E/SURFACE] Dashboard intervention cards render the `DashboardInbox` sink. (O2:L25 | ledger-line: DEEP-O-001.discovery.md:L309)
+- [surface] (O-001/O2-E061) [E/SURFACE] O-2 does not add a spec list/edit panel; O-4 owns that canvas surface. (O2:L25 | ledger-line: DEEP-O-001.discovery.md:L310)
+- [surface] (O-001/O2-E078) [E/SURFACE] Move M3 routes terminal `Notify`/sink output to the intervention-card inbox. (O2:L34 | ledger-line: DEEP-O-001.discovery.md:L327)
+- [surface] (O-001/O2-E079) [E/SURFACE] A fire with results renders an inbox card. (O2:L35 | ledger-line: DEEP-O-001.discovery.md:L328)
+- [surface] (O-001/O2-E081) [E/SURFACE] Empty-inbox spam is remediated by a result-count-based `nothing-to-report -> archive` branch. (O2:L36 | ledger-line: DEEP-O-001.discovery.md:L330)
+- [surface] (O-001/O2-E086) [E/SURFACE] Recon must determine the intervention-card ingestion API. (O2:L44 | ledger-line: DEEP-O-001.discovery.md:L335)
+- [surface] (O-001/O2-E092) [E/SURFACE] Consumed mechanisms are `3F`, `C-9`, SSB/K-14, temporal monitoring, intervention cards, and O-1 stages. (O2:L54-L56 | ledger-line: DEEP-O-001.discovery.md:L341)
+- [surface] (O-001/O2-E095) [E/SURFACE] The observable trigger registers a due-now Cron TaskSpec with a `Digest->DashboardInbox` pipeline and advances the task_runner tick. (O2:L65-L67 | ledger-line: DEEP-O-001.discovery.md:L344)
+- [surface] (O-001/O2-E097) [E/SURFACE] A result-bearing fire creates an intervention-card entry. (O2:L68 | ledger-line: DEEP-O-001.discovery.md:L346)
+- [surface] (O-001/O2-E105) [E/SURFACE] The smoke asserts single-fire journaling and a result-bearing inbox card. (O2:L78 | ledger-line: DEEP-O-001.discovery.md:L354)
+- [surface] (O-001/O2-E109) [E/SURFACE] Inbox flooding from a `1-minute` Cron that reports nothing is patched by auto-archive-on-empty while retaining the SSB audit row. (O2:L81 | ledger-line: DEEP-O-001.discovery.md:L358)
+- [surface] (O-001/O2-E110) [E/SURFACE] O-2 composes with rules-as-data `3F`, task_runner `C-9`, SSB/K-14 monitoring, intervention cards, and O-1 stages, and reimplements none. (O2:L83-L89 | ledger-line: DEEP-O-001.discovery.md:L359)
+- [surface] (O-001/O2-E111) [E/SURFACE] O-1 supplies stages, O-4 renders/edits specs, and O-3 supplies the `VaultPage` sink. (O2:L88-L89 | ledger-line: DEEP-O-001.discovery.md:L360)
+- [surface] (SUMMARY/O-2.E03) [E/Borrowed workflow/surface/SURFACE] Scheduled results flow to an inbox. (O-SUMMARY:L35 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L124)
+- [surface] (SUMMARY/O-2.E16) [E/Enum value/SURFACE] `VaultPage` is an allowed sink value. (O-SUMMARY:L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L137)
+- [surface] (SUMMARY/O-2.E18) [E/Enum value/SURFACE] `DashboardInbox` is an allowed sink value. (O-SUMMARY:L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L139)
+- [surface] (SUMMARY/O-2.E19) [E/Enum value/SURFACE] `Toast` is an allowed sink value. (O-SUMMARY:L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L140)
+- [surface] (SUMMARY/O-2.E25) [E/Surface reuse/status assertion/SURFACE] Task results reuse the shipped intervention-card inbox surface. (O-SUMMARY:L39 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L146)
+- [surface] (SUMMARY/O-2.E31) [E/Dependency/SURFACE] O-2 composes with intervention cards. (O-SUMMARY:L42 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L152)
+- [surface] (SUMMARY/O-2.E41) [E/Surface/done-gate/SURFACE] A result-bearing fire renders an inbox card. (O-SUMMARY:L45 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L162)
+- (O-001/O2-E003) [E] The borrowed Codex Automations shape supports time schedules. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L252)
+- (O-001/O2-E004) [E] The borrowed shape supports event schedules. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L253)
+- (O-001/O2-E006) [E] Runs with nothing to report auto-archive. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L255)
+- (O-001/O2-E007) [E] ELAI’s version is explicitly typed. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L256)
+- (O-001/O2-E008) [E] ELAI’s version is explicitly journaled. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L257)
+- (O-001/O2-E009) [E] A `TaskSpec` is stored as data in SQLite using the rules-engine precedent. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L258)
+- (O-001/O2-E010) [E] Every fire is an SSB row carrying its trigger cause. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L259)
+- (O-001/O2-E011) [E] Triggers are driven by the existing task_runner plus the SSB temporal monitor. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L260)
+- (O-001/O2-E013) [E] O-2 invents only the typed spec and trigger wiring. (O2:L7 | ledger-line: DEEP-O-001.discovery.md:L262)
+- (O-001/O2-E014) [E] `TaskSpec.trigger` is a closed enum. (O2:L9-L10 | ledger-line: DEEP-O-001.discovery.md:L263)
+- (O-001/O2-E015) [E] `Cron{expr}` is a trigger variant with an `expr` operand. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L264)
+- (O-001/O2-E016) [E] `SsbEvent{action_type filter}` is a trigger variant with an action-type filter. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L265)
+- (O-001/O2-E017) [E] `Manual` is a trigger variant. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L266)
+- (O-001/O2-E018) [E] `TaskSpec.pipeline` is an ordered list. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L267)
+- (O-001/O2-E019) [E] Pipeline stage kinds are a closed enum. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L268)
+- (O-001/O2-E020) [E] `Fetch` is a stage kind. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L269)
+- (O-001/O2-E021) [E] `Classify` is a stage kind. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L270)
+- (O-001/O2-E023) [E] `FileToBrain` is a stage kind. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L272)
+- (O-001/O2-E024) [E] `Digest` is a stage kind. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L273)
+- (O-001/O2-E025) [E] `SpawnResearchTree` is a stage kind. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L274)
+- (O-001/O2-E026) [E] `RunPlanUnit` is a stage kind. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L275)
+- (O-001/O2-E027) [E] `Notify` is a stage kind. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L276)
+- (O-001/O2-E028) [E] `TaskSpec.sink` is a closed enum. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L277)
+- (O-001/O2-E030) [E] `Digest` is a sink variant as well as a stage name. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L279)
+- (O-001/O2-E033) [E] TaskSpec rows mirror the rules-engine predicates-as-data persistence pattern. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L282)
+- (O-001/O2-E034) [E] The wall-clock trigger is supervisor-plane and outside the replay set under `K-14`. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L283)
+- (O-001/O2-E035) [E] Given recorded inputs, the actual TaskSpec run must remain deterministic. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L284)
+- (O-001/O2-E036) [E] Missed-run detection reuses the SSB temporal-monitor engine. (O2:L10 | ledger-line: DEEP-O-001.discovery.md:L285)
+- (O-001/O2-E038) [E] Free-form or custom-node stage kinds are forbidden. (O2:L11 | ledger-line: DEEP-O-001.discovery.md:L287)
+- (O-001/O2-E039) [E] New stage kinds must ship as code through the normal plan process. (O2:L11 | ledger-line: DEEP-O-001.discovery.md:L288)
+- (O-001/O2-E040) [E] A wall-clock read inside the replay set is forbidden. (O2:L11 | ledger-line: DEEP-O-001.discovery.md:L289)
+- (O-001/O2-E041) [E] A second scheduler loop is forbidden; the task_runner interval must be reused. (O2:L11 | ledger-line: DEEP-O-001.discovery.md:L290)
+- (O-001/O2-E043) [E] Existing ground truth asserts rules predicates already persist as SQLite data under `3F`. (O2:L13-L14 | ledger-line: DEEP-O-001.discovery.md:L292)
+- (O-001/O2-E044) [E] Existing ground truth asserts task_runner periodic work is driven by `tokio::interval` under `C-9`. (O2:L15 | ledger-line: DEEP-O-001.discovery.md:L293)
+- (O-001/O2-E045) [E] Existing ground truth asserts SSB is the journal. (O2:L16 | ledger-line: DEEP-O-001.discovery.md:L294)
+- (O-001/O2-E046) [E] Existing ground truth asserts an SSB temporal-monitor already handles missed/late detection. (O2:L16 | ledger-line: DEEP-O-001.discovery.md:L295)
+- (O-001/O2-E048) [E] Tier 1 ships the `TaskSpec` schema and SQLite store. (O2:L19-L20 | ledger-line: DEEP-O-001.discovery.md:L297)
+- (O-001/O2-E049) [E] Tier 1 ships `Cron` and `Manual` triggers. (O2:L20 | ledger-line: DEEP-O-001.discovery.md:L298)
+- (O-001/O2-E050) [E] Tier 1 ships journaled fire rows. (O2:L20 | ledger-line: DEEP-O-001.discovery.md:L299)
+- (O-001/O2-E056) [E] Backend ownership is `crates/orchestrator` or the rules-engine crate. (O2:L23-L24 | ledger-line: DEEP-O-001.discovery.md:L305)
+- (O-001/O2-E057) [E] Backend integration adds the TaskSpec table and loader. (O2:L24 | ledger-line: DEEP-O-001.discovery.md:L306)
+- (O-001/O2-E058) [E] Backend integration adds the trigger dispatcher to the task_runner interval. (O2:L24 | ledger-line: DEEP-O-001.discovery.md:L307)
+- (O-001/O2-E059) [E] Backend integration emits the SSB fire row. (O2:L24 | ledger-line: DEEP-O-001.discovery.md:L308)
+- (O-001/O2-E062) [E] Move M1 adds the TaskSpec table, strict closed-trigger/stage deserializer, and a boot-time loader. (O2:L27-L28 | ledger-line: DEEP-O-001.discovery.md:L311)
+- (O-001/O2-E063) [E] A Cron TaskSpec row must load and be enumerated by the dispatcher. (O2:L29 | ledger-line: DEEP-O-001.discovery.md:L312)
+- (O-001/O2-E066) [E] If either unknown value is accepted, the fix is deny-unknown strictness plus a negative parse test. (O2:L30 | ledger-line: DEEP-O-001.discovery.md:L315)
+- (O-001/O2-E067) [E] Move M2 wires Cron onto the existing task_runner interval. (O2:L31 | ledger-line: DEEP-O-001.discovery.md:L316)
+- (O-001/O2-E068) [E] A due spec fires its ordered pipeline. (O2:L31 | ledger-line: DEEP-O-001.discovery.md:L317)
+- (O-001/O2-E069) [E] That fire emits a journaled SSB row with its trigger cause. (O2:L31 | ledger-line: DEEP-O-001.discovery.md:L318)
+- (O-001/O2-E070) [E] At a due tick, a spec must fire exactly once. (O2:L32 | ledger-line: DEEP-O-001.discovery.md:L319)
+- (O-001/O2-E071) [E] The SSB action type is `task_spec_fired`. (O2:L32 | ledger-line: DEEP-O-001.discovery.md:L320)
+- (O-001/O2-E072) [E] `task_spec_fired` carries `spec_id`. (O2:L32 | ledger-line: DEEP-O-001.discovery.md:L321)
+- (O-001/O2-E073) [E] `task_spec_fired` carries `trigger_cause`. (O2:L32 | ledger-line: DEEP-O-001.discovery.md:L322)
+- (O-001/O2-E074) [E] `task_spec_fired` carries `stage_path`. (O2:L32 | ledger-line: DEEP-O-001.discovery.md:L323)
+- (O-001/O2-E075) [E] Double-fire or non-fire is remediated by gating on a last-fired watermark row. (O2:L33 | ledger-line: DEEP-O-001.discovery.md:L324)
+- (O-001/O2-E076) [E] The last-fired watermark is explicitly intended to make due-tick dispatch idempotent. (O2:L33 | ledger-line: DEEP-O-001.discovery.md:L325)
+- (O-001/O2-E077) [E] The idempotency path requires a double-fire assertion. (O2:L33 | ledger-line: DEEP-O-001.discovery.md:L326)
+- (O-001/O2-E080) [E] A nothing-to-report fire auto-archives and leaves only its SSB row. (O2:L34-L35 | ledger-line: DEEP-O-001.discovery.md:L329)
+- (O-001/O2-E084) [E] Before editing, recon must determine the rules table/loader shape TaskSpec will mirror through the stated grep and codegraph exploration. (O2:L41-L42 | ledger-line: DEEP-O-001.discovery.md:L333)
+- (O-001/O2-E085) [E] Recon must determine whether task_runner accepts registered periodic jobs or needs extension, then read its registration site. (O2:L43 | ledger-line: DEEP-O-001.discovery.md:L334)
+- (O-001/O2-E088) [E] Trigger time is an input recorded once, never a replayed pipeline step. (O2:L47 | ledger-line: DEEP-O-001.discovery.md:L337)
+- (O-001/O2-E089) [E] Produced symbols include the closed trigger, stage-kind, and sink enums plus table and loader. (O2:L49-L51 | ledger-line: DEEP-O-001.discovery.md:L338)
+- (O-001/O2-E090) [E] Produced symbols include Cron/Manual dispatch on the task_runner interval. (O2:L52 | ledger-line: DEEP-O-001.discovery.md:L339)
+- (O-001/O2-E091) [E] Produced symbols include `task_spec_fired` and auto-archive-on-empty. (O2:L53 | ledger-line: DEEP-O-001.discovery.md:L340)
+- (O-001/O2-E093) [E] Production reachability is a due Cron TaskSpec fired by a live task_runner interval. (O2:L57-L59 | ledger-line: DEEP-O-001.discovery.md:L342)
+- (O-001/O2-E094) [E] No fire is permitted without a journaled trigger-cause SSB row. (O2:L60-L64 | ledger-line: DEEP-O-001.discovery.md:L343)
+- (O-001/O2-E096) [E] The observable evidence is exactly one `{spec_id, trigger_cause=Cron, stage_path}` fire row per due tick. (O2:L67 | ledger-line: DEEP-O-001.discovery.md:L345)
+- (O-001/O2-E099) [E] The production hook is the `C-9` interval-registration seam; the exact function is named at recon and wired in the same changeset. (O2:L70 | ledger-line: DEEP-O-001.discovery.md:L348)
+- (O-001/O2-E100) [E] Verification runs `wiring_contract_check.py` against this plan with `--run-trigger`. (O2:L72-L75 | ledger-line: DEEP-O-001.discovery.md:L349)
+- (O-001/O2-E102) [E] Verification passes only after a real task_runner tick yields one off-agent fire row, a card for results, and auto-archive for empty output. (O2:L76 | ledger-line: DEEP-O-001.discovery.md:L351)
+- (O-001/O2-E104) [E] The smoke advances several ticks. (O2:L78 | ledger-line: DEEP-O-001.discovery.md:L353)
+- (O-001/O2-E106) [E] The smoke asserts auto-archive on a subsequent empty tick. (O2:L78 | ledger-line: DEEP-O-001.discovery.md:L355)
+- (O-001/O2-E107) [E] A one-tick smoke is insufficient; `R10` requires a multi-tick run exercising missed/idempotency paths. (O2:L78 | ledger-line: DEEP-O-001.discovery.md:L356)
+- (O-001/O2-E112) [E] A `#[cfg(test)]` caller never satisfies O-2 production reachability. (O2:L57-L59 | ledger-line: DEEP-O-001.discovery.md:L361)
+- (SUMMARY/O-2.E01) [E/Borrowed behavior] O-2 adopts the Codex Automations pattern of time schedules. (O-SUMMARY:L35 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L122)
+- (SUMMARY/O-2.E02) [E/Borrowed behavior] O-2 adopts the Codex Automations pattern of event schedules. (O-SUMMARY:L35 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L123)
+- (SUMMARY/O-2.E04) [E/Borrowed lifecycle behavior] The borrowed automation flow includes auto-archive. (O-SUMMARY:L35 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L125)
+- (SUMMARY/O-2.E05) [E/Data invariant] ELAI's scheduled substrate is typed. (O-SUMMARY:L35 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L126)
+- (SUMMARY/O-2.E06) [E/Evidence invariant] ELAI's scheduled substrate is journaled. (O-SUMMARY:L35 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L127)
+- (SUMMARY/O-2.E07) [E/Persistence contract] A `TaskSpec` is stored as a SQLite row. (O-SUMMARY:L35-L36 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L128)
+- (SUMMARY/O-2.E08) [E/Composition/data pattern] The row follows the rules-engine rows-as-data pattern. (O-SUMMARY:L36 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L129)
+- (SUMMARY/O-2.E09) [E/Data contract] `TaskSpec.trigger` is a closed choice among named trigger kinds. (O-SUMMARY:L36 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L130)
+- (SUMMARY/O-2.E10) [E/Enum value] `Cron` is an allowed trigger value. (O-SUMMARY:L36 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L131)
+- (SUMMARY/O-2.E11) [E/Enum value] `SsbEvent` is an allowed trigger value. (O-SUMMARY:L36 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L132)
+- (SUMMARY/O-2.E12) [E/Enum value] `Manual` is an allowed trigger value. (O-SUMMARY:L36 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L133)
+- (SUMMARY/O-2.E13) [E/Data/workflow invariant] `TaskSpec.pipeline` is ordered. (O-SUMMARY:L36-L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L134)
+- (SUMMARY/O-2.E14) [E/Data/safety invariant] Pipeline stage kinds come from a closed enum. (O-SUMMARY:L36-L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L135)
+- (SUMMARY/O-2.E15) [E/Data contract] `TaskSpec.sink` is a closed choice among named sink kinds. (O-SUMMARY:L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L136)
+- (SUMMARY/O-2.E17) [E/Enum value] `Digest` is an allowed sink value. (O-SUMMARY:L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L138)
+- (SUMMARY/O-2.E20) [E/Observability/evidence] Every TaskSpec fire emits a journaled SSB row. (O-SUMMARY:L37-L38 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L141)
+- (SUMMARY/O-2.E21) [E/Event field/invariant] Every fire row carries the trigger cause. (O-SUMMARY:L37-L38 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L142)
+- (SUMMARY/O-2.E22) [E/Determinism boundary] K-14 keeps the wall-clock trigger in the supervisor plane. (O-SUMMARY:L38 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L143)
+- (SUMMARY/O-2.E23) [E/Determinism behavior] Keeping wall-clock triggering in the supervisor plane is intended to keep the run deterministic. (O-SUMMARY:L38-L39 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L144)
+- (SUMMARY/O-2.E24) [E/Lifecycle/operations reuse] Missed-run detection reuses the SSB temporal monitor. (O-SUMMARY:L38-L39 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L145)
+- (SUMMARY/O-2.E26) [E/Missing/status] The typed TaskSpec itself is absent at summary time. (O-SUMMARY:L39-L40 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L147)
+- (SUMMARY/O-2.E27) [E/Missing/status] Trigger-to-`task_runner` wiring is absent at summary time. (O-SUMMARY:L39-L40 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L148)
+- (SUMMARY/O-2.E28) [E/Dependency] O-2 composes with rules-engine rows-as-data (`3F`). (O-SUMMARY:L41 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L149)
+- (SUMMARY/O-2.E29) [E/Dependency] O-2 composes with the `task_runner` interval (`C-9`). (O-SUMMARY:L41 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L150)
+- (SUMMARY/O-2.E30) [E/Dependency] O-2 composes with SSB and the K-14 temporal monitor. (O-SUMMARY:L41-L42 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L151)
+- (SUMMARY/O-2.E32) [E/Cross-O dependency] O-2's pipeline vocabulary consumes O-1 stage kinds. (O-SUMMARY:L42 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L153)
+- (SUMMARY/O-2.E33) [E/Integration point with unresolved owner] The integration must add a `TaskSpec` table in `crates/orchestrator` or the rules crate. (O-SUMMARY:L43 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L154)
+- (SUMMARY/O-2.E34) [E/Integration point] The integration must add a TaskSpec dispatcher. (O-SUMMARY:L43 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L155)
+- (SUMMARY/O-2.E35) [E/Integration point] The integration must add fire-row emission. (O-SUMMARY:L43 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L156)
+- (SUMMARY/O-2.E36) [E/Scheduling invariant/done-gate] A due-now `Cron` TaskSpec must fire exactly once per tick. (O-SUMMARY:L44 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L157)
+- (SUMMARY/O-2.E37) [E/Event type] The emitted event is named `task_spec_fired`. (O-SUMMARY:L44 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L158)
+- (SUMMARY/O-2.E38) [E/Event field] `task_spec_fired` carries `spec_id`. (O-SUMMARY:L44-L45 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L159)
+- (SUMMARY/O-2.E39) [E/Event field] `task_spec_fired` carries `trigger_cause`. (O-SUMMARY:L44-L45 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L160)
+- (SUMMARY/O-2.E40) [E/Event field] `task_spec_fired` carries `stage_path`. (O-SUMMARY:L44-L45 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L161)
+- [deferred] (O-001/O2-E053) [E] Tier 2 defers the `SsbEvent` trigger. (O2:L21 | ledger-line: DEEP-O-001.discovery.md:L302)
+- [deferred] (O-001/O2-E054) [E] Tier 2 defers `SpawnResearchTree` and `RunPlanUnit` until an orchestrator-FSM wiring pass. (O2:L21 | ledger-line: DEEP-O-001.discovery.md:L303)
+- [deferred] (O-001/O2-E055) [E] Tier 2 defers the missed-run detection hookup. (O2:L21 | ledger-line: DEEP-O-001.discovery.md:L304)
+- [deferred] (O-001/O2-E082) [E] If the temporal monitor lacks a due/overdue query, missed-run detection moves to Tier 2. (O2:L38-L39 | ledger-line: DEEP-O-001.discovery.md:L331)
+
+### O-3: brain vault contract + mounting — portable markdown vault with namespace claims
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers SUMMARY, SUP | sample: O3:L1-L3; O3:L5; O3:L7; O3:L7; O3:L7; O3:L7 | 109 non-summary-placed, 35 summary-placed, 146 total unique atoms in unit | IDs: O-001/O3-E001, O-001/O3-E002, O-001/O3-E003, O-001/O3-E004, O-001/O3-E005, O-001/O3-E006, O-001/O3-E007, O-001/O3-E008, …
+**Composes with**: B-42, C-9, C-16, D-5, E-5, F-3, G-1, G-2, H-12, J-31, J-60, O-1, O-2, O-4, PS-1, PS-6. IX: O-001/IX-PATH01 → O-1; O-001/IX-PATH02 → F-3, G-1, G-2; O-001/IX-PATH04 → O-2; O-001/IX-PATH07 → O-2; O-001/IX-PATH08 → D-5, E-5; O-001/IX-PATH09 → J-60, O-4; O-001/IX-PATH10 → O-2; O-001/IX-PATH11 → G-2, J-60, O-1, O-2; O-001/IX-DATA002 → O-1; O-001/IX-DATA003 → G-2
+
+- Superseded: (SUP/SD-MC001) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC001` title=`Digest patches are per-unit, not literally identical across every unit.` (ledger-line: DEEP-O-001.discovery.md:L683): O0 says `A1..A5` feed per-unit `stub_ban`/`REDTEAM` (`O0:L4-L7,L55-L56`). The detail plans specialize them: O-1 applies A1/A3, O-2 A2/A3, O-3 A4, and O-4 A3. The summary-ledger claim that every unit enforces the same A1, A3, and A4 set is broader than the originals.
+- Superseded: (SUP/SD-MC010) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC010` title=`No new O-4 event is planned.` (ledger-line: DEEP-O-001.discovery.md:L692): O0 explicitly says O-4 reuses O-2’s fire row, while O-1/O-2/O-3 add schema action types (`O0:L80-L85`).
+- [status] (O-001/O3-E001) [E] `O-3` is `PLANNED`, Wave `2`, product-surface class, `PROOF_SPINE: none`, and owner-acknowledged `2026-07-06`. (O3:L1-L3 | ledger-line: DEEP-O-001.discovery.md:L365)
+- [status] (O-001/O3-E002) [E] Metadata is Track `RESEARCH-MACHINE`, lever `mount-not-convert`, source finding `L2`, grounding `MODERATE (index-derived, PLAN-asserted)`, nature `BUILD-on-shipped`, effort `M`, Wave `2`. (O3:L5 | ledger-line: DEEP-O-001.discovery.md:L366)
+- [config] (O-001/O3-E076) [E] If mount compatibility would require editing user-authored notes to fit ELAI, execution aborts and flags the issue. (O3:L45-L46 | ledger-line: DEEP-O-001.discovery.md:L440)
+- [gate] (O-001/O3-E026) [E] Every write outside a claimed namespace hard-refuses. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L390)
+- [gate] (O-001/O3-E032) [E] A D-5-style life-layer denylist blocks personal topics from project prompts. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L396)
+- [gate] (O-001/O3-E033) [E] The same privacy boundary blocks personal topics from cloud calls. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L397)
+- [gate] (O-001/O3-E060) [E] Any rewrite/reformat during read is failure. (O3:L29 | ledger-line: DEEP-O-001.discovery.md:L424)
+- [gate] (O-001/O3-E062) [E] Move M2 gates every write through namespace claims. (O3:L30 | ledger-line: DEEP-O-001.discovery.md:L426)
+- [gate] (O-001/O3-E063) [E] An ELAI write into an unclaimed TEIKOKU-owned namespace yields a claim-violation error. (O3:L31 | ledger-line: DEEP-O-001.discovery.md:L427)
+- [gate] (O-001/O3-E069) [E] Upsert targeting a user note must refuse. (O3:L34 | ledger-line: DEEP-O-001.discovery.md:L433)
+- [gate] (O-001/O3-E072) [E] Under that fork, TEIKOKU mounting is a Tier 2 follow-up gated on a shared path and O-3 is not blocked. (O3:L38 | ledger-line: DEEP-O-001.discovery.md:L436)
+- [gate] (O-001/O3-E084) [E] A production write into an unclaimed namespace must hard-refuse. (O3:L60-L64 | ledger-line: DEEP-O-001.discovery.md:L448)
+- [gate] (O-001/O3-E094) [E] Any unclaimed write or user-note mutation fails. (O3:L68 | ledger-line: DEEP-O-001.discovery.md:L458)
+- [gate] (O-001/O3-E098) [E] Verification runs `production_caller_check.py --files <changed .rs> --json`; a dark public function blocks. (O3:L75 | ledger-line: DEEP-O-001.discovery.md:L462)
+- [gate] (O-001/O3-E104) [E] Cross-owner corruption is intended to fail because namespace claims scope writes and upsert is limited to machine-owned page classes. (O3:L80-L81 | ledger-line: DEEP-O-001.discovery.md:L468)
+- [gate] (SUMMARY/O-3.E25) [E/Storage/lifecycle invariant] The two stores must not dual-write. (O-SUMMARY:L57 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L196)
+- [gate] (SUMMARY/O-3.E34) [E/Negative invariant] Any actual write into an unclaimed namespace fails the done-gate. (O-SUMMARY:L61-L62 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L205)
+- [gate] (SUMMARY/O-3.E35) [E/Negative invariant] Any mutation of a user note fails the done-gate. (O-SUMMARY:L61-L62 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L206)
+- [surface] (O-001/O3-E008) [E/SURFACE] A deterministic Markdown vault is the user-grain surface. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L372)
+- [surface] (O-001/O3-E009) [E/SURFACE] The owner can read and edit the vault in Obsidian or GDrive. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L373)
+- [surface] (O-001/O3-E010) [E/SURFACE] The vault format contract comprises Markdown, YAML frontmatter, wikilinks, and machine-owned namespaces. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L374)
+- [surface] (O-001/O3-E011) [E/SURFACE] ELAI mounts the existing TEIKOKU brain vault rather than importing it. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L375)
+- [surface] (O-001/O3-E013) [E/SURFACE] Namespace claims prevent two harnesses writing one vault from colliding. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L377)
+- [surface] (O-001/O3-E024) [E/SURFACE] A file named `namespace-claims` lives at the vault root. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L388)
+- [surface] (O-001/O3-E027) [E/SURFACE] Namespace isolation is intended to let ELAI and TEIKOKU share one physical vault. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L391)
+- [surface] (O-001/O3-E034) [E/SURFACE] Vault reads route through the existing privacy-redaction/air-gapped layer. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L398)
+- [surface] (O-001/O3-E035) [E/SURFACE] Converting the TEIKOKU vault into `memory_facts` is excluded. (O3:L11 | ledger-line: DEEP-O-001.discovery.md:L399)
+- [surface] (O-001/O3-E042) [E/SURFACE] Tier 1 ships the vault contract reader and writer for frontmatter, wikilinks, and `topics/<t>/<slug>.md`. (O3:L18-L19 | ledger-line: DEEP-O-001.discovery.md:L406)
+- [surface] (O-001/O3-E046) [E/SURFACE] Tier 1 mounts a configured existing vault path. (O3:L19 | ledger-line: DEEP-O-001.discovery.md:L410)
+- [surface] (O-001/O3-E050) [E/SURFACE] Backend integration adds the vault reader/writer module. (O3:L23 | ledger-line: DEEP-O-001.discovery.md:L414)
+- [surface] (O-001/O3-E052) [E/SURFACE] The mount point resolves a configured vault root. (O3:L23 | ledger-line: DEEP-O-001.discovery.md:L416)
+- [surface] (O-001/O3-E053) [E/SURFACE] A dashboard vault-page view, if present, is read-only. (O3:L24 | ledger-line: DEEP-O-001.discovery.md:L417)
+- [surface] (O-001/O3-E055) [E/SURFACE] No new ELAI panel is justified because the vault is intentionally an external-editor surface. (O3:L24 | ledger-line: DEEP-O-001.discovery.md:L419)
+- [surface] (O-001/O3-E057) [E/SURFACE] M1 initially mounts a configured existing vault root read-only. (O3:L27 | ledger-line: DEEP-O-001.discovery.md:L421)
+- [surface] (O-001/O3-E071) [E/SURFACE] If the TEIKOKU vault is inaccessible from the host, such as a WSL-only tree, Tier 1 uses a fresh ELAI-claimed vault. (O3:L37-L38 | ledger-line: DEEP-O-001.discovery.md:L435)
+- [surface] (O-001/O3-E073) [E/SURFACE] Before authoring the reader, recon must read the TEIKOKU vault root and `write_page`/`upsert_page` source to establish layout and frontmatter. (O3:L40-L41 | ledger-line: DEEP-O-001.discovery.md:L437)
+- [surface] (O-001/O3-E077) [E/SURFACE] ELAI must adapt to the vault format; the vault may never be adapted to ELAI. (O3:L46 | ledger-line: DEEP-O-001.discovery.md:L441)
+- [surface] (O-001/O3-E085) [E/SURFACE] A production path may not convert the vault into `memory_facts`. (O3:L63 | ledger-line: DEEP-O-001.discovery.md:L449)
+- [surface] (O-001/O3-E087) [E/SURFACE] The observable trigger mounts a vault, performs one ELAI-claimed `FileToBrain` write, and attempts one unclaimed write. (O3:L65-L67 | ledger-line: DEEP-O-001.discovery.md:L451)
+- [surface] (O-001/O3-E088) [E/SURFACE] A successful claimed write emits `vault_write`. (O3:L67 | ledger-line: DEEP-O-001.discovery.md:L452)
+- [surface] (O-001/O3-E089) [E/SURFACE] `vault_write` carries `namespace`. (O3:L67 | ledger-line: DEEP-O-001.discovery.md:L453)
+- [surface] (O-001/O3-E090) [E/SURFACE] `vault_write` carries `page`. (O3:L67 | ledger-line: DEEP-O-001.discovery.md:L454)
+- [surface] (O-001/O3-E091) [E/SURFACE] `vault_write.mode` is one of `create`, `append`, or `upsert`. (O3:L67 | ledger-line: DEEP-O-001.discovery.md:L455)
+- [surface] (O-001/O3-E096) [E/SURFACE] If O-1/O-2 has not landed, interim production reachability is CLI subcommand `elai brain write`, named at recon. (O3:L70 | ledger-line: DEEP-O-001.discovery.md:L460)
+- [surface] (O-001/O3-E100) [E/SURFACE] The independent integration smoke starts with a vault already containing a TEIKOKU-owned namespace. (O3:L78 | ledger-line: DEEP-O-001.discovery.md:L464)
+- [surface] (O-001/O3-E103) [E/SURFACE] A single-owner happy path does not satisfy `R10`; the smoke must be a shared-vault two-owner run. (O3:L78 | ledger-line: DEEP-O-001.discovery.md:L467)
+- [surface] (O-001/O3-E105) [E/SURFACE] Personal-topic leakage is patched by applying D-5 on prompt-bound vault reads. (O3:L81 | ledger-line: DEEP-O-001.discovery.md:L469)
+- [surface] (O-001/O3-E108) [E/SURFACE] Mounting replaces migration while vault and `memory_facts` retain separate user and machine grains. (O3:L88-L89 | ledger-line: DEEP-O-001.discovery.md:L472)
+- [surface] (SUMMARY/O-3.E04) [E/New user surface/SURFACE] A markdown vault is the user-grain surface. (O-SUMMARY:L51-L53 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L175)
+- [surface] (SUMMARY/O-3.E05) [E/Data invariant/SURFACE] The markdown vault format is deterministic. (O-SUMMARY:L51-L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L176)
+- [surface] (SUMMARY/O-3.E07) [E/File-format contract/SURFACE] Vault pages use frontmatter. (O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L178)
+- [surface] (SUMMARY/O-3.E08) [E/File-format/navigation feature/SURFACE] Vault pages support wikilinks. (O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L179)
+- [surface] (SUMMARY/O-3.E09) [E/User-data lifecycle feature/SURFACE] The vault contains living rankings. (O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L180)
+- [surface] (SUMMARY/O-3.E10) [E/User-data lifecycle feature/SURFACE] The vault contains a living queue. (O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L181)
+- [surface] (SUMMARY/O-3.E11) [E/User-data lifecycle/navigation feature/SURFACE] The vault contains a living index. (O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L182)
+- [surface] (SUMMARY/O-3.E12) [E/External contract reuse/SURFACE] The vault adopts TEIKOKU `brain_store.write_page` discipline verbatim. (O-SUMMARY:L52-L53 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L183)
+- [surface] (SUMMARY/O-3.E13) [E/External contract reuse/SURFACE] The vault adopts TEIKOKU `brain_store.upsert_page` discipline verbatim. (O-SUMMARY:L52-L53 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L184)
+- [surface] (SUMMARY/O-3.E14) [E/Migration invariant/SURFACE] The markdown format itself is the migration contract. (O-SUMMARY:L53-L54 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L185)
+- [surface] (SUMMARY/O-3.E16) [E/Integration behavior/SURFACE] ELAI mounts the existing TEIKOKU vault. (O-SUMMARY:L54 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L187)
+- [surface] (SUMMARY/O-3.E17) [E/New state/config mechanism/SURFACE] A namespace-claims file exists at the vault root. (O-SUMMARY:L54-L55 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L188)
+- [surface] (SUMMARY/O-3.E20) [E/Multi-writer isolation behavior/SURFACE] Namespace claims are what allow two harnesses to share one vault. (O-SUMMARY:L55-L56 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L191)
+- [surface] (SUMMARY/O-3.E24) [E/Storage invariant/SURFACE] The vault and E-5 `memory_facts` remain disjoint grains. (O-SUMMARY:L57 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L195)
+- [surface] (SUMMARY/O-3.E27) [E/Integration point/SURFACE] The integration adds a vault reader in `crates/knowledge`. (O-SUMMARY:L59 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L198)
+- [surface] (SUMMARY/O-3.E28) [E/Integration point/SURFACE] The integration adds a vault writer in `crates/knowledge`. (O-SUMMARY:L59 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L199)
+- [surface] (SUMMARY/O-3.E32) [E/Observability/evidence/SURFACE] A successful claimed-namespace write emits a `vault_write` row. (O-SUMMARY:L60 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L203)
+- (O-001/O3-E003) [E] Brain migration is required to cost zero conversion. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L367)
+- (O-001/O3-E004) [E] The brain is split by storage/use grain. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L368)
+- (O-001/O3-E005) [E] E-5 `memory_facts` remains the machine-grain fact store. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L369)
+- (O-001/O3-E006) [E] `memory_facts` continues feeding prompts. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L370)
+- (O-001/O3-E007) [E] The existing auditor firewall around machine memory remains intact. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L371)
+- (O-001/O3-E012) [E] Namespace claims are the only mechanism described as genuinely new for this unit. (O3:L7 | ledger-line: DEEP-O-001.discovery.md:L376)
+- (O-001/O3-E014) [E] Topic pages use `topics/<t>/<slug>.md`. (O3:L9-L10 | ledger-line: DEEP-O-001.discovery.md:L378)
+- (O-001/O3-E015) [E] Pages use YAML frontmatter. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L379)
+- (O-001/O3-E016) [E] Pages support wikilinks. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L380)
+- (O-001/O3-E017) [E] Full contract includes living pages under `rankings/`. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L381)
+- (O-001/O3-E018) [E] Full contract includes living pages under `queue/`. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L382)
+- (O-001/O3-E019) [E] Full contract includes an `index` living page. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L383)
+- (O-001/O3-E020) [E] `write_page` is create/append-only. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L384)
+- (O-001/O3-E021) [E] `upsert_page` is guarded. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L385)
+- (O-001/O3-E022) [E] `upsert_page` is restricted to machine-owned namespaces. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L386)
+- (O-001/O3-E023) [E] `upsert_page` may never edit user notes. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L387)
+- (O-001/O3-E025) [E] The claims file declares which machine owns each namespace. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L389)
+- (O-001/O3-E028) [E] The existing `memory_facts` SQLite store remains unchanged. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L392)
+- (O-001/O3-E029) [E] Existing `Mem0` dispatch remains unchanged. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L393)
+- (O-001/O3-E030) [E] Existing machine-memory decay remains unchanged. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L394)
+- (O-001/O3-E031) [E] Existing `MINJA` defense remains unchanged. (O3:L10 | ledger-line: DEEP-O-001.discovery.md:L395)
+- (O-001/O3-E036) [E] Editing user-authored notes is excluded; allowed writer shapes are create/append and machine-namespace upsert. (O3:L11 | ledger-line: DEEP-O-001.discovery.md:L400)
+- (O-001/O3-E037) [E] Routing personal-brain content into project prompts is excluded. (O3:L11 | ledger-line: DEEP-O-001.discovery.md:L401)
+- (O-001/O3-E038) [E] A second fact store is excluded. (O3:L11 | ledger-line: DEEP-O-001.discovery.md:L402)
+- (O-001/O3-E039) [E] Existing ground truth asserts `memory_facts` is SQLite with Mem0-style dispatch, decay, and MINJA injection defense. (O3:L13-L14 | ledger-line: DEEP-O-001.discovery.md:L403)
+- (O-001/O3-E040) [E] Existing ground truth asserts a D-5 life-layer denylist and privacy-redaction/air-gapped read layer are shipped. (O3:L15 | ledger-line: DEEP-O-001.discovery.md:L404)
+- (O-001/O3-E041) [E] Existing ground truth asserts TEIKOKU’s writer discipline and rankings/queue/index pages are live-proven. (O3:L16 | ledger-line: DEEP-O-001.discovery.md:L405)
+- (O-001/O3-E043) [E] Tier 1 ships guarded create/append. (O3:L19 | ledger-line: DEEP-O-001.discovery.md:L407)
+- (O-001/O3-E044) [E] Tier 1 ships machine-namespace upsert. (O3:L19 | ledger-line: DEEP-O-001.discovery.md:L408)
+- (O-001/O3-E045) [E] Tier 1 ships the root namespace-claims file and hard refusal. (O3:L19 | ledger-line: DEEP-O-001.discovery.md:L409)
+- (O-001/O3-E049) [E] Backend ownership is the knowledge/memory crate. (O3:L22-L23 | ledger-line: DEEP-O-001.discovery.md:L413)
+- (O-001/O3-E051) [E] Backend integration adds the namespace-claims parser and guarded-upsert path. (O3:L23 | ledger-line: DEEP-O-001.discovery.md:L415)
+- (O-001/O3-E056) [E] Move M1 parses frontmatter and wikilinks under the topic-path layout. (O3:L26-L27 | ledger-line: DEEP-O-001.discovery.md:L420)
+- (O-001/O3-E058) [E] Mount acceptance lists existing TEIKOKU topics/pages without modifying them. (O3:L28 | ledger-line: DEEP-O-001.discovery.md:L422)
+- (O-001/O3-E059) [E] Frontmatter and wikilinks must round-trip byte-identically. (O3:L28 | ledger-line: DEEP-O-001.discovery.md:L423)
+- (O-001/O3-E061) [E] The remedy for read mutation is a pure reader with no normalize-on-load plus a byte-identity test. (O3:L29 | ledger-line: DEEP-O-001.discovery.md:L425)
+- (O-001/O3-E064) [E] Writing into an ELAI-claimed namespace succeeds under create/append-only semantics. (O3:L31 | ledger-line: DEEP-O-001.discovery.md:L428)
+- (O-001/O3-E065) [E] If a cross-namespace write succeeds, the claim check must be moved into the single write chokepoint. (O3:L32 | ledger-line: DEEP-O-001.discovery.md:L429)
+- (O-001/O3-E066) [E] Cross-namespace protection requires a refusal test. (O3:L32 | ledger-line: DEEP-O-001.discovery.md:L430)
+- (O-001/O3-E067) [E] Move M3 restricts upsert to machine-owned `rankings`, `queue`, and `index` living pages. (O3:L33 | ledger-line: DEEP-O-001.discovery.md:L431)
+- (O-001/O3-E068) [E] Upsert may update a machine-owned rankings page in place. (O3:L34 | ledger-line: DEEP-O-001.discovery.md:L432)
+- (O-001/O3-E070) [E] If a user note is edited, the remedy is a namespace plus page-class predicate on upsert and a user-note refusal test. (O3:L35 | ledger-line: DEEP-O-001.discovery.md:L434)
+- (O-001/O3-E074) [E] Recon must examine the `memory_facts` API to preserve a disjoint boundary and prevent accidental dual-write. (O3:L42 | ledger-line: DEEP-O-001.discovery.md:L438)
+- (O-001/O3-E075) [E] Recon must locate the D-5 denylist and privacy/air-gap read entrypoint. (O3:L43 | ledger-line: DEEP-O-001.discovery.md:L439)
+- (O-001/O3-E078) [E] Produced symbols include the reader/writer for frontmatter, wikilinks, and the topic path. (O3:L48-L50 | ledger-line: DEEP-O-001.discovery.md:L442)
+- (O-001/O3-E079) [E] Produced symbols include the claims parser and hard refusal for unclaimed namespaces. (O3:L51 | ledger-line: DEEP-O-001.discovery.md:L443)
+- (O-001/O3-E080) [E] Produced symbols include guarded create/append and machine-namespace-only `upsert_page`. (O3:L52 | ledger-line: DEEP-O-001.discovery.md:L444)
+- (O-001/O3-E081) [E] O-3 consumes but does not dual-write or reimplement E-5 machine memory. (O3:L53-L54 | ledger-line: DEEP-O-001.discovery.md:L445)
+- (O-001/O3-E082) [E] O-3 consumes D-5 privacy and the TEIKOKU `brain_store` contract. (O3:L55-L56 | ledger-line: DEEP-O-001.discovery.md:L446)
+- (O-001/O3-E083) [E] Production reachability is an O-1/O-2 `FileToBrain` stage writing through the guarded writer during a live run. (O3:L57-L59 | ledger-line: DEEP-O-001.discovery.md:L447)
+- (O-001/O3-E086) [E] A production path may not route personal-brain content into a project/cloud prompt. (O3:L64 | ledger-line: DEEP-O-001.discovery.md:L450)
+- (O-001/O3-E092) [E] An unclaimed attempt emits `claim_violation`. (O3:L67 | ledger-line: DEEP-O-001.discovery.md:L456)
+- (O-001/O3-E093) [E] The claimed write creates a disk page with valid frontmatter and wikilinks. (O3:L68 | ledger-line: DEEP-O-001.discovery.md:L457)
+- (O-001/O3-E095) [E] The production hook is the O-1/O-2 `FileToBrain` sink wired to the guarded writer in the same changeset. (O3:L70 | ledger-line: DEEP-O-001.discovery.md:L459)
+- (O-001/O3-E097) [E] Verification runs `wiring_contract_check.py` against this plan with `--run-trigger`. (O3:L72-L75 | ledger-line: DEEP-O-001.discovery.md:L461)
+- (O-001/O3-E099) [E] Verification passes only when a real caller creates valid frontmatter and an unclaimed attempt produces an off-agent `claim_violation`, never silent success. (O3:L76 | ledger-line: DEEP-O-001.discovery.md:L463)
+- (O-001/O3-E101) [E] The smoke performs both an ELAI-namespace write and an attempted TEIKOKU-namespace write. (O3:L78 | ledger-line: DEEP-O-001.discovery.md:L465)
+- (O-001/O3-E102) [E] The smoke asserts successful creation, hard claim refusal, and user-note-upsert refusal. (O3:L78 | ledger-line: DEEP-O-001.discovery.md:L466)
+- (O-001/O3-E107) [E] O-3 composes with E-5 machine memory, D-5 privacy, TEIKOKU brain_store, and O-1/O-2 `FileToBrain`, and reimplements none. (O3:L83-L89 | ledger-line: DEEP-O-001.discovery.md:L471)
+- (O-001/O3-E109) [E] A `#[cfg(test)]` caller never satisfies O-3 production reachability. (O3:L57-L59 | ledger-line: DEEP-O-001.discovery.md:L473)
+- (SUMMARY/O-3.E01) [E/Architecture invariant] O-3 splits “the brain” by storage/use grain. (O-SUMMARY:L51 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L172)
+- (SUMMARY/O-3.E02) [E/Existing role/status] E-5 `memory_facts` remains the machine-grain store. (O-SUMMARY:L51 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L173)
+- (SUMMARY/O-3.E03) [E/Existing role] The machine-grain `memory_facts` store feeds prompts. (O-SUMMARY:L51 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L174)
+- (SUMMARY/O-3.E06) [E/File-layout contract] Topic pages use the path contract `topics/<t>/<slug>.md`. (O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L177)
+- (SUMMARY/O-3.E15) [E/Mounting/migration behavior] Migration requires zero conversion. (O-SUMMARY:L53-L54 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L186)
+- (SUMMARY/O-3.E18) [E/Access-control contract] The claims file records which namespaces are claimed for writing. (O-SUMMARY:L55 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L189)
+- (SUMMARY/O-3.E19) [E/Security/error behavior] A write outside a claimed namespace receives a hard refusal. (O-SUMMARY:L55-L56 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L190)
+- (SUMMARY/O-3.E21) [E/Privacy dependency] A D-5 life-layer denylist provides the privacy boundary. (O-SUMMARY:L56 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L192)
+- (SUMMARY/O-3.E22) [E/Privacy invariant] Personal topics are kept out of project prompts. (O-SUMMARY:L56 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L193)
+- (SUMMARY/O-3.E23) [E/Privacy invariant] Personal topics are kept out of cloud prompts. (O-SUMMARY:L56 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L194)
+- (SUMMARY/O-3.E26) [E/Cross-O dependency] O-3 composes with the O-1/O-2 `FileToBrain` sink. (O-SUMMARY:L58 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L197)
+- (SUMMARY/O-3.E29) [E/Integration point] The integration adds a namespace-claims parser. (O-SUMMARY:L59 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L200)
+- (SUMMARY/O-3.E30) [E/Integration/security point] The integration adds guarded upsert. (O-SUMMARY:L59 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L201)
+- (SUMMARY/O-3.E31) [E/Positive done-gate] A `FileToBrain` write inside an ELAI-claimed namespace creates a valid page. (O-SUMMARY:L60 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L202)
+- (SUMMARY/O-3.E33) [E/Refusal observability] An attempted unclaimed-namespace write emits a `claim_violation` row. (O-SUMMARY:L60-L61 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L204)
+- [deferred] (O-001/O3-E047) [E/SURFACE] Tier 2 defers D-5 life-layer enforcement on vault reads into prompts until a privacy-layer wiring pass. (O3:L20 | ledger-line: DEEP-O-001.discovery.md:L411)
+- [deferred] (O-001/O3-E048) [E/SURFACE] Tier 2 defers bidirectional synchronization between `memory_facts` and vault views. (O3:L20 | ledger-line: DEEP-O-001.discovery.md:L412)
+- [deferred] (O-001/O3-E054) [E/SURFACE] The dashboard view may be deferred entirely to Obsidian/GDrive. (O3:L24 | ledger-line: DEEP-O-001.discovery.md:L418)
+- [deferred] (O-001/O3-E106) [E] The D-5 ban is a Tier-1 `stub_ban`, but its enforcement wiring is Tier 2 and must land before personal topics may be mounted into project context. (O3:L81 | ledger-line: DEEP-O-001.discovery.md:L470)
+
+### O-4: canvas WORKFLOW mode — editor + monitor over TaskSpecs (never a runtime)
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers SUMMARY, SUP | sample: O4:L1-L3; O4:L5; O4:L7; O4:L7; O4:L7; O4:L7 | 93 non-summary-placed, 33 summary-placed, 129 total unique atoms in unit | IDs: O-001/O4-E001, O-001/O4-E002, O-001/O4-E003, O-001/O4-E004, O-001/O4-E005, O-001/O4-E006, O-001/O4-E007, O-001/O4-E008, …
+**Composes with**: B-42, C-9, C-16, D-5, E-5, F-3, G-1, G-2, H-12, J-31, J-60, O-1, O-2, O-3, PS-1, PS-6. IX: O-001/IX-PATH01 → O-1; O-001/IX-PATH02 → F-3, G-1, G-2; O-001/IX-PATH03 → O-3; O-001/IX-PATH04 → O-2; O-001/IX-PATH07 → O-2, O-3; O-001/IX-PATH08 → D-5, E-5; O-001/IX-PATH09 → J-60; O-001/IX-PATH10 → O-2; O-001/IX-PATH11 → G-2, J-60, O-1, O-2, O-3; O-001/IX-DATA002 → O-1
+
+- Superseded: (SUP/SD-MC001) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC001` title=`Digest patches are per-unit, not literally identical across every unit.` (ledger-line: DEEP-O-001.discovery.md:L683): O0 says `A1..A5` feed per-unit `stub_ban`/`REDTEAM` (`O0:L4-L7,L55-L56`). The detail plans specialize them: O-1 applies A1/A3, O-2 A2/A3, O-3 A4, and O-4 A3. The summary-ledger claim that every unit enforces the same A1, A3, and A4 set is broader than the originals.
+- Superseded: (SUP/SD-MC003) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC003` title=`O-4 editing is not Tier 1.` (ledger-line: DEEP-O-001.discovery.md:L685): The original makes Tier 1 read-only inspection and explicitly defers TaskSpec write-back plus provenance drill-down to Tier 2 (`O4:L19-L21`). Any summary reading of node editing as an immediate ship-now feature needs this tier qualifier.
+- Superseded: (SUP/SD-MC010) [superseded] [superseded] winner=`O-001 originals (deep)` loser=`SUMMARY orientation` sd_ref=`O-001/SD-MC010` title=`No new O-4 event is planned.` (ledger-line: DEEP-O-001.discovery.md:L692): O0 explicitly says O-4 reuses O-2’s fire row, while O-1/O-2/O-3 add schema action types (`O0:L80-L85`).
+- [status] (O-001/O4-E001) [E] `O-4` is `PLANNED`, Wave `3`, product-surface class, `PROOF_SPINE: none`, and owner-acknowledged `2026-07-06`. (O4:L1-L3 | ledger-line: DEEP-O-001.discovery.md:L477)
+- [status] (O-001/O4-E002) [E/SURFACE] Metadata is Track `RESEARCH-MACHINE`, lever `canvas-as-spec-editor`, source finding `L4`, grounding `MODERATE (index-derived, PLAN-asserted)`, nature `BUILD-on-shipped`, effort `M`, Wave `3`. (O4:L5 | ledger-line: DEEP-O-001.discovery.md:L478)
+- [status] (O-001/O4-E028) [E] Existing ground truth asserts H-12’s modes and bar, J-31’s FSM-only doctrine, and J-60’s status chrome are shipped. (O4:L13-L16 | ledger-line: DEEP-O-001.discovery.md:L504)
+- [status] (O-001/O4-E051) [E] A stage that ran displays its last-run status. (O4:L32 | ledger-line: DEEP-O-001.discovery.md:L527)
+- [config] (O-001/O4-E031) [E/SURFACE] Tier 1 ships the WORKFLOW mode flag in the mode bar. (O4:L19-L20 | ledger-line: DEEP-O-001.discovery.md:L507)
+- [config] (O-001/O4-E066) [E/SURFACE] If WORKFLOW requires any canvas-side execution logic, execution aborts and flags the violation. (O4:L46-L47 | ledger-line: DEEP-O-001.discovery.md:L542)
+- [gate] (O-001/O4-E007) [E/SURFACE] J-31 forbids a canvas-side runtime. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L483)
+- [gate] (O-001/O4-E015) [E] Product positioning is “n8n with receipts”: gated, journaled, replayable, AI-research scoped, and not `400` ungated integrations. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L491)
+- [gate] (O-001/O4-E061) [E] Live store wiring is then gated on O-2. (O4:L39 | ledger-line: DEEP-O-001.discovery.md:L537)
+- [gate] (O-001/O4-E062) [E/SURFACE] O-4 must not create a canvas-side spec store even in fallback. (O4:L39 | ledger-line: DEEP-O-001.discovery.md:L538)
+- [gate] (O-001/O4-E075) [E/SURFACE] `ts-rs` bindings for the Svelte/Rust frontend pair must not drift. (O4:L67 | ledger-line: DEEP-O-001.discovery.md:L551)
+- [gate] (O-001/O4-E079) [E/SURFACE] Any canvas execution path or normally-connected display of a wire-dark node fails. (O4:L71 | ledger-line: DEEP-O-001.discovery.md:L555)
+- [gate] (O-001/O4-E090) [E/SURFACE] Client-side execution-engine smuggling is intended to fail because J-31 is a stub ban and run-now routes to O-2’s journaled dispatcher. (O4:L84-L85 | ledger-line: DEEP-O-001.discovery.md:L566)
+- [gate] (SUMMARY/O-4.E32) [E/Negative invariant/SURFACE] Any canvas-side execution path fails the done-gate. (O-SUMMARY:L76-L77 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L245)
+- [gate] (SUMMARY/O-4.E33) [E/Negative invariant] A normally connected node that renders wire-dark fails the done-gate. (O-SUMMARY:L76-L77 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L246)
+- [surface] (O-001/O4-E003) [E/SURFACE] H-12 is asserted to have shipped PLAN and RESEARCH canvas modes plus a mode bar. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L479)
+- [surface] (O-001/O4-E004) [E/SURFACE] J-31 defines canvas nodes as bound units. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L480)
+- [surface] (O-001/O4-E005) [E/SURFACE] J-31 defines canvas edges as verified claims. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L481)
+- [surface] (O-001/O4-E006) [E/SURFACE] J-31 requires canvas dispatch through the normal FSM. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L482)
+- [surface] (O-001/O4-E008) [E/SURFACE] J-60 overlays journal-derived run state on canvas nodes. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L484)
+- [surface] (O-001/O4-E009) [E/SURFACE] WORKFLOW applies that existing canvas shape to O-2 TaskSpecs. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L485)
+- [surface] (O-001/O4-E010) [E/SURFACE] A WORKFLOW node is a typed stage instance. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L486)
+- [surface] (O-001/O4-E011) [E/SURFACE] A WORKFLOW edge is dataflow carrying a provenance tier. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L487)
+- [surface] (O-001/O4-E012) [E/SURFACE] Node chrome is the stage’s last-run SSB state. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L488)
+- [surface] (O-001/O4-E016) [E/SURFACE] A `WORKFLOW` mode is added to the existing canvas mode bar. (O4:L9-L10 | ledger-line: DEEP-O-001.discovery.md:L492)
+- [surface] (O-001/O4-E017) [E/SURFACE] The node palette is exactly O-2’s coded stage vocabulary; users cannot draw a stage kind that does not exist as code. (O4:L10 | ledger-line: DEEP-O-001.discovery.md:L493)
+- [surface] (O-001/O4-E022) [E/SURFACE] Dispatch remains in the normal J-31 FSM and the canvas itself runs nothing. (O4:L10 | ledger-line: DEEP-O-001.discovery.md:L498)
+- [surface] (O-001/O4-E023) [E/SURFACE] Any canvas-side scheduler or stage runner is excluded. (O4:L11 | ledger-line: DEEP-O-001.discovery.md:L499)
+- [surface] (O-001/O4-E024) [E/SURFACE] A free-form stage kind typed on the canvas is excluded. (O4:L11 | ledger-line: DEEP-O-001.discovery.md:L500)
+- [surface] (O-001/O4-E025) [E/SURFACE] Re-authoring the mode bar is excluded. (O4:L11 | ledger-line: DEEP-O-001.discovery.md:L501)
+- [surface] (O-001/O4-E038) [E/SURFACE] UI ownership is `crates/dashboard-v2`, using Svelte 5 and Tauri v2. (O4:L23-L24 | ledger-line: DEEP-O-001.discovery.md:L514)
+- [surface] (O-001/O4-E041) [E/SURFACE] The Tauri read surface includes `list_task_specs`. (O4:L25 | ledger-line: DEEP-O-001.discovery.md:L517)
+- [surface] (O-001/O4-E042) [E/SURFACE] The Tauri read surface includes `get_task_spec_runstate`. (O4:L25 | ledger-line: DEEP-O-001.discovery.md:L518)
+- [surface] (O-001/O4-E043) [E/SURFACE] The cross-language pair is the Rust command side plus Svelte view. (O4:L25 | ledger-line: DEEP-O-001.discovery.md:L519)
+- [surface] (O-001/O4-E044) [E/SURFACE] Move M1 extends H-12’s mode enum with WORKFLOW. (O4:L27-L28 | ledger-line: DEEP-O-001.discovery.md:L520)
+- [surface] (O-001/O4-E047) [E/SURFACE] Selecting WORKFLOW must render a configured TaskSpec as a node-per-stage graph. (O4:L29 | ledger-line: DEEP-O-001.discovery.md:L523)
+- [surface] (O-001/O4-E048) [E/SURFACE] The palette must offer exactly O-2’s closed stage kinds and no others. (O4:L29 | ledger-line: DEEP-O-001.discovery.md:L524)
+- [surface] (O-001/O4-E049) [E/SURFACE] If a free-form node appears, the palette must be bound to O-2’s enum at build time. (O4:L30 | ledger-line: DEEP-O-001.discovery.md:L525)
+- [surface] (O-001/O4-E055) [E/SURFACE] Move M3 adds a `run now` affordance that enqueues through the normal FSM. (O4:L34 | ledger-line: DEEP-O-001.discovery.md:L531)
+- [surface] (O-001/O4-E056) [E/SURFACE] The run-now affordance may never invoke a canvas-side executor. (O4:L34 | ledger-line: DEEP-O-001.discovery.md:L532)
+- [surface] (O-001/O4-E057) [E/SURFACE] A canvas-triggered run produces the same `task_spec_fired` SSB row as O-2’s scheduler. (O4:L35 | ledger-line: DEEP-O-001.discovery.md:L533)
+- [surface] (O-001/O4-E058) [E/SURFACE] The canvas introduces no canvas-owned execution event. (O4:L35 | ledger-line: DEEP-O-001.discovery.md:L534)
+- [surface] (O-001/O4-E059) [E/SURFACE] If the canvas runs a pipeline itself, the remedy is calling O-2’s dispatcher and asserting fire-row provenance shows the FSM path. (O4:L36 | ledger-line: DEEP-O-001.discovery.md:L535)
+- [surface] (O-001/O4-E063) [E/SURFACE] Before editing, recon must find and read H-12’s mode enum and registration mechanism. (O4:L41-L42 | ledger-line: DEEP-O-001.discovery.md:L539)
+- [surface] (O-001/O4-E065) [E/SURFACE] Recon must confirm O-2’s `list_task_specs` command or record it as a required O-2 input. (O4:L44 | ledger-line: DEEP-O-001.discovery.md:L541)
+- [surface] (O-001/O4-E067) [E/SURFACE] The canvas is strictly an editor and monitor; all dispatch authority stays in the FSM. (O4:L47 | ledger-line: DEEP-O-001.discovery.md:L543)
+- [surface] (O-001/O4-E068) [E/SURFACE] Produced symbols include WORKFLOW and TaskSpec-to-nodes/edges projection. (O4:L49-L51 | ledger-line: DEEP-O-001.discovery.md:L544)
+- [surface] (O-001/O4-E069) [E/SURFACE] Produced symbols include the enum-constrained palette bound to O-2. (O4:L52 | ledger-line: DEEP-O-001.discovery.md:L545)
+- [surface] (O-001/O4-E071) [E/SURFACE] Produced symbols include both Tauri read commands. (O4:L54 | ledger-line: DEEP-O-001.discovery.md:L547)
+- [surface] (O-001/O4-E073) [E/SURFACE] Production reachability is a user selecting WORKFLOW in the live dashboard and inspecting a real TaskSpec. (O4:L59-L61 | ledger-line: DEEP-O-001.discovery.md:L549)
+- [surface] (O-001/O4-E077) [E/SURFACE] Selecting run-now must emit O-2’s `task_spec_fired` through the FSM and no canvas-owned execution row. (O4:L70 | ledger-line: DEEP-O-001.discovery.md:L553)
+- [surface] (O-001/O4-E080) [E/SURFACE] The production hook registers WORKFLOW in H-12’s mode enum and exposes it from the dashboard route. (O4:L73 | ledger-line: DEEP-O-001.discovery.md:L556)
+- [surface] (O-001/O4-E081) [E/SURFACE] The run-now affordance calls O-2’s dispatcher in the same changeset. (O4:L73 | ledger-line: DEEP-O-001.discovery.md:L557)
+- [surface] (O-001/O4-E083) [E/SURFACE] Verification runs `svelte_mount_reachability.py` to prove the view is reachable. (O4:L78 | ledger-line: DEEP-O-001.discovery.md:L559)
+- [surface] (O-001/O4-E084) [E/SURFACE] Verification runs `tauri_ipc_symmetry_check.py` to prove `list_task_specs` invoke/handler symmetry. (O4:L78 | ledger-line: DEEP-O-001.discovery.md:L560)
+- [surface] (O-001/O4-E085) [E/SURFACE] Verification runs `bun .claude/tools/visual/ui-wire-smoke.mjs ...` so a real WORKFLOW click lands a Rust-owned SSB row. (O4:L79 | ledger-line: DEEP-O-001.discovery.md:L561)
+- [surface] (O-001/O4-E086) [E/SURFACE] Completion requires a mount-reachable view, symmetric Tauri command, and live click through FSM dispatch rather than canvas execution. (O4:L80 | ledger-line: DEEP-O-001.discovery.md:L562)
+- [surface] (O-001/O4-E087) [E/SURFACE] The independent integration smoke uses the real dashboard and a TaskSpec spanning O-1 stages with one missing consumer. (O4:L82 | ledger-line: DEEP-O-001.discovery.md:L563)
+- [surface] (O-001/O4-E088) [E/SURFACE] The smoke selects WORKFLOW, triggers run-now, and asserts disconnected rendering, O-2’s FSM fire row, and J-60 chrome updating. (O4:L82 | ledger-line: DEEP-O-001.discovery.md:L564)
+- [surface] (O-001/O4-E093) [E/SURFACE] Final composition rule: canvas is editor/monitor, FSM is dispatcher, and wire-dark is rendered rather than hidden. (O4:L91-L92 | ledger-line: DEEP-O-001.discovery.md:L569)
+- [surface] (SUMMARY/O-4.E01) [E/New surface/SURFACE] A `WORKFLOW` mode is added to the shipped canvas mode bar. (O-SUMMARY:L67 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L214)
+- [surface] (SUMMARY/O-4.E02) [E/Surface dependency/constraint/SURFACE] The mode bar is H-12 and must be extended rather than replaced. (O-SUMMARY:L67,L73 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L215)
+- [surface] (SUMMARY/O-4.E03) [E/Architecture dependency/SURFACE] WORKFLOW follows the shape of J-31's canvas doctrine. (O-SUMMARY:L67-L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L216)
+- [surface] (SUMMARY/O-4.E04) [E/Graph semantic/SURFACE] A workflow node represents a bound unit. (O-SUMMARY:L67-L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L217)
+- [surface] (SUMMARY/O-4.E05) [E/Graph semantic/SURFACE] A workflow edge represents a verified claim. (O-SUMMARY:L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L218)
+- [surface] (SUMMARY/O-4.E06) [E/Execution invariant/SURFACE] Workflow dispatch goes through the normal FSM. (O-SUMMARY:L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L219)
+- [surface] (SUMMARY/O-4.E07) [E/Execution/security invariant/SURFACE] The canvas has no independent runtime. (O-SUMMARY:L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L220)
+- [surface] (SUMMARY/O-4.E08) [E/Cross-O surface dependency/SURFACE] WORKFLOW projects O-2 TaskSpecs. (O-SUMMARY:L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L221)
+- [surface] (SUMMARY/O-4.E12) [E/Observability/surface/SURFACE] Node chrome displays last-run SSB state. (O-SUMMARY:L69 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L225)
+- [surface] (SUMMARY/O-4.E13) [E/Surface dependency/SURFACE] The last-run chrome reuses J-60. (O-SUMMARY:L69,L73 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L226)
+- [surface] (SUMMARY/O-4.E19) [E/Missing/status/SURFACE] The `WORKFLOW` mode is absent at summary time. (O-SUMMARY:L71-L72 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L232)
+- [surface] (SUMMARY/O-4.E21) [E/Missing/status/SURFACE] The enum-constrained palette is absent at summary time. (O-SUMMARY:L72 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L234)
+- [surface] (SUMMARY/O-4.E22) [E/Cross-O dependency/SURFACE] WORKFLOW consumes the O-2 TaskSpec store and enums. (O-SUMMARY:L73 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L235)
+- [surface] (SUMMARY/O-4.E23) [E/Cross-O dependency/SURFACE] WORKFLOW consumes O-1 tiers. (O-SUMMARY:L73 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L236)
+- [surface] (SUMMARY/O-4.E24) [E/Production entrypoint/SURFACE] The UI integration is a Svelte WORKFLOW view in `crates/dashboard-v2`. (O-SUMMARY:L74 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L237)
+- [surface] (SUMMARY/O-4.E25) [E/API/integration point/SURFACE] Rust exposes a `list_task_specs` Tauri command. (O-SUMMARY:L74 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L238)
+- [surface] (SUMMARY/O-4.E26) [E/API/integration point/SURFACE] Rust exposes a `get_task_spec_runstate` Tauri command. (O-SUMMARY:L74 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L239)
+- [surface] (SUMMARY/O-4.E27) [E/Positive done-gate/SURFACE] Selecting WORKFLOW in the live dashboard renders a TaskSpec as nodes and edges. (O-SUMMARY:L75 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L240)
+- [surface] (SUMMARY/O-4.E30) [E/Action/observability/SURFACE] `run-now` emits O-2's fire row. (O-SUMMARY:L76 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L243)
+- [surface] (SUMMARY/O-4.E31) [E/Execution invariant/done-gate/SURFACE] `run-now` reaches execution through the FSM. (O-SUMMARY:L76 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L244)
+- (O-001/O4-E013) [E] Editing a node edits the underlying TaskSpec row. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L489)
+- (O-001/O4-E014) [E] Node editing is constrained to the closed enum vocabulary. (O4:L7 | ledger-line: DEEP-O-001.discovery.md:L490)
+- (O-001/O4-E018) [E] Edge provenance tiers come from O-1 taint labels. (O4:L10 | ledger-line: DEEP-O-001.discovery.md:L494)
+- (O-001/O4-E019) [E] Node run-state chrome reuses the J-60 overlay. (O4:L10 | ledger-line: DEEP-O-001.discovery.md:L495)
+- (O-001/O4-E020) [E] A node with a missing consumer renders visibly disconnected. (O4:L10 | ledger-line: DEEP-O-001.discovery.md:L496)
+- (O-001/O4-E021) [E] Visibly disconnected rendering makes wire-dark state visual. (O4:L10 | ledger-line: DEEP-O-001.discovery.md:L497)
+- (O-001/O4-E026) [E] Re-authoring J-60’s overlay is excluded. (O4:L11 | ledger-line: DEEP-O-001.discovery.md:L502)
+- (O-001/O4-E027) [E] An edge without a provenance tier is excluded. (O4:L11 | ledger-line: DEEP-O-001.discovery.md:L503)
+- (O-001/O4-E029) [E] O-2 is expected to supply TaskSpec rows and closed stage, trigger, and sink enums. (O4:L17 | ledger-line: DEEP-O-001.discovery.md:L505)
+- (O-001/O4-E030) [E] O-1 is expected to supply taint provenance tiers. (O4:L17 | ledger-line: DEEP-O-001.discovery.md:L506)
+- (O-001/O4-E032) [E] Tier 1 renders a TaskSpec as nodes and edges. (O4:L20 | ledger-line: DEEP-O-001.discovery.md:L508)
+- (O-001/O4-E033) [E] Tier 1 applies J-60 last-run chrome. (O4:L20 | ledger-line: DEEP-O-001.discovery.md:L509)
+- (O-001/O4-E034) [E] Tier 1 renders a missing consumer as visibly disconnected. (O4:L20 | ledger-line: DEEP-O-001.discovery.md:L510)
+- (O-001/O4-E035) [E] Tier 1’s interaction level is read-only inspection. (O4:L20 | ledger-line: DEEP-O-001.discovery.md:L511)
+- (O-001/O4-E039) [E] UI integration projects TaskSpecs to nodes and edges. (O4:L24 | ledger-line: DEEP-O-001.discovery.md:L515)
+- (O-001/O4-E040) [E] UI integration consumes J-60 for chrome. (O4:L24 | ledger-line: DEEP-O-001.discovery.md:L516)
+- (O-001/O4-E045) [E] M1 projects each stage instance to one graph node. (O4:L28-L29 | ledger-line: DEEP-O-001.discovery.md:L521)
+- (O-001/O4-E046) [E] M1 projects dataflow into graph edges. (O4:L28 | ledger-line: DEEP-O-001.discovery.md:L522)
+- (O-001/O4-E050) [E] Move M2 overlays each node’s last-run SSB state as J-60 chrome. (O4:L31 | ledger-line: DEEP-O-001.discovery.md:L526)
+- (O-001/O4-E052) [E] A stage whose downstream consumer is absent displays the disconnected treatment instead of a normal edge. (O4:L32 | ledger-line: DEEP-O-001.discovery.md:L528)
+- (O-001/O4-E053) [E] Missing-consumer state is derived from the TaskSpec edge set. (O4:L33 | ledger-line: DEEP-O-001.discovery.md:L529)
+- (O-001/O4-E054) [E] A wire-dark node rendered normally is fixed by wiring that derived state into rendering and adding a visual-disconnect assertion. (O4:L33 | ledger-line: DEEP-O-001.discovery.md:L530)
+- (O-001/O4-E060) [E] If O-2’s store is not queryable, O-4 Tier 1 may use a read-only fixture projection. (O4:L38-L39 | ledger-line: DEEP-O-001.discovery.md:L536)
+- (O-001/O4-E064) [E] Recon must locate the J-60 API that binds last-run state to a node. (O4:L43 | ledger-line: DEEP-O-001.discovery.md:L540)
+- (O-001/O4-E070) [E] Produced symbols include missing-consumer visibly-disconnected rendering. (O4:L53 | ledger-line: DEEP-O-001.discovery.md:L546)
+- (O-001/O4-E072) [E] O-4 consumes H-12, J-31, J-60, O-2 store/enums, and O-1 provenance rather than reauthoring them. (O4:L55-L58 | ledger-line: DEEP-O-001.discovery.md:L548)
+- (O-001/O4-E074) [E] Neither cfg-test nor component-test callers satisfy production reachability. (O4:L61 | ledger-line: DEEP-O-001.discovery.md:L550)
+- (O-001/O4-E076) [E] The observable trigger loads a TaskSpec with a deliberately missing downstream consumer. (O4:L68-L70 | ledger-line: DEEP-O-001.discovery.md:L552)
+- (O-001/O4-E078) [E] The observable artifact is nodes/edges with last-run chrome and a visibly disconnected missing-consumer node. (O4:L71 | ledger-line: DEEP-O-001.discovery.md:L554)
+- (O-001/O4-E082) [E] Verification runs `wiring_contract_check.py` against this plan with `--run-trigger`. (O4:L75-L78 | ledger-line: DEEP-O-001.discovery.md:L558)
+- (O-001/O4-E089) [E] A component test does not satisfy `R10`; the smoke must use a live browser through the real entrypoint. (O4:L82 | ledger-line: DEEP-O-001.discovery.md:L565)
+- (O-001/O4-E091) [E] Hiding wire-dark state with a normal edge is patched by deriving disconnection from the edge set and asserting it in the smoke. (O4:L85 | ledger-line: DEEP-O-001.discovery.md:L567)
+- (O-001/O4-E092) [E] O-4 composes with H-12, J-31, J-60, O-2, and O-1, and reimplements none. (O4:L87-L92 | ledger-line: DEEP-O-001.discovery.md:L568)
+- (SUMMARY/O-4.E09) [E/Graph/data contract] Each node is a typed stage instance. (O-SUMMARY:L68-L69 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L222)
+- (SUMMARY/O-4.E10) [E/Graph semantic] Each edge represents dataflow. (O-SUMMARY:L69 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L223)
+- (SUMMARY/O-4.E11) [E/Provenance/data contract] Each edge carries a provenance tier. (O-SUMMARY:L69 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L224)
+- (SUMMARY/O-4.E14) [E/Editing/persistence behavior] Editing a node edits the underlying TaskSpec row. (O-SUMMARY:L70 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L227)
+- (SUMMARY/O-4.E15) [E/Editing/safety invariant] Node edits are constrained to the closed enum. (O-SUMMARY:L70 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L228)
+- (SUMMARY/O-4.E16) [E/Error visualization] A node with a missing consumer renders visibly disconnected. (O-SUMMARY:L70-L71 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L229)
+- (SUMMARY/O-4.E17) [E/Error visualization invariant] The surface makes a wire-dark condition visual instead of silently implying connectivity. (O-SUMMARY:L71 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L230)
+- (SUMMARY/O-4.E18) [E/Product positioning] The intended product shape is “n8n with receipts.” (O-SUMMARY:L71 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L231)
+- (SUMMARY/O-4.E20) [E/Missing/status] The `TaskSpec->nodes` projection is absent at summary time. (O-SUMMARY:L71-L72 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L233)
+- (SUMMARY/O-4.E28) [E/Positive done-gate] The rendered graph includes J-60 last-run chrome. (O-SUMMARY:L75 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L241)
+- (SUMMARY/O-4.E29) [E/Positive/error done-gate] A missing-consumer node renders disconnected in the live surface. (O-SUMMARY:L75-L76 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L242)
+- [deferred] (O-001/O4-E036) [E/SURFACE] Tier 2 defers in-canvas node editing that writes back to the TaskSpec row until O-2 Tier 1 is wired. (O4:L21 | ledger-line: DEEP-O-001.discovery.md:L512)
+- [deferred] (O-001/O4-E037) [E] Tier 2 defers edge-level provenance-tier drill-down. (O4:L21 | ledger-line: DEEP-O-001.discovery.md:L513)
+
+### O-registers: cross-unit IX / SD / AC / INF registers
+
+**Status**: planned (plan-recorded; deep pass did not re-verify live code)
+**Anchors**: ledgers O-AC, O-INF, O-IX, O-SD, SUMMARY, SUP | sample: O-SUMMARY:L79-L82; O-SUMMARY:L79-L80; O-SUMMARY:L80-L81; O-SUMMARY:L80-L81; O-SUMMARY:L81; O-SUMMARY:L81 | 198 non-summary-placed, 18 summary-placed, 220 total unique atoms in unit | IDs: O-001 explicit E:, O-001 unit breakdown:, SUMMARY/O.X.E01, SUMMARY/O.X.E02, SUMMARY/O.X.E03, SUMMARY/O.X.E04, SUMMARY/O.X.E05, SUMMARY/O.X.E06, …
+**Composes with**: B-42, C-9, C-16, D-5, E-5, F-3, G-1, G-2, H-12, J-31, J-60, O-1, O-2, O-3, O-4, PS-1, PS-6. IX: O-001/IX-PATH01 → O-1; O-001/IX-PATH02 → F-3, G-1, G-2; O-001/IX-PATH03 → O-3; O-001/IX-PATH04 → O-2; O-001/IX-PATH07 → O-2, O-3; O-001/IX-PATH08 → D-5, E-5; O-001/IX-PATH09 → J-60, O-4; O-001/IX-PATH10 → O-2; O-001/IX-PATH11 → G-2, J-60, O-1, O-2, O-3; O-001/IX-DATA002 → O-1
+
+- [status] (O-001/AC-ST004) [A] title=`O-2 schema versus Tier wiring.` (ledger-line: DEEP-O-001.discovery.md:L746): `FileToBrain`, `Notify`, `VaultPage`, `Digest`, and `Toast` appear in the full schema, while the Tier blocks state only some inclusions and two specific deferrals (`O2:L9-L10,L19-L21`). The shipping status of FileToBrain, Notify, and non-Dashboard sinks is not fully assigned.
+- [status] (O-001/AC-STEV001) [A] title=`Status and evidence caveat` (ledger-line: DEEP-O-001.discovery.md:L776): All four unit files are `PLANNED`; all existing-ground-truth blocks are explicitly labelled `PLAN-asserted` and direct executors to re-grep under W-7. Therefore this ledger describes designed and asserted behavior, not implementation-confirmed shipment. `PROOF_SPINE: none` does not remove release evidence: the O0 done definition and each unit’s off-agent wiring/integration smoke remain blocking plan gates (`O0:L42-L64`; `O1:L71-L77`; `O2:L72-L78`; `O3:L72-L78`; `O4:L75-L82`).
+- [config] (O-001/AC-NA005) [A] title=`Topic schema:` (ledger-line: DEEP-O-001.discovery.md:L755): field names are given, but field types for `id`, `sources[]`, `cadence`, threshold, and sink; defaults; enabled state; uniqueness; and versioning are absent.
+- [config] (SUMMARY/AC-010) [A] title=`Topic manifest schema incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L354): only editability and the four `kind` values are named. IDs, query/source fields, cadence, enabled state, ownership, validation, versioning, and persistence are absent.
+- [config] (SUMMARY/AC-012) [A] title=`TaskSpec schema incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L356): IDs, revisions, stage operands, stage output typing, sink operands, enabled/paused state, ownership, and timestamps are unstated.
+- [config] (SUMMARY/O.X.E14) [E/Product validation invariant] A2 is the whole-feature falsifier for the default-off graveyard. (O-SUMMARY:L83 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L265)
+- [gate] (O-001/AC-CL004) [A] Fetch retry/backoff, source rate limits, partial responses, cache behavior, provider degradation, secret handling, unsafe URLs, and partial pipeline failure remain unspecified. (ledger-line: DEEP-O-001.discovery.md:L768)
+- [gate] (O-001/AC-CL007) [A] Inbox/card read state, dismissal, retention, failure cards, deduplication, and the exact auto-archived object remain unspecified. (ledger-line: DEEP-O-001.discovery.md:L771)
+- [gate] (O-001/AC-NA002) [A] title=`O-1 stages consumed by O-2:` (ledger-line: DEEP-O-001.discovery.md:L752): O2 calls Fetch/Classify/Gate/Digest “the ones O-1 already provides,” but O1’s named workflow includes duplicate-precheck, file, layered digest, and confidence gate without defining corresponding reusable stage symbols (`O1:L10`; `O2:L20,L56`).
+- [gate] (O-001/AC-ST005) [A] title=`Manual trigger “on interval.”` (ledger-line: DEEP-O-001.discovery.md:L747): The produced-symbol block calls the Cron/Manual dispatcher “on the task_runner interval” (`O2:L52`), but a manual action normally has a direct entrypoint; the original does not settle whether Manual is polled, enqueued, or invoked synchronously.
+- [gate] (O-001/O-INF02) [I] O-4 likely folds O-2’s `task_spec_fired` plus stage-specific rows into J-60 chrome, but the fold key and error-state model are not stated. (ledger-line: DEEP-O-001.discovery.md:L727)
+- [gate] (O-001/O-INF11) [I] Because O-4 Tier 1 can use a fixture, that release may demonstrate projection UX without satisfying full live production reachability; the final done gate still appears to require the live O-2 caller. (ledger-line: DEEP-O-001.discovery.md:L736)
+- [gate] (SUMMARY/AC-017) [A] title=`SSB schemas incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L361): row version, timestamps/clock domain, parent/run IDs, error fields, and replay ordering are absent for classify and fire events.
+- [gate] (SUMMARY/AC-024) [A] title=`Privacy enforcement point incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L368): D-5 denylist is named, but config source, read boundaries, redaction behavior, local-versus-cloud distinction, and failure evidence are not.
+- [gate] (SUMMARY/AC-029) [A] title=`Editing API incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L373): only read-side Tauri commands are named; the command that persists node edits, validation errors, revisions, and concurrent-edit handling is absent.
+- [gate] (SUMMARY/AC-030) [A] title=`Run-now policy incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L374): authorization, confirmation, risk gates, cancellation, duplicate clicks, and error rendering are not stated.
+- [gate] (SUMMARY/AC-032) [A] title=`Proof relationship deliberately absent:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L376): with `PROOF_SPINE: none`, the summary gives observable effects but no PS metric; originals should clarify what evidence is release-blocking versus product telemetry.
+- [gate] (SUMMARY/O.INF05) [I] basis=`Canary routes to `unsorted`; reaching a steal sink fails.` confirm=`Confirm whether `unsorted` is a class, queue, file path, or sink and what later review does.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L336): `unsorted` appears to be a quarantine/non-steal destination for ambiguous or canary classifications.
+- [gate] (SUMMARY/O.INF09) [I] basis=`Empty fires must not card.` confirm=`Confirm exact predicate and representation of empty/skipped/no-change outcomes.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L340): “Result-bearing” likely means a fire with a material user-visible output, not merely a successful empty run.
+- [gate] (SUMMARY/O.X.E03) [E/Classifier safety invariant] A1 forbids sending a free-text classifier output to a prompt. (O-SUMMARY:L80-L81 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L254)
+- [gate] (SUMMARY/O.X.E07) [E/Workflow vocabulary invariant] A3 forbids generic nodes. (O-SUMMARY:L81 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L258)
+- [gate] (SUMMARY/O.X.E08) [E/Workflow vocabulary invariant] A3 forbids custom nodes. (O-SUMMARY:L81 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L259)
+- [surface] (SUMMARY/O.X.E13) [E/Multi-writer invariant/SURFACE] A4 requires disjoint vault namespaces for the two masters. (O-SUMMARY:L82 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L264)
+- [surface] (SUMMARY/O.X.E15) [E/Engagement observability/SURFACE] A successful digest is connected to a measured digest-open signal. (O-SUMMARY:L83-L84 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L266)
+- [surface] (SUMMARY/O.X.E16) [E/Engagement observability/SURFACE] A successful digest is connected to a measured `For-You` click signal. (O-SUMMARY:L83-L84 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L267)
+- (Cross-check vs summary quantitative coverage:) summary declares **185** explicit atomic statements — match.
+- (Duplicate-ID check (native E IDs within deep):) unique=520/520.
+- (Duplicate-ID check (native E IDs within summary):) unique=185/185.
+- (O-001 explicit E:) source footer declares **520**; extracted **520** — **exact**
+- (O-001 unit breakdown:) O0=95, O1=111, O2=112, O3=109, O4=93 (declared 95+111+112+109+93=520)
+- (O-001/AC-CL001) [A] Last-fired watermark transaction boundaries, crash-before/after-row behavior, multi-process dispatch, retry idempotency, and catch-up/coalescing remain unspecified. (ledger-line: DEEP-O-001.discovery.md:L765)
+- (O-001/AC-CL002) [A] Trigger timezone, Cron dialect, jitter, startup behavior, overlap, maximum run duration, cancellation, pause/resume, deletion, and retention remain unspecified. (ledger-line: DEEP-O-001.discovery.md:L766)
+- (O-001/AC-CL003) [A] `SsbEvent` recursion/loop prevention, filter matching, event ordering, and replay interaction remain unspecified. (ledger-line: DEEP-O-001.discovery.md:L767)
+- (O-001/AC-CL005) [A] Rejected-ledger fingerprinting, false-positive handling, cross-topic scope, retention, and override remain unspecified. (ledger-line: DEEP-O-001.discovery.md:L769)
+- (O-001/AC-CL006) [A] Vault atomicity, locking, simultaneous writers, symlink/path traversal rules, case sensitivity, partial-write recovery, backup/restore, corruption handling, and file-watcher behavior remain unspecified. (ledger-line: DEEP-O-001.discovery.md:L770)
+- (O-001/AC-CL008) [A] Canvas branch/fan-in/fan-out/cycle representation, layout persistence, accessibility, save conflicts, undo/redo, cancellation, duplicate run-now clicks, and permission checks remain unspecified. (ledger-line: DEEP-O-001.discovery.md:L772)
+- (O-001/AC-NA001) [A] title=``VaultPage` / `FileToBrain`:` (ledger-line: DEEP-O-001.discovery.md:L751): sink versus stage versus production seam is inconsistent across O2/O3.
+- (O-001/AC-NA003) [A] title=`Classifier `class`:` (ledger-line: DEEP-O-001.discovery.md:L753): enum members are not listed. `unsorted` may be a member but is never typed as one.
+- (O-001/AC-NA004) [A] title=`Confidence:` (ledger-line: DEEP-O-001.discovery.md:L754): representation is `f32`, but range, threshold comparison, calibration, NaN handling, and per-kind/per-sink interaction are absent.
+- (O-001/AC-NA006) [A] title=`TaskSpec identity:` (ledger-line: DEEP-O-001.discovery.md:L756): no `spec_id` field is shown in the schema even though the event contains `spec_id`; revision, owner, timestamps, operands, and stage-output typing are absent.
+- (O-001/AC-NA007) [A] title=``namespace-claims`:` (ledger-line: DEEP-O-001.discovery.md:L757): filename has no extension and its serialization, namespace grammar, claim precedence, acquisition/release, and conflict syntax are absent.
+- (O-001/AC-NA008) [A] title=`Machine-owned page detection:` (ledger-line: DEEP-O-001.discovery.md:L758): rankings/queue/index are named, but ownership metadata and treatment of a user-edited machine page are absent.
+- (O-001/AC-NA009) [A] title=`Missing consumer:` (ledger-line: DEEP-O-001.discovery.md:L759): derived from the edge set, but invalid/disabled/unavailable consumers and sink termination are not distinguished.
+- (O-001/AC-NA010) [A] title=`Provenance tier:` (ledger-line: DEEP-O-001.discovery.md:L760): O-1 produces and O-4 displays it, but the tier vocabulary and edge aggregation rule are absent.
+- (O-001/AC-NA011) [A] title=`Classify action type:` (ledger-line: DEEP-O-001.discovery.md:L761): O0 says O-1 adds a classify row but does not give its exact action-type string (`O0:L82`).
+- (O-001/O-INF01) [I] Full completion likely presents a single journey: configure a typed topic, schedule a closed pipeline, run trusted/replayable research, send useful output to inbox or vault, and inspect/edit/run the same spec on the canvas. This is a synthesis of declared composition edges, not a verbatim golden journey. (ledger-line: DEEP-O-001.discovery.md:L726)
+- (O-001/O-INF03) [I] `VaultPage` likely denotes a terminal destination while `FileToBrain` denotes the executable stage that invokes it, but the originals never define that mapping. (ledger-line: DEEP-O-001.discovery.md:L728)
+- (O-001/O-INF04) [I] `unsorted` likely functions as an abstention/quarantine destination for low-confidence or adversarial items, but its schema and review lifecycle are unknown. (ledger-line: DEEP-O-001.discovery.md:L729)
+- (O-001/O-INF05) [I] O-1’s `sink` topic field likely chooses or parameterizes an O-2 sink, but the files do not state the adapter or validation rule. (ledger-line: DEEP-O-001.discovery.md:L730)
+- (O-001/O-INF06) [I] O-4’s typed stage node can satisfy J-31’s “bound unit” rule if each node binds a concrete TaskSpec stage implementation; that binding record is not specified. (ledger-line: DEEP-O-001.discovery.md:L731)
+- (O-001/O-INF07) [I] O-4’s provenance-bearing dataflow edge can satisfy J-31’s “verified claim” rule if its tier is journal-derived and validated; the proof record is not specified. (ledger-line: DEEP-O-001.discovery.md:L732)
+- (O-001/O-INF08) [I] A last-fired watermark likely uses `(spec_id, due-window)` or an equivalent identity, but no key or transaction scope is stated. (ledger-line: DEEP-O-001.discovery.md:L733)
+- (O-001/O-INF10) [I] Because O-3 requires pure reads and permits external editors, robust implementation likely needs atomic writes and external-change detection, but neither mechanism is designed here. (ledger-line: DEEP-O-001.discovery.md:L735)
+- (O-001/O-INF12) [I] O0’s `memory-writer ran` completion item likely refers to plan/session memory bookkeeping, not O-3 vault writes, but this is not defined in O sources. (ledger-line: DEEP-O-001.discovery.md:L737)
+- (Per-ledger atom counts (all distinct record kinds):) 
+- (SUMMARY/AC-001) [A] title=``D-5` namespace collision:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L345): the summary calls D-5 a “life-layer denylist,” while the canonical ELAI file named `D-plan/D-5_bai_thompson_promotion.md` has a different title. `D-5` may instead be a section/requirement ID inside the TEIKOKU/source-design document. Do not bind this privacy feature to ELAI D-plan/D-5 without reconciliation.
+- (SUMMARY/AC-002) [A] title=`Topic kinds versus stage kinds:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L346): O-1 explicitly enumerates topic `kind`, but O-2 says it consumes “O-1 stage kinds.” The summary does not enumerate a stage-kind enum or say whether `fetch`, `enum-classify`, `dup-precheck`, `file`, and `digest` are its values.
+- (SUMMARY/AC-003) [A] title=`Sink naming mismatch:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L347): O-2's sink enum contains `VaultPage`; O-3 calls the O-1/O-2 sink `FileToBrain`. Their relation is unspecified.
+- (SUMMARY/AC-004) [A] title=`Crate ownership unresolved:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L348): the TaskSpec table is assigned to `crates/orchestrator (or rules crate)`.
+- (SUMMARY/AC-005) [A] title=`VCR undefined here:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L349): G-2 VCR is named but its record/replay boundary, file format, and interaction with the G-2 reproducible-run artifact are not restated.
+- (SUMMARY/AC-006) [A] title=`“Every fetched byte” boundary unspecified:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L350): the summary does not say whether metadata, redirects, attachments, tool outputs, and cached bytes all share the same taint/filter/VCR treatment.
+- (SUMMARY/AC-007) [A] title=`Classifier contract incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L351): confidence type/range, class enum values, abstention, invalid-output repair/refusal, and ownership of the off-agent classifier are not specified.
+- (SUMMARY/AC-008) [A] title=`Canary contract incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L352): frozen canary corpus, injection frequency, matching rules, and the exact definition of “steal sink” are absent.
+- (SUMMARY/AC-009) [A] title=``unsorted` undefined:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L353): it may be a classifier class, holding queue, vault namespace, or sink.
+- (SUMMARY/AC-011) [A] title=`Cosmos scheduling detail incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L355): “hourly tick” is stated for the existing loop, but timezone, jitter, startup behavior, locking, and overlap rules are absent.
+- (SUMMARY/AC-013) [A] title=`Exactly-once scope incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L357): “exactly once per tick” does not settle transaction boundaries, crash recovery, multiple processes, retried dispatch, or idempotency keys.
+- (SUMMARY/AC-014) [A] title=`Missed-run semantics incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L358): detection is named, but catch-up, skip, coalesce, maximum backlog, and notification policies are not.
+- (SUMMARY/AC-015) [A] title=`Auto-archive semantics incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L359): the borrowed flow names auto-archive without stating which artifact archives, when, or under what completion criteria.
+- (SUMMARY/AC-018) [A] title=`Vault claims format incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L362): filename spelling, schema, namespace syntax, precedence, conflict resolution, and claim acquisition/release are unstated.
+- (SUMMARY/AC-019) [A] title=`Shared-vault concurrency incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L363): atomicity, locking, simultaneous writers, external-editor changes, and recovery from partial writes are unstated.
+- (SUMMARY/AC-020) [A] title=`User-note boundary incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L364): the summary prohibits “any mutation of a user note” but does not define how a user note is distinguished from an ELAI-owned page or whether append counts as mutation.
+- (SUMMARY/AC-021) [A] title=`Guarded upsert semantics incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L365): create/replace/merge behavior, conflict detection, and page ownership metadata are not stated.
+- (SUMMARY/AC-022) [A] title=`Vault page schema incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L366): required frontmatter keys, wikilink validity, slug normalization, encoding, and ranking/queue/index update rules are absent.
+- (SUMMARY/AC-023) [A] title=`Mount validation incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L367): the summary does not state what happens when an existing TEIKOKU vault violates the contract or contains unknown namespaces.
+- (SUMMARY/AC-025) [A] title=`Provenance tiers incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L369): O-4 edges carry a tier and consume O-1 tiers, but no tier vocabulary or admission rules are supplied.
+- (SUMMARY/AC-026) [A] title=`Graph projection incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L370): fan-in/out, branching, cycles, ordering, graph layout, sink nodes, trigger nodes, and invalid TaskSpec rendering are not specified.
+- (SUMMARY/AC-027) [A] title=`Missing-consumer semantics incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L371): the summary does not define how a consumer is deemed missing or distinguish missing from temporarily unavailable/disabled.
+- (SUMMARY/AC-028) [A] title=`Wire-dark semantics incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L372): it is unclear whether “wire-dark” means no event producer, stale data, an unresolved type edge, or only a visual state.
+- (SUMMARY/AC-031) [A] title=`Engagement decay incomplete:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L375): `N`, minimum sample, open/click identity, offline collection, privacy, decay function, reactivation, and pack-level versus topic-level scope are absent.
+- (SUMMARY/AC-033) [A] title=`Status evidence is asserted, not verified:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L377): “already,” “shipped,” “TEIKOKU-proven,” and “dark/absent” are plan assertions in a MODERATE-grounding summary, not code-ledger findings.
+- (SUMMARY/O.INF01) [I] basis=`O-2 consumes O-1 stage kinds; O-3 names an O-1/O-2 sink; O-4 projects/runs O-2.` confirm=`Confirm exact golden journey and which sinks each topic kind uses.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L332): The intended end-to-end product likely lets a user define research topics, schedule their closed stages, persist selected results into the mounted vault, inspect results/inbox state, and edit/run the same workflow visually.
+- (SUMMARY/O.INF02) [I] basis=`O-1/O-2 journal rows plus O-4 last-run SSB state.` confirm=`Confirm event-fold keys, row types, and replay source of truth.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L333): SSB rows likely provide the replay/last-run substrate used by O-4 chrome.
+- (SUMMARY/O.INF03) [I] basis=`O-2 enumerates `VaultPage`; O-3 says O-1/O-2 `FileToBrain` sink.` confirm=`Resolve terminology/schema in O-2 and O-3 originals.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L334): `VaultPage` and `FileToBrain` may be two names or two layers for the same terminal action.
+- (SUMMARY/O.INF04) [I] basis=`A2 says zero engagement “decays the topic.”` confirm=`Confirm the mutated field, decay curve, reversibility, and whether scheduling is disabled.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L335): Topic decay likely changes manifest scheduling or priority rather than deleting vault content.
+- (SUMMARY/O.INF06) [I] basis=`Node edit updates the spec row; run-now goes via FSM.` confirm=`Confirm validation, optimistic concurrency, approvals, and mutation commands.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L337): “No canvas runtime” likely means all graph edits are persisted as spec data and all execution authority stays engine-side.
+- (SUMMARY/O.INF07) [I] basis=`Namespace claims prevent writes outside ownership.` confirm=`Locking/concurrency is not stated; confirm in original.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L338): Two-harness vault sharing likely depends on non-overlapping claims plus atomic/locked writes.
+- (SUMMARY/O.INF08) [I] basis=`Layout/contract and observable effect appear in the same unit.` confirm=`Confirm validation rules and invalid-page refusal behavior.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L339): A “valid page” likely means conformance to the deterministic TEIKOKU markdown/frontmatter/wikilink contract.
+- (SUMMARY/O.INF10) [I] basis=`A4 makes topic packs data; A3 makes new stage kinds code.` confirm=`Confirm who can edit packs and admission/versioning rules.` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L341): The user-editable topic set is likely data-only, while adding a novel stage implementation is code-only.
+- (SUMMARY/O.X.E01) [E/Cross-unit invariant] Every O unit enforces the same A1, A3, and A4 digest patches. (O-SUMMARY:L79-L82 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L252)
+- (SUMMARY/O.X.E02) [E/Verification posture] Those patches are enforced as `stub_ban + REDTEAM`. (O-SUMMARY:L79-L80 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L253)
+- (SUMMARY/O.X.E04) [E/Classifier data invariant] A1 requires classifier output to use a closed enum. (O-SUMMARY:L80-L81 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L255)
+- (SUMMARY/O.X.E05) [E/Classifier data invariant] A1 requires classifier output to carry confidence. (O-SUMMARY:L81 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L256)
+- (SUMMARY/O.X.E06) [E/Test/safety invariant] A1 requires frozen canaries. (O-SUMMARY:L81 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L257)
+- (SUMMARY/O.X.E09) [E/Workflow data invariant] A3 requires a closed stage vocabulary. (O-SUMMARY:L81-L82 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L260)
+- (SUMMARY/O.X.E10) [E/Extension invariant] A new stage kind must ship as code. (O-SUMMARY:L81-L82 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L261)
+- (SUMMARY/O.X.E11) [E/Ownership boundary] A4 says ELAI ships the substrate. (O-SUMMARY:L82 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L262)
+- (SUMMARY/O.X.E12) [E/Ownership/config boundary] A4 says topic packs are data. (O-SUMMARY:L82 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L263)
+- (SUMMARY/O.X.E17) [E/Lifecycle threshold] Zero engagement is evaluated after `N` days. (O-SUMMARY:L84 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L268)
+- (SUMMARY/O.X.E18) [E/Lifecycle behavior/falsifier] A topic with zero engagement after `N` days decays honestly. (O-SUMMARY:L84 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L269)
+- [deferred] (O-001/AC-ST001) [A] title=`O-4 read-only Tier 1 versus run-now verification.` (ledger-line: DEEP-O-001.discovery.md:L743): Tier 1 says read-only inspection, while M3, the production hook, observable effect, verifier, and integration smoke require a live run-now click (`O4:L19-L21,L34-L36,L68-L82`). Run-now is not assigned explicitly to Tier 1 or Tier 2.
+- [deferred] (O-001/AC-ST002) [A] title=`O-3 privacy ban versus deferred enforcement.` (ledger-line: DEEP-O-001.discovery.md:L744): The safety rule is unconditional, yet D-5 read-path wiring is Tier 2 (`O3:L10-L11,L18-L20,L60-L64,L80-L81`). The original partially resolves this by forbidding personal topics in project context until Tier 2, but it does not state what Tier-1 mount validation enforces.
+- [deferred] (O-001/AC-ST003) [A] title=`O-3 bidirectional sync versus no dual-write.` (ledger-line: DEEP-O-001.discovery.md:L745): Bidirectional synchronization of “views” is deferred while memory/vault dual-write is forbidden (`O3:L20,L42,L53-L64`). The permitted future sync direction and derived-view semantics need definition.
+- [deferred] (O-001/O-INF09) [I] The safest reading of O3’s privacy staging is that ordinary non-personal mounts can ship in Tier 1, while personal topics cannot enter project-context mounts until Tier 2. (ledger-line: DEEP-O-001.discovery.md:L734)
+- [deferred] (SUMMARY/AC-016) [A] title=`Result-bearing predicate undefined:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L360): therefore the empty-fire/card negative cannot yet be implemented from the summary alone.
+- [interaction] (O-001/IX-CAT001) [IX] dimension=`Commands/actions` coverage=`Cosmos tick, TaskSpec boot/load/fire, run-now, FileToBrain, `elai brain write`, list/get Tauri reads, create/append/upsert` (ledger-line: DEEP-O-001.discovery.md:L782)
+- [interaction] (O-001/IX-CAT002) [IX] dimension=`Inputs/outputs` coverage=`Topic record fields; classifier object; TaskSpec trigger/stage/sink enums; three SSB event shapes; Markdown page output` (ledger-line: DEEP-O-001.discovery.md:L783)
+- [interaction] (O-001/IX-CAT003) [IX] dimension=`Workflows/state` coverage=`Fetch/classify/dedupe/file/digest; due-tick/watermark/card; mount/read/claim/write; project/chrome/disconnect/run` (ledger-line: DEEP-O-001.discovery.md:L784)
+- [interaction] (O-001/IX-CAT004) [IX] dimension=`Schema/data/lifecycle` coverage=`SQLite TaskSpecs, rejected ledger, run-ID cassette, namespace claims, vault paths, auto-archive, existing `DECAYED` state` (ledger-line: DEEP-O-001.discovery.md:L785)
+- [interaction] (O-001/IX-CAT005) [IX] dimension=`Config/defaults` coverage=`Named fields and strict closed enums; kill-switch convention; no concrete defaults for cadence, clock, enabled state, or paths` (ledger-line: DEEP-O-001.discovery.md:L786)
+- [interaction] (O-001/IX-CAT006) [IX] dimension=`UI/API/CLI` coverage=`CosmosDrawer extension, intervention cards, optional external-editor/read view, Svelte WORKFLOW, two Tauri reads, interim brain CLI` (ledger-line: DEEP-O-001.discovery.md:L787)
+- [interaction] (O-001/IX-CAT007) [IX] dimension=`Integrations/events` coverage=`B-42/C-9/3F/E-5/D-5/G-1/F-3/G-2/H-12/J-31/J-60; classify/fire/vault/refusal rows` (ledger-line: DEEP-O-001.discovery.md:L788)
+- [interaction] (O-001/IX-CAT008) [IX] dimension=`Permissions/security/privacy` coverage=`Taint, tool role filter, closed schemas, frozen canaries, namespace claims, user-note ban, D-5 boundary, no client runtime` (ledger-line: DEEP-O-001.discovery.md:L789)
+- [interaction] (O-001/IX-CAT009) [IX] dimension=`Failure/recovery` coverage=`Strict refusals, adapter/fallback paths, watermark, auto-archive, pure read, write chokepoint, fixture projection, explicit aborts` (ledger-line: DEEP-O-001.discovery.md:L790)
+- [interaction] (O-001/IX-CAT010) [IX] dimension=`Determinism/idempotency/concurrency` coverage=`Detached byte replay, supervisor-plane clock, recorded trigger input, due-tick watermark; distributed/vault concurrency unspecified` (ledger-line: DEEP-O-001.discovery.md:L791)
+- [interaction] (O-001/IX-CAT011) [IX] dimension=`Observability` coverage=`SSB receipt chain, CosmosDrawer trust tier, inbox cards, J-60 chrome, visible disconnection, off-agent artifacts` (ledger-line: DEEP-O-001.discovery.md:L792)
+- [interaction] (O-001/IX-CAT012) [IX] dimension=`Tests/done gates` coverage=`Wiring/caller checks, negative parses, canaries, detached replay, multi-tick smoke, two-owner vault smoke, real-browser smoke` (ledger-line: DEEP-O-001.discovery.md:L793)
+- [interaction] (O-001/IX-CAT013) [IX] dimension=`Constraints/non-goals` coverage=`No generic engine, custom kinds/nodes, second scheduler/inbox/fact store, vault conversion, user-note edits, canvas runtime, trust-gate edits` (ledger-line: DEEP-O-001.discovery.md:L794)
+- [interaction] (O-001/IX-CAT014) [IX] dimension=`Dependencies/status/deferred` coverage=`All four PLANNED; exact waves/effort; Tier 1/Tier 2 and fork conditions recorded above` (ledger-line: DEEP-O-001.discovery.md:L795)
+- [interaction] (O-001/IX-DATA001) [IX/SURFACE] surface=`Research topics` state=`User-editable manifest `[[research.topics]]`` lifecycle=`Existing hourly Cosmos loop enumerates topics; existing Cosmos artifacts can time-decay to `DECAYED`; drawer shows kind and last-run trust tier` (ledger-line: DEEP-O-001.discovery.md:L605)
+- [interaction] (O-001/IX-DATA002) [IX] surface=`Rejected ledger` state=`Store consulted by O-1 duplicate precheck` lifecycle=`Duplicate handling occurs before file/digest; exact record schema is not given` (ledger-line: DEEP-O-001.discovery.md:L606)
+- [interaction] (O-001/IX-DATA003) [IX] surface=`G-2 cassette` state=`External bytes keyed by run ID` lifecycle=`Detached-network, byte-identical replay; divergence detects unrecorded reads` (ledger-line: DEEP-O-001.discovery.md:L607)
+- [interaction] (O-001/IX-DATA004) [IX] surface=`TaskSpec` state=`SQLite rows loaded at boot` lifecycle=`Cron/manual dispatch at Tier 1; last-fired watermark protects each due tick; event trigger/missed-run hookup deferred` (ledger-line: DEEP-O-001.discovery.md:L608)
+- [interaction] (O-001/IX-DATA005) [IX] surface=`SSB classify row` state=`O-1 schema-version bump site` lifecycle=`Carries `{class, confidence, taint_tier}` and proves canary containment` (ledger-line: DEEP-O-001.discovery.md:L609)
+- [interaction] (O-001/IX-DATA006) [IX/SURFACE] surface=``task_spec_fired`` state=`O-2 schema-version bump site` lifecycle=`Carries `{spec_id, trigger_cause, stage_path}` exactly once per due tick; reused by O-4 run-now` (ledger-line: DEEP-O-001.discovery.md:L610)
+- [interaction] (O-001/IX-DATA007) [IX/SURFACE] surface=`Inbox intervention card` state=`Existing dashboard surface` lifecycle=`Created only for result-bearing runs; empty runs auto-archive and retain SSB only` (ledger-line: DEEP-O-001.discovery.md:L611)
+- [interaction] (O-001/IX-DATA008) [IX/SURFACE] surface=`Markdown vault` state=`Configured mounted root` lifecycle=`Pure read/byte-identical round trip; claimed create/append; machine-owned upsert; external-editor ownership` (ledger-line: DEEP-O-001.discovery.md:L612)
+- [interaction] (O-001/IX-DATA009) [IX] surface=``namespace-claims`` state=`Root file mapping namespaces to machines` lifecycle=`Hard refusal and `claim_violation` for unclaimed writes; permits ELAI/TEIKOKU cohabitation` (ledger-line: DEEP-O-001.discovery.md:L613)
+- [interaction] (O-001/IX-DATA010) [IX/SURFACE] surface=``vault_write`` state=`O-3 schema-version bump site` lifecycle=`Records namespace, page, and create/append/upsert mode` (ledger-line: DEEP-O-001.discovery.md:L614)
+- [interaction] (O-001/IX-DATA011) [IX/SURFACE] surface=`Canvas projection` state=`Derived from TaskSpec rows plus J-60 SSB run state` lifecycle=`Read-only Tier 1; editing Tier 2; missing consumers are visually disconnected` (ledger-line: DEEP-O-001.discovery.md:L615)
+- [interaction] (O-001/IX-DEP001) [IX] status=``PLANNED`, `[KEYSTONE]`, effort `M-L`, Wave 1` owner=`Knowledge/Cosmos owner; live C-16 `live_cli` Cosmos tick` dep=`Consume frozen G-1/F-3/G-2; if manifest is hard-inlined, add a loader adapter without forking the loop` (ledger-line: DEEP-O-001.discovery.md:L621)
+- [interaction] (O-001/IX-DEP002) [IX] status=``PLANNED`, effort `M-L`, Wave 1` owner=``crates/orchestrator` **or** rules crate; C-9 task_runner interval` dep=`O-1 stage implementations; if no temporal due-query exists, ship fire-on-tick and defer missed-run monitoring` (ledger-line: DEEP-O-001.discovery.md:L622)
+- [interaction] (O-001/IX-DEP003) [IX] status=``PLANNED`, effort `M`, Wave 2` owner=`Knowledge/memory crate; O-1/O-2 FileToBrain or interim `elai brain write`` dep=`Needs a writer caller; if TEIKOKU path is cross-host inaccessible, use a fresh ELAI namespace and defer shared mount` (ledger-line: DEEP-O-001.discovery.md:L623)
+- [interaction] (O-001/IX-DEP004) [IX] status=``PLANNED`, effort `M`, Wave 3` owner=``crates/dashboard-v2`; live dashboard mode route + O-2 dispatcher` dep=`Queryable O-2 store; if absent, render a read-only fixture and never invent a client store` (ledger-line: DEEP-O-001.discovery.md:L624)
+- [interaction] (O-001/IX-DEPNOTE001) [IX] status=`` owner=`` dep=`O-1 and O-2 are explicitly parallel-safe in Wave 1 because their declared crate touch sets differ. O-3 follows when a FileToBrain/CLI caller exists. O-4 follows a queryable TaskSpec store, with a fixture-only Tier-1 fallback (`O0:L87-L96`). All four are product-surface units with no direct `PS-1..PS-6` contribution (`O0:L58-L60`).` (ledger-line: DEEP-O-001.discovery.md:L626)
+- [interaction] (O-001/IX-FAIL001) [IX] failure=`Unknown topic kind` response=`Hard parse refusal; deny-unknown enum and negative test` source=``O1:L27-L30`` (ledger-line: DEEP-O-001.discovery.md:L632)
+- [interaction] (O-001/IX-FAIL002) [IX] failure=`Canary reaches prompt unlabelled` response=`Re-anchor classifier to taint-wrapped item; freeze fixture` source=``O1:L31-L33`` (ledger-line: DEEP-O-001.discovery.md:L633)
+- [interaction] (O-001/IX-FAIL003) [IX] failure=`Replay diverges` response=`Treat as leaked network read; route remaining fetch through VCR and add detached assertion` source=``O1:L34-L36`` (ledger-line: DEEP-O-001.discovery.md:L634)
+- [interaction] (O-001/IX-FAIL004) [IX] failure=`Cosmos manifest hard-inlined` response=`Stop in-place edit; use new loader+adapter; do not fork worker` source=``O1:L38-L39`` (ledger-line: DEEP-O-001.discovery.md:L635)
+- [interaction] (O-001/IX-FAIL005) [IX] failure=`Trust gate/cassette format would need modification` response=`Abort and flag; O-1 only consumes frozen gates` source=``O1:L45-L46`` (ledger-line: DEEP-O-001.discovery.md:L636)
+- [interaction] (O-001/IX-FAIL006) [IX] failure=`Unknown TaskSpec trigger/stage` response=`Hard parse refusal; strict enum and negative test` source=``O2:L27-L30`` (ledger-line: DEEP-O-001.discovery.md:L637)
+- [interaction] (O-001/IX-FAIL007) [IX] failure=`Due spec double-fires or never fires` response=`Gate with last-fired watermark and test duplicate firing` source=``O2:L31-L33`` (ledger-line: DEEP-O-001.discovery.md:L638)
+- [interaction] (O-001/IX-FAIL008) [IX] failure=`Empty runs spam inbox` response=`Result-count predicate sends them to auto-archive` source=``O2:L34-L36`` (ledger-line: DEEP-O-001.discovery.md:L639)
+- [interaction] (O-001/IX-FAIL009) [IX] failure=`Temporal monitor lacks due query` response=`Defer missed-run hookup, ship fire-on-tick, build no second monitor` source=``O2:L38-L39`` (ledger-line: DEEP-O-001.discovery.md:L640)
+- [interaction] (O-001/IX-FAIL010) [IX] failure=`Clock would move inside replay` response=`Abort and flag` source=``O2:L46-L47`` (ledger-line: DEEP-O-001.discovery.md:L641)
+- [interaction] (O-001/IX-FAIL011) [IX] failure=`Reader reformats mounted page` response=`Make reads pure; prohibit normalize-on-load; byte-identity test` source=``O3:L26-L29`` (ledger-line: DEEP-O-001.discovery.md:L642)
+- [interaction] (O-001/IX-FAIL012) [IX] failure=`Cross-namespace write succeeds` response=`Put claim check at sole write chokepoint; refusal test` source=``O3:L30-L32`` (ledger-line: DEEP-O-001.discovery.md:L643)
+- [interaction] (O-001/IX-FAIL013) [IX] failure=`Upsert edits user note` response=`Add namespace plus page-class predicate; refusal test` source=``O3:L33-L35`` (ledger-line: DEEP-O-001.discovery.md:L644)
+- [interaction] (O-001/IX-FAIL014) [IX] failure=`Shared vault inaccessible` response=`Fresh ELAI-claimed root; defer cross-host mounting` source=``O3:L37-L38`` (ledger-line: DEEP-O-001.discovery.md:L645)
+- [interaction] (O-001/IX-FAIL015) [IX] failure=`ELAI schema would require user-note edits` response=`Abort; ELAI adapts to vault` source=``O3:L45-L46`` (ledger-line: DEEP-O-001.discovery.md:L646)
+- [interaction] (O-001/IX-FAIL016) [IX] failure=`Palette admits a free-form node` response=`Bind palette to O-2 enum at build` source=``O4:L27-L30`` (ledger-line: DEEP-O-001.discovery.md:L647)
+- [interaction] (O-001/IX-FAIL017) [IX] failure=`Missing consumer looks connected` response=`Derive disconnection from edge set and assert visual treatment` source=``O4:L31-L33`` (ledger-line: DEEP-O-001.discovery.md:L648)
+- [interaction] (O-001/IX-FAIL018) [IX] failure=`Canvas tries to execute` response=`Call O-2 dispatcher/FSM and prove fire-row path` source=``O4:L34-L36,L46-L47`` (ledger-line: DEEP-O-001.discovery.md:L649)
+- [interaction] (O-001/IX-FAIL019) [IX] failure=`O-2 store unavailable` response=`Read-only fixture projection; never create canvas-side store` source=``O4:L38-L39`` (ledger-line: DEEP-O-001.discovery.md:L650)
+- [interaction] (O-001/IX-PATH01) [IX] title=`Define research work.` (ledger-line: DEEP-O-001.discovery.md:L577): The user supplies `[[research.topics]]` records with `id`, closed `kind`, `sources[]`, `cadence`, `confidence_threshold`, and `sink` (`O1:L9-L10`). O-1 swaps only this source into Cosmos; the worker loop, stage, briefing compiler, and hourly task-runner seam remain the pre-existing execution substrate (`O0:L106-L109`; `O1:L7,L13-L16,L27-L30`).
+- [interaction] (O-001/IX-PATH02) [IX] title=`Fetch and contain untrusted bytes.` (ledger-line: DEEP-O-001.discovery.md:L578): A live Cosmos tick fetches topic sources. Before prompt use, bytes receive G-1 untrusted provenance; the research role is narrowed by F-3; external bytes are recorded in a run-ID-keyed G-2 cassette (`O1:L10,L31-L36`). Classification uses an untrusted preamble, an item fence, a per-kind schema, frozen injection fixtures, closed class output, and `f32` confidence (`O1:L10,L31-L33,L48-L52`).
+- [interaction] (O-001/IX-PATH03) [IX/SURFACE] title=`Classify, deduplicate, and produce.` (ledger-line: DEEP-O-001.discovery.md:L579): The TEIKOKU-derived workflow is fetch → enum classification → duplicate precheck against a rejected ledger → file → layered digest →, at full scope, guarded living-page upsert (`O1:L10`). Tier 1 covers `steal-scan` and `monitor`; `leaderboard`, `discovery`, and living leaderboard pages wait for Tier 2/O-3 (`O1:L19-L21`).
+- [interaction] (O-001/IX-PATH04) [IX/SURFACE] title=`Represent scheduled execution as data.` (ledger-line: DEEP-O-001.discovery.md:L580): O-2 persists strict TaskSpec rows in SQLite. Each row combines a closed trigger, ordered closed stages, and a closed sink (`O2:L9-L10,L27-L30,L49-L53`). Tier 1 brings Cron/Manual, `Fetch/Classify/Gate/Digest`, fire rows, and DashboardInbox; event triggering, orchestrator stage kinds, and missed-run hookup are deferred (`O2:L19-L21`).
+- [interaction] (O-001/IX-PATH05) [IX] title=`Fire through the existing authority.` (ledger-line: DEEP-O-001.discovery.md:L581): Supervisor-plane time makes a due decision outside replay; the existing task_runner interval dispatches the pipeline; a last-fired watermark makes a due tick idempotent; the run receives recorded time as an input (`O2:L10,L31-L33,L46-L47`). A fire writes `task_spec_fired {spec_id, trigger_cause, stage_path}` (`O2:L31-L33,L65-L70`).
+- [interaction] (O-001/IX-PATH06) [IX/SURFACE] title=`Surface only useful scheduled output.` (ledger-line: DEEP-O-001.discovery.md:L582): Result-bearing output creates an existing intervention card. Nothing-to-report output auto-archives, leaving only the SSB receipt; the predicate is based on pipeline result count (`O2:L34-L36,L65-L68`).
+- [interaction] (O-001/IX-PATH07) [IX/SURFACE] title=`Write selected research to the owner vault.` (ledger-line: DEEP-O-001.discovery.md:L583): O-3’s production seam is O-2’s `FileToBrain` stage calling a guarded writer (or interim `elai brain write`) (`O3:L57-L70`). The writer resolves a configured vault root, validates ownership at a single chokepoint, creates/appends only in ELAI-owned space, and upserts only machine-owned rankings/queue/index pages (`O3:L18-L35`). It records `vault_write {namespace,page,mode}` or `claim_violation` (`O3:L65-L68`).
+- [interaction] (O-001/IX-PATH08) [IX/SURFACE] title=`Keep the two memory grains separate.` (ledger-line: DEEP-O-001.discovery.md:L584): The mounted deterministic Markdown vault is the human/owner grain; E-5 `memory_facts` remains the prompt-feeding machine grain. There is no conversion or dual-write, and ELAI adapts to existing vault bytes (`O3:L7,L10-L11,L37-L46,L53-L64`). Prompt-bound personal content is barred pending the Tier-2 D-5 read wiring (`O3:L18-L20,L80-L81`).
+- [interaction] (O-001/IX-PATH09) [IX/SURFACE] title=`Project, inspect, and eventually edit visually.` (ledger-line: DEEP-O-001.discovery.md:L585): O-4 lists TaskSpecs through Tauri and renders a node-per-stage graph in Svelte. Provenance-labelled edges, J-60 last-run chrome, and missing-consumer disconnection make execution receipts and wire-dark state visible (`O4:L19-L33,L49-L71`). Tier 1 is read-only; Tier 2 writes node edits back to TaskSpec rows and adds provenance drill-down (`O4:L19-L21`).
+- [interaction] (O-001/IX-PATH10) [IX/SURFACE] title=`Run-now shares the same backend.` (ledger-line: DEEP-O-001.discovery.md:L586): The canvas calls O-2’s dispatcher, which emits the same `task_spec_fired` receipt through the normal FSM. No client-side scheduler, stage runner, spec store, or separate execution event is allowed (`O4:L34-L39,L46-L47,L68-L73`).
+- [interaction] (O-001/IX-PATH11) [IX] title=`Replay and observe.` (ledger-line: DEEP-O-001.discovery.md:L587): Network-dependent research replays byte-identically from G-2 with network detached; wall-clock observation itself remains outside replay (`O1:L34-L36`; `O2:L10,L46-L47`). O-1 classify rows, O-2 fire rows, O-3 write/refusal rows, and J-60’s fold of run state form the observable receipt chain (`O0:L80-L85`; `O1:L64-L75`; `O2:L65-L76`; `O3:L65-L76`; `O4:L31-L35,L68-L82`).
+- [interaction] (O-001/IX-RECON001) [IX] purpose=`Cosmos manifest/classifier recon` command=``grep -rn "cosmos_worker\` (ledger-line: DEEP-O-001.discovery.md:L658)
+- [interaction] (O-001/IX-RECON002) [IX] purpose=`Taint API recon` command=``grep -rn "taint\` (ledger-line: DEEP-O-001.discovery.md:L659)
+- [interaction] (O-001/IX-RECON003) [IX] purpose=`Wiring proof` command=``python .claude/tools/wiring_contract_check.py --bn-file docs/thefinalglance/O-plan/O-1_research_daemon_generalized_cosmos.md --run-trigger`` (ledger-line: DEEP-O-001.discovery.md:L660)
+- [interaction] (O-001/IX-RECON004) [IX] purpose=`Production caller proof` command=``python .claude/tools/production_caller_check.py --files <changed .rs> --json`` (ledger-line: DEEP-O-001.discovery.md:L661)
+- [interaction] (O-001/IX-RECON005) [IX] purpose=`Rules-store recon` command=``grep -rn "rules\` (ledger-line: DEEP-O-001.discovery.md:L662)
+- [interaction] (O-001/IX-RECON006) [IX] purpose=`Interval-registration recon` command=``grep -rn "task_runner\` (ledger-line: DEEP-O-001.discovery.md:L663)
+- [interaction] (O-001/IX-RECON007) [IX/SURFACE] purpose=`Intervention-card recon` command=``grep -rn "intervention\` (ledger-line: DEEP-O-001.discovery.md:L664)
+- [interaction] (O-001/IX-RECON008) [IX] purpose=`Wiring proof` command=``python .claude/tools/wiring_contract_check.py --bn-file docs/thefinalglance/O-plan/O-2_scheduled_taskspec_substrate.md --run-trigger`` (ledger-line: DEEP-O-001.discovery.md:L665)
+- [interaction] (O-001/IX-RECON009) [IX] purpose=`Production caller proof` command=``python .claude/tools/production_caller_check.py --files <changed .rs> --json`` (ledger-line: DEEP-O-001.discovery.md:L666)
+- [interaction] (O-001/IX-RECON010) [IX] purpose=`Machine-memory boundary recon` command=``grep -rn "memory_facts\` (ledger-line: DEEP-O-001.discovery.md:L667)
+- [interaction] (O-001/IX-RECON011) [IX] purpose=`Privacy boundary recon` command=``grep -rn "life.layer\` (ledger-line: DEEP-O-001.discovery.md:L668)
+- [interaction] (O-001/IX-RECON012) [IX/SURFACE] purpose=`Wiring proof` command=``python .claude/tools/wiring_contract_check.py --bn-file docs/thefinalglance/O-plan/O-3_brain_vault_contract_mounting.md --run-trigger`` (ledger-line: DEEP-O-001.discovery.md:L669)
+- [interaction] (O-001/IX-RECON013) [IX] purpose=`Production caller proof` command=``python .claude/tools/production_caller_check.py --files <changed .rs> --json`` (ledger-line: DEEP-O-001.discovery.md:L670)
+- [interaction] (O-001/IX-RECON014) [IX] purpose=`Mode registration recon` command=``grep -rn "mode.bar\` (ledger-line: DEEP-O-001.discovery.md:L671)
+- [interaction] (O-001/IX-RECON015) [IX] purpose=`Run-state overlay recon` command=``grep -rn "J-60\` (ledger-line: DEEP-O-001.discovery.md:L672)
+- [interaction] (O-001/IX-RECON016) [IX/SURFACE] purpose=`Wiring proof` command=``python .claude/tools/wiring_contract_check.py --bn-file docs/thefinalglance/O-plan/O-4_canvas_workflow_mode.md --run-trigger`` (ledger-line: DEEP-O-001.discovery.md:L673)
+- [interaction] (O-001/IX-RECON017) [IX/SURFACE] purpose=`Svelte/Tauri reachability and symmetry` command=``python .claude/tools/svelte_mount_reachability.py` and `python .claude/tools/tauri_ipc_symmetry_check.py`` (ledger-line: DEEP-O-001.discovery.md:L674)
+- [interaction] (O-001/IX-RECON018) [IX] purpose=`Real UI wire smoke` command=``bun .claude/tools/visual/ui-wire-smoke.mjs ...`` (ledger-line: DEEP-O-001.discovery.md:L675)
+- [interaction] (O-001/IX-VOCAB001) [IX] vocab=`Research topic `kind`` values=``steal-scan`, `leaderboard`, `discovery`, `monitor`` admission=`Closed/deny-unknown; a new kind requires code; Tier 1 exposes only `steal-scan` and `monitor`` source=``O1:L9-L11,L19-L21,L27-L30`` (ledger-line: DEEP-O-001.discovery.md:L593)
+- [interaction] (O-001/IX-VOCAB002) [IX] vocab=`TaskSpec `trigger`` values=``Cron{expr}`, `SsbEvent{action_type filter}`, `Manual`` admission=`Closed/deny-unknown; Tier 1 is Cron+Manual; SsbEvent is Tier 2` source=``O2:L9-L11,L19-L21,L27-L30`` (ledger-line: DEEP-O-001.discovery.md:L594)
+- [interaction] (O-001/IX-VOCAB003) [IX] vocab=`TaskSpec stage` values=``Fetch`, `Classify`, `Gate`, `FileToBrain`, `Digest`, `SpawnResearchTree`, `RunPlanUnit`, `Notify`` admission=`Ordered closed enum; novel stage code goes through plan process; Tier 1 explicitly names Fetch/Classify/Gate/Digest` source=``O2:L9-L11,L19-L21`` (ledger-line: DEEP-O-001.discovery.md:L595)
+- [interaction] (O-001/IX-VOCAB004) [IX] vocab=`TaskSpec sink` values=``VaultPage`, `Digest`, `DashboardInbox`, `Toast`` admission=`Closed enum; Tier 1 explicitly names DashboardInbox` source=``O2:L10,L19-L20`` (ledger-line: DEEP-O-001.discovery.md:L596)
+- [interaction] (O-001/IX-VOCAB005) [IX] vocab=`Classifier output` values=``{class: enum, confidence: f32}`` admission=`Never free text; zero out-of-enum; low-confidence canary goes to `unsorted`` source=``O1:L31-L33`` (ledger-line: DEEP-O-001.discovery.md:L597)
+- [interaction] (O-001/IX-VOCAB006) [IX] vocab=`Vault write `mode`` values=``create`, `append`, `upsert`` admission=`Create/append inside a claimed namespace; upsert additionally requires machine-owned page class` source=``O3:L30-L35,L65-L68`` (ledger-line: DEEP-O-001.discovery.md:L598)
+- [interaction] (O-001/IX-VOCAB007) [IX] vocab=`Track status` values=``PLANNED`, `IN PROGRESS`, `DONE`, `DEFERRED`` admission=``DONE` has wiring, caller, smoke, and artifact gates beyond cargo-green` source=``O0:L42-L45`` (ledger-line: DEEP-O-001.discovery.md:L599)
+- [summary-delta] (O-001/SD-MC001) [Δ] title=`Digest patches are per-unit, not literally identical across every unit.` (ledger-line: DEEP-O-001.discovery.md:L683): O0 says `A1..A5` feed per-unit `stub_ban`/`REDTEAM` (`O0:L4-L7,L55-L56`). The detail plans specialize them: O-1 applies A1/A3, O-2 A2/A3, O-3 A4, and O-4 A3. The summary-ledger claim that every unit enforces the same A1, A3, and A4 set is broader than the originals.
+- [summary-delta] (O-001/SD-MC002) [Δ] title=`The engagement falsifier is not present in these five originals.` (ledger-line: DEEP-O-001.discovery.md:L684): The summary ledger’s digest-open, `For-You` click, `N`-day zero-engagement, and honest topic-decay requirements are not stated in O0 or O1–O4. O1 does state an existing artifact lifecycle that decays to `DECAYED` (`O1:L7`), but it does not connect that state to opens/clicks or an `N`-day threshold. Those engagement requirements remain summary-only in this source scope.
+- [summary-delta] (O-001/SD-MC003) [Δ] title=`O-4 editing is not Tier 1.` (ledger-line: DEEP-O-001.discovery.md:L685): The original makes Tier 1 read-only inspection and explicitly defers TaskSpec write-back plus provenance drill-down to Tier 2 (`O4:L19-L21`). Any summary reading of node editing as an immediate ship-now feature needs this tier qualifier.
+- [summary-delta] (O-001/SD-MC004) [Δ] title=`O-2 full vocabulary is larger than its Tier-1 runtime.` (ledger-line: DEEP-O-001.discovery.md:L686): The schema names eight stages and four sinks, but Tier 1 explicitly names only Fetch/Classify/Gate/Digest and DashboardInbox; SsbEvent, SpawnResearchTree, RunPlanUnit, and missed-run wiring are Tier 2 (`O2:L9-L10,L19-L21`). Schema availability must not be confused with production wiring.
+- [summary-delta] (O-001/SD-MC005) [Δ] title=`O-1 full topic enum is larger than Tier 1.` (ledger-line: DEEP-O-001.discovery.md:L687): Four kinds are schema-valid, but only `steal-scan` and `monitor` ship now; `leaderboard`, `discovery`, and living-page upserts are deferred (`O1:L19-L21`).
+- [summary-delta] (O-001/SD-MC006) [Δ] title=`Exactly-once is scoped to a due tick.` (ledger-line: DEEP-O-001.discovery.md:L688): The original’s concrete mechanism is a last-fired watermark and the acceptance phrase “exactly once per due tick” (`O2:L31-L33,L65-L68`); it does not claim global exactly-once under crash, multi-process, or distributed scheduling.
+- [summary-delta] (O-001/SD-MC007) [Δ] title=`Privacy is a staged safety barrier.` (ledger-line: DEEP-O-001.discovery.md:L689): Personal-to-project/cloud flow is a hard exclusion/stub ban, but the actual D-5 read-path wiring is Tier 2 and must land before personal topics become mountable into project context (`O3:L10-L11,L18-L20,L60-L64,L80-L81`).
+- [summary-delta] (O-001/SD-MC008) [Δ] title=`“Dark/absent” is not the exact status vocabulary of the originals.` (ledger-line: DEEP-O-001.discovery.md:L690): All four details say `PLANNED`; O0 defines the formal statuses. The originals identify new versus reused mechanisms but do not independently inventory current code to prove each component dark (`O0:L42-L45`; `O1:L3`; `O2:L3`; `O3:L3`; `O4:L3`).
+- [summary-delta] (O-001/SD-MC009) [Δ] title=`The trust-spine boundary is more precise than a blanket byte claim.` (ledger-line: DEEP-O-001.discovery.md:L691): O1 says G-1 wraps fetched bytes, F-3 applies to the research role, and G-2 records external bytes; integration names fetch/classify/sink seams (`O1:L10,L23-L24,L31-L36`). Metadata, redirect, attachment, and cache coverage remain unspecified.
+- [summary-delta] (O-001/SD-MC010) [Δ] title=`No new O-4 event is planned.` (ledger-line: DEEP-O-001.discovery.md:L692): O0 explicitly says O-4 reuses O-2’s fire row, while O-1/O-2/O-3 add schema action types (`O0:L80-L85`).
+- [summary-delta] (O-001/SD-OE001) [Δ] O0 supplies full wiring doctrine, release gates, `WIRE-DARK[O-N]`, `cross_lang_diff`, schema-baseline procedure, kill-switch convention, `blake3` requirement, affected-crate test scope, no `.unwrap()`/`.expect()` production rule, and anti-slopsquatting requirement (`O0:L42-L64,L79-L103`). (ledger-line: DEEP-O-001.discovery.md:L696)
+- [summary-delta] (O-001/SD-OE002) [Δ] O1 supplies the complete topic record shape, including `id`, `sources[]`, `cadence`, `confidence_threshold`, and `sink`; untrusted preamble/item fence/per-kind schema; rejected ledger; layered digest; `f32` confidence; run-ID cassette keying; detached-network byte identity; CosmosDrawer trust-tier chrome; adapter fork; and exact hard-input smoke (`O1:L9-L10,L23-L39,L64-L77`). (ledger-line: DEEP-O-001.discovery.md:L697)
+- [summary-delta] (O-001/SD-OE003) [Δ] O2 supplies trigger operands (`Cron{expr}`, `SsbEvent{action_type filter}`), the eight stage values, boot-time loading, the last-fired watermark, result-count auto-archive, trigger-time-as-recorded-input rule, intervention ingestion recon, fire-on-tick fork, and `1-minute` empty-Cron attack (`O2:L9-L11,L27-L47,L65-L81`). (ledger-line: DEEP-O-001.discovery.md:L698)
+- [summary-delta] (O-001/SD-OE004) [Δ] O3 supplies the exact topic path, root claims location, write modes, living-page classes, pure-read/no-normalize rule, byte-identical round trip, single write chokepoint, page-class upsert check, cross-host fallback, optional/no-new-panel UI stance, interim CLI, and two-owner smoke (`O3:L9-L10,L18-L46,L65-L81`). (ledger-line: DEEP-O-001.discovery.md:L699)
+- [summary-delta] (O-001/SD-OE005) [Δ] O4 supplies Svelte 5/Tauri v2 ownership, two read-command names, ts-rs drift ban, read-only Tier 1, edge-set-derived disconnection, real browser smoke, fixture projection fallback, and the prohibition on a client-side spec store (`O4:L19-L25,L31-L47,L49-L89`). (ledger-line: DEEP-O-001.discovery.md:L700)
+- [summary-delta] (O-001/SD-RQ001) [Δ] Topic-manifest fields are now enumerated, though their types/defaults remain open (`O1:L10`). (ledger-line: DEEP-O-001.discovery.md:L704)
+- [summary-delta] (O-001/SD-RQ002) [Δ] TaskSpec’s stage enum is now fully enumerated (`O2:L10`). (ledger-line: DEEP-O-001.discovery.md:L705)
+- [summary-delta] (O-001/SD-RQ003) [Δ] Cron and SSB-event operands are named (`O2:L10`). (ledger-line: DEEP-O-001.discovery.md:L706)
+- [summary-delta] (O-001/SD-RQ004) [Δ] O-1 replay is keyed by run ID and tested byte-identically with networking detached (`O1:L34-L36`). (ledger-line: DEEP-O-001.discovery.md:L707)
+- [summary-delta] (O-001/SD-RQ005) [Δ] O-2’s first idempotency mechanism is a last-fired watermark row (`O2:L31-L33`). (ledger-line: DEEP-O-001.discovery.md:L708)
+- [summary-delta] (O-001/SD-RQ006) [Δ] Auto-archive is keyed off pipeline result count and leaves the SSB row (`O2:L34-L36`). (ledger-line: DEEP-O-001.discovery.md:L709)
+- [summary-delta] (O-001/SD-RQ007) [Δ] O-3’s machine-owned upsert classes are rankings/queue/index (`O3:L33-L35`). (ledger-line: DEEP-O-001.discovery.md:L710)
+- [summary-delta] (O-001/SD-RQ008) [Δ] O-3 reads must not normalize content (`O3:L26-L29`). (ledger-line: DEEP-O-001.discovery.md:L711)
+- [summary-delta] (O-001/SD-RQ009) [Δ] O-4 missing-consumer rendering is derived from the TaskSpec edge set (`O4:L31-L33`). (ledger-line: DEEP-O-001.discovery.md:L712)
+- [summary-delta] (O-001/SD-RQ010) [Δ] O-4’s frontend pair and validation commands are named (`O4:L67,L75-L80`). (ledger-line: DEEP-O-001.discovery.md:L713)
+- [summary-delta] (O-001/SD-UQ001) [Δ/A] `VaultPage` versus `FileToBrain` naming remains unresolved: O2 calls the former a sink and the latter a stage; O3 calls FileToBrain both a stage and sink seam (`O2:L10,L88-L89`; `O3:L57-L70`). (ledger-line: DEEP-O-001.discovery.md:L717)
+- [summary-delta] (O-001/SD-UQ002) [Δ/A] The `D-5` reference namespace remains unresolved; O3 repeats “D-5 life-layer denylist” but does not reconcile it to the differently titled D-plan file noted by the summary pass (`O3:L10,L15,L20,L43,L55,L64,L81`). (ledger-line: DEEP-O-001.discovery.md:L718)
+- [summary-delta] (O-001/SD-UQ003) [Δ/A] `unsorted` is still not typed as a class, queue, path, or sink (`O1:L32,L66,L75`). (ledger-line: DEEP-O-001.discovery.md:L719)
+- [summary-delta] (O-001/SD-UQ004) [Δ/A] Class-enum values and confidence range/calibration remain unstated (`O1:L10,L31-L33`). (ledger-line: DEEP-O-001.discovery.md:L720)
+- [summary-delta] (O-001/SD-UQ005) [Δ/A] Shared-vault locking and atomic-write semantics remain unstated. (ledger-line: DEEP-O-001.discovery.md:L721)
+- [summary-delta] (O-001/SD-UQ006) [Δ/A] Canvas write-side IPC, edit revisions, concurrent edits, authorization, and save errors remain unstated. (ledger-line: DEEP-O-001.discovery.md:L722)
+
+### O-summary-wide: summary-wide premise, cross-cutting digest, workflows, invariants, silent candidates
+
+**Status**: planned (register / orientation inventory)
+**Anchors**: ledgers SUMMARY, SUP | sample: O-SUMMARY:L1,L15; O-SUMMARY:L9-L10; O-SUMMARY:L10; O-SUMMARY:L10-L11; O-SUMMARY:L11; O-SUMMARY:L11-L12 | 0 non-summary-placed, 41 summary-placed, 71 total unique atoms in unit | IDs: SUMMARY/O.G.E01, SUMMARY/O.G.E02, SUMMARY/O.G.E03, SUMMARY/O.G.E04, SUMMARY/O.G.E05, SUMMARY/O.G.E06, SUMMARY/O.G.E07, SUMMARY/O.G.E08, …
+**Composes with**: B-42, C-9, C-16, D-5, E-5, F-3, G-1, G-2, H-12, J-31, J-60, O-1, O-2, O-3, O-4, PS-1, PS-6. IX: O-001/IX-PATH01 → O-1; O-001/IX-PATH02 → F-3, G-1, G-2; O-001/IX-PATH03 → O-3; O-001/IX-PATH04 → O-2; O-001/IX-PATH07 → O-2, O-3; O-001/IX-PATH08 → D-5, E-5; O-001/IX-PATH09 → J-60, O-4; O-001/IX-PATH10 → O-2; O-001/IX-PATH11 → G-2, J-60, O-1, O-2, O-3; O-001/IX-DATA002 → O-1
+
+- [config] (SUMMARY/SILENT-010) [SILENT] title=`Operational health:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L392): daemon enable/disable, health checks, metrics, logs, alerting, queue pressure, database migrations, backups, and repair commands.
+- [config] (SUMMARY/SILENT-012) [SILENT] title=`Packaging/rollout:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L394): default-off/on choice, upgrade path from designer-only Cosmos manifests, feature flags, compatibility versions, and rollback.
+- [config] (SUMMARY/WF-05) [WF/SURFACE] title=`Track validation loop` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L291): Digest success -> measure digest opens and `For-You` clicks -> after `N` days of zero engagement, decay the topic instead of preserving an unused default-off feature. Source: O-SUMMARY:L83-L84.
+- [gate] (Product positioning:) “n8n with receipts” / not generic ungated engine — refs: O-001/O4-E015, O-001/O0-E017, SUMMARY/O-4.E18, SUMMARY/O.G.E06
+- [gate] (SUMMARY/INV-04) [INV] title=`Fail closed:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L300): out-of-enum classification, canary-to-steal, duplicate fire, carding an empty result, unclaimed writes, user-note mutation, canvas-side execution, and false wire-dark rendering are explicit failures. (O-SUMMARY:L29-L30,L45-L46,L61-L62,L76-L77)
+- [gate] (SUMMARY/O.G.E06) [E/Comparative constraint] The summary distinguishes n8n by characterizing its nodes as arbitrary and ungated. (O-SUMMARY:L11-L12 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L57)
+- [gate] (SUMMARY/O.G.E07) [E/Global invariant] Every O unit is required to be gated. (O-SUMMARY:L12-L13 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L58)
+- [gate] (SUMMARY/SILENT-001) [SILENT] title=`Fetch/runtime failures:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L383): retry/backoff, source rate limits, partial downloads, parse failures, offline operation, and provider degradation.
+- [gate] (SUMMARY/SILENT-003) [SILENT] title=`Pipeline typing:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L385): stage input/output types, type checking, branching, fan-out, failure propagation, compensation, and partial-result behavior.
+- [gate] (SUMMARY/SILENT-004) [SILENT] title=`Task lifecycle:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L386): queued/running/succeeded/failed/cancelled states, timeout, pause/resume, deletion, revisions, retention, and manual retry.
+- [gate] (SUMMARY/SILENT-005) [SILENT] title=`Notification lifecycle:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L387): toast/card dismissal, auto-archive policy, read/unread state, dedupe, and failure notifications.
+- [gate] (SUMMARY/SILENT-008) [SILENT] title=`Privacy observability:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L390): evidence that a denied personal-topic flow was blocked, redacted audit projection, and user-visible policy controls.
+- [surface] (CLI: interim `elai brain write`) (when FileToBrain caller absent) — refs: O-001/O3-E096, O-001/O0-E079
+- [surface] (Config: `[[research.topics]]` typed topic manifest) (user-editable; closed `kind`) — refs: O-001/O1-E015..E025, O-001/O0-E021, SUMMARY/O-1.E10..E16
+- [surface] (Config: root `namespace-claims` file) — refs: O-001/O3-E024..E026, SUMMARY/O-3.E17..E20
+- [surface] (Engagement signals (summary-only; not in originals):) digest-open, `For-You` click, N-day zero-engagement decay — refs: SUMMARY/O.X.E14..E18; superseded/narrowed by O-001/SD-MC002
+- [surface] (External surface: Markdown vault) (Obsidian/GDrive; mount TEIKOKU vault) — refs: O-001/O3-E008..E011, SUMMARY/O-3.E04..E16
+- [surface] (External surface: living pages) `topics/<t>/<slug>.md`, `rankings/`, `queue/`, `index` — refs: O-001/O3-E014..E019, SUMMARY/O-3.E06..E11
+- [surface] (Notification/status: SSB classify row) `{class, confidence, taint_tier}` — refs: O-001/O1-E096, SUMMARY/O-1.E36..E39
+- [surface] (Notification/status: `claim_violation`) — refs: O-001/O3-E092, SUMMARY/O-3.E33
+- [surface] (Notification/status: `task_spec_fired`) `{spec_id, trigger_cause, stage_path}` — refs: O-001/O2-E071..E074, SUMMARY/O-2.E37..E40
+- [surface] (Notification/status: `vault_write`) `{namespace, page, mode}` — refs: O-001/O3-E088..E091, SUMMARY/O-3.E32
+- [surface] (Production tick: C-9 task_runner interval) — refs: O-001/O2-E093, O-001/O2-E099
+- [surface] (Production tick: live_cli Cosmos tick / C-16) — refs: O-001/O1-E093, O-001/O1-E100
+- [surface] (SUMMARY/O.G.E02) [E/Product surface/SURFACE] The desired product is a “TEIKOKU-style personal research machine on the ELAI canvas.” (O-SUMMARY:L9-L10 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L53)
+- [surface] (SUMMARY/WF-02) [WF/SURFACE] title=`Scheduled execution path (`O-2`)` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L279): Supervisor-plane `Cron`, `SsbEvent`, or `Manual` trigger -> persisted typed `TaskSpec` -> ordered closed-enum stages -> one journaled `task_spec_fired` row with cause and stage path -> one of the typed sinks -> intervention-card inbox only when the fire bears a result. Temporal monitoring detects missed runs; a Cron due now fires exactly once per tick. Source: O-SUMMARY:L35-L46.
+- [surface] (SUMMARY/WF-03) [WF/SURFACE] title=`Guarded vault path (`O-3`)` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L283): O-1/O-2 `FileToBrain` request -> namespace-claims parser -> hard write-scope check -> guarded vault writer/upsert -> deterministic markdown page and `vault_write` row. A denied attempt emits `claim_violation` without producing the forbidden write. Prompt-bound reads remain separated from E-5 machine memory, and personal topics may not enter project/cloud prompts. Source: O-SUMMARY:L51-L62.
+- [surface] (SUMMARY/WF-04) [WF/SURFACE] title=`Visual editing and run path (`O-4`)` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L287): Select WORKFLOW -> list/project O-2 TaskSpecs to typed nodes and provenance-bearing edges -> overlay last-run SSB state -> edit a node by editing its closed-enum-constrained spec row -> display missing consumers as disconnected -> `run-now` dispatches through the normal FSM -> O-2 emits the fire row. The canvas may never execute directly. Source: O-SUMMARY:L67-L77.
+- [surface] (Status: artifact lifecycle `DECAYED`) — refs: O-001/O1-E007
+- [surface] (Status: canary route `unsorted`) — refs: O-001/O1-E073, O-001/O1-E097, SUMMARY/O-1.E40
+- [surface] (Tauri command: `get_task_spec_runstate`) — refs: O-001/O4-E042, SUMMARY/O-4.E26
+- [surface] (Tauri command: `list_task_specs`) — refs: O-001/O4-E041, SUMMARY/O-4.E25
+- [surface] (Topic kinds (schema):) `steal-scan`, `leaderboard`, `discovery`, `monitor` — refs: O-001/O1-E018..E021; Tier 1 ships steal-scan+monitor: O-001/O1-E057..E058, O-001/O0-E065
+- [surface] (Track product name:) TEIKOKU-style personal research machine on the ELAI canvas / RESEARCH-MACHINE — refs: O-001/O0-E001, SUMMARY/O.G.E01..E02
+- [surface] (UI action: `run now` / `run-now`) (FSM dispatch only; no canvas runtime) — refs: O-001/O4-E055..E059, SUMMARY/O-4.E30..E32
+- [surface] (UI: CosmosDrawer) (extend, not replace; show topic kind + last-run trust tier) — refs: O-001/O1-E064..E066, SUMMARY/O-1.E34
+- [surface] (UI: J-60 last-run chrome on nodes) — refs: O-001/O4-E012, O-001/O4-E019, O-001/O4-E050..E051, SUMMARY/O-4.E12..E13
+- [surface] (UI: Toast sink) — refs: O-001/O2-E032, SUMMARY/O-2.E19
+- [surface] (UI: WORKFLOW Svelte view) (`crates/dashboard-v2`, Svelte 5 / Tauri v2) — refs: O-001/O4-E038..E043, SUMMARY/O-4.E24
+- [surface] (UI: canvas mode bar WORKFLOW mode) (H-12 extend) — refs: O-001/O4-E016, O-001/O4-E031, O-001/O4-E044, SUMMARY/O-4.E01..E02
+- [surface] (UI: enum-constrained node palette) (O-2 stage vocabulary only) — refs: O-001/O4-E017, O-001/O4-E048..E049, SUMMARY/O-4.E21
+- [surface] (UI: intervention-card inbox / DashboardInbox sink) — refs: O-001/O2-E037, O-001/O2-E060, O-001/O2-E078..E080, SUMMARY/O-2.E25, SUMMARY/O-2.E41
+- [surface] (UI: missing-consumer / wire-dark visual disconnect) — refs: O-001/O4-E020..E021, O-001/O4-E052..E054, SUMMARY/O-4.E16..E17
+- [surface] (UI: node graph projection) (node = stage instance; edge = dataflow + provenance tier) — refs: O-001/O4-E010..E011, O-001/O4-E045..E047, SUMMARY/O-4.E04..E11
+- (SUMMARY/INV-01) [INV] title=`Closed-vocabulary all the way down:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L297): topic kind, classifier class, TaskSpec trigger/stage/sink, and canvas palette/editing cannot silently expand into free text or generic/custom nodes. New stage kinds ship as code. (O-SUMMARY:L22-L23,L35-L37,L70-L72,L80-L82)
+- (SUMMARY/INV-02) [INV] title=`One execution authority:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L298): WORKFLOW is a spec editor/projection, not a runtime; `run-now` enters the normal FSM and produces O-2 journal evidence. (O-SUMMARY:L67-L77)
+- (SUMMARY/INV-03) [INV] title=`Off-agent evidence:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L299): O-1 classification lands off-agent in SSB; O-2 fires, O-3 writes/refusals, and O-4 run state all surface journal-derived evidence. (O-SUMMARY:L28-L30,L37-L46,L60-L62,L69,L75-L77)
+- (SUMMARY/INV-05) [INV] title=`Untrusted-input containment:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L301): fetched bytes acquire taint, tool filtering, and replay coverage before downstream classification/storage; frozen canaries exercise the real path. (O-SUMMARY:L23-L30,L80-L81)
+- (SUMMARY/INV-06) [INV] title=`Two-master separation:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L302): ELAI owns a reusable substrate, topic packs remain data, stores remain grain-disjoint, and vault writers remain in disjoint claimed namespaces. (O-SUMMARY:L51-L58,L82)
+- (SUMMARY/INV-07) [INV] title=`No migration-by-copy:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L303): ELAI mounts the existing contract-compatible vault and does not convert it into `memory_facts` or dual-write both grains. (O-SUMMARY:L53-L58)
+- (SUMMARY/INV-08) [INV] title=`Privacy boundary:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L304): personal topics do not flow into project or cloud prompts. (O-SUMMARY:L56-L58)
+- (SUMMARY/INV-09) [INV] title=`Deterministic time boundary:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L305): wall-clock trigger observation stays in the supervisor plane while the run remains deterministic and journaled. (O-SUMMARY:L37-L39)
+- (SUMMARY/INV-10) [INV] title=`Honest product use:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L306): digest production alone is insufficient; engagement is measured and unused topics decay after an explicitly configurable-but-unspecified `N`-day interval. (O-SUMMARY:L83-L84)
+- (SUMMARY/O.G.E01) [E/Identity] The track is named `RESEARCH-MACHINE`. (O-SUMMARY:L1,L15 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L52)
+- (SUMMARY/O.G.E03) [E/Architecture] The product decomposes into four vertical slices. (O-SUMMARY:L10 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L54)
+- (SUMMARY/O.G.E04) [E/Composition/status assertion] The four slices are asserted to be approximately 80% composition of shipped subsystems. (O-SUMMARY:L10-L11 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L55)
+- (SUMMARY/O.G.E05) [E/Comparative constraint] The summary distinguishes TEIKOKU by noting that TEIKOKU already has classify canaries. (O-SUMMARY:L11 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L56)
+- (SUMMARY/O.G.E08) [E/Global invariant] Every O unit is required to be journaled. (O-SUMMARY:L12-L13 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L59)
+- (SUMMARY/O.G.E09) [E/Global invariant] Every O unit is required to be replayable. (O-SUMMARY:L12-L13 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L60)
+- (SUMMARY/O.G.E10) [E/Global invariant] Every O unit is required to use a closed vocabulary. (O-SUMMARY:L12-L13 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L61)
+- (SUMMARY/O.G.E11) [E/Scope/status] O is classified as a product-surface letter. (O-SUMMARY:L13 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L62)
+- (SUMMARY/O.G.E12) [E/Proof status] O declares `PROOF_SPINE: none`. (O-SUMMARY:L13 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L63)
+- (SUMMARY/O.G.E13) [E/Proof status] The absence of a proof-spine contribution is owner-acknowledged. (O-SUMMARY:L13 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L64)
+- (SUMMARY/O.G.E14) [E/Measurement status] O feeds no `PS-1..PS-6` number. (O-SUMMARY:L13 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L65)
+- (SUMMARY/SILENT-002) [SILENT] title=`Duplicate-precheck behavior:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L384): identity/fingerprint algorithm, false positives, cross-topic dedupe, replay determinism, and user override.
+- (SUMMARY/SILENT-006) [SILENT] title=`Vault operations:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L388): backup/restore, reindex, portability checks, corrupted-frontmatter recovery, case sensitivity, path traversal defense, symlink policy, and storage quotas.
+- (SUMMARY/SILENT-007) [SILENT] title=`Access/security:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L389): manifest editor authorization, TaskSpec ownership, multi-user boundaries, unsafe URL handling, secrets/credentials, and cloud egress approvals.
+- (SUMMARY/SILENT-009) [SILENT] title=`Canvas accessibility/UX:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L391): keyboard editing, screen-reader semantics, zoom/layout persistence, undo/redo, diff/approval before save, and mobile behavior.
+- (SUMMARY/SILENT-011) [SILENT] title=`Test matrix:` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L393): all four topic kinds, all three triggers, all four sinks, invalid schema/property tests, crash/restart, concurrency, and replay-equivalence tests.
+- (SUMMARY/WF-01) [WF] title=`Per-topic research path (`O-1`)` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L275): `user-edited typed topic manifest` -> live/hourly Cosmos tick -> `fetch` (G-1 taint + F-3 tool filter + G-2 VCR on every fetched byte) -> closed-enum classification -> duplicate precheck -> file -> digest -> off-agent SSB classify evidence. A frozen canary must be diverted to `unsorted`; it must never reach a steal sink. Source: O-SUMMARY:L20-L30,L80-L81.
+- [deferred] (UI: optional read-only dashboard vault-page view) (or defer to Obsidian/GDrive; no new panel justified) — refs: O-001/O3-E053..E055, O-001/O3-E009
+
+### User-facing surfaces (O)
+
+Windows, panels, drawers, commands, CLI verbs, flags, status displays, notifications, published commercial/docs surfaces, and other SURFACE-tagged atoms. One line per atom with ID.
+
+#### Surfaces for O-0 (O-Plan Index / track-wide contract)
+- O is a product-surface letter that ships a new user-facing feature, unlike N’s invent-nothing interlacing role. (`O-001/O0-E008`) [O0:L11-L13 | ledger-line: DEEP-O-001.discovery.md:L45]
+- The new surface is the combination of a research daemon, typed scheduler, mounted brain vault, and canvas workflow mode. (`O-001/O0-E009`) [O0:L12-L13 | ledger-line: DEEP-O-001.discovery.md:L46]
+- Named composed subsystems are `B-42` Cosmos, `C-9` task_runner, `3F` rules-engine, `E-5` memory, `D-5` privacy, `G-1` taint, `F-3` tool-filter, `G-2` VCR, and `H-12/J-31/J-60` canvas. (`O-001/O0-E011`) [O0:L13-L15 | ledger-line: DEEP-O-001.discovery.md:L48]
+- Genuinely new mechanisms are a closed `TaskSpec` vocabulary, vault namespace claims, canvas `WORKFLOW` mode, and Cosmos manifest generalization. (`O-001/O0-E012`) [O0:L15-L16 | ledger-line: DEEP-O-001.discovery.md:L49]
+- O-1 swaps Cosmos’s topic source for a user-editable typed topic set. (`O-001/O0-E021`) [O0:L33-L34 | ledger-line: DEEP-O-001.discovery.md:L58]
+- O-2 journals fires and supplies a dashboard intervention-card inbox. (`O-001/O0-E026`) [O0:L35-L36 | ledger-line: DEEP-O-001.discovery.md:L63]
+- O-3 mounts, rather than converts, a portable Markdown brain vault. (`O-001/O0-E028`) [O0:L37-L38 | ledger-line: DEEP-O-001.discovery.md:L65]
+- O-3 adds a namespace-claims contract so ELAI and TEIKOKU can share one vault. (`O-001/O0-E029`) [O0:L37-L38 | ledger-line: DEEP-O-001.discovery.md:L66]
+- `memory_facts` remains the machine-grain store while the vault becomes the user-grain surface. (`O-001/O0-E030`) [O0:L37-L38 | ledger-line: DEEP-O-001.discovery.md:L67]
+- O-4 adds canvas `WORKFLOW` as an editor and monitor over TaskSpecs. (`O-001/O0-E031`) [O0:L39-L40 | ledger-line: DEEP-O-001.discovery.md:L68]
+- O-4 dispatches through the `J-31` FSM and must never introduce a canvas runtime. (`O-001/O0-E033`) [O0:L39-L40 | ledger-line: DEEP-O-001.discovery.md:L70]
+- Execution requires re-reading the live baseline and adding a dashboard done-item. (`O-001/O0-E047`) [O0:L52 | ledger-line: DEEP-O-001.discovery.md:L84]
+- O-4 is effort `M`, Wave `3`, with lever `canvas-as-spec-editor`. (`O-001/O0-E068`) [O0:L76-L77 | ledger-line: DEEP-O-001.discovery.md:L105]
+- O-3 adds `vault_write` and `claim_violation`. (`O-001/O0-E072`) [O0:L82-L83 | ledger-line: DEEP-O-001.discovery.md:L109]
+- O-3 may instead ship with interim CLI caller `elai brain write`. (`O-001/O0-E079`) [O0:L93-L94 | ledger-line: DEEP-O-001.discovery.md:L116]
+- New dependencies require anti-slopsquatting review; none are expected. (`O-001/O0-E085`) [O0:L102 | ledger-line: DEEP-O-001.discovery.md:L122]
+- The vault is mounted and never converted into `memory_facts`. (`O-001/O0-E091`) [O0:L111 | ledger-line: DEEP-O-001.discovery.md:L128]
+- The canvas has no runtime; the `J-31` FSM performs dispatch. (`O-001/O0-E092`) [O0:L112 | ledger-line: DEEP-O-001.discovery.md:L129]
+
+#### Surfaces for O-1 (research daemon — generalize Cosmos to user-editable typed topic set [KEYSTONE])
+- The per-topic workflow begins with `fetch`. (`O-001/O1-E027`) [O1:L10 | ledger-line: DEEP-O-001.discovery.md:L162]
+- Existing asserted symbols/surfaces include `VerificationMethod::CosmosCheck`, `CosmosStage`, `CosmosDrawer`, and the `live_cli` tick. (`O-001/O1-E048`) [O1:L14 | ledger-line: DEEP-O-001.discovery.md:L183]
+- Tier 2 defers living-leaderboard upsert pages until O-3’s vault supplies the page surface. (`O-001/O1-E059`) [O1:L21 | ledger-line: DEEP-O-001.discovery.md:L194]
+- `CosmosDrawer` is extended to show topic kind. (`O-001/O1-E064`) [O1:L25 | ledger-line: DEEP-O-001.discovery.md:L199]
+- `CosmosDrawer` is extended to show last-run trust tier. (`O-001/O1-E065`) [O1:L25 | ledger-line: DEEP-O-001.discovery.md:L200]
+- A new drawer must not be built. (`O-001/O1-E066`) [O1:L25 | ledger-line: DEEP-O-001.discovery.md:L201]
+- Replay-divergence remediation routes every remaining fetch through the VCR client and adds a detached-network replay assertion. (`O-001/O1-E081`) [O1:L36 | ledger-line: DEEP-O-001.discovery.md:L216]
+- Production reachability is the live `live_cli` Cosmos tick driving a configured topic end to end. (`O-001/O1-E093`) [O1:L56-L58 | ledger-line: DEEP-O-001.discovery.md:L228]
+- The production hook is the C-16 Cosmos tick in `live_cli`; the exact function is named at recon and wired in the same changeset. (`O-001/O1-E100`) [O1:L69 | ledger-line: DEEP-O-001.discovery.md:L235]
+- O-2 supplies scheduling, O-3 supplies the vault sink, and O-4 supplies the canvas surface around O-1. (`O-001/O1-E110`) [O1:L87-L88 | ledger-line: DEEP-O-001.discovery.md:L245]
+- The generalized manifest represents a user-editable topic set. (`SUMMARY/O-1.E10`) [O-SUMMARY:L22 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L82]
+- `CosmosDrawer` is extended; no new drawer is created. (`SUMMARY/O-1.E34`) [O-SUMMARY:L27 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L106]
+
+#### Surfaces for O-2 (scheduled TaskSpec substrate — typed, journaled, rules-as-data schedules)
+- Scheduled results land in an inbox. (`O-001/O2-E005`) [O2:L7 | ledger-line: DEEP-O-001.discovery.md:L254]
+- O-2 supplies the scheduler used by O-1’s daemon and edited by O-4’s canvas. (`O-001/O2-E012`) [O2:L7 | ledger-line: DEEP-O-001.discovery.md:L261]
+- `VaultPage` is a sink variant. (`O-001/O2-E029`) [O2:L10 | ledger-line: DEEP-O-001.discovery.md:L278]
+- `DashboardInbox` is a sink variant. (`O-001/O2-E031`) [O2:L10 | ledger-line: DEEP-O-001.discovery.md:L280]
+- `Toast` is a sink variant. (`O-001/O2-E032`) [O2:L10 | ledger-line: DEEP-O-001.discovery.md:L281]
+- The existing dashboard intervention-card surface serves as the inbox sink. (`O-001/O2-E037`) [O2:L10 | ledger-line: DEEP-O-001.discovery.md:L286]
+- A second inbox surface is forbidden; intervention cards must be reused. (`O-001/O2-E042`) [O2:L11 | ledger-line: DEEP-O-001.discovery.md:L291]
+- Existing ground truth asserts intervention cards already support human-in-the-loop inbox cards. (`O-001/O2-E047`) [O2:L17 | ledger-line: DEEP-O-001.discovery.md:L296]
+- Tier 1 ships the `DashboardInbox` sink. (`O-001/O2-E051`) [O2:L20 | ledger-line: DEEP-O-001.discovery.md:L300]
+- Dashboard intervention cards render the `DashboardInbox` sink. (`O-001/O2-E060`) [O2:L25 | ledger-line: DEEP-O-001.discovery.md:L309]
+- O-2 does not add a spec list/edit panel; O-4 owns that canvas surface. (`O-001/O2-E061`) [O2:L25 | ledger-line: DEEP-O-001.discovery.md:L310]
+- Move M3 routes terminal `Notify`/sink output to the intervention-card inbox. (`O-001/O2-E078`) [O2:L34 | ledger-line: DEEP-O-001.discovery.md:L327]
+- A fire with results renders an inbox card. (`O-001/O2-E079`) [O2:L35 | ledger-line: DEEP-O-001.discovery.md:L328]
+- Empty-inbox spam is remediated by a result-count-based `nothing-to-report -> archive` branch. (`O-001/O2-E081`) [O2:L36 | ledger-line: DEEP-O-001.discovery.md:L330]
+- Recon must determine the intervention-card ingestion API. (`O-001/O2-E086`) [O2:L44 | ledger-line: DEEP-O-001.discovery.md:L335]
+- Consumed mechanisms are `3F`, `C-9`, SSB/K-14, temporal monitoring, intervention cards, and O-1 stages. (`O-001/O2-E092`) [O2:L54-L56 | ledger-line: DEEP-O-001.discovery.md:L341]
+- The observable trigger registers a due-now Cron TaskSpec with a `Digest->DashboardInbox` pipeline and advances the task_runner tick. (`O-001/O2-E095`) [O2:L65-L67 | ledger-line: DEEP-O-001.discovery.md:L344]
+- A result-bearing fire creates an intervention-card entry. (`O-001/O2-E097`) [O2:L68 | ledger-line: DEEP-O-001.discovery.md:L346]
+- The smoke asserts single-fire journaling and a result-bearing inbox card. (`O-001/O2-E105`) [O2:L78 | ledger-line: DEEP-O-001.discovery.md:L354]
+- Inbox flooding from a `1-minute` Cron that reports nothing is patched by auto-archive-on-empty while retaining the SSB audit row. (`O-001/O2-E109`) [O2:L81 | ledger-line: DEEP-O-001.discovery.md:L358]
+- O-2 composes with rules-as-data `3F`, task_runner `C-9`, SSB/K-14 monitoring, intervention cards, and O-1 stages, and reimplements none. (`O-001/O2-E110`) [O2:L83-L89 | ledger-line: DEEP-O-001.discovery.md:L359]
+- O-1 supplies stages, O-4 renders/edits specs, and O-3 supplies the `VaultPage` sink. (`O-001/O2-E111`) [O2:L88-L89 | ledger-line: DEEP-O-001.discovery.md:L360]
+- Scheduled results flow to an inbox. (`SUMMARY/O-2.E03`) [O-SUMMARY:L35 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L124]
+- `VaultPage` is an allowed sink value. (`SUMMARY/O-2.E16`) [O-SUMMARY:L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L137]
+- `DashboardInbox` is an allowed sink value. (`SUMMARY/O-2.E18`) [O-SUMMARY:L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L139]
+- `Toast` is an allowed sink value. (`SUMMARY/O-2.E19`) [O-SUMMARY:L37 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L140]
+- Task results reuse the shipped intervention-card inbox surface. (`SUMMARY/O-2.E25`) [O-SUMMARY:L39 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L146]
+- O-2 composes with intervention cards. (`SUMMARY/O-2.E31`) [O-SUMMARY:L42 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L152]
+- A result-bearing fire renders an inbox card. (`SUMMARY/O-2.E41`) [O-SUMMARY:L45 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L162]
+
+#### Surfaces for O-3 (brain vault contract + mounting — portable markdown vault with namespace claims)
+- A deterministic Markdown vault is the user-grain surface. (`O-001/O3-E008`) [O3:L7 | ledger-line: DEEP-O-001.discovery.md:L372]
+- The owner can read and edit the vault in Obsidian or GDrive. (`O-001/O3-E009`) [O3:L7 | ledger-line: DEEP-O-001.discovery.md:L373]
+- The vault format contract comprises Markdown, YAML frontmatter, wikilinks, and machine-owned namespaces. (`O-001/O3-E010`) [O3:L7 | ledger-line: DEEP-O-001.discovery.md:L374]
+- ELAI mounts the existing TEIKOKU brain vault rather than importing it. (`O-001/O3-E011`) [O3:L7 | ledger-line: DEEP-O-001.discovery.md:L375]
+- Namespace claims prevent two harnesses writing one vault from colliding. (`O-001/O3-E013`) [O3:L7 | ledger-line: DEEP-O-001.discovery.md:L377]
+- A file named `namespace-claims` lives at the vault root. (`O-001/O3-E024`) [O3:L10 | ledger-line: DEEP-O-001.discovery.md:L388]
+- Namespace isolation is intended to let ELAI and TEIKOKU share one physical vault. (`O-001/O3-E027`) [O3:L10 | ledger-line: DEEP-O-001.discovery.md:L391]
+- Vault reads route through the existing privacy-redaction/air-gapped layer. (`O-001/O3-E034`) [O3:L10 | ledger-line: DEEP-O-001.discovery.md:L398]
+- Converting the TEIKOKU vault into `memory_facts` is excluded. (`O-001/O3-E035`) [O3:L11 | ledger-line: DEEP-O-001.discovery.md:L399]
+- Tier 1 ships the vault contract reader and writer for frontmatter, wikilinks, and `topics/<t>/<slug>.md`. (`O-001/O3-E042`) [O3:L18-L19 | ledger-line: DEEP-O-001.discovery.md:L406]
+- Tier 1 mounts a configured existing vault path. (`O-001/O3-E046`) [O3:L19 | ledger-line: DEEP-O-001.discovery.md:L410]
+- Tier 2 defers D-5 life-layer enforcement on vault reads into prompts until a privacy-layer wiring pass. (`O-001/O3-E047`) [O3:L20 | ledger-line: DEEP-O-001.discovery.md:L411]
+- Tier 2 defers bidirectional synchronization between `memory_facts` and vault views. (`O-001/O3-E048`) [O3:L20 | ledger-line: DEEP-O-001.discovery.md:L412]
+- Backend integration adds the vault reader/writer module. (`O-001/O3-E050`) [O3:L23 | ledger-line: DEEP-O-001.discovery.md:L414]
+- The mount point resolves a configured vault root. (`O-001/O3-E052`) [O3:L23 | ledger-line: DEEP-O-001.discovery.md:L416]
+- A dashboard vault-page view, if present, is read-only. (`O-001/O3-E053`) [O3:L24 | ledger-line: DEEP-O-001.discovery.md:L417]
+- The dashboard view may be deferred entirely to Obsidian/GDrive. (`O-001/O3-E054`) [O3:L24 | ledger-line: DEEP-O-001.discovery.md:L418]
+- No new ELAI panel is justified because the vault is intentionally an external-editor surface. (`O-001/O3-E055`) [O3:L24 | ledger-line: DEEP-O-001.discovery.md:L419]
+- M1 initially mounts a configured existing vault root read-only. (`O-001/O3-E057`) [O3:L27 | ledger-line: DEEP-O-001.discovery.md:L421]
+- If the TEIKOKU vault is inaccessible from the host, such as a WSL-only tree, Tier 1 uses a fresh ELAI-claimed vault. (`O-001/O3-E071`) [O3:L37-L38 | ledger-line: DEEP-O-001.discovery.md:L435]
+- Before authoring the reader, recon must read the TEIKOKU vault root and `write_page`/`upsert_page` source to establish layout and frontmatter. (`O-001/O3-E073`) [O3:L40-L41 | ledger-line: DEEP-O-001.discovery.md:L437]
+- ELAI must adapt to the vault format; the vault may never be adapted to ELAI. (`O-001/O3-E077`) [O3:L46 | ledger-line: DEEP-O-001.discovery.md:L441]
+- A production path may not convert the vault into `memory_facts`. (`O-001/O3-E085`) [O3:L63 | ledger-line: DEEP-O-001.discovery.md:L449]
+- The observable trigger mounts a vault, performs one ELAI-claimed `FileToBrain` write, and attempts one unclaimed write. (`O-001/O3-E087`) [O3:L65-L67 | ledger-line: DEEP-O-001.discovery.md:L451]
+- A successful claimed write emits `vault_write`. (`O-001/O3-E088`) [O3:L67 | ledger-line: DEEP-O-001.discovery.md:L452]
+- `vault_write` carries `namespace`. (`O-001/O3-E089`) [O3:L67 | ledger-line: DEEP-O-001.discovery.md:L453]
+- `vault_write` carries `page`. (`O-001/O3-E090`) [O3:L67 | ledger-line: DEEP-O-001.discovery.md:L454]
+- `vault_write.mode` is one of `create`, `append`, or `upsert`. (`O-001/O3-E091`) [O3:L67 | ledger-line: DEEP-O-001.discovery.md:L455]
+- If O-1/O-2 has not landed, interim production reachability is CLI subcommand `elai brain write`, named at recon. (`O-001/O3-E096`) [O3:L70 | ledger-line: DEEP-O-001.discovery.md:L460]
+- The independent integration smoke starts with a vault already containing a TEIKOKU-owned namespace. (`O-001/O3-E100`) [O3:L78 | ledger-line: DEEP-O-001.discovery.md:L464]
+- A single-owner happy path does not satisfy `R10`; the smoke must be a shared-vault two-owner run. (`O-001/O3-E103`) [O3:L78 | ledger-line: DEEP-O-001.discovery.md:L467]
+- Personal-topic leakage is patched by applying D-5 on prompt-bound vault reads. (`O-001/O3-E105`) [O3:L81 | ledger-line: DEEP-O-001.discovery.md:L469]
+- Mounting replaces migration while vault and `memory_facts` retain separate user and machine grains. (`O-001/O3-E108`) [O3:L88-L89 | ledger-line: DEEP-O-001.discovery.md:L472]
+- A markdown vault is the user-grain surface. (`SUMMARY/O-3.E04`) [O-SUMMARY:L51-L53 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L175]
+- The markdown vault format is deterministic. (`SUMMARY/O-3.E05`) [O-SUMMARY:L51-L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L176]
+- Vault pages use frontmatter. (`SUMMARY/O-3.E07`) [O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L178]
+- Vault pages support wikilinks. (`SUMMARY/O-3.E08`) [O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L179]
+- The vault contains living rankings. (`SUMMARY/O-3.E09`) [O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L180]
+- The vault contains a living queue. (`SUMMARY/O-3.E10`) [O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L181]
+- The vault contains a living index. (`SUMMARY/O-3.E11`) [O-SUMMARY:L52 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L182]
+- The vault adopts TEIKOKU `brain_store.write_page` discipline verbatim. (`SUMMARY/O-3.E12`) [O-SUMMARY:L52-L53 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L183]
+- The vault adopts TEIKOKU `brain_store.upsert_page` discipline verbatim. (`SUMMARY/O-3.E13`) [O-SUMMARY:L52-L53 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L184]
+- The markdown format itself is the migration contract. (`SUMMARY/O-3.E14`) [O-SUMMARY:L53-L54 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L185]
+- ELAI mounts the existing TEIKOKU vault. (`SUMMARY/O-3.E16`) [O-SUMMARY:L54 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L187]
+- A namespace-claims file exists at the vault root. (`SUMMARY/O-3.E17`) [O-SUMMARY:L54-L55 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L188]
+- Namespace claims are what allow two harnesses to share one vault. (`SUMMARY/O-3.E20`) [O-SUMMARY:L55-L56 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L191]
+- The vault and E-5 `memory_facts` remain disjoint grains. (`SUMMARY/O-3.E24`) [O-SUMMARY:L57 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L195]
+- The integration adds a vault reader in `crates/knowledge`. (`SUMMARY/O-3.E27`) [O-SUMMARY:L59 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L198]
+- The integration adds a vault writer in `crates/knowledge`. (`SUMMARY/O-3.E28`) [O-SUMMARY:L59 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L199]
+- A successful claimed-namespace write emits a `vault_write` row. (`SUMMARY/O-3.E32`) [O-SUMMARY:L60 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L203]
+
+#### Surfaces for O-4 (canvas WORKFLOW mode — editor + monitor over TaskSpecs (never a runtime))
+- Metadata is Track `RESEARCH-MACHINE`, lever `canvas-as-spec-editor`, source finding `L4`, grounding `MODERATE (index-derived, PLAN-asserted)`, nature `BUILD-on-shipped`, effort `M`, Wave `3`. (`O-001/O4-E002`) [O4:L5 | ledger-line: DEEP-O-001.discovery.md:L478]
+- H-12 is asserted to have shipped PLAN and RESEARCH canvas modes plus a mode bar. (`O-001/O4-E003`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L479]
+- J-31 defines canvas nodes as bound units. (`O-001/O4-E004`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L480]
+- J-31 defines canvas edges as verified claims. (`O-001/O4-E005`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L481]
+- J-31 requires canvas dispatch through the normal FSM. (`O-001/O4-E006`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L482]
+- J-31 forbids a canvas-side runtime. (`O-001/O4-E007`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L483]
+- J-60 overlays journal-derived run state on canvas nodes. (`O-001/O4-E008`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L484]
+- WORKFLOW applies that existing canvas shape to O-2 TaskSpecs. (`O-001/O4-E009`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L485]
+- A WORKFLOW node is a typed stage instance. (`O-001/O4-E010`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L486]
+- A WORKFLOW edge is dataflow carrying a provenance tier. (`O-001/O4-E011`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L487]
+- Node chrome is the stage’s last-run SSB state. (`O-001/O4-E012`) [O4:L7 | ledger-line: DEEP-O-001.discovery.md:L488]
+- A `WORKFLOW` mode is added to the existing canvas mode bar. (`O-001/O4-E016`) [O4:L9-L10 | ledger-line: DEEP-O-001.discovery.md:L492]
+- The node palette is exactly O-2’s coded stage vocabulary; users cannot draw a stage kind that does not exist as code. (`O-001/O4-E017`) [O4:L10 | ledger-line: DEEP-O-001.discovery.md:L493]
+- Dispatch remains in the normal J-31 FSM and the canvas itself runs nothing. (`O-001/O4-E022`) [O4:L10 | ledger-line: DEEP-O-001.discovery.md:L498]
+- Any canvas-side scheduler or stage runner is excluded. (`O-001/O4-E023`) [O4:L11 | ledger-line: DEEP-O-001.discovery.md:L499]
+- A free-form stage kind typed on the canvas is excluded. (`O-001/O4-E024`) [O4:L11 | ledger-line: DEEP-O-001.discovery.md:L500]
+- Re-authoring the mode bar is excluded. (`O-001/O4-E025`) [O4:L11 | ledger-line: DEEP-O-001.discovery.md:L501]
+- Tier 1 ships the WORKFLOW mode flag in the mode bar. (`O-001/O4-E031`) [O4:L19-L20 | ledger-line: DEEP-O-001.discovery.md:L507]
+- Tier 2 defers in-canvas node editing that writes back to the TaskSpec row until O-2 Tier 1 is wired. (`O-001/O4-E036`) [O4:L21 | ledger-line: DEEP-O-001.discovery.md:L512]
+- UI ownership is `crates/dashboard-v2`, using Svelte 5 and Tauri v2. (`O-001/O4-E038`) [O4:L23-L24 | ledger-line: DEEP-O-001.discovery.md:L514]
+- The Tauri read surface includes `list_task_specs`. (`O-001/O4-E041`) [O4:L25 | ledger-line: DEEP-O-001.discovery.md:L517]
+- The Tauri read surface includes `get_task_spec_runstate`. (`O-001/O4-E042`) [O4:L25 | ledger-line: DEEP-O-001.discovery.md:L518]
+- The cross-language pair is the Rust command side plus Svelte view. (`O-001/O4-E043`) [O4:L25 | ledger-line: DEEP-O-001.discovery.md:L519]
+- Move M1 extends H-12’s mode enum with WORKFLOW. (`O-001/O4-E044`) [O4:L27-L28 | ledger-line: DEEP-O-001.discovery.md:L520]
+- Selecting WORKFLOW must render a configured TaskSpec as a node-per-stage graph. (`O-001/O4-E047`) [O4:L29 | ledger-line: DEEP-O-001.discovery.md:L523]
+- The palette must offer exactly O-2’s closed stage kinds and no others. (`O-001/O4-E048`) [O4:L29 | ledger-line: DEEP-O-001.discovery.md:L524]
+- If a free-form node appears, the palette must be bound to O-2’s enum at build time. (`O-001/O4-E049`) [O4:L30 | ledger-line: DEEP-O-001.discovery.md:L525]
+- Move M3 adds a `run now` affordance that enqueues through the normal FSM. (`O-001/O4-E055`) [O4:L34 | ledger-line: DEEP-O-001.discovery.md:L531]
+- The run-now affordance may never invoke a canvas-side executor. (`O-001/O4-E056`) [O4:L34 | ledger-line: DEEP-O-001.discovery.md:L532]
+- A canvas-triggered run produces the same `task_spec_fired` SSB row as O-2’s scheduler. (`O-001/O4-E057`) [O4:L35 | ledger-line: DEEP-O-001.discovery.md:L533]
+- The canvas introduces no canvas-owned execution event. (`O-001/O4-E058`) [O4:L35 | ledger-line: DEEP-O-001.discovery.md:L534]
+- If the canvas runs a pipeline itself, the remedy is calling O-2’s dispatcher and asserting fire-row provenance shows the FSM path. (`O-001/O4-E059`) [O4:L36 | ledger-line: DEEP-O-001.discovery.md:L535]
+- O-4 must not create a canvas-side spec store even in fallback. (`O-001/O4-E062`) [O4:L39 | ledger-line: DEEP-O-001.discovery.md:L538]
+- Before editing, recon must find and read H-12’s mode enum and registration mechanism. (`O-001/O4-E063`) [O4:L41-L42 | ledger-line: DEEP-O-001.discovery.md:L539]
+- Recon must confirm O-2’s `list_task_specs` command or record it as a required O-2 input. (`O-001/O4-E065`) [O4:L44 | ledger-line: DEEP-O-001.discovery.md:L541]
+- If WORKFLOW requires any canvas-side execution logic, execution aborts and flags the violation. (`O-001/O4-E066`) [O4:L46-L47 | ledger-line: DEEP-O-001.discovery.md:L542]
+- The canvas is strictly an editor and monitor; all dispatch authority stays in the FSM. (`O-001/O4-E067`) [O4:L47 | ledger-line: DEEP-O-001.discovery.md:L543]
+- Produced symbols include WORKFLOW and TaskSpec-to-nodes/edges projection. (`O-001/O4-E068`) [O4:L49-L51 | ledger-line: DEEP-O-001.discovery.md:L544]
+- Produced symbols include the enum-constrained palette bound to O-2. (`O-001/O4-E069`) [O4:L52 | ledger-line: DEEP-O-001.discovery.md:L545]
+- Produced symbols include both Tauri read commands. (`O-001/O4-E071`) [O4:L54 | ledger-line: DEEP-O-001.discovery.md:L547]
+- Production reachability is a user selecting WORKFLOW in the live dashboard and inspecting a real TaskSpec. (`O-001/O4-E073`) [O4:L59-L61 | ledger-line: DEEP-O-001.discovery.md:L549]
+- `ts-rs` bindings for the Svelte/Rust frontend pair must not drift. (`O-001/O4-E075`) [O4:L67 | ledger-line: DEEP-O-001.discovery.md:L551]
+- Selecting run-now must emit O-2’s `task_spec_fired` through the FSM and no canvas-owned execution row. (`O-001/O4-E077`) [O4:L70 | ledger-line: DEEP-O-001.discovery.md:L553]
+- Any canvas execution path or normally-connected display of a wire-dark node fails. (`O-001/O4-E079`) [O4:L71 | ledger-line: DEEP-O-001.discovery.md:L555]
+- The production hook registers WORKFLOW in H-12’s mode enum and exposes it from the dashboard route. (`O-001/O4-E080`) [O4:L73 | ledger-line: DEEP-O-001.discovery.md:L556]
+- The run-now affordance calls O-2’s dispatcher in the same changeset. (`O-001/O4-E081`) [O4:L73 | ledger-line: DEEP-O-001.discovery.md:L557]
+- Verification runs `svelte_mount_reachability.py` to prove the view is reachable. (`O-001/O4-E083`) [O4:L78 | ledger-line: DEEP-O-001.discovery.md:L559]
+- Verification runs `tauri_ipc_symmetry_check.py` to prove `list_task_specs` invoke/handler symmetry. (`O-001/O4-E084`) [O4:L78 | ledger-line: DEEP-O-001.discovery.md:L560]
+- Verification runs `bun .claude/tools/visual/ui-wire-smoke.mjs ...` so a real WORKFLOW click lands a Rust-owned SSB row. (`O-001/O4-E085`) [O4:L79 | ledger-line: DEEP-O-001.discovery.md:L561]
+- Completion requires a mount-reachable view, symmetric Tauri command, and live click through FSM dispatch rather than canvas execution. (`O-001/O4-E086`) [O4:L80 | ledger-line: DEEP-O-001.discovery.md:L562]
+- The independent integration smoke uses the real dashboard and a TaskSpec spanning O-1 stages with one missing consumer. (`O-001/O4-E087`) [O4:L82 | ledger-line: DEEP-O-001.discovery.md:L563]
+- The smoke selects WORKFLOW, triggers run-now, and asserts disconnected rendering, O-2’s FSM fire row, and J-60 chrome updating. (`O-001/O4-E088`) [O4:L82 | ledger-line: DEEP-O-001.discovery.md:L564]
+- Client-side execution-engine smuggling is intended to fail because J-31 is a stub ban and run-now routes to O-2’s journaled dispatcher. (`O-001/O4-E090`) [O4:L84-L85 | ledger-line: DEEP-O-001.discovery.md:L566]
+- Final composition rule: canvas is editor/monitor, FSM is dispatcher, and wire-dark is rendered rather than hidden. (`O-001/O4-E093`) [O4:L91-L92 | ledger-line: DEEP-O-001.discovery.md:L569]
+- A `WORKFLOW` mode is added to the shipped canvas mode bar. (`SUMMARY/O-4.E01`) [O-SUMMARY:L67 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L214]
+- The mode bar is H-12 and must be extended rather than replaced. (`SUMMARY/O-4.E02`) [O-SUMMARY:L67,L73 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L215]
+- WORKFLOW follows the shape of J-31's canvas doctrine. (`SUMMARY/O-4.E03`) [O-SUMMARY:L67-L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L216]
+- A workflow node represents a bound unit. (`SUMMARY/O-4.E04`) [O-SUMMARY:L67-L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L217]
+- A workflow edge represents a verified claim. (`SUMMARY/O-4.E05`) [O-SUMMARY:L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L218]
+- Workflow dispatch goes through the normal FSM. (`SUMMARY/O-4.E06`) [O-SUMMARY:L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L219]
+- The canvas has no independent runtime. (`SUMMARY/O-4.E07`) [O-SUMMARY:L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L220]
+- WORKFLOW projects O-2 TaskSpecs. (`SUMMARY/O-4.E08`) [O-SUMMARY:L68 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L221]
+- Node chrome displays last-run SSB state. (`SUMMARY/O-4.E12`) [O-SUMMARY:L69 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L225]
+- The last-run chrome reuses J-60. (`SUMMARY/O-4.E13`) [O-SUMMARY:L69,L73 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L226]
+- The `WORKFLOW` mode is absent at summary time. (`SUMMARY/O-4.E19`) [O-SUMMARY:L71-L72 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L232]
+- The enum-constrained palette is absent at summary time. (`SUMMARY/O-4.E21`) [O-SUMMARY:L72 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L234]
+- WORKFLOW consumes the O-2 TaskSpec store and enums. (`SUMMARY/O-4.E22`) [O-SUMMARY:L73 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L235]
+- WORKFLOW consumes O-1 tiers. (`SUMMARY/O-4.E23`) [O-SUMMARY:L73 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L236]
+- The UI integration is a Svelte WORKFLOW view in `crates/dashboard-v2`. (`SUMMARY/O-4.E24`) [O-SUMMARY:L74 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L237]
+- Rust exposes a `list_task_specs` Tauri command. (`SUMMARY/O-4.E25`) [O-SUMMARY:L74 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L238]
+- Rust exposes a `get_task_spec_runstate` Tauri command. (`SUMMARY/O-4.E26`) [O-SUMMARY:L74 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L239]
+- Selecting WORKFLOW in the live dashboard renders a TaskSpec as nodes and edges. (`SUMMARY/O-4.E27`) [O-SUMMARY:L75 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L240]
+- `run-now` emits O-2's fire row. (`SUMMARY/O-4.E30`) [O-SUMMARY:L76 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L243]
+- `run-now` reaches execution through the FSM. (`SUMMARY/O-4.E31`) [O-SUMMARY:L76 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L244]
+- Any canvas-side execution path fails the done-gate. (`SUMMARY/O-4.E32`) [O-SUMMARY:L76-L77 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L245]
+
+#### Surfaces for O-registers (cross-unit IX / SD / AC / INF registers)
+- A4 requires disjoint vault namespaces for the two masters. (`SUMMARY/O.X.E13`) [O-SUMMARY:L82 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L264]
+- A successful digest is connected to a measured digest-open signal. (`SUMMARY/O.X.E15`) [O-SUMMARY:L83-L84 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L266]
+- A successful digest is connected to a measured `For-You` click signal. (`SUMMARY/O.X.E16`) [O-SUMMARY:L83-L84 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L267]
+- title=`Classify, deduplicate, and produce.` (ledger-line: DEEP-O-001.discovery.md:L579): The TEIKOKU-derived workflow is fetch → enum classification → duplicate precheck against a rejected ledger → file → layered digest →, at full scope, guarded living-page upsert (`O1:L10`). Tier 1 covers `steal-scan` and `monitor`; `leaderboard`, `discovery`, and living leaderboard pages wait for Tier 2/O-3 (`O1:L19-L21`). (`O-001/IX-PATH03`)
+- title=`Represent scheduled execution as data.` (ledger-line: DEEP-O-001.discovery.md:L580): O-2 persists strict TaskSpec rows in SQLite. Each row combines a closed trigger, ordered closed stages, and a closed sink (`O2:L9-L10,L27-L30,L49-L53`). Tier 1 brings Cron/Manual, `Fetch/Classify/Gate/Digest`, fire rows, and DashboardInbox; event triggering, orchestrator stage kinds, and missed-run hookup are deferred (`O2:L19-L21`). (`O-001/IX-PATH04`)
+- title=`Surface only useful scheduled output.` (ledger-line: DEEP-O-001.discovery.md:L582): Result-bearing output creates an existing intervention card. Nothing-to-report output auto-archives, leaving only the SSB receipt; the predicate is based on pipeline result count (`O2:L34-L36,L65-L68`). (`O-001/IX-PATH06`)
+- title=`Write selected research to the owner vault.` (ledger-line: DEEP-O-001.discovery.md:L583): O-3’s production seam is O-2’s `FileToBrain` stage calling a guarded writer (or interim `elai brain write`) (`O3:L57-L70`). The writer resolves a configured vault root, validates ownership at a single chokepoint, creates/appends only in ELAI-owned space, and upserts only machine-owned rankings/queue/index pages (`O3:L18-L35`). It records `vault_write {namespace,page,mode}` or `claim_violation` (`O3:L65-L68`). (`O-001/IX-PATH07`)
+- title=`Keep the two memory grains separate.` (ledger-line: DEEP-O-001.discovery.md:L584): The mounted deterministic Markdown vault is the human/owner grain; E-5 `memory_facts` remains the prompt-feeding machine grain. There is no conversion or dual-write, and ELAI adapts to existing vault bytes (`O3:L7,L10-L11,L37-L46,L53-L64`). Prompt-bound personal content is barred pending the Tier-2 D-5 read wiring (`O3:L18-L20,L80-L81`). (`O-001/IX-PATH08`)
+- title=`Project, inspect, and eventually edit visually.` (ledger-line: DEEP-O-001.discovery.md:L585): O-4 lists TaskSpecs through Tauri and renders a node-per-stage graph in Svelte. Provenance-labelled edges, J-60 last-run chrome, and missing-consumer disconnection make execution receipts and wire-dark state visible (`O4:L19-L33,L49-L71`). Tier 1 is read-only; Tier 2 writes node edits back to TaskSpec rows and adds provenance drill-down (`O4:L19-L21`). (`O-001/IX-PATH09`)
+- title=`Run-now shares the same backend.` (ledger-line: DEEP-O-001.discovery.md:L586): The canvas calls O-2’s dispatcher, which emits the same `task_spec_fired` receipt through the normal FSM. No client-side scheduler, stage runner, spec store, or separate execution event is allowed (`O4:L34-L39,L46-L47,L68-L73`). (`O-001/IX-PATH10`)
+- surface=`Research topics` state=`User-editable manifest `[[research.topics]]`` lifecycle=`Existing hourly Cosmos loop enumerates topics; existing Cosmos artifacts can time-decay to `DECAYED`; drawer shows kind and last-run trust tier` (ledger-line: DEEP-O-001.discovery.md:L605) (`O-001/IX-DATA001`)
+- surface=``task_spec_fired`` state=`O-2 schema-version bump site` lifecycle=`Carries `{spec_id, trigger_cause, stage_path}` exactly once per due tick; reused by O-4 run-now` (ledger-line: DEEP-O-001.discovery.md:L610) (`O-001/IX-DATA006`)
+- surface=`Inbox intervention card` state=`Existing dashboard surface` lifecycle=`Created only for result-bearing runs; empty runs auto-archive and retain SSB only` (ledger-line: DEEP-O-001.discovery.md:L611) (`O-001/IX-DATA007`)
+- surface=`Markdown vault` state=`Configured mounted root` lifecycle=`Pure read/byte-identical round trip; claimed create/append; machine-owned upsert; external-editor ownership` (ledger-line: DEEP-O-001.discovery.md:L612) (`O-001/IX-DATA008`)
+- surface=``vault_write`` state=`O-3 schema-version bump site` lifecycle=`Records namespace, page, and create/append/upsert mode` (ledger-line: DEEP-O-001.discovery.md:L614) (`O-001/IX-DATA010`)
+- surface=`Canvas projection` state=`Derived from TaskSpec rows plus J-60 SSB run state` lifecycle=`Read-only Tier 1; editing Tier 2; missing consumers are visually disconnected` (ledger-line: DEEP-O-001.discovery.md:L615) (`O-001/IX-DATA011`)
+- purpose=`Intervention-card recon` command=``grep -rn "intervention\` (ledger-line: DEEP-O-001.discovery.md:L664) (`O-001/IX-RECON007`)
+- purpose=`Wiring proof` command=``python .claude/tools/wiring_contract_check.py --bn-file docs/thefinalglance/O-plan/O-3_brain_vault_contract_mounting.md --run-trigger`` (ledger-line: DEEP-O-001.discovery.md:L669) (`O-001/IX-RECON012`)
+- purpose=`Wiring proof` command=``python .claude/tools/wiring_contract_check.py --bn-file docs/thefinalglance/O-plan/O-4_canvas_workflow_mode.md --run-trigger`` (ledger-line: DEEP-O-001.discovery.md:L673) (`O-001/IX-RECON016`)
+- purpose=`Svelte/Tauri reachability and symmetry` command=``python .claude/tools/svelte_mount_reachability.py` and `python .claude/tools/tauri_ipc_symmetry_check.py`` (ledger-line: DEEP-O-001.discovery.md:L674) (`O-001/IX-RECON017`)
+
+#### Surfaces for O-summary-wide (summary-wide premise, cross-cutting digest, workflows, invariants, silent candidates)
+- The desired product is a “TEIKOKU-style personal research machine on the ELAI canvas.” (`SUMMARY/O.G.E02`) [O-SUMMARY:L9-L10 | ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L53]
+- title=`Scheduled execution path (`O-2`)` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L279): Supervisor-plane `Cron`, `SsbEvent`, or `Manual` trigger -> persisted typed `TaskSpec` -> ordered closed-enum stages -> one journaled `task_spec_fired` row with cause and stage path -> one of the typed sinks -> intervention-card inbox only when the fire bears a result. Temporal monitoring detects missed runs; a Cron due now fires exactly once per tick. Source: O-SUMMARY:L35-L46. (`SUMMARY/WF-02`)
+- title=`Guarded vault path (`O-3`)` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L283): O-1/O-2 `FileToBrain` request -> namespace-claims parser -> hard write-scope check -> guarded vault writer/upsert -> deterministic markdown page and `vault_write` row. A denied attempt emits `claim_violation` without producing the forbidden write. Prompt-bound reads remain separated from E-5 machine memory, and personal topics may not enter project/cloud prompts. Source: O-SUMMARY:L51-L62. (`SUMMARY/WF-03`)
+- title=`Visual editing and run path (`O-4`)` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L287): Select WORKFLOW -> list/project O-2 TaskSpecs to typed nodes and provenance-bearing edges -> overlay last-run SSB state -> edit a node by editing its closed-enum-constrained spec row -> display missing consumers as disconnected -> `run-now` dispatches through the normal FSM -> O-2 emits the fire row. The canvas may never execute directly. Source: O-SUMMARY:L67-L77. (`SUMMARY/WF-04`)
+- title=`Track validation loop` (ledger-line: 15-O-SUMMARY_INDEX.discovery.md:L291): Digest success -> measure digest opens and `For-You` clicks -> after `N` days of zero engagement, decay the topic instead of preserving an unused default-off feature. Source: O-SUMMARY:L83-L84. (`SUMMARY/WF-05`)
+- (user-editable; closed `kind`) — refs: O-001/O1-E015..E025, O-001/O0-E021, SUMMARY/O-1.E10..E16 (`Config: `[[research.topics]]` typed topic manifest`)
+- `steal-scan`, `leaderboard`, `discovery`, `monitor` — refs: O-001/O1-E018..E021; Tier 1 ships steal-scan+monitor: O-001/O1-E057..E058, O-001/O0-E065 (`Topic kinds (schema):`)
+- (extend, not replace; show topic kind + last-run trust tier) — refs: O-001/O1-E064..E066, SUMMARY/O-1.E34 (`UI: CosmosDrawer`)
+- — refs: O-001/O2-E037, O-001/O2-E060, O-001/O2-E078..E080, SUMMARY/O-2.E25, SUMMARY/O-2.E41 (`UI: intervention-card inbox / DashboardInbox sink`)
+- — refs: O-001/O2-E032, SUMMARY/O-2.E19 (`UI: Toast sink`)
+- (H-12 extend) — refs: O-001/O4-E016, O-001/O4-E031, O-001/O4-E044, SUMMARY/O-4.E01..E02 (`UI: canvas mode bar WORKFLOW mode`)
+- (`crates/dashboard-v2`, Svelte 5 / Tauri v2) — refs: O-001/O4-E038..E043, SUMMARY/O-4.E24 (`UI: WORKFLOW Svelte view`)
+- (O-2 stage vocabulary only) — refs: O-001/O4-E017, O-001/O4-E048..E049, SUMMARY/O-4.E21 (`UI: enum-constrained node palette`)
+- (node = stage instance; edge = dataflow + provenance tier) — refs: O-001/O4-E010..E011, O-001/O4-E045..E047, SUMMARY/O-4.E04..E11 (`UI: node graph projection`)
+- — refs: O-001/O4-E012, O-001/O4-E019, O-001/O4-E050..E051, SUMMARY/O-4.E12..E13 (`UI: J-60 last-run chrome on nodes`)
+- — refs: O-001/O4-E020..E021, O-001/O4-E052..E054, SUMMARY/O-4.E16..E17 (`UI: missing-consumer / wire-dark visual disconnect`)
+- (FSM dispatch only; no canvas runtime) — refs: O-001/O4-E055..E059, SUMMARY/O-4.E30..E32 (`UI action: `run now` / `run-now``)
+- (or defer to Obsidian/GDrive; no new panel justified) — refs: O-001/O3-E053..E055, O-001/O3-E009 (`UI: optional read-only dashboard vault-page view`)
+- (Obsidian/GDrive; mount TEIKOKU vault) — refs: O-001/O3-E008..E011, SUMMARY/O-3.E04..E16 (`External surface: Markdown vault`)
+- `topics/<t>/<slug>.md`, `rankings/`, `queue/`, `index` — refs: O-001/O3-E014..E019, SUMMARY/O-3.E06..E11 (`External surface: living pages`)
+- — refs: O-001/O3-E024..E026, SUMMARY/O-3.E17..E20 (`Config: root `namespace-claims` file`)
+- (when FileToBrain caller absent) — refs: O-001/O3-E096, O-001/O0-E079 (`CLI: interim `elai brain write``)
+- — refs: O-001/O4-E041, SUMMARY/O-4.E25 (`Tauri command: `list_task_specs``)
+- — refs: O-001/O4-E042, SUMMARY/O-4.E26 (`Tauri command: `get_task_spec_runstate``)
+- — refs: O-001/O1-E093, O-001/O1-E100 (`Production tick: live_cli Cosmos tick / C-16`)
+- — refs: O-001/O2-E093, O-001/O2-E099 (`Production tick: C-9 task_runner interval`)
+- `{class, confidence, taint_tier}` — refs: O-001/O1-E096, SUMMARY/O-1.E36..E39 (`Notification/status: SSB classify row`)
+- `{spec_id, trigger_cause, stage_path}` — refs: O-001/O2-E071..E074, SUMMARY/O-2.E37..E40 (`Notification/status: `task_spec_fired``)
+- `{namespace, page, mode}` — refs: O-001/O3-E088..E091, SUMMARY/O-3.E32 (`Notification/status: `vault_write``)
+- — refs: O-001/O3-E092, SUMMARY/O-3.E33 (`Notification/status: `claim_violation``)
+- — refs: O-001/O1-E073, O-001/O1-E097, SUMMARY/O-1.E40 (`Status: canary route `unsorted``)
+- — refs: O-001/O1-E007 (`Status: artifact lifecycle `DECAYED``)
+- digest-open, `For-You` click, N-day zero-engagement decay — refs: SUMMARY/O.X.E14..E18; superseded/narrowed by O-001/SD-MC002 (`Engagement signals (summary-only; not in originals):`)
+- “n8n with receipts” / not generic ungated engine — refs: O-001/O4-E015, O-001/O0-E017, SUMMARY/O-4.E18, SUMMARY/O.G.E06 (`Product positioning:`)
+- TEIKOKU-style personal research machine on the ELAI canvas / RESEARCH-MACHINE — refs: O-001/O0-E001, SUMMARY/O.G.E01..E02 (`Track product name:`)
+
+## Audit (SECTION-M-N-O)
+
+- Units covered (M): 10 entries; behaviors=1000; surfaces=153; superseded_inline=12
+- Units covered (N): 19 entries; behaviors=1388; surfaces=166; superseded_inline=17
+- Units covered (O): 7 entries; behaviors=982; surfaces=239; superseded_inline=18
+- Entry count (sum of unit sections): 36
+- Behavior bullet count (sum): 3370
+- Surfaces count (sum): 558
+- Superseded notes count (inline, may duplicate across units): 47
+- Parser atoms (sum, pre-dedupe-by-unit): 3534
+- M bold-ID coverage: aggregate=968 missing=16 sample_missing=['Family:', 'Generated:', 'Inputs:', 'M-0', 'M-001:', 'M-1', 'M-2', 'M-3', 'M-4', 'M-5', 'M-6', 'NEWER-PLAN PRECEDENCE (within family):', 'Namespacing:', 'Policy:', 'SUMMARY:']
+- N bold-ID coverage: aggregate=1322 missing=17 sample_missing=['Aggregate distinct record count:', 'Family:', 'Generated:', 'Inputs:', 'Ledgers merged:', 'N-001:', 'N-002:', 'NEWER-PLAN PRECEDENCE (within family):', 'Namespacing:', 'Per-ledger atom counts:', 'Policy:', 'SUMMARY:', 'Status language preserved:', 'Superseded notes count:', 'Surface-tagged atoms indexed:']
+- O bold-ID coverage: aggregate=989 missing=15 sample_missing=['Aggregate distinct record count:', 'Cross-check vs deep ledger footer:', 'Family:', 'Generated:', 'Inputs:', 'Ledgers merged:', 'NEWER-PLAN PRECEDENCE (within family):', 'Namespacing:', 'Output path:', 'Policy:', 'SUMMARY explicit E:', 'Status language preserved:', 'Superseded notes count:', 'Surface-tagged atoms (unique):', 'Zero-omission statement:']
+- Output path: `docs/thefinalglance/feature-discovery/aggregates/compile/SECTION-M-N-O.md`
+- Precedence: deep original ledger > summary orientation; SUPERSEDED bullets keep losers under newer-plan precedence
+- Status caveat: labels are plan-recorded unless an auditor independently verified

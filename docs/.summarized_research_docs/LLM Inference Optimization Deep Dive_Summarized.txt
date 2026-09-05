@@ -1,0 +1,66 @@
+LLM Inference Optimization Deep Dive
+
+Core Challenge: 31B parameter model requires 62GB VRAM (FP16) before context processing, leaving minimal budget for KV cache and batching.
+
+Optimization Categories (Non-Invasive):
+
+Advanced Decoding Strategies:
+- EAGLE-3: Draft-free speculative decoding, 1.8-2.3x speedup
+- Medusa: Multi-head candidate prediction, 1.9-2.1x throughput
+- Lookahead Decoding: Parallel token verification, 1.6-1.8x gain
+- Acceptance rates: 65-85% depending on model complexity
+
+Memory Management:
+- EvicPress: Multi-tier KV cache with 93% hit rate
+- PagedAttention++: Dynamic page allocation, 40% VRAM reduction
+- Quantized KV: INT8 cache with 2.3x capacity increase
+- Zero-copy operations for memory bandwidth optimization
+
+Test-Time Compute Scaling:
+- PRM (Process Reward Models): Monte Carlo Tree Search validation
+- Best-of-N sampling: Temperature exploration with quality scoring
+- Self-consistency checks: Multiple path verification
+- Dynamic compute allocation based on query complexity
+
+Activation Steering:
+- Representation Engineering: Latent space manipulation
+- vLLM-Hook: High-throughput activation steering framework
+- Zero-shot behavioral modification with <1% latency overhead
+- JSON-configurable layer-specific interventions
+
+Orchestration & Routing:
+- Pyramid MoA: Hierarchical agent architecture
+- Value of Computation theory for dynamic routing
+- 62.7% VRAM/compute savings on simple queries
+- OptiLLM proxy: OpenAI-compatible routing layer
+
+Implementation Stack:
+
+Core Engines:
+- vLLM: PagedAttention with continuous batching
+- SGLang: Structured generation with flexible scheduling
+- TensorRT-LLM: GPU-optimized inference kernels
+
+Proxy Layer:
+- OptiLLM: 20+ test-time compute techniques
+- MARS (Multi-Agent Reasoning): Temperature exploration
+- PlanSearch: Natural language plan optimization
+- Z3 Solver integration for mathematical logic
+
+Performance Metrics:
+- Speedup: 1.6-2.3x through speculative decoding
+- Memory: 40% VRAM reduction via advanced caching
+- Quality: <5% degradation vs full compute baselines
+- Latency: <100ms additional overhead for steering
+
+Critical Thresholds:
+- KV cache hit rate: >90% for optimal performance
+- Speculative acceptance: >70% for net speedup
+- Memory bandwidth: >80% utilization target
+- Router accuracy: >85% complexity prediction
+
+Production Readiness:
+- Framework-agnostic REST API integration
+- SSL-enabled JSON configuration management
+- Horizontal scaling via proxy layer abstraction
+- Zero-downtime deployment with hot-swapping techniques

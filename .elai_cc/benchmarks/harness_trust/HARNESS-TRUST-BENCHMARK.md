@@ -2,7 +2,7 @@
 
 FILE
 
-`/home/user/teikoku/elai/.elai_cc/benchmarks/harness_trust/HARNESS-TRUST-BENCHMARK.md`
+`.elai_cc/benchmarks/harness_trust/HARNESS-TRUST-BENCHMARK.md`
 
 Run the commands below from:
 
@@ -272,7 +272,7 @@ Read the suite-specific `stdout.log` and `stderr.log`, validate that the adapter
 
 REFERENCE FILES
 
-- Main README: `/home/user/teikoku/elai/.elai_cc/benchmarks/harness_trust/README.md`
-- Manifest: `/home/user/teikoku/elai/.elai_cc/benchmarks/harness_trust/suites.json`
-- Runner: `/home/user/teikoku/elai/.elai_cc/scripts/trustbench.py`
-- Contract tests: `/home/user/teikoku/elai/.elai_cc/scripts/tests/test_trustbench.py`
+- Main README: `.elai_cc/benchmarks/harness_trust/README.md`
+- Manifest: `.elai_cc/benchmarks/harness_trust/suites.json`
+- Runner: `.elai_cc/scripts/trustbench.py`
+- Contract tests: `.elai_cc/scripts/tests/test_trustbench.py`

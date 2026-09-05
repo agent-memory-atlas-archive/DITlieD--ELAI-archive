@@ -1,0 +1,36 @@
+1. Advanced Contrastive Decoding (Probability Manipulation)
+
+These methods work by comparing the "normal" model against a "flawed" version to highlight and subtract likely hallucinations.
+
+    Multi-Model Contrastive Decoding (MCD): Uses three models simultaneously: a base model, an "evil" (hallucination-prone) model, and a "truthful" model. By looking for tokens that the evil model likes but the truthful model also identifies, it prunes "hallucinatory branches" in real-time.
+
+    Regularized Contrastive Decoding (RCD): A more efficient single-model approach. It uses Adversarial Fine-Tuning to mathematically synthesize "worst-case scenario" hallucinations. During inference, it penalizes any tokens that match these synthesized patterns.
+
+2. Layer-Wise Interventions (Mechanistic Exploitation)
+
+Research discovered a "Depth-Factual Dichotomy": shallow layers often hold the raw truth, while deeper layers get "distracted" by linguistic patterns and start hallucinating.
+
+    DoLa & LayerCD: These algorithms contrast the output of early layers against the final layers. If the final layer deviates too sharply from the early "factual" layers, the system corrects the trajectory.
+
+    Dynamic Correction (DeCo): Specifically for Multimodal models (images + text). It found that layers 20–28 usually have the correct visual data before the deep text layers "override" it with a hallucination. DeCo mathematically reintegrates that "lost" visual knowledge into the final result.
+
+3. Representation Engineering (Latent Space Steering)
+
+Instead of looking at the final word probabilities, these techniques reach into the "hidden states" (the geometric math inside the AI) to force them into a "truthful" shape.
+
+    Truthfulness Separator Vectors (TSV): A "plug-and-play" method that adds a tiny steering vector (only 0.00005% of the model's parameters) to the internal math. This pushes the AI's internal representations away from "hallucination clusters" and toward "truth clusters."
+
+    Dynamic Multimodal Activation Steering (DMAS): A database-driven approach for Vision-Language models. It identifies specific "truthfulness heads" and "perception heads" in the transformer and boosts their signals based on the semantic context of the image.
+
+4. Hardware Economics & Production Reality
+
+The report emphasizes that "academic elegance" must survive "deployment reality."
+Method	VRAM Impact	Latency	Verdict
+MCD	Extremely High (3x)	High	Best for high-stakes offline verification.
+TSV / DMAS	Near-Zero	Zero	Winner for real-time production.
+DeCo	Zero	Low	Excellent for model-agnostic visual tasks.
+The "vLLM" Era (2026)
+
+The industry has moved these theories into production through tools like HaluGate. This system uses a "Sentinel" to flag risky prompts and an "NLI Explanation" layer to verify tokens in C++/CUDA. By combining this with Speculative Decoding (using a small model to "guess" and a big model to "verify"), 2026-era systems can mitigate hallucinations without slowing down the user experience.
+
+    Key Takeaway: The "hallucination problem" is being solved not by more data, but by treating the LLM as a causal machine that can be steered geometrically and mechanically in real-time.

@@ -12,7 +12,7 @@
 //!   (g) KEYSTONE NEGATIVE: sub-14B local never yields CodeAct.
 //!
 //! Composition limits recorded honestly (canonical record:
-//! `/home/user/teikoku/elai/workflow/reasoning/J-55-decisions.md`):
+//! `workflow/reasoning/J-55-decisions.md`):
 //!   * E-35 SearchReplaceMatcher application lives in elai-tools
 //!     (`tools/src/dispatcher.rs try_edit_tiers`, already wired; matcher is
 //!     E-35-owned coverage). Orchestrator must NOT depend on elai-tools in

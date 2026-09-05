@@ -1,0 +1,15 @@
+LLM-as-a-Judge and RAG Metrics
+
+To replace rigid "exact match" grading, SOTA systems use LLMs to grade other LLMs.
+
+    DeepEval: Implements DAGMetric (Directed Acyclic Graph), which breaks complex rubrics into a tree of atomic boolean decisions to reduce "judge hallucinations."
+
+    RAGAS: A mathematical framework for Retrieval-Augmented Generation using the RAG Triad:
+
+        Faithfulness: (Context-supported claims / Total claims).
+
+        Answer Relevancy: Cosine similarity between the answer and synthetic questions.
+
+        Context Precision: Validating if the "gold" tokens exist in the top-K retrieved chunks.
+
+    Bias Mitigation: Current systems rotate answer positions and use multi-agent consensus to fight "self-preference bias" (where a model like GPT-4 prefers its own stylistic output).

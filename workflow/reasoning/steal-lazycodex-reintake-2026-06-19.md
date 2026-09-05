@@ -1,0 +1,61 @@
+STEAL ANALYSIS — lazycodex / OmO RE-INTAKE (v4.11.1)
+Date 2026-06-19. Source docs/.source/lazycodex-main (MIT). Understanding: docs/.source/lazycodex-main-INDEX.md (opus, real-source, HIGH confidence).
+
+WHY A RE-INTAKE
+lazycodex was already mined once: STEAL-LIST.md (2026-06-10) at version v0.2.2 — then "35-line npm wrapper + 17 SKILL.md skills + 8 TS hook components", read from a per-repo SUMMARY at MEDIUM confidence. That pass captured only two lazycodex items: F1 Stop-hook auto-continuation (Tier-3, DEFERRED — "harness-level; PreCompact handoff stands") and F2 skills-as-product (=E-43, HAVE). Track-20 (I-45..I-54) then ported the broader STEAL-LIST cross-repo items (sealed receipts I-45, bash interceptor I-46, verifier-input hardening I-47, prompts-as-files I-48, provider lanes I-49/I-50, model catalog I-51, checkpoints I-52, recipe runners I-53, ast-grep/tree-sitter I-54).
+This checkout is v4.11.1 — 14 components, 22 skills, read from real src/*.ts at HIGH confidence. The repo grew ~20x since v0.2.2; the deep ENFORCEMENT mechanisms below were not present / not seen in the v0.2.2 SUMMARY pass. Hence a justified re-intake.
+
+GROUNDING BASIS
+Each verdict checked against docs/thefinalglance/ELAI-FEATURE-MAP.md (upserted 2026-06-19, LIVE SCHEMA ~268/TV ~577). Cited feature-map lines in parentheses.
+
+================================================================================
+NET-NEW / EXTENSION (plan-worthy)
+================================================================================
+
+S1. EVIDENCE-RECEIPT SubagentStop GATE  [EXTENSION of HOOK SYSTEM (WIRED, fmap:855) + agent-dispatch-preamble R-8 + production-caller-gate D-030]  — STRONGEST
+  What: components/lazycodex-executor-verify/src/codex-hook.ts. A SubagentStop hook (matcher ^lazycodex-executor$) BLOCKS a sub-executor from finishing unless its last assistant line is exactly `EVIDENCE_RECORDED: <path>` AND that path resolves to a NON-EMPTY REAL file (realpath-canonical, symlink-rejected, traversal-guarded, both pre- and post-realpath) strictly inside .omo/evidence/. Else: increment a persisted atomic attempt counter (MAX 3), return {decision:"block", reason:<nag directive>}. Bounded 3x nag, then gives up. Proof is a filesystem artifact the verifier reads, never the agent's stdout.
+  ELAI today: the HOOK SYSTEM [WIRED] intercepts IPC at PreToolUse/PostToolUse/Stop/PreCompact and "agents never see hooks" (fmap:855) — there is NO SubagentStop axis and sub-executors are unhooked. Evidence/wiring enforcement happens at AUDIT time, a full cycle later (auditor re-runs production_caller_check.py / wire checkers off-agent). production-caller-gate.md states the prompt-plea version "only REDUCED the rate, never eliminated it ... the fix has to be STRUCTURAL and off-agent." I-45 sealed receipts (fmap:412) is blake3 RRA-seal/attestation for replay-staleness, NOT a return-time gate on the executor's own claim.
+  Verdict: EXTENSION — add a SubagentStop axis to ELAI's HOOK SYSTEM that fail-closed blocks an executor agent's DONE return unless it emitted EVIDENCE_RECORDED:<real non-empty artifact> (path-hardened), bounded-nag, then escalates. This turns agent-dispatch-preamble R-8 / D-030 from a PROMPT PLEA into a MECHANICAL return-time gate — catching wire-dark/no-evidence AT executor return instead of one expensive auditor cycle later. Steal: the gate + path-hardening (realpath/symlink/traversal) + bounded-nag counter. The auditor stays the authority (off-agent re-run); this is the cheap early tripwire, not a replacement.
+
+S2. PER-EDIT LSP + LINT BLOCK-FEEDBACK via REUSED DAEMON  [EXTENSION of E-52 LSP-AS-VERIFIER (PARTIAL, fmap:692)]
+  What: components/lsp/src/codex-hook.ts (runLspPostToolUseHook) + comment-checker. PostToolUse on edit-like tools: extract mutated file paths, run REAL diagnostics through a long-lived DAEMON (callDiagnosticsViaDaemon, MAX_CONCURRENT_DIAGNOSTICS=4), and on any real diagnostic return {decision:"block", reason:<formatted diagnostics>} to feed the error inline before the agent moves on. Subtle correctness: a daemon-UNREACHABLE result is treated as transient and NOT recorded (else it silences the extension all session); an "no LSP server for extension" result IS recorded so it stops retrying. Output truncated 8000 normal / 1200 under context pressure.
+  ELAI today: E-52 is a rust-analyzer headless diagnostic probe run PRE-AUDITING (batch, at audit time), flag ELAI_LSP_DIAGNOSTIC_PROBE_ENABLE unallowlisted, real subprocess DEFERRED (fmap:692). J-18 adds an LSP retrieval channel (fmap:94). Neither is a per-edit, daemon-reused, block-feed-now loop.
+  Verdict: EXTENSION — move LSP diagnostics from the pre-AUDITING batch into a per-edit PostToolUse block-feedback loop backed by a reused daemon (launch the editor LSP server once, reuse across edits), with the transient-vs-permanent failure distinction. The daemon-reuse + don't-record-unreachable nuance is the copyable part. comment-checker's post-edit-lint-block-feed is the same shape with a slop linter (overlaps maintainability-review / Zero-Lazy-Code but as a real-time gate, not an audit gate).
+
+S3. PATH-KEYED DYNAMIC RULE INJECTION  [EXTENSION of conditional-routing.md (instruction-only) onto HOOK SYSTEM PostToolUse]
+  What: components/rules (PostToolUse, dynamic-target-fingerprints.ts). Editing src/auth/* mechanically pulls in src/auth's LOCAL rules on demand: fingerprint the edited file path, inject only rules whose target fingerprint changed and that are not already in the transcript (transcript-rule-filter dedup), priority-ordered sources (.omo/.claude/.cursor/.github/...).
+  ELAI today: conditional-routing.md ("load rule when editing X") is an INSTRUCTION the main LLM is told to follow, not a mechanical PostToolUse hook keyed on the edited path. The HOOK SYSTEM has a PostToolUse axis (fmap:855) but no path-fingerprint rule injector. I-47 injects worker-discipline rules into the auditor's untrusted-input frame (fmap:684) — different concern.
+  Verdict: EXTENSION — make conditional-routing mechanical: a PostToolUse hook that fingerprints the edited path and injects the matching local rule (transcript-deduped, priority-sourced). Removes reliance on the LLM remembering to load the right rule.
+
+================================================================================
+RIDERS / MARGINAL (record, do not author standalone)
+================================================================================
+R1 POST-COMPACT RULE RE-INJECTION (rules/static-injection.ts runPostCompactRecovery: diff transcript for rules dropped by compaction, re-inject full-body or read-by-path). Largely COVERED — CONTEXT BUDGET ALLOCATOR re-fills the fixed "Rules" slot each turn with 2 cache breakpoints (fmap:442-446); H-50/H-51 own compaction/handoff (fmap:480-493). The transcript-diff-for-dropped-rules refinement is a small rider on H-50, not net-new.
+R2 SCHEMA-VALIDATED QUALITY GATE (ulw-loop/quality-gate.ts: final JSON blob the CLI validates — reviewer roles by exact name, every artifact path must statSync size>0, counts alone fail). ALREADY-SHIPPED doctrine (wiring-enforcement R1 missing-evidence=FAIL; gate-manifest freeze). A runnable end-of-plan aggregate-artifact validator could be a rider on the auditor.
+R3 CLEANUP-RECEIPT discipline (every spawned process/tmux/port/temp torn down with a one-line receipt or the criterion stays in_progress). Rider on wiring-enforcement + feedback_stop_pod_after_session.
+R4 HOOK ROBUSTNESS IDIOMS (every hook fails OPEN on any error; transcript-tail marker dedup so a directive injects once; 7-marker context-pressure short-circuit to no-op; per-process output caps). Rider for ELAI HOOK SYSTEM hardening.
+R5 CODEGRAPH session-start background-detached provision+sync with a fail-open notice (codegraph/src/session-start-worker.ts). Small rider — ELAI codegraph-elai MCP + elai.map already exist; only the boot-time auto-sync pattern is borrowable.
+
+================================================================================
+ALREADY-SHIPPED / ALREADY-REJECTED / REJECT
+================================================================================
+- SISYPHUS COMPLETION CONTRACT (DoneClaim -> INDEPENDENT AdversarialVerify -> FullyDone). ALREADY-SHIPPED — auditor-not-executor doctrine + D-13 cross-family critique + VD-4 stronger-than-generator + adversarial-auditor agent. The {confirmed|false-positive|needs-fix|needs-human-review} verdict schema is a clean reference, not a steal.
+- STOP-HOOK AUTO-CONTINUATION (boulder.json + Stop blocks while checkboxes remain). ALREADY-REJECTED — F1, Tier-3 DEFERRED (STEAL-LIST:191; fmap:1596 "harness-level; PreCompact handoff stands"). ELAI Stop hook already blocks mid-workflow termination (fmap:855) + FSM plan-walk + PreCompact handoff. Keep declined.
+- UNLIMITED-GOAL GUARD + STRUCTURED-ONLY STEERING (reject prose state mutation). ALREADY-SHIPPED — FSM transitions (mcp_fsm_transition) + SSB are structured-only by construction.
+- DUAL CROSS-MODEL PLAN REVIEW (momus + independent Codex-CLI gpt-5.5 xhigh, both must OKAY). ALREADY-SHIPPED — D-13 cross-family + gpt-bridge (gpt_chat/grok_chat) + plan-improvement adversarial injection.
+- SPARKSHELL bounded-output + bash normalization. PLANNED — I-46 BASH INTERCEPTOR (fmap:892) + token-discipline output bounds.
+- MULTI-MODEL CATEGORY ROUTING (model-catalog.json + openai-categories). ALREADY-SHIPPED/PLANNED — I-51 MODEL CAPABILITY CATALOG (fmap:1084) + E-31 tier matrix. (Routing logic lives in the EMPTY src/ submodule anyway — unverifiable.)
+- ast-grep structural search/rewrite. ALREADY-PLANNED — I-54 (dep BANNED, tree-sitter retained, fmap:1209/1511).
+- init-deep HIERARCHICAL complexity-scored AGENTS.md placement. REJECT as autonomous feature — conflicts with ELAI's single-CLAUDE.md + memory-bank model and "no unsolicited refactoring" posture. NOTE: .elai_cc/AGENTS.md was just deleted (git status) — if per-crate context files are wanted, the directory-complexity SCORING MATRIX (centrality 3x / file-count 3x / symbol-density 2x...) is a good reference, but route through the user, not this steal.
+- remove-ai-slops AUTONOMOUS deslop pass. REJECT — conflicts with ELAI "no removal or simplification without explicit user confirmation". The 10-category slop taxonomy (if/elif-on-variant -> match+assert_never; object-annotation -> Protocol/TypeVar; 250-LOC oversized-module split; behavior-locked-by-regression-test-first) is a strong REFERENCE for maintainability-review.md, not a new skill.
+- checkpoint/rewind = I-52; prompts-as-files = I-48; sealed receipts = I-45; verifier-input hardening = I-47; provider lanes = I-49/I-50; recipe runners = I-53. ALL ALREADY-PLANNED (Track-20).
+
+================================================================================
+RELIABILITY / CAVEATS
+================================================================================
+- The OmO ENGINE (src/ submodule) is EMPTY in this checkout: category routing, the 500/100 iteration caps, --completion-promise, --strategy, ORCHESTRATION COMPLETE, and the omo/ulw-loop CLI bodies are README/skill-described, NOT source-verified. Do not steal anything resting only on those.
+- 3 components ship dist-only (lsp-daemon, lsp-tools-mcp, git-bash-mcp); their internals are inferred from consumers.
+- GPT-5.x 2026 model ids + benchmark claims are the SOURCE's own roadmap assertions — never cite as ecosystem ground truth.
+- All three NET-NEW steals (S1/S2/S3) touch ELAI's WIRED HOOK SYSTEM subsystem -> group into ONE plan file (3 vertical slices), fewest-files per the skill.
+
+OUTCOME (2026-06-19b): user chose all-3-in-one-file as a NEW J-plan (not K); oracle pass SKIPPED (grounding strong). Authored docs/thefinalglance/J-plan/J-52_returntime_perEdit_enforcement_hooks.md (S1+S2+S3 as 3 legs extending the WIRED hook system). Updated J-0_INDEX (title 51->52, date line, sessions table, SSB delta, LAZYCODEX-REINTAKE wave) + J-SUMMARY_INDEX (J-52 entry + count) + ELAI-FEATURE-MAP (3 PLANNED(J-52) entries under HOOK SYSTEM, re-intake verdict + 5 riders in the ledger, header date 2026-06-19b, J-family ledger range J-1..J-52). 5 riders recorded (post-compact rule re-inject, runnable quality-gate validator, cleanup receipts, hook-robustness idioms, codegraph boot-sync). Plan id created: J-52.

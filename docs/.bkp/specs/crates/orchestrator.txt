@@ -1,0 +1,914 @@
+CRATE: orchestrator/
+Purpose: FSM, agents, sessions, parallelism, lifecycle, SSB, BSP, checkpointing.
+Source: design_document.txt PART 6 (all), PART 7 (workflow), PART 18 (SSB),
+  PART 20 (BSP), PART 21 (context budget), PART 24 (project isolation),
+  PART 25 (feasibility probe), design 31.1-31.4, 31.10-31.11.
+Depends on: core/, providers/ (ModelPool), reasoning/ (GRC), rules/, tools/
+
+Largest crate. Most claw-code modules map here.
+
+
+1. RESPONSIBILITIES
+
+  - FSM engine with phase-aware context/tool loading
+  - Agent spawning, lifecycle, checkpointing, crash recovery
+  - Agent parallelism with resource-aware scheduling
+  - Shared State Board (SSB): inter-agent communication via SQLite WAL
+  - BSP superstep model: deterministic macro-level orchestration
+  - Channel types: LastValue, Topic, UntrackedValue, EphemeralValue
+  - Context budget allocator: fixed-slot ordering with cache breakpoints
+  - Session handoff: structured state transfer (no summarization)
+  - Project isolation namespace
+  - Dual execution modes (INTERACTIVE first, AUTONOMOUS second — see architecture-overview.txt section 6)
+  - Evidence gate protocol (DAIRA-derived)
+  - FEASIBILITY_PROBE state
+  - Dynamic fan-out (Send) with namespace disambiguation
+  - Deferred node execution (post-barrier cleanup)
+  - Session-owned commit tracking
+  - Agent isolation: invisible walls, filesystem filtering, process separation
+
+
+2. FSM STATES
+
+  IDLE -> PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST -> EXECUTING
+    -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE
+
+  Phase-aware loading per state:
+    PLANNING:      rules + knowledge results + plan template. NO edit/bash tools.
+    FEASIBILITY:   stub write (<50 lines) + bash + web search. NO full edit/git.
+    TESTING_FIRST: test framework + plan + rules. NO edit/bash tools.
+    EXECUTING:     edit tools + current phase spec + code context. NO planning tools.
+    AUDITING:      validation tools + test runner + code. NO edit/planning tools.
+    MEMORIZING:    memory-bank write tools only.
+    CONFIGURING:   edit tools restricted to config paths only (.elai_cc/,
+                     elai_cc.toml, rules/, templates/). workflow domain.
+                     NO project source editing. NO knowledge engine queries.
+
+
+3. SSB (Shared State Board) — design PART 18
+
+  Single SQLite WAL database per project. Append-only within session.
+  All writes through single-writer tokio::mpsc channel.
+  All reads via read-only connections (WAL lock-free reads).
+
+  Schema:
+    ssb(seq INTEGER PK, project_id, session_id, agent_id, superstep INTEGER,
+        action_type TEXT CHECK(...), payload BLOB, created_at INTEGER)
+    ssb_files(seq REFERENCES ssb, file_path TEXT)
+    Indexes: project_id, session_id, superstep, file_path, (project_id,superstep).
+
+  action_types (complete list — 17 total):
+    file_write, file_read, tool_result, test_outcome, finding,
+    claim, checkpoint, model_swap, phase_transition,
+    knowledge_degradation (Section 5/knowledge.txt), isolation_metric (Section 7),
+    plan_update (Section 8), replan_request (Section 8),
+    stub_reference (Section 9), reasoning_trace (Section 7A),
+    memory_monitoring (Section 5, Phase 3D: UntrackedValue size tracking + force-clear),
+    phase_complete (Section 7B: atomic durability marker at phase boundary,
+      written BEFORE model unload, fsync to WAL before unload proceeds).
+
+  Conflict detection (requires JOIN — ssb_files has only seq + file_path):
+    SELECT DISTINCT ssb.agent_id FROM ssb_files
+    JOIN ssb ON ssb_files.seq = ssb.seq
+    WHERE ssb_files.file_path IN (rarray(?1))
+      AND ssb.project_id = ?2
+      AND ssb.session_id != ?3
+      AND ssb.superstep = ?4
+
+  Throughput: ~50K inserts/sec ceiling. Agent rate: ~1-10/sec. No bottleneck.
+
+
+4. BSP SUPERSTEPS — design PART 20
+
+  Phase transitions = superstep boundaries. Channel writes applied atomically.
+
+  loop {
+      channel_snapshot = channels.snapshot_for_scheduling();
+      tasks = prepare_next_tasks(checkpoint, channel_snapshot, nodes);
+      if tasks.empty() { break; }
+      channels.clear_non_accumulating_topics();  // after snapshot, before execute
+      writes = execute_tasks_parallel(tasks, model_pool, ssb);
+      apply_writes(checkpoint, channels, writes);
+
+      // deferred node phase (design 31.2)
+      for node in get_deferred_nodes(nodes) {
+          if node.all_inputs_satisfied(channels) {
+              deferred_writes = execute_single(node, channels);
+              apply_writes(checkpoint, channels, deferred_writes);
+          }
+      }
+
+      channels.clear_ephemeral();  // records in SSB for crash recovery replay
+      if !evidence_gate_passes(checkpoint, channels) {
+          attempt += 1;
+          if attempt >= max_superstep_attempts { break; }
+          continue;
+      }
+      save_checkpoint(checkpoint, channels);  // AFTER gate (prevents filename collision)
+      superstep += 1;
+      attempt = 0;
+  }
+
+
+5. CHANNEL TYPES — design 31.1
+
+  LastValue: single value, last writer wins. Deterministic (SSB seq order).
+  Topic(accumulate: bool): append-only list. accumulate=true persists across supersteps.
+    accumulate=false: Vec cleared to empty at superstep boundary. Two-phase reset:
+    (1) snapshot current state for prepare_next_tasks scheduling reads,
+    (2) clear to empty before execute_tasks writes new values.
+    Append ordering follows SSB seq within a superstep.
+  UntrackedValue: in-memory only, NEVER checkpointed. guard=false for multi-writer.
+    Persists until overwritten. Lost on crash (intentional).
+    T must implement DeepSizeOf for memory monitoring (size_of_val only measures stack).
+  EphemeralValue: cleared to MISSING on zero-write superstep. Fire-and-forget signals.
+    Detection: per-channel write_count (u32, saturating_add), reset at superstep start.
+    Clearing recorded in SSB (action_type='checkpoint', ephemeral_clears field) for
+    crash recovery replayability.
+  BinaryOp: DROPPED (non-deterministic with concurrent writes).
+
+  ChannelRegistry trait (programmatic interface):
+    read(id: ChannelId<T>) -> ChannelValue<T>
+    write(id: ChannelId<T>, value: T) -> Result<(), ChannelError>
+    snapshot_for_scheduling() -> ChannelSnapshot  (frozen read-only view)
+    clear_ephemeral() -> usize  (cleared count, records in SSB)
+    force_clear_untracked(id) -> bool
+    deep_size_untracked(id) -> usize
+  ChannelId<T>: typed key ensuring compile-time channel/type match.
+  ChannelState: enum with 3 variants (LastValue, Topic, Ephemeral) for checkpoint serialization.
+    UntrackedValue excluded from ChannelState by design.
+
+
+6. CONTEXT BUDGET ALLOCATOR — design PART 21, 31.10
+
+  Fixed-slot ordering every invocation:
+    Slot 1: system_prompt (GRC structured prompt per role)
+    Slot 2: rules (active for current phase + file context)
+    Slot 3: phase_spec (from PipelineSpec, includes output_format + constraints)
+    --- cache breakpoint 1 (slots 1-3 stable, cacheable) ---
+    Slot 4: repo_map (PageRank DKG output, fitted to budget)
+    Slot 5: code_context (BM25 + vector chunks)
+    --- cache breakpoint 2 (slots 4-5 stable within same files) ---
+    Slot 6: ssb_entries (filtered by file overlap)
+    Slot 7: grc_history (prior reasoning for current topic)
+    Slot 8: [output_reserve] (2000 tokens minimum)
+
+  Budget split after fixed slots: repo_map 15%, code_context 40%, ssb 25%, grc 20%.
+  Floors: ssb >= 200, grc >= 500, output >= 2000 tokens.
+  Floor enforcement: steal from code_context first, then repo_map. Err if insufficient.
+  File overlap score: |intersection(entry.files, agent.files)| / |agent.files|
+  Token counting: estimate for allocation, exact for final validation (providers.txt section 1).
+
+  Auditor DKG blast radius injection (Phase 3E+):
+    When assembling Slot 5 (code_context) for auditor role:
+      1. Compute blast radius via DKG reverse traversal of changed files.
+      2. Include blast_radius_subgraph as a SEPARATE sub-section within
+         Slot 5, clearly delimited from BM25/vector chunks.
+      3. Subgraph budget: 30% of code_context allocation.
+         BM25/vector chunks: 70% of code_context allocation.
+      4. Configurable in elai_cc.toml [context_budget.auditor.subgraph_pct].
+
+    Cache breakpoint 2 impact:
+      Cache breakpoint 2 (after Slots 4-5) applies to the BM25/vector portion
+      of Slot 5 only. The DKG subgraph changes on every commit, not on file-set
+      changes. Slot 5 is split: [BM25/vector (cacheable)] [subgraph (volatile)].
+
+    Non-auditor roles: no subgraph injection. Executor, context-compiler,
+    etc. continue using Slot 5 as-is (no split).
+
+    Evidence: "LLM auditors hallucinate architecture when given fragmented
+     cross-file context; they must receive pre-computed structural subgraphs,
+     not raw code." (architectural-rule-engine.md section 7.3)
+
+  Adaptive reduction (3 attempts max):
+    1. Filter by relevance score. 2. Reduce granularity. 3. Reduce scope.
+    Terminal: INTERACTIVE -> ESCALATE (implemented Phase 3). AUTONOMOUS -> SPLIT_TASK (Phase 4G).
+    Never silently truncate. Every reduction logged to SSB.
+
+
+7. AGENT CHECKPOINTING — design PART 6.5
+
+  Location: .elai_cc/sessions/{sid}/agents/{agent_id}/
+  Files: state.msgpack, grc_history.msgpack, tool_results.msgpack,
+    output_draft.msgpack, checkpoint_ts.
+
+  Triggers (automatic): after GRC step, tool call, file edit, before slow ops.
+
+  Recovery: orchestrator detects stop/crash -> reads checkpoint -> spawns new instance
+    -> injects checkpoint as structured context -> agent continues from last GRC step.
+  Anti-spiral: same_step_count > 3 -> checkpoint + escalate. Stop is safe, always resumable.
+
+  Checkpoint validation (UntrackedValue exclusion):
+    Agent checkpoints MUST NOT reference UntrackedValue channel IDs.
+    Checkpoint serializer validates channel references against channel registry type map.
+    UntrackedValue is for transient data only (streaming progress, temporary counters).
+    Agents MUST NOT use UntrackedValue for state they cannot recompute from SSB or
+    tool re-execution. Violation: orchestrator rejects checkpoint that references
+    UntrackedValue channel IDs.
+
+  Supervision tree pattern (Erlang-derived, formalized in Phase 3C):
+    Orchestrator is root supervisor. Each agent process has a restart policy:
+      max_restarts: 3 per phase (configurable in elai_cc.toml [agents.{role}.supervision]).
+      restart_window: current phase duration.
+      on_max_restarts: ESCALATE (interactive, Phase 3) or SUBSTITUTE_MODEL (autonomous, Phase 4G).
+    Supervision integrates with anti-spiral: 3x same GRC step failure -> supervisor
+      stops restarting, checkpoints, escalates. This is not a new mechanism — it
+      formalizes the existing crash recovery + anti-spiral into a single policy.
+    Agent death classification:
+      CLEAN_EXIT: agent sent AgentResponse before exit. Normal.
+      CRASH: agent died without AgentResponse. Restart from checkpoint.
+      TIMEOUT: heartbeat missed for 15s. SIGKILL + restart from checkpoint.
+      BUDGET_EXCEEDED: orchestrator-enforced GRC budget overflow. Convergence injected.
+
+
+7A. STRUCTURED REASONING TRACE (verifiable audit trail)
+
+  Every agent action produces a machine-readable trace record in SSB.
+  action_type='reasoning_trace'. Append-only within session.
+
+  ReasoningTraceEntry {
+    agent_id: UUID,
+    step_index: u32,           -- monotonic per agent per phase
+    step_type: String,         -- "observe", "hypothesize", "plan_action", "act", "verify",
+                               --   "tool_call", "grounding_check", "convergence"
+    content_summary: String,   -- max 200 chars, structured (not prose)
+    grounding_source: String,  -- FILE_CHECK:path, WEB_CHECK:url, SOURCE_CHECK:path, etc.
+    grounding_level: String,   -- VERIFIED, HIGH, UNCERTAIN
+    confidence: f64,           -- [0,1]
+    elapsed_ms: u64,           -- wall time for this step
+    topic: String,             -- GRC topic
+    budget_remaining: u32,     -- calls remaining in topic budget
+  }
+
+  Purpose:
+    1. Post-mortem debugging: "why did the executor write X?" -> read trace for that phase.
+    2. Compliance audit: every decision has a cited grounding source.
+    3. Self-modification fuel: log-driven proposals (self-modification.txt section 2)
+       read reasoning_trace entries, not just phase outcomes. Richer signal for
+       identifying WHERE reasoning fails, not just THAT it failed.
+    4. Cognitive isolation metric: sum(reasoning_trace tokens per agent) quantifies
+       context that would have polluted the orchestrator if agents were in-process.
+
+  Cognitive isolation metric (measured at phase boundary):
+    context_savings_from_isolation =
+      sum(all_agent_grc_tokens_this_phase) / model.max_context
+    Logged in SSB as action_type='isolation_metric' at each phase transition.
+    On 8k local model: if agents generate 12k tokens of reasoning internally,
+    isolation saves 150% of context window — makes the task possible at all.
+    On 32k cloud model: savings are less critical but still meaningful (30-40%).
+    This metric justifies Tier C beyond security: it is a context efficiency mechanism.
+
+
+7B. PHASE COMPLETION AND MODEL SWAP PROTOCOL
+
+  Atomic phase completion sequence (at phase boundaries):
+    a. Current agent sends AgentResponse via IPC.
+    b. Orchestrator validates AgentResponse against evidence gate.
+    c. Orchestrator writes SSB record: action_type='phase_complete'.
+       Content: { phase_id, agent_id, fsm_state, evidence_artifacts,
+         commit_hashes, test_outcomes }
+       This is the ATOMIC DURABILITY MARKER. Everything before this record
+       is committed. Everything after is idempotent on replay.
+    d. Orchestrator advances FSM state (Fsm::transition()).
+    e. ModelPool unloads current model from GPU.
+       Precondition: phase_complete record flushed to SQLite WAL.
+       Only proceeds after fsync confirms durability.
+    f. ModelPool loads next model (predictive pre-load if VRAM allows).
+    g. Orchestrator spawns new agent process with next phase's AgentRequest.
+    h. Health check inference on new model. Failure -> reload previous model
+       from ModelPool cache (model binary still on disk, re-load ~15-30s).
+
+  Crash recovery semantics:
+    - Crash before step (c): phase_complete absent. On restart, orchestrator
+      re-dispatches the same phase. Agent re-runs from last internal checkpoint.
+      SSB side effects from the crashed run are present but do not conflict
+      (append-only, new run appends new seq numbers).
+    - Crash between (c) and (e): phase_complete present. On restart,
+      orchestrator reads phase_complete, skips re-execution, proceeds to (e).
+    - Crash between (e) and (g): FSM advanced, model unloaded. On restart,
+      orchestrator loads the next model per FSM state and spawns agent.
+    - Crash during (g)/(h): Agent process may be partially spawned. On restart,
+      orchestrator kills orphan processes (stale PID check), re-spawns.
+
+
+8. DYNAMIC FAN-OUT — design 31.3
+
+  Agent emits Send(target_role, input_data) objects.
+  Namespace: "{parent_ns}|{subgraph_type}:{counter}" (AtomicU64 per type).
+  Counter checkpointed at superstep boundary.
+  Resource-aware: checks ModelPool. Insufficient VRAM -> serialize, not parallel.
+
+
+9. HIERARCHICAL PLAN MANAGEMENT (large plan coherence)
+
+  Problem: plans can exceed 40k tokens. Local models (8-32k context) cannot load
+  the full plan while elaborating a single phase. Elaboration drifts from plan intent.
+
+  Solution: two-artifact plan representation.
+
+  PLAN SKELETON (~2-4k tokens, always loaded in Slot 3):
+    One-liner per phase/sub-phase: goal, key decision, interface contracts, cross-refs.
+    Version number per section. Updated only when phase elaboration is approved.
+    Format: .elai_cc/pipelines/{id}/skeleton.toml
+      [phase.3B]
+      goal = "SSB single-writer SQLite WAL"
+      inputs = ["AgentPool::write(action)", "FSM::phase_transition()"]
+      outputs = ["ssb::query(filter) -> Vec<SsbRow>"]
+      constraints = ["append-only within session", "conflict detection on file_path"]
+      depends_on = ["3A"]
+      depended_by = ["3C", "3D"]
+      version = 3
+
+  PHASE DETAIL (~5-15k tokens, loaded on demand):
+    Full elaboration of the phase being worked on.
+    Format: .elai_cc/pipelines/{id}/phases/{phase_id}.toml
+    Loaded into Slot 3 alongside skeleton (skeleton first, then active phase detail).
+
+  CONTRACT EXTRACTION (pre-elaboration):
+    Before elaborating Phase X, extract from skeleton:
+      1. Input contracts: what Phase X receives from dependencies (types, invariants).
+      2. Output contracts: what dependents of Phase X expect (types, invariants).
+      3. Shared constraints: cross-cutting invariants (e.g. "SSB seq monotonic").
+    These contracts are prepended to the phase detail. The model elaborates AGAINST
+    contracts, not against the full plan text.
+
+  COHERENCE ENFORCEMENT:
+    After elaboration, auditor checks:
+      1. Phase detail satisfies all input/output contracts from skeleton.
+      2. No new interfaces introduced that skeleton doesn't declare.
+      3. Version number in skeleton incremented if contracts changed.
+    Skeleton contract change -> propagate to all dependent phases (flag for re-review).
+    Phase Sizing split operation: preserve_contracts flag ensures sub-phases inherit
+      parent phase's input/output contracts. Split points chosen at contract boundaries
+      first, then by directory proximity. Contract preservation is mandatory.
+
+  STORAGE: skeleton + phase details in SSB as action_type='plan_update'.
+  NOT in RAG/vector search. Plans are structured — use SQLite queries:
+    SELECT * FROM plan_phases WHERE phase_id IN (?, dependencies_of(?), dependents_of(?))
+
+
+10. SESSION HANDOFF — design PART 6.4, CMV-derived (arxiv 2602.22402)
+
+  DAG-based session state management replaces flat handoff file.
+  Derived from CMV (Contextual Memory Virtualisation) paper.
+
+  SessionDag:
+    Storage: .elai_cc/sessions/{id}/session_dag.db (SQLite)
+    Schema:
+      snapshots(snap_id TEXT PK, parent_id TEXT, session_id TEXT,
+        fsm_state TEXT, phase TEXT, step TEXT, findings BLOB,
+        code_changes BLOB, tests_written BLOB, commit_hashes TEXT,
+        created_at INTEGER, tag TEXT)
+      snapshot_context(snap_id TEXT REFERENCES snapshots(snap_id),
+        seq INTEGER, role TEXT CHECK(IN system/user/assistant/tool),
+        content BLOB, is_stubbed INTEGER DEFAULT 0,
+        stub_ssb_seq INTEGER, PRIMARY KEY(snap_id, seq))
+
+  Checkpoint trigger: after every GRC step, tool call, phase transition.
+  Handoff trigger: at token budget threshold (configurable, e.g. 85%).
+
+  Structurally lossless trimming (CMV-derived, runs before handoff):
+    Three streaming passes over session context:
+      Pass 1: identify large tool results (> stub_threshold tokens, default 500).
+      Pass 2: replace large results with stubs (type, size, summary hash).
+              Preserve ALL user messages and assistant responses intact.
+      Pass 3: validate stub references (every stub points to SSB seq for recovery).
+    Trimmed context stored in snapshot_context alongside full snapshot.
+    Stubs are recoverable: new session can re-execute tool call or read from SSB.
+    Prompt cache aware: trimming preserves prefix tokens in Slots 1-3 (cache breakpoints).
+
+  Branch and explore:
+    snapshot with tag="branch:{name}" creates named exploration branch.
+    Multiple approaches can be tried from same checkpoint.
+    Merge: pick winning branch, discard others. Only winning branch's SSB entries kept.
+    Use case: FEASIBILITY_PROBE tries stub A from checkpoint, then stub B from same.
+    Branch limit: max 3 active branches per session (prevent combinatorial explosion).
+
+  Handoff (replaces flat handoff.msgpack):
+    Save: create snapshot with tag="handoff", run trimming passes.
+    Load: new session reads latest handoff snapshot from session_dag.db.
+    If branch exists: load the branch tip, not the trunk.
+    No summarization. Structural skeleton preserved, bulk trimmed.
+    Knowledge engine, RAG, git state persist on disk (unchanged).
+
+  Session-owned commits (design 31.11):
+    commit_hashes: Vec<String> per session. Persists in snapshot.
+    Safe undo: only session-owned, working tree clean, not pushed, has parent.
+
+
+11. PROJECT ISOLATION — design PART 24
+
+  project_id: UUID v4.
+  Directory: .elai_cc/projects/{project_id}/ (ssb.db, knowledge.db, index/, rules/, etc.)
+  Global shared: .elai_cc/global/ (model_registry, rule_templates, pipeline_templates, metrics).
+  One project on GPU at a time. FIFO queue with priority override.
+  Switch: checkpoint -> unload -> load new -> resume. ~30-60 seconds.
+
+  Query-level project scoping:
+    Every knowledge engine query MUST include project_id parameter.
+    Server rejects queries without project_id (no global search allowed).
+    Exception: global/ directory queries use project_id="global".
+    This prevents accidental cross-project contamination at the API level.
+
+
+12. AGENT ISOLATION MODEL
+
+  Design principle: isolation over blocking. Agent should not know enforcement
+  exists. "Permission denied" teaches the agent about boundaries. "Not found"
+  makes the boundary invisible. A blocked agent adapts; an isolated agent
+  cannot even form the hypothesis.
+
+  Three tiers, implemented incrementally:
+
+  TIER A — INVISIBLE WALLS (Phase 0-1, zero external deps):
+
+    Filesystem view filtering:
+      Agent tool calls (read_file, glob, grep) pass through visibility filter.
+      Orchestrator maintains per-agent allowed_paths: Vec<GlobPattern>.
+      Default allowed: project source code, test files, agent's own scratch dir.
+      Default hidden: .elai_cc/, rules.db, harness source, other agent checkpoints,
+        SSB database, ONNX model files, elai_cc binary internals.
+      Hidden path access returns "not found" (not "permission denied", not "access denied").
+      No error variant distinguishes "hidden" from "nonexistent". Same code path.
+
+    Error message sanitization:
+      Rule BLOCK verdicts stripped of: rule_id, predicate type, enforcement tier,
+        DSL details, SQLite query info.
+      Agent sees: "Output rejected. Issue: [natural language description of violation]."
+      No structural information about how enforcement works leaks to the agent.
+      Tier 3 prompt rules: remove rule IDs (currently "[trading.22]"), use plain text only.
+
+    Knowledge engine exclusion:
+      .elai_cc/ directory excluded from DKG graph, BM25 index, vector embeddings.
+      Agent cannot search for enforcement code, rule definitions, or harness internals.
+      Exclusion list in elai_cc.toml: [knowledge.exclude_paths].
+
+    Tool registry opacity:
+      Agent sees tool names and parameter schemas. Never sees tool implementation.
+      Tool error messages are generic: "tool execution failed" + sanitized stderr.
+      Internal tool failures (hook rejections, rule blocks) indistinguishable from
+        regular errors to the agent.
+
+  TIER B — SANDBOX EXECUTION (Phase 3-4, Firecracker or gVisor):
+
+    Bash tool execution in lightweight microVM per agent:
+      Firecracker (preferred): <125ms boot, 5MB memory overhead per microVM.
+      gVisor (fallback): OCI-compatible, no KVM requirement, ~200ms startup.
+      Decision: measure both on target hardware in Phase 3. Pick lower latency.
+
+    Sandbox filesystem mount:
+      Read-only bind mount: project source code directory.
+      Read-write: /tmp/agent_{id}/ (scratch space, cleared after phase).
+      Not mounted: .elai_cc/, home directory, system files, other projects.
+      Agent sees a minimal filesystem: source code + scratch. Nothing else exists.
+
+    Sandbox network:
+      Default: no network access. Socket calls return ENETUNREACH.
+      Allowlist per role:
+        researcher: outbound HTTPS to configured search APIs only.
+        executor: none.
+        auditor: none.
+        All others: none.
+      Network policy enforced by sandbox, not by prompt rules.
+
+    Sandbox resource limits:
+      CPU: 2 cores per agent (configurable).
+      Memory: 512MB per agent (configurable). OOM kills the sandbox, not the host.
+      Disk: 100MB scratch space. Exceeding triggers cleanup, not host disk pressure.
+      Time: per-command timeout (inherited from tools.txt). Sandbox killed on timeout.
+
+    Agent cannot:
+      See other agents' sandboxes.
+      See the orchestrator process.
+      See GPU devices (no /dev/nvidia* mounted).
+      Access the host network stack.
+      Read /proc or /sys (restricted or fake).
+      Know it is in a sandbox (no sandbox-detection artifacts).
+
+  TIER C — PROCESS SEPARATION (Phase 4):
+
+    Each agent runs as a separate OS process (elai_cc_agent binary).
+    Agent binary contains: GRC reasoning loop, IPC client, structured output parser.
+    Agent binary does NOT contain: LLM client, network code, tool implementations,
+      FSM, SSB, rules engine, knowledge engine.
+    LLM calls proxied: agent emits InferRequest over IPC. Orchestrator calls
+      providers::LlmProvider::complete(), streams tokens back via IPC. Agent never
+      touches the network for LLM inference.
+
+    IPC protocol:
+      Transport: unix domain socket (Linux) / named pipe (Windows).
+      Wire format: 1-byte version header + 4-byte length prefix + postcard payload.
+      MAX_FRAME_SIZE: 10MB hard cap. Orchestrator rejects oversized frames.
+      Per-type limits: AgentHeartbeat < 1KB, ThinkStep < 64KB,
+        ToolResult < 10MB, AgentResponse < context_limit.
+
+      Connection sequence:
+        1. Orchestrator creates 0700 directory: /tmp/elai_cc_{session}/
+        2. Orchestrator creates socket inside directory, begins listen().
+        3. Orchestrator spawns agent process with socket path as argument.
+        4. Agent connects to socket. Orchestrator verifies peer PID via SO_PEERCRED
+           matches spawned child PID (Linux). Named pipe impersonation level
+           set to SecurityIdentification (Windows).
+        5. Version handshake: agent sends protocol version. Mismatch -> kill.
+
+      Message types (complete enum):
+        AgentRequest       — orchestrator -> agent: assembled prompt + task spec
+        AgentResponse      — agent -> orchestrator: completed output
+        InferRequest       — agent -> orchestrator: prompt for LLM call
+        InferResponse      — orchestrator -> agent: LLM completion (streamed or batch)
+        ToolRequest        — agent -> orchestrator: tool call (read/write/edit/glob/grep)
+        ToolResult         — orchestrator -> agent: sanitized tool result
+        BashRequest        — agent -> orchestrator: shell command
+        BashResult         — orchestrator -> agent: stdout/stderr
+        GroundingRequest   — agent -> orchestrator: GRC verify (FILE_CHECK/WEB_CHECK/etc.)
+        GroundingResult    — orchestrator -> agent: verification outcome
+        ThinkStep          — agent -> orchestrator: GRC reasoning step (for checkpointing)
+        CheckpointSync     — orchestrator -> agent: checkpoint acknowledgment
+        AgentHeartbeat     — bidirectional: liveness probe (5s interval)
+        AgentKill          — orchestrator -> agent: graceful shutdown (agent has 1s to flush)
+        ReplanRequest      — agent -> orchestrator: executor signals plan is fundamentally wrong
+                             Fields: evidence (string, max 500 tokens), severity (MINOR|MAJOR).
+                             MINOR: auditor reviews evidence, may fast-track EXECUTING -> PLANNING
+                               for current sub-phase only (no human gate).
+                             MAJOR: human gate required before replanning.
+                             Bounds: max 1 ReplanRequest per agent per phase (prevents abuse).
+                             Orchestrator logs to SSB as action_type='replan_request'.
+                             Does NOT bypass evidence gates — auditor still validates evidence.
+
+      Crash safety:
+        SSB write is synchronous with IPC ToolResult dispatch. Orchestrator writes to SSB
+        BEFORE sending ToolResult to agent. On crash, SSB state is consistent.
+        SIGKILL: orchestrator closes socket fd, reads no further. New socket created
+        on agent respawn. Old socket file unlinked. No buffer drain — partial frames
+        discarded by closing the fd.
+
+      agent_id format: UUID v4, assigned at spawn time by orchestrator.
+      Socket path: /tmp/elai_cc_{session}/{agent_uuid}.sock
+      Invariant: no two live agent sockets share the same path.
+
+    GRC budget enforcement:
+      Orchestrator counts ThinkStep messages per topic per agent externally.
+      After max_calls messages for a topic, orchestrator stops forwarding ThinkStep
+      to SSB and injects convergence signal via IPC. Agent binary budget tracking
+      is advisory only. Enforcement is in the orchestrator, not the agent.
+      Scope: this orchestrator enforcement applies in Tier C (Phase 4A+) process isolation.
+      In phases 0-3 (in-process), the agent-side GrcEngine is the authoritative enforcer
+      (see reasoning.txt section 7, phase 2C). Phase 4A transitions authority from agent
+      to orchestrator. The same GrcBudget struct and per-agent AgentGrcConfig are used
+      in both modes; only the enforcement location changes.
+      Per-agent config: AgentGrcConfig (reasoning.txt section 7) defines per-role budgets,
+      required step sequences, grounding level minimums, and allowed verification methods.
+      The orchestrator loads these configs at agent spawn time and applies them to the
+      GRC engine (in-process) or to the IPC message counter (Tier C).
+
+    Process restrictions (Linux):
+      clone() with CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET.
+      All capabilities dropped via prctl(PR_SET_NO_NEW_PRIVS) BEFORE exec().
+      No capabilities retained. Zero. Not even researcher.
+      Researcher network: veth pair + iptables allowlist. No capabilities needed.
+
+      seccomp-bpf allowlist (two profiles):
+
+        IPC_BASELINE (all roles):
+          read, write, open, openat, close, mmap, mmap2, munmap, mprotect, brk,
+          exit_group, clock_gettime, clock_getres, getrandom, futex, sigaction,
+          rt_sigreturn, rt_sigprocmask, nanosleep, poll, epoll_ctl, epoll_wait,
+          epoll_create1, eventfd2,
+          socket(AF_UNIX only — BPF argument check rejects AF_INET/AF_INET6),
+          connect, sendmsg, recvmsg, sendto, recvfrom, shutdown,
+          getsockname, getpeername, setsockopt, getsockopt,
+          fstat, stat, lstat, access, readlink, getdents64, ioctl(FIONREAD only),
+          getpid, gettid, set_tid_address, arch_prctl, set_robust_list.
+          All unlisted syscalls -> EPERM (silent, no audit trail visible to agent).
+
+        NETWORK_EXTRA (researcher only, added to IPC_BASELINE):
+          socket(AF_INET, AF_INET6 — TCP only, BPF checks SOCK_STREAM),
+          connect (to allowlisted IPs only — enforced by iptables, not seccomp).
+
+      Mount namespace:
+        Bind-mount project source (read-only) + scratch dir (read-write).
+        .elai_cc/ not mounted. Does not exist in agent's view.
+        Self-modification agent: locked files/dirs mounted read-only additionally.
+        /proc: masked (hidepid=2 or not mounted). /sys: not mounted.
+
+      PID namespace: agent sees only its own PID (PID 1 inside namespace).
+      rlimit: RLIMIT_NPROC=1, RLIMIT_FSIZE=100MB, RLIMIT_AS=512MB (configurable).
+
+    Process restrictions (Windows):
+      NOTE: Windows isolation is explicitly WEAKER than Linux. Linux is the production
+      security target. Windows provides best-effort isolation suitable for development.
+
+      AppContainer isolation (preferred over ACL deny):
+        CreateAppContainerProfile() for each agent. Provides:
+          - Filesystem: agent can only access explicitly granted paths.
+          - Network: no network by default. Researcher: add network capability.
+          - Registry: no access.
+          - Process: isolated from other AppContainers.
+        Fallback (if AppContainer unavailable): restricted token + Job object.
+          Known weakness: NTFS junction points, reparse points may bypass ACL deny.
+          This is documented, not hidden. Use Linux for production security.
+
+      Job object: JOB_OBJECT_LIMIT_ACTIVE_PROCESS=1, JOB_OBJECT_LIMIT_PROCESS_MEMORY=512MB,
+        JOB_OBJECT_LIMIT_JOB_TIME (configurable timeout).
+
+    Agent environment:
+      Sanitized. Only variables passed: LANG, TERM, PATH (restricted), TMPDIR (scratch).
+      NOT passed: HOME, USER, API keys, ELAI_CC_* variables, shell history paths.
+
+    Separation benefits:
+      Auditor cannot inspect executor memory (separate address space).
+      Executor cannot read auditor findings until orchestrator delivers them.
+      Compromised agent process killed without affecting orchestrator.
+      kill -9 is the ultimate enforcement: no negotiation, no re-prompting.
+
+    Separation costs:
+      IPC latency: ~0.1ms per message (acceptable, agent turns are seconds).
+      Process spawn: ~50ms (Rust binary fork + namespace setup, not cold start).
+      Memory overhead: ~20MB per agent process (Rust binary + runtime).
+      Complexity: message serialization, process lifecycle, crash detection.
+
+    Self-modification extra restrictions:
+      IPC-level: orchestrator rejects WriteFile/EditFile to locked paths (canonical
+        realpath comparison, not string match — prevents normalization attacks).
+      Filesystem-level: locked directories mounted read-only in agent namespace.
+        Even BashRequest cannot write to read-only mount. Defense in depth.
+      Git-level: orchestrator filters GitCommit requests, rejects if diff touches
+        any locked path.
+
+    Auditor self-discovery trust boundary:
+      Auditor findings used for self-discovery (rules.txt section 6) arrive via IPC.
+      Auditor is untrusted. Findings that auto-propose rules require human approval
+      gate: source=AUDITOR -> PROPOSED status, NEVER auto-promoted to CANDIDATE.
+      Independent verification: a SECOND auditor instance (fresh process, no shared
+      state with the finding-source auditor) validates proposed predicate logic.
+      mutable=0 rules remain protected from all automated modification.
+
+
+13. EVIDENCE GATE PROTOCOL — design PART 15.8
+
+  IDLE -> PLANNING: knowledge engine readiness gate.
+    Knowledge engine must report READY or DEGRADED (see knowledge.txt section 7).
+    READY: all layers operational. DEGRADED: BM25_ONLY mode, user warned.
+    UNAVAILABLE (startup failed after 3 retries): block transition, user must fix.
+
+  PLANNING -> TESTING_FIRST: zero UNGROUNDED claims in grounding_sweep_report.
+  TESTING_FIRST -> EXECUTING: all tests fail for right reasons (not syntax errors).
+  EXECUTING -> AUDITING: at least 1 test flipped FAIL -> PASS.
+  EXECUTING -> PLANNING (fast-track replan): executor sends ReplanRequest(MINOR),
+    auditor validates evidence, approved -> transition back to PLANNING for current
+    sub-phase only. Rejected -> executor continues EXECUTING. Max 1 per phase.
+  EXECUTING -> PLANNING (major replan): executor sends ReplanRequest(MAJOR),
+    requires human approval in both AUTONOMOUS and INTERACTIVE modes.
+  AUDITING -> MEMORIZING: zero BLOCK findings remaining.
+  MEMORIZING -> next: DKG reflects new code, changelog has entry.
+
+  Adaptive context (DAIRA): variable-output tools implement scope reduction.
+  run -> check size -> if > budget * 0.3, reduce scope -> retry. Max 3 attempts.
+
+
+13A. FEASIBILITY_PROBE STATE — design PART 15.4 (Phase 4F)
+
+  Position in FSM: PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST.
+  Skip: PLANNING -> TESTING_FIRST when novel_steps.is_empty() AND ALL resources meet
+    margin >= 20% (formula: resource_free >= resource_required * 1.20, per VRAM/RAM/disk).
+
+  Phase-aware tools (from S2): stub write (<50 lines) + bash + web search. NO edit/git.
+
+  Types (all in orchestrator::feasibility):
+    SystemProbeResult { gpu_count, gpu_info: Vec<GpuInfo>, ram_total_bytes, ram_free_bytes,
+      disk_free_bytes, os, is_supported }
+    GpuInfo { index, name, total_bytes, free_bytes, driver_version, uuid }
+    SystemConstraints { min_vram_bytes, min_ram_bytes, min_disk_bytes, required_gpu_count,
+      model_max_context: usize, available_for_work: usize,
+      avg_file_tokens: usize, avg_test_tokens: usize }
+      model_max_context: from providers::ModelPool (current model's context window).
+      available_for_work: computed from context budget allocator (total - fixed slots - output_reserve).
+      avg_file_tokens: from knowledge_engine.index_stats() when index has >= 10 files,
+        else elai_cc.toml [planning.sizing.default_avg_file_tokens] (default: 150).
+      avg_test_tokens: from knowledge_engine.index_stats() when index has >= 10 files,
+        else elai_cc.toml [planning.sizing.default_avg_test_tokens] (default: 80).
+    StubResult { step_id, alternative_index (0-2), outcome: FeasibilityOutcome, elapsed_ms,
+      stdout_hash: [u8;32], stderr_summary, resource_delta: ResourceDelta }
+    ResourceDelta { vram_before_bytes, vram_after_bytes, ram_before_bytes, ram_after_bytes }
+    ConstraintResult { resource, required, available, margin, passed }
+    FeasibilityReport { probe, constraints, constraint_results: Vec<ConstraintResult>,
+      stubs (passing novel steps only), skipped_steps, escalations }
+    FeasibilityEscalation { step_id, reason, stubs_tried: Vec<StubResult> }
+    FeasibilityDecision { Proceed, ProceedWithConstraints(Vec<String>),
+      Escalate(Vec<FeasibilityEscalation>), Replan(Vec<FeasibilityEscalation>) }
+
+  Trait: FeasibilityProbe (object-safe, all methods take &self)
+    fn probe_system(&self) -> Result<SystemProbeResult>
+    fn check_constraints(&self, probe, constraints) -> bool
+    fn run_stub(&self, step, alternative, timeout) -> Result<StubResult>
+    fn decide(&self, report, mode: ExecutionMode) -> FeasibilityDecision
+
+  Hardware detection: nvml-wrapper (GPU VRAM via device.memory_info()),
+    sysinfo (RAM via system.total_memory(), disk via disk.available_space()).
+  Stub execution: reuses Tier C agent process (S12) with FEASIBILITY tool restrictions.
+  Stub timeout: 25s graceful shutdown IPC, 30s hard kill via explicit child.kill().await
+    (tokio kill_on_drop is false by default — must call kill explicitly on Elapsed).
+  Stub line limit: strict <50 lines (>=50 rejected) enforced before execution.
+  SSB branching: per S10, each alternative creates branch:stub_{step_id}_{n}. Max 3.
+  Escalation: 3 failed alternatives -> Escalate (INTERACTIVE) or Replan (AUTONOMOUS).
+  Output: stub_results.msgpack (FeasibilityReport serialized via rmp-serde).
+  FeasibilityOutcome reused from reasoning crate (no duplication).
+
+
+14. DETERMINISTIC DISPATCH PROTOCOL
+
+  Design: the orchestrator is Rust code, not an LLM. No "main LLM" decides to
+  spawn agents or write tasks. FSM state determines agent role. Plan determines
+  task content. Knowledge engine determines code context. Rules.db determines
+  constraints. Prompt assembly is pure Rust, <5ms.
+
+  TWO DISPATCH TABLES:
+
+  A. META-DISPATCH TABLE (static, hardcoded in orchestrator crate):
+     Used for PLANNING and CONFIGURING states.
+     These states run BEFORE a PipelineSpec exists. Cannot be built from PipelineSpec.
+     Loaded from: elai_cc.toml [fsm.meta_dispatch] OR hardcoded defaults.
+     Immutable during pipeline execution.
+
+     FsmState           Dispatch Entry
+     -----------------------------------------------------------------
+     PLANNING           DispatchPipeline (4 stages: research, design, validate, probe)
+     CONFIGURING        Single stage: executor, config paths only, workflow domain
+     IDLE               No dispatch (waiting for user input)
+     COMPLETE           No dispatch (cleanup, transition to IDLE)
+
+     PLANNING DispatchPipeline (4 stages from pipeline-factory.txt S3):
+       Stage 1 — RESEARCH: { role: Researcher, grc: 10/1200, tools: [web_search] }
+         input_from: None. output_artifact: ResearchReport.
+         gate: ArtifactExists(ResearchReport) AND phi >= phi_min convergence.
+       Stage 2 — PLAN ASSEMBLY (L1 designer):
+         { role: Designer, grc: 8/1200, tools: [none — context via prompt] }
+         input_from: Stage 1 (ResearchReport). output_artifact: PipelineSpec.
+         gate: ArtifactExists(PipelineSpec) AND zero ungrounded claims.
+         NOTE: Designer is DISTINCT from Executor (different role_prompt, GRC steps).
+       Stage 3 — STRUCTURAL VALIDATION (L2 builder):
+         skip_condition: NotAnAgent (pure Rust, runs in orchestrator process).
+         Kahn's cycle detection, 7-point validation, Phase Sizing.
+         output_artifact: ExecutablePipeline.
+       Stage 4 — FEASIBILITY PROBE:
+         { role: Executor with config overrides, grc: 3/600,
+           tools: [stub_write, bash, web_search], timeout: 25s/30s }
+         input_from: Stage 3 (novel_step_ids). output_artifact: FeasibilityReport.
+         skip_condition: novel_steps.is_empty() AND all resources >= 20% margin.
+         NOTE: AgentDispatchConfig is authoritative, not AgentRole alone.
+
+  B. PLAN-DISPATCH TABLE (dynamic, built from PipelineSpec at L2):
+     Used for FEASIBILITY_PROBE, TESTING_FIRST, EXECUTING, AUDITING, MEMORIZING.
+     Built once when L2 produces ExecutablePipeline. One entry per PipelineSpec phase.
+     Immutable after construction (rebuilt only on ReplanRequest).
+
+     FsmState            Agent Role     Tool Access                  GRC Config
+     ---------------------------------------------------------------------------
+     TESTING_FIRST       Executor       test framework, plan         5/800
+     EXECUTING           Executor       edit, bash, git              8/1200
+     AUDITING            Auditor        validation, test runner      10/1200
+     MEMORIZING          MemoryWriter   memory write only            2/400
+
+  DISPATCH SEQUENCE (per phase, fully deterministic):
+    1. Read FSM state. Meta-dispatch (PLANNING/CONFIGURING) or plan-dispatch.
+    2. Dispatch table returns DispatchStage or DispatchPipeline.
+    3. For each stage:
+       a. Check skip_condition. If met, run Rust code directly (no agent).
+       b. Assemble prompt (role_prompt + tier_3_rules + code_context + task_spec).
+       c. Spawn agent process (Tier C), send AgentRequest via IPC.
+       d. Agent works (GRC chain, tool calls via IPC, LLM via IPC).
+       e. Agent returns AgentResponse via IPC.
+       f. Check gate condition. Pass -> next stage. Fail -> retry or escalate.
+    4. All stages complete -> evidence gate -> FSM transition.
+
+  IMPLEMENTATION TYPES:
+
+    AgentDispatchConfig { role: AgentRole, model_preference: ModelPreference,
+      tool_filter: ToolFilter, rule_domains: Vec<Domain>,
+      grc_config: AgentGrcConfig, sandbox_config: SandboxConfig }
+
+    ToolFilter { allowed_tools: Vec<ToolId> }
+      Whitelist enforced at IPC layer. ToolRequest for disallowed tool -> generic
+      rejection ("tool call rejected by policy"). No internal details leaked.
+
+    DispatchPipeline { stages: Vec<DispatchStage> }
+
+    DispatchStage { stage_id: StageId, agent: AgentDispatchConfig,
+      input_from: Option<StageId>, output_artifact: ArtifactType,
+      gate: Option<GateCondition>, skip_condition: Option<SkipCondition> }
+
+    ArtifactType enum { ResearchReport, PipelineSpec, QualitySpec,
+      TransformedPrompt, FeasibilityReport, ExecutablePipeline }
+
+    GateCondition enum { ArtifactExists(ArtifactType),
+      QualityThreshold { metric, min }, EvidenceGate(FsmState) }
+
+    SkipCondition enum { NotAnAgent, FeatureDisabled }
+
+    MetaDispatchTable { planning: DispatchPipeline, configuring: DispatchPipeline }
+
+    PlanDispatchTable { entries: Vec<PlanDispatchEntry> }
+
+    PlanDispatchEntry { phase_id: PhaseId, fsm_state: FsmState,
+      agent: AgentDispatchConfig, depends_on: Vec<PhaseId> }
+
+    AgentRole enum: Executor, Auditor, Researcher, Designer, PromptEngineer,
+      ContextCompiler, MemoryWriter, MediaValidator
+
+    Designer (NEW): produces PipelineSpec from Research Report + user task.
+      role_prompt: "Design a phased execution plan from the research findings.
+        Output: TOML PipelineSpec with phases, dependencies, tool requirements,
+        resource estimates, and quality metrics. Do not implement. Plan only."
+      GRC: 8/1200, required_steps: [observe, hypothesize, plan_action, verify, converge]
+      Model: reuses executor model (Gemma 4 31B)
+
+  KEY PROPERTIES:
+    a. No LLM in the dispatch loop. Steps 1-3 are pure Rust code.
+    b. TWO tables, not one. Meta-dispatch (static) + plan-dispatch (dynamic).
+    c. Agent has zero knowledge of dispatch system.
+    d. session_id + pipeline_id + phase_id uniquely determine dispatch.
+    e. Multi-agent sequencing in PLANNING explicit in DispatchPipeline type.
+    f. ToolFilter is defense-in-depth on top of PreToolUse hooks.
+    g. Meta-dispatch is hardcoded (not user-configurable). Plan-dispatch is
+       built programmatically from PipelineSpec.
+
+
+15. CLAW-CODE MODULE MAPPING
+
+  worker_boot.rs (1,069 LOC)         -> AgentPool
+  policy_engine.rs (581 LOC)         -> rules::RuleEngine (shared with rules/)
+  permission_enforcer.rs (546 LOC)   -> rules enforcement layer
+  green_contract.rs (4,061 LOC)      -> evidence gates + contract tests
+  mcp_lifecycle_hardened.rs (839 LOC) -> plugins/ error recovery
+  recovery_recipes.rs (630 LOC)      -> crash recovery
+  trust_resolver.rs (299 LOC)        -> interactive gating
+  session_control.rs (461 LOC)       -> session management
+  task_registry.rs (506 LOC)         -> task tracking
+  lane_events.rs (241 LOC)           -> evaluate for SSB action_types
+  task_packet.rs (162 LOC)           -> structured task data
+
+  STRIP: compact.rs, summary_compression.rs (never compact).
+
+
+15. TESTABLE INVARIANTS
+
+  - SSB seq is monotonically increasing
+  - All SSB writes visible to readers within 1ms (WAL guarantee)
+  - No two agents write to same file simultaneously (SSB conflict detection)
+  - Channel state at superstep N deterministic given N-1 + writes
+  - UntrackedValue never in checkpoint data
+  - EphemeralValue returns MISSING after zero-write superstep
+  - sum(all_context_slots) <= model.max_context
+  - output_reserve >= 2000 always
+  - Evidence gates block transition when artifacts missing
+  - IDLE -> PLANNING blocked when knowledge engine UNAVAILABLE
+  - IDLE -> PLANNING allowed in DEGRADED mode (BM25_ONLY) with user warning
+  - Only session-owned commits can be undone
+  - Session DAG is always acyclic (snapshot parent chain has no cycles)
+  - Trimming preserves ALL user and assistant messages (structurally lossless)
+  - Every stub references a valid SSB seq (recoverable)
+  - Max 3 active branches per session (enforced on branch creation)
+  - Handoff snapshot always has tag="handoff"
+  - Trimmed context + stubs fit within model context window
+  - Prompt cache prefix (Slots 1-3) preserved across trimming passes
+  - Plan skeleton fits within 4k tokens (enforced on write)
+  - Phase elaboration satisfies all input/output contracts from skeleton
+  - Skeleton version incremented on any contract change
+  - Contract change propagates dependency flags to all dependent phases
+  - Agent read/glob/grep of hidden paths returns "not found" (never "denied")
+  - Agent error messages contain zero rule IDs, predicate types, or enforcement details
+  - .elai_cc/ excluded from knowledge engine indexes (DKG, BM25, vectors)
+  - Sandbox bash cannot access .elai_cc/, home directory, or other projects (Tier B)
+  - Sandbox bash has no network access unless role is researcher (Tier B)
+  - Agent cannot distinguish "hidden" from "nonexistent" paths (same error type)
+  - ReasoningTraceEntry emitted for every GRC step and tool call (append-only in SSB)
+  - Reasoning trace step_index is monotonically increasing per agent per phase
+  - Cognitive isolation metric logged at every phase transition
+  - Supervision: agent restart count <= max_restarts per phase (default 3)
+  - Supervision: max_restarts exceeded -> ESCALATE or SUBSTITUTE_MODEL (never infinite restart)
+  - ReplanRequest: max 1 per agent per phase (prevents abuse)
+  - ReplanRequest MINOR: auditor validates evidence before fast-track replan
+  - ReplanRequest MAJOR: requires human approval before replanning
+  - ReplanRequest logged to SSB as action_type='replan_request'
+  - CONFIGURING state restricts tools to config paths only (no project source editing)
+  - phase_complete SSB record written BEFORE model unload (fsync to WAL)
+  - Crash before phase_complete -> phase re-executed from last checkpoint
+  - Crash after phase_complete -> phase skipped, next phase dispatched
+  - UntrackedValue channel IDs never appear in serialized checkpoint data
+  - Agent checkpoint referencing UntrackedValue -> rejected by serializer
+  - Meta-dispatch table is static (hardcoded in orchestrator crate)
+  - Plan-dispatch table built once per pipeline from PipelineSpec (no LLM)
+  - PLANNING DispatchPipeline has exactly 4 stages with explicit data deps
+  - ToolFilter is a whitelist enforced at IPC layer
+  - ToolRequest for disallowed tool -> generic rejection (no internal details)
+  - FEASIBILITY executor uses config overrides (GRC 3/600, not 8/1200)
+  - AgentDispatchConfig is authoritative (not AgentRole alone)
+  - Designer is a distinct AgentRole from Executor
+  - session_id + pipeline_id + phase_id uniquely determine dispatch
+  - Prompt assembly completes in <5ms (no LLM, all from RAM/SQLite)
+  - Phase Sizing split preserves input/output contracts from skeleton
+  - SystemConstraints includes model_max_context and available_for_work
+  - avg_file_tokens defaults to 150 when knowledge index has <10 files
+  - Auditor Slot 5 split: subgraph 30% + BM25/vector 70% (configurable)
+  - Non-auditor roles: Slot 5 has no subgraph split
+  - Cache breakpoint 2 applies to BM25/vector portion only (subgraph is volatile)

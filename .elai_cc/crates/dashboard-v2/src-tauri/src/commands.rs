@@ -7158,7 +7158,7 @@ pub async fn start_chat_stream(
                 &format!("chat-stream-end:{stream_id}"),
                 json!({
                     "stream_id": stream_id,
-                    "error": "sidecar offline — start with `elai.bat --remote` to use the friend's GPU box, or switch Mode to CLOUD",
+                    "error": "sidecar offline — start with `elai.bat --remote` to use the remote GPU server, or switch Mode to CLOUD",
                     "offline": true,
                 }),
             );

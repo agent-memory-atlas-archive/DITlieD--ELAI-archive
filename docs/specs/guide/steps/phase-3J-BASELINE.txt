@@ -1,0 +1,146 @@
+phase-3J-BASELINE — Token Efficiency Benchmark Harness
+========================================================
+
+Scope: a standalone benchmark harness that measures the effective token economy
+of every shipped ModelCapabilityProfile tier under representative fixtures.
+The harness produces metrics/capability_profile.toml — the canonical source
+consumed by the runtime when choosing slot sizes, compression thresholds, and
+budget caps. Standalone requirement: this binary MUST run without booting the
+elai runtime (no SSB, no DKG, no orchestrator). It reads fixture TOML, calls
+the inference endpoint directly, writes a TOML report.
+
+Tier roster (matches ModelCapabilityProfile constructors in
+crates/orchestrator/src/context_budget.rs:309-657):
+  - micro_8gb (context_budget.rs:496)
+  - micro_3b_12gb (context_budget.rs:353)
+  - micro_7b_12gb (context_budget.rs:309)
+  - awq_3b_8gb (context_budget.rs:621)
+  - awq_3b_12gb (context_budget.rs:581)
+  - awq_7b_12gb (context_budget.rs:541)
+  - large_32b_48gb (context_budget.rs:448)
+  - cloud_200k (context_budget.rs:401)
+
+Spec references:
+  - benches/model_capability/baseline_harness.py (3J-BASELINE harness binary)
+  - benches/model_capability/run_benchmark.py (PRE-EXISTING C-26/A-1 harness;
+    untouched by 3J-BASELINE — it serves attention-curve/few-shot/structured
+    measurements consumed by other phases)
+  - benches/model_capability/fixtures/*.toml (per-tier fixture TOML files)
+  - .elai_cc/elai_cc.toml [model_capability] section (tier roster)
+  - .elai_cc/python/elai_inference/server.py (target endpoint, /v1/messages)
+  - metrics/capability_profile.toml (canonical output; checked-in template)
+
+Reads (mandatory):
+  - docs/specs/guide/steps/phase-3J.txt (parent spec — full 3J pipeline).
+  - .claude/tools/elai.map for symbols: ModelCapabilityProfile,
+    ConstrainedDecodingConfig.
+
+Inputs / outputs
+----------------
+
+Input: a fixture TOML with ≥10 prompts per tier. Schema:
+  [fixture]
+  tier = "micro_7b_12gb"
+  prompts = [
+    { id = "p1", text = "...", expect_json = false },
+    ...
+  ]
+
+Output: TOML row per fixture run with 7 measurements per prompt:
+  total_tokens_in
+  total_tokens_out
+  slot_utilization_pct
+  compression_ratio    # ShortCoder average over the fixture
+  ttft_ms              # time-to-first-token (median)
+  p99_latency_ms       # end-to-end p99
+  cost_per_run_usd     # zero for local sidecar; non-zero for cloud tiers
+
+Acceptance gates
+----------------
+
+ModelCapabilityProfile generation:
+  - The harness reads elai_cc.toml [model_capability] and emits one row
+    per tier to metrics/capability_profile.toml.
+
+Baseline targets (per the existing live measurements on RTX 3090):
+  - micro_7b_12gb: slot_utilization ≥ 0.82, compression_ratio ≥ 0.65
+  - cloud_200k:    slot_utilization ≥ 0.90
+
+REPAIR_CONTEXT regression gate:
+  - Running the fixture twice (once with REPAIR_CONTEXT active, once without)
+    on the same prompts MUST NOT increase total_tokens_in by > 15 %.
+  - Violation → emit `repair_context_regression` row in the report; the
+    auditor blocks any plan that includes REPAIR_CONTEXT changes if this
+    gate fails.
+
+Constrained decoding gate:
+  - A dedicated JSON-schema fixture (20 prompts, all expect_json = true)
+    MUST produce 0 invalid-JSON outputs when ConstrainedDecodingConfig is
+    active (schema_mode for both sidecar and cloud).
+  - DEFERRED: grammar/EBNF constrained decoding. The sidecar currently
+    wires only JSON-schema mode via LMFE (server.py:1829-1894
+    _build_constrained_prefix_fn — explicitly rejects response_format.type
+    other than "json_schema"); EBNF/grammar HTTP path does not exist. The
+    3J-BASELINE harness ships with JSON-schema-only coverage; grammar mode
+    is tracked for a follow-up phase once the sidecar /v1/messages handler
+    grows a grammar branch.
+
+Standalone binary requirement
+-----------------------------
+
+baseline_harness.py (NEW; do not overwrite run_benchmark.py):
+  - imports: stdlib only (urllib.request, tomllib, json, csv, argparse, time,
+    statistics, pathlib, sys). No `requests`, no in-tree crate.
+  - MUST NOT import elai_core, elai_orchestrator, elai_knowledge::ShortCoder,
+    or any in-tree crate symbol. Compression metric is computed externally
+    as `compression_ratio_estimate` from output-token / input-token ratio
+    (measurement_method = "output_token_ratio") because the spec stub_ban
+    forbids importing ShortCoder; the runtime-side ShortCoder ratio
+    (knowledge/src/shortcoder.rs:101) is a different semantic and is the
+    runtime's job, not the bench harness's.
+  - MUST NOT touch SSB or DKG. Reads fixtures, talks HTTP to the sidecar or
+    cloud endpoint, writes a TOML + CSV report.
+  - Exit codes: 0 = all gates pass; 1 = any gate failed; 2 = harness error
+    (fixture missing, endpoint unreachable).
+
+WIRING_CONTRACT
+---------------
+
+produces_symbols:
+  - benches/model_capability/baseline_harness.py (executable, stdlib-only)
+  - metrics/capability_profile.toml (canonical per-tier metrics)
+  - benches/model_capability/fixtures/<tier>.toml (8 per-tier prompt sets)
+  - benches/model_capability/fixtures/json_schema.toml (constrained gate)
+consumes_symbols:
+  - elai_cc.toml [model_capability.profiles.*] tier roster
+  - benches/model_capability/fixtures/*.toml (per-tier prompts)
+  - sidecar /v1/messages OR cloud Anthropic endpoint
+reachable_from:
+  - Manual harness invocation (`python benches/.../baseline_harness.py`).
+  - CI job `bench-capability` (optional; non-blocking on PRs).
+stub_ban:
+  - DO NOT import any in-tree crate.
+  - DO NOT import ShortCoder from elai_knowledge.
+  - DO NOT call SSB.emit or DKG.* in baseline_harness.py.
+observable_effect:
+  trigger: `python benches/model_capability/baseline_harness.py --profile micro_7b_12gb`
+  expect: exit 0; metrics/capability_profile.toml updated with the row for
+          that tier; slot_utilization ≥ 0.82.
+
+DETERMINISTIC_CHECK
+-------------------
+
+```bash
+# 1. Harness file exists and is stdlib-only
+grep -L "elai_core\|elai_orchestrator\|ShortCoder" \
+  benches/model_capability/baseline_harness.py
+# 2. Per-tier fixture TOML exists
+test -f benches/model_capability/fixtures/micro_7b_12gb.toml
+# 3. JSON-schema fixture has 20 expect_json=true prompts
+grep -c "expect_json = true" \
+  benches/model_capability/fixtures/json_schema.toml
+# 4. Output template present
+test -f metrics/capability_profile.toml
+# 5. elai_cc.toml carries the [model_capability] roster
+grep -c "^\[model_capability\." .elai_cc/elai_cc.toml
+```

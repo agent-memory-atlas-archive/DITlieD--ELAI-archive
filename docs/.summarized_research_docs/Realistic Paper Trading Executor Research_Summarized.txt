@@ -1,0 +1,63 @@
+Realistic Paper Trading Executor Research
+
+Implementation Risk: Systematic divergence between simulated and live trading results due to architectural flaws, not market psychology.
+
+Core Problem Categories:
+
+Floating-Point Precision Collapse:
+- IEEE 754 cannot represent decimal fractions exactly
+- $10.01 + 0.01 ≠ 10.02$ in floating-point arithmetic
+- Microscopic errors accumulate into massive PnL deviations
+- State logic failures: position == 0.0 checks fail due to artifacts
+- Solution: Binary Coded Decimal, scaled integers (64-bit for hundred-millionths of cent)
+
+Critical Engine Defects (Discovered in Major Libraries):
+
+Backtrader:
+- Default commission division bug (rate/100)
+- Artificially inflates PnL by slashing transaction costs
+
+NautilusTrader:
+- Fixed-point arithmetic overflow causing integer wrapping
+- Position-mode mismatch (HEDGING vs NETTING semantics)
+- Silent data truncation after 62 days of 1,258-day datasets
+- Double-charged commissions on gross notional value
+
+Zipline-Reloaded:
+- Trading-calendar misalignment on rebalancing days
+- Injects look-ahead bias and skipped executions
+
+Architectural Requirements for Truthful Executor:
+
+Deterministic Sequencing:
+- Single-threaded, lock-free architecture
+- C++/Rust Limit Order Book implementation
+- Prevents race conditions and ensures state integrity
+
+Market Microstructure Fidelity:
+- Probability queue modeling (Power-Law/Logarithmic decay)
+- Partial fills and matching engine contention simulation
+- Adverse selection modeling
+
+Synthetic Friction Injection:
+- HTTP 429 API rate limiting
+- Network jitter simulation
+- Cancel-on-disconnect (COD) heartbeat failures
+- Self-Trade Prevention (STP) logic
+
+Data Management:
+- Strict bitemporal data management
+- Eliminates look-ahead bias
+- Scaled integer arithmetic for precision
+
+Impact Metrics:
+- Implementation risk causes up to 3.71% total return deviation
+- High-turnover strategies most vulnerable
+- Tens of millions of dollars impact for institutional portfolios
+- 15 benchmark strategies tested across multiple engines
+
+Validation Requirements:
+- Fail-fast input validation
+- Strict compiler warnings and panic routines
+- Memory-safe language implementation
+- Aggressive failure simulation for robustness

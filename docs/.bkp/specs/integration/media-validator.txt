@@ -1,0 +1,259 @@
+INTEGRATION: MEDIA VALIDATOR AGENT
+Source: design_document.txt PART 28 (all subsections).
+
+
+1. PURPOSE
+
+  Validate non-code outputs: images, 3D models, audio, UI screenshots.
+  Only loaded when PipelineSpec contains media-producing steps.
+
+
+2. AGENT CONFIGURATION
+
+  Role: media_validator
+  GRC budget: low (3/600)
+  Permissions: FILESYSTEM (read-only on output files)
+
+  Tier 2 VLM model selection (two modes, pick per task):
+
+  MODE A — Single image deep analysis:
+    Model: Qwen3.5-VL-30B-A3B (MoE), 8-bit precision.
+    Why: built-in Thinking Mode (generative CoT). Internally maps spatial layout
+    and logical deductions before generating output. MoE architecture gives
+    70-140 tok/s while retaining 8-bit detail fidelity.
+    Alternative (max intelligence): Qwen3.5-VL-72B Instruct at 4-bit EXL2/AWQ.
+    Requires input image downscale. Slower but GPT-5-level reasoning.
+
+  MODE B — Sequential image flow (multiple smaller images):
+    Model: InternVL3.5-38B, 8-bit (or 4-bit for very long sequences).
+    Why: 5.5B parameter vision encoder (vs typical small encoders). Tracks
+    details across image sequences. Leaves 12-28GB VRAM free for KV cache
+    buffer from sequential image tokens.
+    Engine: MUST use SGLang (not vLLM/ollama). RadixAttention caches prior
+    image visual state without re-processing or eviction. Critical for
+    sequential workflows where KV cache growth would otherwise crash VRAM.
+
+
+3. TWO-TIER VALIDATION
+
+  TIER 1 — DETERMINISTIC (no model, <100ms):
+    Always runs first.
+
+    Image: format, resolution, file size, color space, SSIM/LPIPS against reference.
+    3D model: vertex/face count, manifold check, UV overlap, normals, bounding box.
+      Tools: Blender CLI headless mode.
+    Audio: sample rate, bit depth, duration, silence %, clipping detection.
+    UI screenshot: resolution, SSIM vs mockup, color histogram, OCR text verification.
+
+  TIER 2 — VLM QUALITATIVE (model, ~2-5 seconds):
+    Only when Tier 1 passes AND qualitative check specified in QualitySpec.
+    VLM output is ADVISORY. Tier 1 has veto power.
+    VLM disagrees with Tier 1 -> flag for human review.
+
+    Audio (CLAP model ~0.8-1.0GB FP32, ~0.4GB FP16): audio-text similarity scoring.
+      Use Xenova/clap-htsat-unfused ONNX export (no official ONNX for fused variant).
+      Input: raw PCM to avoid mel-spectrogram BLAS variance from FFmpeg decoding.
+
+
+4. GPU SCHEDULING
+
+  Tier 1: CPU only. Zero GPU impact.
+  Tier 2 (MODE A — Qwen3.5-VL-30B-A3B MoE):
+    Active params ~3B (MoE routing) BUT all 30B params stored in VRAM.
+    8-bit: ~30GB. Q4_K_M: ~17GB. Does NOT fit alongside other models on 24GB GPU.
+    Swap: unload executor -> load VLM Q4 -> validate -> unload -> reload executor.
+    ~10-15 seconds at phase boundaries.
+    Phase 0 (RTX 3060 12GB): cannot run. Use mock VLM.
+  Tier 2 (MODE B — InternVL3.5-38B):
+    Full 38B model. Requires dedicated GPU. Unload executor/auditor first.
+    SGLang engine manages VRAM via RadixAttention.
+    Swap cost: ~30-60 seconds. Only justified for multi-image validation tasks.
+
+
+5. EXTERNAL TOOLS
+
+  ImageMagick, Blender CLI, FFmpeg, Tesseract, ComfyUI API.
+  Each registered via Tool Auto-Discovery (pipeline-factory.txt section 7).
+
+
+6. COMFYUI INTEGRATION
+
+  REST API: POST /prompt (submit workflow), GET /history (results).
+  Executor writes workflow JSON. Tool wrapper sends, polls, downloads.
+  Timeout: 600s for GPU rendering. Then Tier 1 + optional Tier 2 validation.
+
+
+7. RENDER-CAPTURE-EVALUATE ARCHITECTURE (visual feedback loop)
+
+  Problem: the pipeline produces diverse visual outputs (websites, 3D models,
+  animations, UI mockups). Without human-in-the-loop, nothing can tell if the
+  visual result looks right. Code passes tests but the website is ugly. The 3D
+  model compiles but the normals are inverted. The animation renders but timing
+  is wrong. How do you give EYES to an automated pipeline?
+
+  Solution: MediaRenderAdapter trait abstracts "render this output to an image."
+  One interface, many adapters. The adapter pattern handles scope diversity.
+
+  7.1 ADAPTER TRAIT
+
+    trait MediaRenderAdapter {
+        fn can_handle(&self, output_type: &OutputType) -> bool;
+        async fn render(&self, artifact: &Path, config: &RenderConfig) -> Result<Vec<CapturedFrame>>;
+        fn cleanup(&self);
+    }
+
+    CapturedFrame { image_path: PathBuf, viewport: Viewport, metadata: FrameMetadata }
+    Viewport { width: u32, height: u32, device: Option<String> }
+    FrameMetadata { capture_time: Duration, adapter_name: String, state_description: String }
+
+  7.2 BUILT-IN ADAPTERS
+
+    WebRenderAdapter:
+      Tool: Playwright (headless Chromium/Firefox/WebKit).
+      Process: spawn dev server -> navigate headless browser -> wait for network idle ->
+        capture viewport screenshot(s) at multiple breakpoints (mobile 375px, tablet 768px,
+        desktop 1440px). Return screenshots as CapturedFrame vec.
+      Prior art: Playwright visual regression testing (CSS-Tricks 2024), Design2Code
+        benchmark (arxiv 2403.03163) uses screenshot-based evaluation.
+      Integration: Playwright MCP (Microsoft) or direct CDP (Chrome DevTools Protocol).
+      State capture: can also capture after interactions (click button, scroll, hover)
+        by accepting a Vec<Interaction> in RenderConfig.
+
+    BlenderRenderAdapter:
+      Tool: Blender CLI (--background --python).
+      Process: load model -> set camera angles (front/side/top/perspective) ->
+        render to image at configured resolution. Return rendered images.
+      Supports: .obj, .fbx, .gltf, .blend files.
+      Multi-angle: default 4 views (front, right, top, 3/4 perspective).
+
+    AnimationRenderAdapter:
+      Tool: FFmpeg.
+      Process: render animation -> extract key frames at configured intervals
+        (e.g., every 1s, or at 0%, 25%, 50%, 75%, 100% of duration).
+      Return key frames as CapturedFrame vec with timing metadata.
+      For video: extract frames. For GIF/Lottie: render to frames first.
+
+    UiScreenshotAdapter:
+      Tool: direct file read (output is already an image).
+      Process: validate image format -> optionally resize -> return as CapturedFrame.
+      Used when the output IS a screenshot or mockup (no rendering needed).
+
+    ComfyUIAdapter:
+      Tool: ComfyUI REST API.
+      Process: POST /prompt with workflow JSON -> poll /history -> download result.
+      Used for AI-generated images (Stable Diffusion, Flux, etc.).
+      Timeout: 600s (GPU rendering). Returns generated image as CapturedFrame.
+
+  7.3 RENDER-CAPTURE-EVALUATE LOOP
+
+    The core feedback cycle that gives the pipeline "eyes":
+
+    1. EXECUTE: agent produces output (code, model, config, etc.)
+    2. RENDER: appropriate MediaRenderAdapter renders output to image(s)
+       Adapter selection: L2 pipeline builder maps PipelineSpec.output_type -> adapter
+       via Tool Auto-Discovery (pipeline-factory.txt section 7).
+    3. CAPTURE: screenshots/renders collected as Vec<CapturedFrame>
+    4. TIER 1 EVALUATE: deterministic checks on captured frames
+       (resolution, format, SSIM vs reference if available, color histogram, etc.)
+    5. TIER 2 EVALUATE: VLM receives captured frames + QualitySpec + original intent
+       VLM produces structured VlmValidationOutput:
+         - Does the output match the described intent?
+         - What specific visual issues exist? (layout, color, spacing, content)
+         - Severity classification per issue (Critical/Major/Minor)
+    6. FEEDBACK: structured issues fed back to executor as correction signal
+       Executor receives: "Button text overflows container at mobile viewport (375px).
+         Header font 48px too large for mobile. Footer links not visible (white on white)."
+       NOT: "looks bad" or "needs improvement" -- specific, actionable, localized.
+    7. ITERATE: executor revises code/config -> go to step 1
+       Max iterations: configurable (default 3). After max: escalate to INTERACTIVE gate.
+       Convergence check: if Tier 2 issues unchanged between iterations, stop
+       (executor cannot fix it, human review needed).
+
+    This loop runs INSIDE the EXECUTING phase, between the executor agent's work
+    and the evidence gate check. It is NOT a new FSM state -- it is a sub-loop
+    within execution, like the anti-spiral check or the GRC chain.
+
+  7.4 SCOPE UNIVERSALITY
+
+    The key insight: you do NOT need different "eyes" systems for websites vs 3D
+    vs animation. You need ONE abstraction: "render this output to image(s)" +
+    "evaluate these images against criteria." The adapter pattern handles diversity.
+
+    Pipeline Designer (L1) declares output_type per step in PipelineSpec:
+      [[phases]]
+      name = "build_landing_page"
+      output_type = "web"         # -> WebRenderAdapter
+      visual_check = true
+
+      [[phases]]
+      name = "generate_character_model"
+      output_type = "3d_model"    # -> BlenderRenderAdapter
+      visual_check = true
+
+    L2 pipeline builder maps output_type -> adapter at plan assembly time.
+    If adapter's tool is unavailable (no Playwright installed), L2 flags:
+      visual_check=true but adapter unavailable -> DEGRADED validation (Tier 1 only).
+    If output_type has no adapter, L2 rejects the PipelineSpec step
+      (cannot validate what you cannot see).
+
+    New output types get new adapters. Adding a new adapter:
+      1. Implement MediaRenderAdapter trait
+      2. Register in adapter registry with output_type key
+      3. Ensure render tool is in Tool Auto-Discovery
+      No changes to the evaluation pipeline, VLM integration, or feedback loop.
+
+  7.5 MAKING IT PART OF THE PROCESS (not an afterthought)
+
+    Without visual feedback: execute -> test passes -> done (blind to visual quality).
+    With visual feedback: execute -> test passes -> render -> VLM evaluates ->
+      issues found -> iterate -> render -> VLM approves -> done.
+
+    The visual check is triggered by visual_check=true in PipelineSpec.
+    It runs automatically. No human needs to say "now look at it."
+    The pipeline knows it is making a visual thing because the Designer said so.
+
+    For non-visual outputs (libraries, APIs, data processing), visual_check=false
+    and the render-capture-evaluate loop never activates. Zero overhead.
+
+    For mixed pipelines (API backend + web frontend), visual_check is per-phase.
+    Backend phases: no visual check. Frontend phases: visual check enabled.
+
+  7.6 PRIOR ART AND GROUNDING
+
+    Design2Code (arxiv 2403.03163): benchmark for visual-to-code, uses CLIP score,
+      CW-SSIM, block-matching for visual fidelity evaluation. 484 real webpages.
+      Proves: screenshot-based evaluation is feasible and measurable.
+    ScreenCoder (arxiv 2507.22827): modular multi-agent (grounding, planning, generation)
+      for visual-to-code. Decomposes task into interpretable stages.
+      Proves: specialized agents outperform monolithic models on complex visual tasks.
+    SeeAct (ICML 2024): generalist web agent using screenshots as primary observation.
+      Visual grounding model maps textual plans to screen coordinates.
+      Proves: VLMs can reason about screenshots to plan actions.
+    VisualWebArena (arxiv 2401.13649): benchmark for multimodal web agents.
+      Set-of-Mark prompting with bounding boxes on screenshots.
+      Proves: VLMs can evaluate visual web pages (though still far below human: 16.4% vs 88.7%).
+    Tweag Agentic Coding Handbook: "Visual Feedback Loop" workflow.
+      Capture screenshot -> AI evaluates -> suggest fixes -> re-capture.
+      Proves: the pattern works in practice for human-AI frontend iteration.
+    Playwright visual regression testing: automated screenshot comparison in CI/CD.
+      Pixel-diff with configurable threshold. Cross-browser support.
+      Proves: headless browser screenshot capture is mature and reliable.
+
+    Gap: existing systems are either human-in-the-loop (Tweag) or benchmark-only
+    (Design2Code, VisualWebArena). None implement a fully autonomous render-capture-
+    evaluate loop inside a pipeline execution engine. This is novel integration,
+    not novel research -- all components exist, the composition is new.
+
+
+8. TESTABLE INVARIANTS
+
+  - Tier 1 always before Tier 2
+  - Tier 1 fail overrides Tier 2 pass
+  - VLM output structured (constrained decoding)
+  - Only loaded when PipelineSpec has media steps
+  - SSIM/LPIPS scores deterministic
+  - Render-capture-evaluate loop max iterations enforced (default 3)
+  - Convergence check stops iteration when issues unchanged
+  - Adapter selection deterministic (output_type -> adapter, no LLM)
+  - visual_check=false -> zero render overhead (adapter never instantiated)
+  - Missing adapter tool -> DEGRADED (not FAIL, not silent skip)

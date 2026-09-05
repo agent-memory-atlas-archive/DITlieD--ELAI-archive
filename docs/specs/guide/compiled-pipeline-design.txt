@@ -1,0 +1,422 @@
+COMPILED PIPELINE DESIGN: ZERO-INFERENCE EXECUTION + EXTERNAL ARCHITECTURE PATTERNS
+Date: 2026-04-16
+Status: PROPOSAL
+Author: Claude Opus 4.6 (competitive analysis session)
+Sources: Compiled AI (arXiv 2604.05150), Sema Code (arXiv 2604.11045),
+  Agent RuleZ (SpillwaveSolutions), codebase-summaries.md, paper-summaries-2026-04-16.md
+
+
+========================================================================
+PROBLEM STATEMENT
+========================================================================
+
+Four gaps identified by cross-referencing ELAI's spec against three
+external codebases/papers (agent_rulez, sema-code-core, LocalCode) and
+three papers (Compiled AI, Sema Code, Agent RuleZ):
+
+GAP 1: REPEATED PIPELINE EXECUTION COSTS LLM TOKENS EVERY TIME
+  Compiled AI (arXiv 2604.05150) demonstrates that for deterministic,
+  high-volume workflows, LLMs should run ONCE at compile time to produce
+  static code. Deployed workflows then execute with zero inference tokens.
+  Results: 4.5ms P50 latency (vs 2,004ms), 57x token reduction at 1K tx,
+  100% reproducibility (H=0 entropy). Break-even after ~17 executions.
+
+  ELAI's pipeline templates (pipeline-factory.txt S10) store completed
+  pipelines with outcomes and rank by first-try ratio. But they still
+  invoke the LLM for every execution. A pipeline that has succeeded 10
+  times identically should not require LLM inference on the 11th run.
+
+GAP 2: LONG-RUNNING TOOL CALLS BLOCK THE PIPELINE
+  Sema Code (arXiv 2604.11045, mechanism 8) implements reactive background
+  takeover: when a tool call exceeds a timeout, instead of killing it,
+  the engine detaches it to a background manager and returns a tracking ID.
+  The agent continues with other work and checks back.
+
+  ELAI's current design (orchestrator.txt S7, tools.txt S8) kills tool
+  calls on timeout. During autonomous mode (4G), long builds or test
+  suites block the entire pipeline. A 10-minute cargo test --workspace
+  on a large project stalls everything.
+
+GAP 3: TOKEN COUNTING USES ESTIMATES, NOT ACTUALS
+  Sema Code uses cumulative token metadata from the LLM API response for
+  O(1) context monitoring instead of recalculating token counts. ELAI's
+  context budget allocator (phase 3E) uses estimate for allocation and
+  exact for validation — but "exact" still means running a tokenizer,
+  not reading the API's own count.
+
+GAP 4: ORACLE MODE EXTRACTION LACKS STRUCTURAL GUARANTEES
+  Compiled AI's "Safety Sandwich" pattern for healthcare prior-auth:
+  deterministic input validation -> schema-constrained agentic extraction
+  -> deterministic output validation. The agentic middle is bounded by
+  JSON schema so the model can only extract within defined fields.
+
+  ELAI's Oracle Mode (pipeline-modes-design.txt section 3) has Phase D
+  (fact extraction) using LLM with "exact quote" fields, but the
+  extraction schema is not enforced at generation time. The model CAN
+  produce facts without exact quotes — they're filtered post-hoc.
+  Constrained decoding during extraction would prevent malformed facts
+  from ever being generated.
+
+
+========================================================================
+DESIGN 1: COMPILED PIPELINE EXECUTION
+========================================================================
+
+CONCEPT
+------------------------------------------------------------------------
+
+When a pipeline template has been validated N times with 100% success
+rate, ELAI "compiles" it: generates a deterministic script that replays
+the exact file operations, edits, and validations without any LLM call.
+
+The compilation target is NOT a generic program. It is a frozen sequence
+of:
+  1. File reads (specific paths, line ranges)
+  2. File writes (specific content at specific locations)
+  3. Validation commands (build, lint, test — already deterministic)
+  4. Git operations (stage, commit)
+
+The LLM's contribution (code generation) is replaced by cached outputs
+from previous successful runs, parameterized by template variables.
+
+ARCHITECTURE
+------------------------------------------------------------------------
+
+Three components:
+
+  1. TEMPLATE CRYSTALLIZER (new, in orchestrator/)
+    Monitors pipeline template outcomes. When a template reaches
+    compilation threshold (configurable, default N=3 consecutive
+    successes with identical structure):
+      a. Extracts the deterministic skeleton: ordered list of
+         (step_type, target_file, edit_region, validation_command)
+      b. Identifies VARIABLE regions: parts of the generated code that
+         change per invocation (function names, module paths, type names)
+      c. Identifies FIXED regions: boilerplate that was identical across
+         all N executions (imports, error handling patterns, test structure)
+      d. Produces a CompiledPipeline struct
+
+  2. COMPILED PIPELINE (new type in orchestrator/)
+    CompiledPipeline {
+      template_id: TemplateId,
+      source_executions: Vec<PipelineOutcomeId>,  // the N runs it learned from
+      steps: Vec<CompiledStep>,
+      variables: Vec<TemplateVariable>,  // user-provided per invocation
+      validation_commands: Vec<ValidationCommand>,  // unchanged
+      confidence: f32,  // degrades if any execution fails post-compilation
+    }
+
+    CompiledStep {
+      step_type: StepType,  // CREATE_FILE | EDIT_REGION | RUN_COMMAND
+      target_file: PathPattern,  // may contain {variables}
+      content: CompiledContent,  // FIXED(String) | TEMPLATE(String with {vars})
+      validation: Option<ValidationCommand>,
+    }
+
+    TemplateVariable {
+      name: String,
+      source: VariableSource,  // USER_INPUT | PROJECT_PROFILE | DKG_QUERY
+      example_values: Vec<String>,  // from the N source executions
+    }
+
+  3. COMPILED EXECUTOR (new, in orchestrator/)
+    Executes CompiledPipeline with zero LLM calls:
+      a. Resolve all TemplateVariables (prompt user, query ProjectProfile, DKG)
+      b. For each CompiledStep: substitute variables, write file, validate
+      c. If ANY validation fails: mark pipeline as DECOMPILED, fall back to
+         normal LLM execution. Decrement confidence.
+      d. If all pass: record success, increment confidence.
+
+    Decompilation trigger: 2 consecutive failures OR confidence < 0.7.
+    Decompiled pipeline returns to template status, needs N more successes
+    to recompile.
+
+COMPILATION ELIGIBILITY
+------------------------------------------------------------------------
+
+Not all pipelines can compile. Eligible:
+  - Structural tasks: add CRUD endpoint, create test file, add error handling
+  - Boilerplate tasks: new module with standard structure
+  - Refactoring patterns: rename across files, extract function, move to module
+
+Not eligible:
+  - Tasks requiring novel logic (algorithm implementation)
+  - Tasks where output depends on codebase state not captured by variables
+  - Tasks with MEDIUM+ complexity classification
+  - Tasks that used reasoning Layers 3+ during any source execution
+
+Eligibility is a computed property, not a human label:
+  eligible = (all_source_executions_used_only_L1) AND
+             (variable_region_ratio < 0.3) AND
+             (no_source_execution_had_replan_request) AND
+             (template_rank.first_try_ratio == 1.0)
+
+TOKEN AND LATENCY IMPACT
+------------------------------------------------------------------------
+
+Compiled execution:
+  Tokens: 0 (zero LLM inference)
+  Latency: sum of file I/O + validation commands (~1-10s total)
+  Cost: $0
+
+vs normal execution (30-step MEDIUM task, local 7B):
+  Tokens: ~50K-100K total across steps
+  Latency: ~30-180 minutes
+  Cost: $0 (local) but time cost is real
+
+vs cloud execution:
+  Tokens: ~20K-50K
+  Latency: ~2-15 minutes
+  Cost: $0.10-$0.50
+
+Compiled pipelines make repetitive structural tasks instant and free.
+The human equivalent: a senior dev who has done the same refactoring
+50 times can do it in their sleep. ELAI learns the same way.
+
+
+========================================================================
+DESIGN 2: REACTIVE BACKGROUND TAKEOVER
+========================================================================
+
+CONCEPT
+------------------------------------------------------------------------
+
+When a tool call (build, test suite, git operation) exceeds a soft
+timeout, instead of killing it, detach it to a background manager.
+Return a tracking ID to the agent. The orchestrator continues with
+independent work and checks back.
+
+Derived from Sema Code mechanism 8 (Background Task Execution).
+
+ARCHITECTURE
+------------------------------------------------------------------------
+
+  BackgroundTaskManager (new, in orchestrator/)
+    Manages detached tool calls. Lifecycle:
+
+    1. Tool call starts normally (BashSandbox.execute())
+    2. Soft timeout reached (configurable, default 30s for build, 60s for test)
+    3. BashSandbox detaches process: returns BackgroundTaskId instead of result
+    4. Orchestrator records BACKGROUND_TASK_STARTED in SSB
+    5. Agent receives: "Task detached to background. ID: {id}. Continuing."
+    6. Orchestrator proceeds to next independent step (if any exist in plan)
+    7. BackgroundTaskManager polls detached process (adaptive: 5s -> 10s -> 30s)
+    8. On completion: records BACKGROUND_TASK_COMPLETE in SSB with result
+    9. Orchestrator injects result at next superstep boundary
+
+  BackgroundTask {
+    id: BackgroundTaskId,
+    command: String,
+    started_at: Instant,
+    detached_at: Instant,
+    pid: u32,
+    output_file: PathBuf,  // stdout/stderr captured to temp file
+    status: BackgroundTaskStatus,  // RUNNING | COMPLETED | FAILED | KILLED
+  }
+
+  BackgroundTaskStatus includes exit_code and output on completion.
+
+CONSTRAINTS
+------------------------------------------------------------------------
+
+  - Max 3 concurrent background tasks (prevent resource exhaustion)
+  - Hard timeout = 5x soft timeout (kill if exceeded)
+  - Background tasks inherit BashSandbox restrictions (Tier B/C isolation)
+  - Agent CANNOT spawn new background tasks while 3 are active
+  - Background results are injected as SSB entries, not direct tool results
+    (preserves BSP superstep determinism)
+  - Autonomous mode only: in interactive mode, long tasks show progress to
+    user instead of backgrounding (user expects to see the output)
+
+INTERACTION WITH EXISTING DESIGNS
+------------------------------------------------------------------------
+
+  Pipeline parallelism (focus-tunnel-design.txt): complementary. Pipeline
+    parallelism pre-assembles context for the NEXT step. Background
+    takeover handles the CURRENT step being slow. Both can operate together.
+  BSP supersteps (phase 3D): background task results arrive at superstep
+    boundaries, preserving determinism. No mid-superstep injection.
+  Agent process isolation (phase 4A): background tasks run in the same
+    sandbox as the original tool call. No escalation of privileges.
+
+
+========================================================================
+DESIGN 3: CUMULATIVE TOKEN TRACKING
+========================================================================
+
+CONCEPT
+------------------------------------------------------------------------
+
+Replace estimated token counting with actual counts from the LLM API
+response. Both the sidecar and cloud providers return token usage in
+their response metadata. Use these actual counts for context budget
+tracking instead of running a separate tokenizer.
+
+CURRENT STATE
+------------------------------------------------------------------------
+
+Context budget allocator (phase 3E) uses:
+  - token_count_estimate() for allocation (sampling-based, 95% accurate)
+  - token_count() for validation (exact, runs tokenizer)
+
+The sidecar already returns usage.prompt_tokens and usage.completion_tokens
+in the /v1/completions response (OpenAI-compatible format). Cloud providers
+(Anthropic, OpenAI) return the same. This data is currently parsed by
+the providers crate but not fed back to the context budget allocator.
+
+CHANGES
+------------------------------------------------------------------------
+
+  1. CumulativeTokenTracker (new, in orchestrator/)
+    Tracks actual cumulative token usage per agent session from API
+    response metadata. O(1) per response (no tokenizer call).
+
+    CumulativeTokenTracker {
+      prompt_tokens_total: u64,
+      completion_tokens_total: u64,
+      cache_read_tokens: u64,   // Anthropic cache_read_input_tokens
+      cache_write_tokens: u64,  // Anthropic cache_creation_input_tokens
+      last_response_prompt: u64,
+      last_response_completion: u64,
+    }
+
+  2. Context budget allocator uses CumulativeTokenTracker.last_response_prompt
+    as the ACTUAL context size after each turn. If actual > estimated * 1.1,
+    recalibrate the estimate function's scaling factor for this model.
+
+  3. Sidecar provider: parse usage fields from response (already done).
+    Forward to CumulativeTokenTracker via SSB HEALTH_SNAPSHOT action.
+
+TOKEN SAVINGS
+------------------------------------------------------------------------
+
+  Per-turn savings: eliminates one tokenizer call (~1-5ms on CPU).
+  Negligible individually, but over 1000 turns in a session: 1-5 seconds.
+  Real value: accuracy. Estimated counts can drift 5-10% from actual,
+  causing either wasted context (undercount) or overflow (overcount).
+  Actual counts are exact by definition.
+
+
+========================================================================
+DESIGN 4: SAFETY SANDWICH FOR EXTRACTION
+========================================================================
+
+CONCEPT
+------------------------------------------------------------------------
+
+Apply Compiled AI's "Safety Sandwich" pattern to ELAI's Oracle Mode
+fact extraction (pipeline-modes-design.txt Phase D) and any future
+data extraction pipelines.
+
+Three-phase extraction:
+  Phase 1 (DETERMINISTIC): validate input, classify source tier, reject
+    T4 sources, enforce rate limits. No LLM.
+  Phase 2 (CONSTRAINED AGENTIC): LLM extracts facts using constrained
+    decoding with JSON schema enforcement. The model CANNOT produce
+    output missing required fields. Schema:
+    {
+      "type": "object",
+      "required": ["claim", "exact_quote", "source_url", "confidence"],
+      "properties": {
+        "claim": {"type": "string", "maxLength": 200},
+        "exact_quote": {"type": "string", "minLength": 10},
+        "source_url": {"type": "string", "format": "uri"},
+        "confidence": {"enum": ["high", "medium", "low"]}
+      },
+      "additionalProperties": false
+    }
+  Phase 3 (DETERMINISTIC): validate extracted facts against source tier,
+    verify exact_quote appears in source text (substring match), reject
+    facts with fabricated quotes. No LLM.
+
+CURRENT STATE (Oracle Mode Phase D)
+------------------------------------------------------------------------
+
+Currently: LLM extracts ExtractedFact with exact_quote field. Facts
+without exact_quote are classified UNSUPPORTED post-hoc. But the LLM
+CAN generate facts with fabricated quotes — there's no verification
+that the quote actually appears in the source.
+
+CHANGES
+------------------------------------------------------------------------
+
+  1. Wire constrained decoding (B-1, from token-efficiency-design.txt)
+    into Oracle Mode Phase D extraction. JSON schema mode forces the
+    model to produce valid ExtractedFact structs.
+
+  2. Add quote verification in Phase G (post-verification):
+    For each ExtractedFact, check: does exact_quote appear as a substring
+    in the source page content? If not: mark as FABRICATED, exclude from
+    synthesis. This is a deterministic string search, no LLM needed.
+
+  3. Add source content caching: when Phase B fetches source pages, cache
+    the raw text content (max 50KB per page, LRU cache of 100 pages).
+    Phase G quote verification reads from cache. No re-fetch needed.
+
+  4. Metrics: track fabrication_rate per model. If fabrication_rate > 20%,
+    escalate to cloud model for extraction (cloud models hallucinate
+    quotes less frequently).
+
+INTERACTION WITH EXISTING DESIGNS
+------------------------------------------------------------------------
+
+  Constrained decoding (B-1, token-efficiency-design.txt): prerequisite.
+    JSON schema mode must be available for the extraction model.
+  Oracle Mode (pipeline-modes-design.txt): direct enhancement to Phase D
+    and Phase G. No structural changes to the 7-phase pipeline.
+  Cloud mode (cloud-mode-design.txt): fabrication_rate escalation uses
+    the same HYBRID escalation signal.
+
+
+========================================================================
+IMPLEMENTATION
+========================================================================
+
+No new phase. Integrates into existing infrastructure:
+
+  Compiled pipeline: extends pipeline-factory.txt template system (4D/4E)
+  Background takeover: extends orchestrator tools/BashSandbox (4B/4G)
+  Cumulative tracking: extends providers + context budget (3E/3J)
+  Safety sandwich: extends Oracle Mode extraction (4D)
+
+Implementation steps (C-group, post-Phase-4):
+  C-1: CompiledPipeline types + TemplateCrystallizer
+  C-2: CompiledExecutor + decompilation logic
+  C-3: BackgroundTaskManager + BashSandbox detach
+  C-4: CumulativeTokenTracker + provider wiring
+  C-5: Safety sandwich constrained extraction + quote verification
+
+Dependencies: Phase 4D (pipeline factory), Phase 4B (tools/BashSandbox),
+  Phase 3E (context budget), B-1 (constrained decoding).
+Estimated: 5-6 implementation sessions.
+
+
+========================================================================
+RISK ASSESSMENT
+========================================================================
+
+Risk 1: Compiled pipelines produce wrong output on changed codebase.
+  The codebase may have changed since the template was learned.
+  Mitigation: validation commands still run (build, lint, test). If the
+  compiled output doesn't compile or pass tests, decompilation triggers
+  automatically. The compiled pipeline is NEVER trusted — it's always
+  verified by the same deterministic harness.
+
+Risk 2: Background tasks consume resources during active generation.
+  A cargo test running in background competes with LLM inference for
+  CPU/memory.
+  Mitigation: max 3 concurrent tasks. Background tasks are deprioritized
+  (nice +10 on Linux, BELOW_NORMAL_PRIORITY on Windows). VRAM is not
+  affected (background tasks don't use GPU).
+
+Risk 3: Cumulative token tracking diverges from estimated on long sessions.
+  Tokenizer estimation may use a different tokenizer than the model.
+  Mitigation: CumulativeTokenTracker provides GROUND TRUTH. When actual
+  diverges from estimated, recalibrate the estimate. Actual always wins.
+
+Risk 4: Quote verification has false negatives due to whitespace/encoding.
+  Source page content may have different whitespace than the quote.
+  Mitigation: normalize whitespace before substring match (collapse
+  multiple spaces/newlines to single space, strip leading/trailing).
+  If normalized match fails, try fuzzy match (Levenshtein distance < 5%
+  of quote length). Log fuzzy matches for review.

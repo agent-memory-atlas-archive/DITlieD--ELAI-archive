@@ -1,0 +1,68 @@
+LLM Codebase Memory Engine Design
+
+Repository-Level Cognitive Architecture Challenge:
+- 1-3M LOC enterprise codebases exceed brute-force context capabilities
+- LLM attention mechanisms fail at massive scale (lost-in-the-middle, latency, cost)
+- Effective reasoning context << theoretical maximum window
+- Need dedicated memory engine for autonomous operation
+
+Core Memory Engine Components:
+
+Abstract Syntax Tree Knowledge Graphs:
+- Tree-sitter parsing into persistent SQLite graphs
+- Multi-hop architectural queries (hundreds of tokens vs entire directories)
+- Surgical dependency tracing and impact analysis
+- Real-time synchronization with file system
+
+Token-Oriented Object Notation (TOON):
+- Eliminates verbose JSON formatting
+- 40-60% token reduction in serialization
+- Preserves semantic relationships with minimal overhead
+- Critical for context window efficiency
+
+Progress-Compress-Reset Lifecycle:
+- Progress: Active context accumulation during reasoning
+- Compress: Skeletonization and semantic summarization
+- Reset: Context eviction to prevent pollution
+- Enables long-horizon tasks without LLM amnesia
+
+Advanced Retrieval Algorithms:
+
+PageRank-Based Code Ranking:
+- Algorithm: PageRank(A) = (1-d) + d * Σ(PR(Ti)/C(Ti))
+- Identifies architectural hotspots and critical paths
+- Graceful degradation when full code reading unavoidable
+- Type-checked function stubs preserve intent
+
+Semantic Eviction Caching (Asteria):
+- Context pollution prevention across long sessions
+- Dynamic cache management based on relevance scoring
+- Sub-millisecond latency for graph operations
+- Memory-efficient temporal lifecycle management
+
+Standardization Interfaces:
+
+/llms.txt and /llms-ctx.txt Specification:
+- AI-native repository format for machine readability
+- Dual-file hierarchy: navigation index + flattened context
+- Bypasses parametric knowledge cutoff dates
+- Eliminates web scraping and HTML parsing overhead
+
+Model Context Protocol (MCP) Integration:
+- Universal JSON-RPC interface for memory servers
+- Separation of concerns: LLM reasoning vs memory computation
+- Background auto-sync with repository changes
+- Client-agnostic (Claude Desktop, Cursor, Aider, Zed)
+
+Performance Metrics:
+- Token density: 2-3x improvement over vector databases
+- Query latency: <100ms for graph traversals
+- Memory efficiency: 60% reduction via TOON serialization
+- Context window utilization: <40% for complex queries
+
+Implementation Requirements:
+- Tree-sitter AST parsing for multi-language support
+- SQLite graph database for persistent storage
+- MCP server for standardized interface
+- Real-time file system monitoring
+- Caching layer for frequently accessed subgraphs

@@ -1,0 +1,1514 @@
+PHASE 3J: vLLM INTEGRATION + ADVANCED PROVIDERS + PLUGINS + ORCHESTRATOR HARDENING
+Prerequisites: Phase 3I complete (DST infrastructure), Phase 1F (speculative decoding eval)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Integrate vLLM as the production inference backend. Enable layer-level optimizations
+(DoLa, TurboQuant KV cache, steering vectors) that require vLLM's internal access.
+Build advanced ModelPool features (GPU multiplexing, predictive pre-loading, workload
+profiling). Implement MCP bridge, tiered static analysis hooks, AppContainer isolation,
+advanced SSB action types, and MILP scheduling evaluation.
+
+All model-specific steps (DoLa, steering vectors, EAGLE-3, TurboQuant) are developed
+and tested on Gemma4 E2B (~2B params, fits on RTX 3060 12GB) as the primary test model.
+Final step (3J.14) applies everything to Gemma4 31B via CPU offload on 64GB RAM (slow
+but validates artifacts for the 48GB GPU setup).
+
+This phase bridges the gap between the ollama-based Phase 0-3 and the production-grade
+Phase 4 by delivering the inference substrate that all subsequent phases depend on.
+
+
+HARDWARE CONTEXT
+  Development hardware: Ryzen 7800X3D, 64GB RAM, RTX 3060 12GB.
+  48GB VRAM setup NOT available during this phase.
+  Primary test model: Gemma4 E2B (~2B, ~4-5GB Q4, fits on 12GB GPU with room to spare).
+  Target production model: Gemma4 31B (~31B, ~18GB Q4, requires 48GB GPU for real-time).
+  31B testing strategy: CPU offload via llama.cpp/vLLM (model in RAM, ~0.5-2 tok/sec).
+    Slow but sufficient for: steering vector computation, DoLa evaluation, artifact generation.
+    NOT sufficient for: EAGLE-3 draft training (needs thousands of forward passes).
+
+
+MODEL SETUP STATUS (completed 2026-04-08)
+  Installed models (C:\Users\user\.ollama\models\manifests\registry.ollama.ai\library\):
+    gemma4:31b   — 19 GB, Q4_K_M, 31.3B params, 262144 context length, embedding dim 5376
+                   Capabilities: completion, vision, tools, thinking
+                   Pulled from: ollama.com/library/gemma4:31b (same as HuggingFace google/gemma-4-31B)
+                   CPU offload tested: working (~0.5-2 tok/sec as expected, model loads into 64GB RAM)
+                   This IS the VLM — Gemma4 is natively multimodal (vision+text), no separate VLM needed
+    gemma4:e2b   — 7.2 GB, ~2B params (primary test model for all 3J steps, fits RTX 3060 12GB)
+    gemma3:4b    — 3.3 GB, ~4B params (fallback model)
+  No separate VLM download required: gemma4:31b and gemma4:e2b both support vision natively.
+  vLLM SETUP (completed 2026-04-08):
+    Location: WSL2 Ubuntu, ~/vllm-env/ (Python 3.12 virtualenv)
+    Version: vLLM 0.19.0, PyTorch 2.10.0+cu128, CUDA available, GPU: RTX 3060 detected
+    Activate: wsl -d Ubuntu -- bash -c "source ~/vllm-env/bin/activate && <command>"
+    Serve example: vllm serve google/gemma-4-e2b --host 0.0.0.0 --port 8000
+    Status: installed and import-verified. NOT yet test-served (that is step 3J.1 work).
+    Note: vLLM runs in WSL2 (Linux-only). Rust code on Windows side connects via HTTP
+      to WSL2's localhost (ports auto-forwarded by WSL2). No extra networking config needed.
+    Note: Ollama GGUF weights are at /mnt/c/Users/user/.ollama/models/ from WSL2.
+      vLLM 0.19.0 supports GGUF format, but HuggingFace download is the standard path.
+
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/providers.txt         vLLM integration (S4 L168-174), LayerConfig (S3), ModelPool (S4), ONNX health (S9)
+  docs/specs/crates/orchestrator.txt      SSB action_types (S3), AppContainer (S12 L599-610), self-mod locks (S12 L628-634)
+  docs/specs/crates/plugins.txt           MCP bridge (S4), tiered static analysis (S3)
+  workflow/papers/dola-2309.03883-summary.md              DoLa algorithm + layer bucket strategy
+  workflow/papers/turboquant-interface.md                  TurboQuant KV cache compression
+  workflow/papers/eagle3/eagle3-summary.md                 EAGLE-3 speculative decoding (vLLM results)
+  workflow/papers/tide-2602.05145/summary.md               TIDE adaptive speculation
+  workflow/papers/actadd-2308.10248/summary.md             ActAdd steering vectors
+  workflow/papers/murakkab-interface.md                    Murakkab SLO tiers + MILP scheduling
+
+
+NOTE: vLLM layer-level access is what unlocks DoLa, TurboQuant, and steering vectors.
+These optimizations are impossible with ollama (black box). This phase is the prerequisite
+for Phase 4A (process isolation) and 4G (autonomous mode) because the model placement and
+optimization decisions must be stable before agents are sandboxed.
+
+
+RISKS
+  R1: vLLM Rust client does not exist as a published crate. Must use HTTP/gRPC to the
+      vLLM Python server. Latency overhead from HTTP vs in-process ollama needs measurement.
+      Mitigation: benchmark HTTP latency in step 3J.1 spike. Accept if <10ms overhead.
+  R2: DoLa requires access to intermediate layer logits during inference. vLLM's OpenAI-
+      compatible API does NOT expose per-layer logits. Requires either (a) custom vLLM
+      plugin/extension, (b) vLLM's internal Python API, or (c) a custom sampling hook.
+      Mitigation: spike in step 3J.3. If vLLM plugin API is insufficient, DoLa is deferred.
+  R3: TurboQuant for KV cache requires modifying vLLM's attention backend. This is deep
+      integration, not API-level. May require forking vLLM or contributing upstream.
+      Mitigation: evaluate complexity in step 3J.4. If >2 weeks effort, defer to Phase 4+.
+  R4: Steering vectors (ActAdd) require writing to the residual stream at a specific layer
+      during forward pass. Same access issue as DoLa (R2). Coupled risk.
+      Mitigation: if DoLa plugin works, steering vectors reuse the same hook.
+  R5: MILP solver (coin-or/cbc or highs) Rust bindings may have build complexity on Windows.
+      Mitigation: spike in step 3J.8. Windows build failure -> defer MILP to Linux-only.
+  R6: MCP bridge is 1751 LOC from claw-code (mcp_tool_bridge.rs + mcp_lifecycle_hardened.rs).
+      Porting requires understanding the existing protocol. Risk of subtle protocol bugs.
+      Mitigation: port incrementally with contract tests per message type.
+  R7: AppContainer (Windows) has known weaknesses (NTFS junctions, reparse points). This is
+      documented as weaker-than-Linux. Not a blocker but must be documented clearly.
+  R8: GPU multiplexing requires accurate VRAM accounting for colocated models. Overcommit
+      causes OOM. Safety margin (1GB) may be insufficient for some model combinations.
+      Mitigation: conservative accounting + health check after colocation.
+  R9: Gemma4 E2B (~2B) is smaller than any model tested in DoLa/EAGLE-3 papers. Results
+      may not transfer to 31B. Mitigation: E2B validates code paths and integration, not
+      production quality. Quality validation happens on 31B in step 3J.14 and on 48GB hardware.
+  R10: Gemma4 31B on CPU offload is extremely slow (~0.5-2 tok/sec). EAGLE-3 draft training
+      requires thousands of forward passes — infeasible on CPU. Mitigation: step 3J.14 tests
+      everything EXCEPT EAGLE-3 draft training on 31B. Draft training deferred to 48GB hardware.
+  R11: vLLM CPU offload may not support layer-level hooks needed for DoLa/steering. If vLLM
+      only supports GPU execution for custom hooks, 31B DoLa/steering must wait for 48GB.
+      Mitigation: test hook availability in CPU offload mode in step 3J.14. Fall back to
+      transformers + PyTorch for artifact generation if vLLM CPU hooks unavailable.
+
+
+STEPS
+
+  3J.1 VLLM HTTP CLIENT SPIKE
+    PRE_GATE:
+      - cargo check succeeds on current workspace (Phase 0-3I baseline intact)
+      - vLLM installed and serving Gemma4 E2B on RTX 3060 (manual prerequisite)
+    TASK:
+      - Create providers/src/vllm_client.rs with basic HTTP client to vLLM server
+      - Implement OpenAI-compatible /v1/completions endpoint call
+      - Implement /v1/models endpoint for model listing
+      - Implement streaming SSE response parsing (reuse existing sse.rs from api/ crate)
+      - Measure round-trip latency against Gemma4 E2B: 100 requests, record p50/p95/p99
+      - Implement health check: GET /health -> VllmHealthStatus
+      - gRPC client evaluation: check if vLLM gRPC is production-ready. If not, HTTP-only.
+      - VllmProvider struct implementing LlmProvider trait (complete, embed, token_count)
+      - Feature-gated behind cfg(feature = "vllm")
+      - Test model: Gemma4 E2B on RTX 3060 12GB (primary test target for all 3J steps)
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace --features vllm exits 0
+      - grep -r "VllmProvider" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "impl LlmProvider for VllmProvider" .elai_cc/crates/providers/src/ returns hits
+      - Latency metrics file exists: .elai_cc/metrics/vllm_spike.toml
+    ADVERSARIAL:
+      - If vLLM server is down, all VllmProvider calls hang or timeout.
+        Test: connect to non-existent server, verify timeout within 5s + error, not hang.
+      - If SSE parsing differs from vLLM's actual format, streaming breaks silently.
+        Test: record real vLLM SSE response, replay in unit test, assert tokens parsed correctly.
+      - If latency exceeds 10ms overhead vs ollama, vLLM may not be worth it for single-GPU.
+        Decision: document threshold, proceed with integration regardless (layer access is the value).
+    ACCEPTANCE:
+      - VllmProvider compiles and implements LlmProvider trait
+      - HTTP roundtrip latency measured and documented
+      - Health check works against running vLLM server
+      - Feature-gated (does not affect non-vllm builds)
+
+  3J.2 VLLM MODELPOOL INTEGRATION
+    PRE_GATE:
+      - Step 3J.1 passed (VllmProvider compiles)
+      - ModelPool exists: grep "ModelPool" .elai_cc/crates/providers/src/ returns hits
+    TASK:
+      - Extend ModelPool to support VllmBackend alongside OllamaBackend
+        enum InferenceBackend { Ollama(OllamaConfig), Vllm(VllmConfig) }
+      - VllmConfig: server_url, tensor_parallelism (bool), served_model_names: Vec<String>
+      - ModelPool delegates GPU memory management to vLLM when backend is Vllm:
+        vLLM manages own GPU memory via its internal scheduler
+        ModelPool tracks which models are served but does NOT call load/unload
+        Instead: POST /v1/load_model and DELETE /v1/unload_model (vLLM model management API)
+      - --served-model-name support: multiple models on single vLLM instance
+      - Tensor parallelism flag: when true, model spans multiple GPUs (vLLM handles sharding)
+      - Health check integration: ModelPool.health_check() calls VllmProvider.health()
+      - Backend selection in elai_cc.toml: [providers.backend] = "ollama" | "vllm"
+      - Fallback: if vLLM unavailable, ModelPool falls back to Ollama with WARNING log
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace --features vllm exits 0
+      - grep -r "InferenceBackend" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "VllmConfig" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "tensor_parallelism" .elai_cc/crates/providers/src/ returns hits
+    ADVERSARIAL:
+      - If ModelPool assumes it controls GPU memory with vLLM, double-allocation crash.
+        Test: verify ModelPool does NOT call nvml VRAM queries when backend=Vllm.
+      - If fallback to Ollama is silent, user does not know they lost layer-level optimizations.
+        Test: verify WARNING log emitted on fallback, message includes "layer-level optimizations unavailable".
+    ACCEPTANCE:
+      - ModelPool supports both backends via enum dispatch
+      - Tensor parallelism configurable
+      - Fallback behavior documented and tested
+      - Backend configurable in elai_cc.toml
+
+  3J.3 DOLA LAYER-CONTRAST DECODING
+    PRE_GATE:
+      - Step 3J.1 passed (VllmProvider works with Gemma4 E2B)
+      - vLLM exposes per-layer logits or has plugin/hook API for custom sampling
+        If NOT: this step produces a SPIKE evaluating access methods, then DEFER
+    TASK:
+      - Implement DolaDecoder in providers/src/layer_config/dola.rs
+      - DoLa algorithm (arxiv 2309.03883, ICLR 2024):
+        1. Forward pass to compute hidden states at all candidate layers J and final layer N
+        2. Compute early-exit distributions q_j = softmax(phi(h_t^(j))) for j in J
+        3. Select premature layer: M = argmax_{j in J} JSD(q_N || q_j)
+        4. Adaptive plausibility constraint: V_head = {x : q_N(x) >= alpha * max q_N}
+        5. Contrastive logits: log(q_N / q_M) for tokens in V_head, -inf otherwise
+        6. Sample from softmax of contrastive logits
+      - Candidate layer buckets (model-specific, from DoLa paper Table):
+        ~2B (Gemma4 E2B, ~18-26 layers): J = even layers in [0, N/2) or [N/2, N)
+          NOTE: 2B is in untested range. Bucket boundaries derived by analogy with 7B.
+          Evaluate empirically. Log factuality vs baseline on 20 test prompts.
+        7B  (32 layers): J = even layers in [0,16) or [16,32)
+        13B (40 layers): J = even layers in [0,20) or [20,40)
+        >30B (60+ layers): 3-4 buckets of 20 layers each
+      - Hyperparameters: alpha=0.1 (plausibility), theta=1.2 (repetition penalty)
+      - DolaConfig struct: enabled (bool), alpha (f64), candidate_buckets (Vec<Range<usize>>),
+        repetition_penalty (f64)
+      - Per-role application (from providers.txt S3):
+        Executor (Gemma 4 31B): DoLa enabled (factuality improvement)
+        Auditor (DeepSeek-R1-32B): DoLa amplified (stronger factual grounding)
+        Prompt-engineer (Qwen 3.5 27B): DoLa disabled (constrained decoding only)
+      - E2B testing: run DoLa on Gemma4 E2B via vLLM on RTX 3060.
+        Compare 20 factuality prompts: baseline vs DoLa. Log results.
+        If DoLa improves or is neutral on E2B: code validated, ready for 31B.
+        If DoLa degrades on E2B: document as expected for small models, code still valid.
+      - Latency budget: DoLa adds ~5-8% latency overhead (DoLa paper Section 7: 1.01-1.08x)
+      - Memory overhead: stores intermediate layer distributions (DoLa paper: +0.6-1.1% of total)
+      - vLLM integration path: either custom SamplingParams hook or vLLM plugin mechanism
+        If vLLM does not support custom sampling hooks: implement as post-processing on
+        logprobs output (vLLM /v1/completions with logprobs=N returns top-N logprobs per token)
+        DEGRADED path: if only top-N logprobs available (not full distribution), DoLa accuracy
+        is reduced. Document degradation and measure empirically.
+      - CAUTION: DoLa degrades on 335M models (DoLa paper Section 6.7, GPT2-Medium).
+        Paper tested 7B+ (improved) and 335M (degraded). 1-7B range is UNTESTED.
+        Guard: if model_params < 1B, log WARNING and disable DoLa automatically.
+        For 1-7B models (including Gemma4 E2B ~2B): EVALUATE empirically.
+        Log DoLa vs baseline factuality metrics. Disable if degradation detected.
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace --features vllm exits 0
+      - grep -r "DolaDecoder" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "DolaConfig" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "candidate_buckets" .elai_cc/crates/providers/src/ returns hits
+    ADVERSARIAL:
+      - If vLLM only exposes top-5 logprobs, JSD computation over full vocabulary is impossible.
+        Test: check vLLM API for full logit access. If unavailable, document degraded path.
+      - If DoLa is applied to reasoning-heavy tasks (R1-Distill CoT), it may conflict with
+        INSTRUCTOR tier-2 mode. Test: verify DoLa disabled when tier2_mode=INSTRUCTOR.
+      - If repetition penalty interacts badly with DoLa contrastive logits, output quality drops.
+        Test: compare output quality with and without repetition penalty on 10 test prompts.
+    ACCEPTANCE:
+      - DolaDecoder compiles and integrates with VllmProvider
+      - Per-role enable/disable via elai_cc.toml [agents.{role}.layer_config.dola]
+      - Model size guard prevents application to <1B models, logs EVALUATE for 1-7B
+      - E2B factuality evaluation completed (20 prompts, results logged)
+      - Latency overhead measured on E2B and within 10% budget
+
+  3J.4 TURBOQUANT KV CACHE COMPRESSION (EVALUATION)
+    PRE_GATE:
+      - Step 3J.1 passed (VllmProvider works)
+      - TurboQuant paper ingested: workflow/papers/turboquant-interface.md exists
+    TASK:
+      - EVALUATE feasibility of TurboQuant KV cache integration with vLLM
+      - TurboQuant (arxiv 2504.19874, ICLR 2026):
+        Step 1: random rotation matrix Pi (QR of Gaussian, d x d, fixed per instance)
+        Step 2: coordinates follow Beta distribution, converge to N(0,1/d) at high d
+        Step 3: Lloyd-Max scalar quantizer per coordinate independently
+        Expected compression: 3.5-bit matches full-precision (score 0.997 on NIAH)
+        2.5-bit gives marginal degradation (49.44 vs 50.06 on LongBench)
+      - Evaluation criteria:
+        a. Does vLLM's attention backend allow custom KV cache quantization?
+           Check: vLLM KVCacheConfig, CacheEngine, attention backends (FlashAttention, PagedAttention)
+        b. If custom KV cache: estimate LOC and complexity for TurboQuant integration
+        c. If not: can TurboQuant run as external quantizer on KV cache tensors?
+        d. Minimum dimension d >= 64 (TurboQuant paper: low-d fails Beta approximation)
+      - Implementation sketch (if feasible):
+        TurboQuantConfig { bit_width: u8 (1-4), rotation_seed: u64 }
+        TurboQuantizer struct: precomputed Pi matrix + Lloyd-Max codebook per (d, b) pair
+        quant_kv(key_or_value: &Tensor) -> QuantizedKV (b-bit indices per coordinate)
+        dequant_kv(qkv: &QuantizedKV) -> Tensor
+      - Critical invariants (from turboquant-interface.md):
+        Input must be unit norm (store L2 norm separately, rescale after dequant)
+        Pi must be orthogonal rotation matrix
+        Codebook size must equal 2^b
+        Codebook centroids must be ascending sorted
+      - Implementation pitfalls (from paper):
+        Do NOT reuse Pi across instances without resetting
+        Do NOT skip norm rescaling for non-unit inputs
+        Do NOT approximate rotation with Hadamard (full QR required for theoretical guarantees)
+        Do NOT use MSE variant for inner product queries (biased)
+      - E2B testing: pre-compute Lloyd-Max codebooks for E2B's head dimension (d).
+        Codebooks are dimension-specific, not model-specific (data-oblivious algorithm).
+        Verify: quant -> dequant roundtrip on random unit-norm vectors within expected MSE.
+        Codebooks reusable for any model with same d (including 31B if same head dim).
+      - Output: FEASIBLE/DEFER decision with complexity estimate
+      - If FEASIBLE and complexity < 1 week: implement TurboQuantizer struct, test on E2B
+      - If DEFER: document reason, preserve evaluation in workflow/reasoning/phase-3J-turboquant.md
+    DETERMINISTIC_CHECK:
+      - Decision file exists: workflow/reasoning/phase-3J-turboquant.md
+      - If FEASIBLE: grep -r "TurboQuantizer" .elai_cc/crates/providers/src/ returns hits
+    ADVERSARIAL:
+      - If TurboQuant quantizes KV cache but vLLM's PagedAttention assumes full-precision,
+        attention computation silently produces wrong results.
+        Test: if implemented, verify attention output matches full-precision within tolerance.
+      - If KV cache compression saves VRAM but adds latency exceeding the VRAM savings benefit,
+        net effect is negative. Test: measure tokens/sec with and without compression.
+    ACCEPTANCE:
+      - FEASIBLE/DEFER decision documented with evidence
+      - If FEASIBLE: TurboQuantizer struct compiles, codebook precomputation verified
+      - If DEFER: reasoning documented, no dead code left behind
+
+  3J.5 STEERING VECTORS (ActAdd)
+    PRE_GATE:
+      - Step 3J.3 completed (DoLa layer access path established)
+      - ActAdd paper ingested: workflow/papers/actadd-2308.10248/summary.md exists
+    TASK:
+      - Implement SteeringVectorEngine in providers/src/layer_config/steering.rs
+      - ActAdd algorithm (arxiv 2308.10248):
+        1. Compute steering vector: h_A^l = h+^l - h-^l from contrast prompt pair
+        2. At inference, add c * h_A^l to residual stream at target layer l
+        3. Continue forward pass with modified residual
+      - Steering vector computation is one-time per contrast pair (amortized):
+        Forward model on p+, record activations at layer l -> h+
+        Forward model on p-, record activations at layer l -> h-
+        Steering vector = h+ - h-
+        Store as SteeringVector { layer: usize, vector: Vec<f32>, coefficient: f64 }
+      - Pre-computed vectors for agent roles (from providers.txt S3 L102-104):
+        Auditor: skepticism steering vector (contrast pair TBD at implementation)
+        Context-compiler: completeness steering vector (high temperature 0.7 + steering)
+      - SteeringConfig: vectors: Vec<SteeringVectorSpec>, enabled: bool
+        SteeringVectorSpec: name (String), layer (usize), coefficient (f64),
+          positive_prompt (String), negative_prompt (String)
+      - Configurable in elai_cc.toml [agents.{role}.layer_config.steering]
+      - Layer selection guidance (from ActAdd paper Section 6.3):
+        Early layers (0-5): minimal effect
+        Mid layers (6-20): peak effectiveness
+        Late layers (25+): declining
+        Default: layer = model_layers / 3 (early-mid)
+      - Coefficient guidance (from paper Section 6.4):
+        Typical range: c in [3, 20]
+        Start conservative (c=5), tune per vector
+      - vLLM integration: same layer-access hook as DoLa (step 3J.3)
+        If DoLa hook works: steering vectors reuse the same mechanism
+        If DoLa was deferred: steering vectors also deferred (coupled dependency)
+      - Composability: multiple steering vectors can be added simultaneously
+        (ActAdd paper confirms composability, Section 9 advantages)
+      - CRITICAL: steering vectors require access to intermediate activations.
+        API-only models (Anthropic, OpenAI) cannot use this. Local models only.
+      - E2B testing: compute steering vectors on Gemma4 E2B (RTX 3060).
+        ActAdd paper validated on GPT2-XL (1.5B), so E2B (~2B) is within tested range.
+        Compute at least 2 contrast pairs (skepticism, completeness).
+        Evaluate steering effect: 5 prompts per vector, compare steered vs baseline output.
+        Store computed vectors as .safetensors or .npz for reuse.
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace --features vllm exits 0
+      - grep -r "SteeringVectorEngine" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "SteeringConfig" .elai_cc/crates/providers/src/ returns hits
+    ADVERSARIAL:
+      - If steering coefficient is too high, output degrades to incoherent text.
+        Test: sweep c from 1 to 30, verify coherence does not drop below baseline at c <= 15.
+      - If wrong layer is selected, steering has no effect or causes harm.
+        Test: sweep layers, verify at least one layer produces measurable steering effect.
+      - Not all contrast pairs produce meaningful vectors (ActAdd paper Table 7).
+        Test: validate each pre-computed vector with 5 test prompts before deployment.
+    ACCEPTANCE:
+      - SteeringVectorEngine compiles
+      - Per-role vector configuration via elai_cc.toml
+      - Vector computation verified (h+ - h- produces non-zero vector)
+      - Coupled with DoLa: if DoLa deferred, steering also documented as deferred
+
+  3J.6 GPU MULTIPLEXING + PREDICTIVE PRE-LOADING
+    PRE_GATE:
+      - Step 3J.2 passed (ModelPool supports vLLM backend)
+      - Dual-GPU hardware available OR single-GPU with test-mode multiplexing simulation
+    TASK:
+      - GPU multiplexing (from providers.txt S4 L130-136, Murakkab-derived):
+        Small models (<4GB) can colocate on same GPU with large model's idle headroom.
+        Embedding model (~1.5GB) + cross-encoder (~130MB) on GPU1 while executor on GPU0.
+        Memory-writer (~4GB) can share GPU1 with embedding model during MEMORIZING.
+        Constraint: sum(colocated_vram) <= GPU_VRAM - safety_margin (1GB)
+        Phase 0-1 (single GPU): no multiplexing, sequential loading only.
+        Phase 2+ (dual GPU): multiplexing enabled on GPU1 for small models.
+      - MultiplexingPolicy struct:
+        safety_margin_bytes: u64 (default 1GB = 1_073_741_824)
+        max_colocated: usize (default 3)
+        min_model_size_for_dedicated_gpu: u64 (default 4GB)
+      - ModelPool.can_colocate(model_id, target_gpu) -> Result<bool>:
+        Check: current_vram_used(target_gpu) + model_vram + safety_margin <= gpu_total_vram
+      - Predictive pre-loading (from providers.txt S4 L138-140, FSM-driven):
+        EXECUTING -> pre-load auditor model
+        AUDITING -> pre-load executor model
+        PLANNING -> pre-load prompt-engineer model
+        TESTING_FIRST -> pre-load executor model
+        Pre-load triggers on FSM state entry (not exit). Background tokio::spawn.
+        Pre-load blocked if VRAM insufficient (falls back to sequential load at boundary).
+      - PreloadPolicy: map from FsmState to Vec<ModelId>
+        Configurable in elai_cc.toml [providers.preload]
+      - SLO quality tiers (from providers.txt S4 L120-128, Murakkab-derived):
+        BEST (auditor, researcher): highest precision model, full VRAM
+        GOOD (executor, context-compiler): standard model, standard allocation
+        FAIR (prompt-engineer): can use smaller/quantized variant
+        BASIC (memory-writer): smallest capable model, minimal resources
+        Tier stored in elai_cc.toml [agents.{role}.slo_tier]
+        ModelPool uses tier for: model variant selection, GPU assignment, VRAM allocation
+        Tier mismatch (BEST role + BASIC model) -> WARNING log
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace exits 0
+      - grep -r "MultiplexingPolicy" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "PreloadPolicy" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "SloTier" .elai_cc/crates/providers/src/ returns hits
+      - grep -r "can_colocate" .elai_cc/crates/providers/src/ returns hits
+    ADVERSARIAL:
+      - If VRAM accounting is wrong, colocated models cause GPU OOM.
+        Test: simulate colocation where sum > GPU_VRAM - margin, verify can_colocate returns false.
+      - If pre-load races with current model's inference, VRAM contention.
+        Test: verify pre-load waits until current agent is between inference calls (phase boundary).
+      - If safety margin (1GB) is too small for a specific model, OOM despite passing check.
+        Test: health check after colocation, if OOM -> increase margin and retry.
+    ACCEPTANCE:
+      - Multiplexing policy enforced with VRAM safety margin
+      - Predictive pre-loading triggers on FSM state transitions
+      - SLO tiers configurable per agent role
+      - Single-GPU mode correctly disables multiplexing
+
+  3J.7 WORKLOAD PROFILING
+    PRE_GATE:
+      - Step 3J.6 passed (ModelPool with multiplexing)
+      - SSB write path exists: grep "SsbWriter" .elai_cc/crates/orchestrator/src/ returns hits
+    TASK:
+      - Workload profiling (from providers.txt S4 L142-147, Murakkab-derived):
+        Track per-agent per-phase: tokens_in, tokens_out, latency_ms, vram_peak_mb
+        Written to SSB as action_type='workload_profile' at phase boundary
+      - WorkloadProfile struct:
+        agent_role: AgentRole,
+        phase_id: String,
+        tokens_in: u64,
+        tokens_out: u64,
+        latency_ms: u64,
+        vram_peak_mb: u32,
+        model_id: String,
+        gpu_id: u8,
+        timestamp: i64 (ClockProvider)
+      - Emitted automatically by orchestrator at every phase_complete event
+      - Phase 0-1: collect data only, no optimization from profiles
+      - Phase 2+: EVALUATE whether profiles improve model placement decisions
+      - Storage: SSB action_type='workload_profile', payload = msgpack(WorkloadProfile)
+      - Query: SELECT * FROM ssb WHERE action_type='workload_profile' AND project_id=?
+        Used by MILP solver (step 3J.8) for optimal placement input data
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace exits 0
+      - grep -r "WorkloadProfile" .elai_cc/crates/ returns hits
+      - grep -r "workload_profile" .elai_cc/crates/orchestrator/src/ returns hits
+    ADVERSARIAL:
+      - If vram_peak_mb is measured at wrong time (after unload), value is zero.
+        Test: verify VRAM measurement taken during agent execution, not after cleanup.
+      - If profiling adds measurable latency to phase transitions, it's a tax on every phase.
+        Test: measure phase transition time with and without profiling. Budget: <1ms.
+    ACCEPTANCE:
+      - WorkloadProfile emitted at every phase boundary
+      - Profile data queryable from SSB
+      - Zero measurable latency impact on phase transitions
+
+  3J.8 MILP SCHEDULING EVALUATION
+    PRE_GATE:
+      - Step 3J.7 passed (workload profiles being collected)
+      - Accumulated workload profiles: SELECT count(*) FROM ssb WHERE action_type='workload_profile' >= 10
+    TASK:
+      - EVALUATE MILP-based scheduling (from providers.txt S4 L171-174):
+        "Implement only if heuristic scheduling proves insufficient in Phase 2 metrics"
+      - MILP problem formulation (Murakkab-derived):
+        Decision variables: model_assignment[model, gpu] in {0,1}
+        Objective: minimize total phase transition latency (model swap time)
+        Constraints:
+          sum(vram[model] * assignment[model, gpu]) <= gpu_vram[gpu] - safety_margin for each gpu
+          sum(assignment[model, gpu] for gpu) == 1 for each model (each model on exactly 1 GPU)
+          models_needed_concurrently assigned to different GPUs or colocated within VRAM
+        Reoptimize at phase boundaries, not per-request
+      - Evaluate Rust MILP solvers:
+        a. good_lp crate (v1.10+): abstraction over CBC, HiGHS, CPLEX
+           HiGHS backend: MIT-licensed, actively maintained, no external C++ dependency if using highs crate
+           CBC backend: EPL-licensed, coin-or ecosystem
+        b. Check Windows build compatibility (R5 risk)
+        c. Measure: time to solve 5-model 2-GPU assignment problem
+      - Decision criteria:
+        If heuristic (greedy: assign largest model first, pack small models) achieves
+        <5% worse swap latency than MILP optimal: DROP MILP (complexity not justified)
+        If MILP gives >10% improvement: ADOPT with good_lp + HiGHS backend
+        If 5-10% improvement: EVALUATE further in Phase 4
+      - Heuristic baseline implementation (always needed, even if MILP adopted):
+        GreedyModelPlacer: sort models by VRAM desc, assign to GPU with most free space
+        Respects multiplexing policy from step 3J.6
+      - Output: ADOPT/DROP/EVALUATE decision in workflow/reasoning/phase-3J-milp.md
+    DETERMINISTIC_CHECK:
+      - Decision file exists: workflow/reasoning/phase-3J-milp.md
+      - grep -r "GreedyModelPlacer" .elai_cc/crates/providers/src/ returns hits
+      - If ADOPT: grep -r "MilpModelPlacer" .elai_cc/crates/providers/src/ returns hits
+    ADVERSARIAL:
+      - If MILP solver takes >100ms, it adds latency to every phase transition.
+        Test: measure solve time for realistic problem size. Budget: <50ms.
+      - If MILP is infeasible (no valid assignment), system hangs.
+        Test: handle infeasibility -> fall back to greedy with WARNING log.
+    ACCEPTANCE:
+      - GreedyModelPlacer implemented (always available)
+      - MILP decision documented with measurements
+      - If ADOPT: MilpModelPlacer compiles, handles infeasibility gracefully
+      - If DROP: greedy placer is the production implementation
+
+  3J.9 MCP BRIDGE
+    PRE_GATE:
+      - Phase 3C complete (agent system exists)
+      - claw-code source available for reference: mcp_tool_bridge.rs, mcp_lifecycle_hardened.rs
+    TASK:
+      - Port MCP bridge from claw-code (plugins.txt S4):
+        mcp_tool_bridge.rs (912 LOC) -> plugins/src/mcp_bridge.rs
+        mcp_lifecycle_hardened.rs (839 LOC) -> plugins/src/mcp_lifecycle.rs
+      - MCP bridge connects orchestrator to external MCP servers for tool access
+      - McpBridge trait:
+        fn connect(server_url: &str) -> Result<McpConnection>
+        fn list_tools(conn: &McpConnection) -> Result<Vec<McpToolSpec>>
+        fn call_tool(conn: &McpConnection, tool: &str, args: Value) -> Result<Value>
+        fn disconnect(conn: &McpConnection) -> Result<()>
+      - McpConnection: holds transport (stdio, SSE, or streamable HTTP)
+      - Error recovery from mcp_lifecycle_hardened:
+        Connection retry with exponential backoff (3 attempts, 1s/2s/4s)
+        Server crash detection via heartbeat timeout (30s)
+        Graceful degradation: if MCP server unavailable, tools from that server return error
+        No silent failure: unavailable tools explicitly reported to agent
+      - Tool registration: MCP tools registered in orchestrator's tool registry
+        Agents see MCP tools alongside native tools (uniform ToolRequest/ToolResult interface)
+        MCP tool calls proxied by orchestrator (agent never connects to MCP server directly)
+      - Security: MCP servers are external and untrusted
+        Tool results sanitized before forwarding to agent
+        MCP server cannot inject prompts (result is treated as data, not instructions)
+        MCP server timeout: 30s per tool call (configurable)
+      - Feature-gated behind cfg(feature = "mcp")
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace --features mcp exits 0
+      - grep -r "McpBridge" .elai_cc/crates/plugins/src/ returns hits
+      - grep -r "McpConnection" .elai_cc/crates/plugins/src/ returns hits
+      - grep -r "mcp_lifecycle" .elai_cc/crates/plugins/src/ returns hits
+    ADVERSARIAL:
+      - If MCP server sends malicious tool results, prompt injection possible.
+        Test: send result containing "ignore previous instructions", verify agent does not execute.
+      - If MCP server hangs, tool call blocks the agent indefinitely.
+        Test: timeout after 30s, verify agent receives error, not hang.
+      - If MCP protocol version mismatch, silent data corruption.
+        Test: version handshake at connection, reject incompatible versions.
+    ACCEPTANCE:
+      - McpBridge compiles and can connect to MCP server
+      - Error recovery with retry and graceful degradation
+      - Security: timeout, result sanitization, no prompt injection
+      - Feature-gated (does not affect non-mcp builds)
+
+  3J.10 TIERED STATIC ANALYSIS HOOKS
+    PRE_GATE:
+      - Phase 3F complete (rules engine exists with predicates)
+      - SSB write path exists for hook integration
+    TASK:
+      - Implement tiered static analysis (plugins.txt S3):
+        T1 (RULES, <1ms): fires on EVERY SSB write
+          Evaluates predicates from rules.db for active rules matching current phase + domain
+          Predicate types: AST_PATTERN, GREP_PATTERN, METRIC_GATE, COMPOSITE
+          Output: ALLOW | WARN | BLOCK
+        T2 (AST, <10ms for files <5000 lines): fires on action_type='file_write' ONLY
+          tree-sitter parse + pattern matching
+          Checks: syntax validity, imports, dead code, lazy code (pass bodies, TODO)
+          Circuit breaker: files >5000 lines degrade to T1-only
+        T3 (PATTERN MATCH, <5ms): fires ONLY when WARN exists AND no BLOCK from T1/T2
+          Pattern-match library of known-ambiguous patterns. NO LLM.
+          Examples: function >200 lines -> WARN:complexity, catch Exception: pass -> BLOCK:swallow
+      - Hook integration with SSB single-writer:
+        SSB writer calls T1 on every write (sync, <1ms budget)
+        T2 triggered async for file_write actions
+        T3 triggered conditionally (WARN without BLOCK)
+      - BLOCK from any tier -> SSB 'finding' entry -> agent notified on next read
+      - No LLM in the validation hot path (deterministic only)
+      - Findings pathway: BLOCK/WARN -> SSB 'finding' entry
+        Orchestrator normalizes finding to pattern hash (blake2s)
+        Feeds violation_patterns in rules.db for self-discovery (rules.txt S6)
+        Circular trust boundary: orchestrator normalizes, not auditor
+      - Hook verdict sanitization: BLOCK -> agent receives generic error
+        "Tool call rejected by policy" (no rule ID, tier, or pattern info exposed)
+      - Performance targets verified with benchmarks:
+        T1: <1ms (deterministic predicate evaluation)
+        T2: <10ms for files <5000 lines (tree-sitter parse)
+        T3: <5ms (pattern match, no LLM)
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace exits 0
+      - grep -r "TieredAnalysis\|T1Hook\|T2Hook\|T3Hook" .elai_cc/crates/plugins/src/ returns hits
+      - grep -r "circuit_breaker" .elai_cc/crates/plugins/src/ returns hits
+      - Benchmark results: T1 < 1ms, T2 < 10ms, T3 < 5ms
+    ADVERSARIAL:
+      - If T1 exceeds 1ms, every SSB write is slowed (hot path).
+        Test: benchmark T1 with 100 rules, verify median < 0.5ms.
+      - If T2 circuit breaker threshold is wrong, large files crash tree-sitter.
+        Test: parse 10,000-line file, verify circuit breaker triggers at 5000.
+      - If T3 fires when T1=BLOCK (should not), wasted computation.
+        Test: send BLOCK from T1, verify T3 does NOT fire.
+    ACCEPTANCE:
+      - All 3 tiers implemented with correct trigger conditions
+      - Performance targets met (benchmarked)
+      - Hook verdicts sanitized (no internal details to agent)
+      - Findings feed violation_patterns via blake2s hash
+
+  3J.11 APPCONTAINER ISOLATION (Windows)
+    PRE_GATE:
+      - Phase 3C complete (agent system exists)
+      - Windows 10/11 (AppContainer API available)
+    TASK:
+      - Implement AppContainer isolation for agent processes (orchestrator.txt S12 L599-610):
+        CreateAppContainerProfile() for each agent
+        Filesystem: agent can only access explicitly granted paths
+        Network: no network by default. Researcher: add network capability.
+        Registry: no access
+        Process: isolated from other AppContainers
+      - AppContainerConfig struct:
+        profile_name: String (unique per agent, format: "elai_cc_agent_{agent_id}")
+        granted_paths: Vec<PathBuf> (project source read-only, scratch dir read-write)
+        network_allowed: bool (false for all except researcher)
+      - Job object limits (orchestrator.txt S12 L609-610):
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 1
+        JOB_OBJECT_LIMIT_PROCESS_MEMORY = 512MB
+        JOB_OBJECT_LIMIT_JOB_TIME = configurable timeout
+      - Fallback (if AppContainer unavailable): restricted token + Job object
+        Known weakness: NTFS junction points, reparse points may bypass ACL deny
+        Documented, not hidden. Use Linux for production security.
+      - Self-modification locks (orchestrator.txt S12 L628-634):
+        IPC-level: reject WriteFile/EditFile to locked paths (canonical realpath comparison)
+        Filesystem-level: locked directories not granted in AppContainer
+        Git-level: filter GitCommit requests, reject if diff touches locked path
+      - Agent environment sanitization:
+        Only pass: LANG, TERM, PATH (restricted), TMPDIR (scratch)
+        NOT passed: HOME, USER, API keys, ELAI_CC_* variables
+      - Platform-conditional: #[cfg(target_os = "windows")] for AppContainer
+        #[cfg(target_os = "linux")] for clone() + seccomp (Phase 4A)
+        Common trait: AgentSandbox { fn create(), fn launch_agent(), fn cleanup() }
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace exits 0
+      - grep -r "AppContainerConfig\|AppContainer" .elai_cc/crates/orchestrator/src/ returns hits
+      - grep -r "AgentSandbox" .elai_cc/crates/orchestrator/src/ returns hits
+      - grep -r "JOB_OBJECT_LIMIT" .elai_cc/crates/orchestrator/src/ returns hits
+    ADVERSARIAL:
+      - If canonical path comparison uses string match instead of realpath, normalization attacks bypass locks.
+        Test: create junction point to locked dir, attempt write via junction, verify BLOCK.
+      - If Job object memory limit is not enforced, agent can OOM the host.
+        Test: agent allocates 1GB, verify Job object kills agent process at 512MB.
+      - If AppContainer creation fails silently, agent runs unrestricted.
+        Test: if CreateAppContainerProfile fails, verify explicit error (not silent fallback).
+    ACCEPTANCE:
+      - AppContainer profiles created and cleaned up per agent lifecycle
+      - Job object limits enforced
+      - Self-modification locks prevent unauthorized writes
+      - Environment sanitization verified
+      - Fallback path documented with known weaknesses
+
+  3J.12 ADVANCED SSB ACTION TYPES
+    PRE_GATE:
+      - Phase 3B complete (SSB core with basic action_types)
+      - Step 3J.7 passed (workload_profile action type defined)
+    TASK:
+      - Implement remaining SSB action_types not yet covered (from orchestrator.txt S3):
+        Already implemented (3B): file_write, file_read, tool_result, test_outcome,
+          finding, claim, checkpoint, phase_transition
+        This step adds:
+          model_swap: payload = { from_model, to_model, gpu_id, swap_duration_ms, reason }
+          knowledge_degradation: payload = { component, old_mode, new_mode, reason }
+          isolation_metric: payload = { agent_id, phase_id, context_savings_ratio }
+          plan_update: payload = { phase_id, version, change_summary }
+          replan_request: payload = { agent_id, severity: MINOR|MAJOR, evidence }
+          stub_reference: payload = { phase_id, step_id, stub_hash }
+          reasoning_trace: payload = ReasoningTraceEntry (from orchestrator.txt S7A)
+          memory_monitoring: payload = { channel_id, deep_size_bytes, threshold_exceeded }
+          phase_complete: payload = { phase_id, agent_id, evidence_artifacts, commit_hashes, test_outcomes }
+          workload_profile: payload = WorkloadProfile (from step 3J.7)
+      - Typed validation: each action_type has a corresponding Rust struct
+        Deserialization from msgpack must succeed for the declared action_type
+        Type mismatch -> SSB writer rejects with error (not silent corruption)
+      - Query patterns for new types:
+        SELECT * FROM ssb WHERE action_type='reasoning_trace' AND agent_id=? ORDER BY seq
+        SELECT * FROM ssb WHERE action_type='phase_complete' AND phase_id=?
+        SELECT * FROM ssb WHERE action_type='isolation_metric' GROUP BY phase_id
+      - Cognitive isolation metric computation (orchestrator.txt S7A):
+        context_savings_from_isolation = sum(agent_grc_tokens_this_phase) / model.max_context
+        Logged as isolation_metric at each phase transition
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace exits 0
+      - grep -r "action_type.*model_swap\|action_type.*reasoning_trace\|action_type.*phase_complete"
+        .elai_cc/crates/orchestrator/src/ returns hits
+      - Count of action_type variants >= 17
+    ADVERSARIAL:
+      - If action_type string does not match payload struct, deserialization fails at read time
+        (not write time), causing downstream errors.
+        Test: write with wrong payload type, verify SSB writer rejects at write time.
+      - If reasoning_trace entries are not monotonically increasing per agent, replay is ambiguous.
+        Test: verify step_index is monotonically increasing per (agent_id, phase_id).
+    ACCEPTANCE:
+      - All 17 action_types have typed structs
+      - Type validation at write time (not read time)
+      - Query patterns for new types verified
+      - Isolation metric computed and logged
+
+  3J.PIPELINE CLI-ORCHESTRATOR INTEGRATION
+    PRE_GATE:
+      - 3J.COMPOSE passed (sidecar with DoLa + TurboQuant working)
+      - 3J.LOCAL passed (CLI connects to sidecar via Anthropic protocol)
+      - Phase 3A-3I infrastructure compiled and tested
+    TASK:
+      Wire the CLI's ConversationRuntime through the orchestrator pipeline so that
+      BOTH local and API backends use the full phase 1-3 infrastructure (FSM-aware
+      tool filtering, context budget allocation, agent dispatch, rules engine).
+
+      Current state: CLI -> AnthropicClient -> API (bypasses all infrastructure)
+      Target state:  CLI -> Orchestrator.dispatch() -> Backend (local or API)
+
+      A. BACKEND ABSTRACTION
+        - Define InferenceDispatcher trait in orchestrator crate:
+          fn dispatch(request: &MessageRequest, context: &DispatchContext) -> MessageStream
+        - DispatchContext contains: current FSM state, agent role, tool filter,
+          context budget, backend config
+        - Two implementations:
+          ApiDispatcher: wraps AnthropicClient (current behavior, unchanged)
+          LocalDispatcher: wraps SidecarProvider (local inference)
+        - Selection via elai_cc.toml:
+          [backend]
+          mode = "local" | "api" | "hybrid" | "auto"
+          # hybrid: per-role override
+          [backend.role_override]
+          executor = "local"
+          auditor = "api"
+          prompt_engineer = "local"
+        - "auto" mode: try local sidecar first, fall back to API if unhealthy
+
+      B. FSM-AWARE TOOL FILTERING
+        - Before dispatch, query FSM state -> active tool set
+        - PLANNING state: read-only tools (read_file, glob_search, grep_search, WebSearch)
+        - EXECUTING state: full tool set (bash, edit_file, write_file, etc.)
+        - AUDITING state: read-only + test runner
+        - Tool set from orchestrator's existing phase-aware tool loading (3A)
+        - For local backend: additional size filter (max 15 tools, truncate descriptions)
+        - For API backend: send all (Claude handles 49+ tools fine)
+
+      C. CONTEXT BUDGET INTEGRATION
+        - Before dispatch, run ContextBudgetAllocator (3E) to determine slot sizes
+        - System prompt slot: fixed
+        - Tools slot: bounded by tool filter output
+        - Messages slot: remaining budget
+        - For local backend: total budget = model's max context (131K for E2B)
+          minus KV cache overhead. Conservative: use 80% of theoretical max.
+        - For API backend: total budget = model's max context (200K for Claude)
+
+      D. CONVERSATION RUNTIME REFACTOR
+        - ConversationRuntime currently calls self.client.send_message() directly
+        - Replace with self.dispatcher.dispatch() which goes through orchestrator
+        - Dispatcher handles: tool filter -> context budget -> format request -> send
+        - Response handling unchanged (SSE events are identical from both backends)
+        - Slash commands (/model, /mode) can switch backend at runtime
+
+      E. AUTO-START SIDECAR
+        - When mode="local" or "auto", CLI checks sidecar health on startup
+        - If unhealthy, spawn WSL2 sidecar process (reuse elai.bat logic)
+        - Wait for health check (max 120s timeout)
+        - If sidecar fails to start and mode="auto", fall back to API
+        - Clean shutdown: kill sidecar on CLI exit
+
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace --all-features exits 0
+      - grep -r "InferenceDispatcher" .elai_cc/crates/orchestrator/src/ returns hits
+      - grep -r "LocalDispatcher" .elai_cc/crates/ returns hits
+      - grep -r "ApiDispatcher" .elai_cc/crates/ returns hits
+      - elai_cc.toml has [backend] section with mode field
+    ADVERSARIAL:
+      - If local sidecar crashes mid-conversation, CLI must not hang.
+        Test: kill sidecar during generation, verify CLI shows error and continues.
+      - If FSM tool filter removes a tool the model already called in context,
+        the model may hallucinate that tool. Guard: include tool names in system
+        prompt even if definitions are filtered out ("tool X is not available in
+        this state").
+      - If context budget is too small for the tool definitions + system prompt,
+        dispatch must fail gracefully with a clear error, not send a truncated request.
+    ACCEPTANCE:
+      - CLI works identically with local and API backends
+      - FSM state changes tool set visible to the model
+      - Context budget prevents OOM on local models
+      - elai --local uses orchestrator pipeline, not direct sidecar call
+      - elai (default) uses API through same orchestrator pipeline
+      - /mode local|api|hybrid switches backend at runtime
+
+  3J.UNIFIED SINGLE RUNTIMECLIENT WITH CONFIG-DRIVEN BACKEND SELECTION
+    PRE_GATE:
+      - 3J.PIPELINE passed (CliApiClient enum dispatch working, both backends compile)
+      - cargo check --workspace exits 0
+    TASK:
+      Eliminate the duplicated ApiClient implementations (AnthropicRuntimeClient and
+      LocalRuntimeClient share ~140 lines of identical stream() logic). Replace with
+      a single UnifiedRuntimeClient that is config-driven, so future phases adding
+      new features only touch ONE code path.
+
+      Current state (from 3J.PIPELINE session):
+        - AnthropicRuntimeClient: auth via resolve_cli_auth_source(), base_url from env
+        - LocalRuntimeClient: AuthSource::None, base_url = sidecar, FSM tool filter, budget
+        - CliApiClient enum dispatches between them
+        - prepare_turn_runtime checks local_config to pick which build_*_runtime to call
+        - 140+ lines of stream() logic duplicated (SSE parsing, markdown rendering, etc.)
+        - Every new feature must be added to BOTH clients or one path silently misses it
+
+      Target state:
+        A. UNIFIED RUNTIME CLIENT
+          - Single RuntimeClient struct with fields:
+            client: AnthropicClient (base_url configurable)
+            auth: AuthSource (None for local, resolved for API)
+            backend: BackendMode (from BackendConfig)
+            tool_policy: ToolPolicy (FSM-filtered + capped for local, full for API)
+            budget_policy: BudgetPolicy (131K local ceiling, 200K API ceiling)
+          - ONE stream() implementation that branches on backend only for:
+            auth source selection, tool filtering policy, budget ceiling, prompt cache
+          - Shared: SSE parsing, markdown rendering, tool accumulation, error handling
+
+        B. CONFIG-DRIVEN TOOL POLICY
+          - ToolPolicy enum: Full (API), FsmFiltered { max_tools, fsm_state_path }, None (Idle)
+          - Tool filtering runs inside stream() based on policy, not client type
+          - Adding a new tool = adding to mvp_tool_specs() + classify(). Auto-available
+            to both backends. No separate wiring needed.
+
+        C. CONFIG-DRIVEN BUDGET POLICY
+          - BudgetPolicy enum: ApiDefault { ceiling: 200K }, Local { ceiling: 131K, fraction: 80% }
+          - Budget computed inside stream() based on policy. Same code path.
+          - Future budget features (adaptive reduction, slot prioritization) wire once.
+
+        D. ELIMINATE BUILD DUPLICATION
+          - Remove build_local_runtime(). build_runtime() takes BackendConfig.
+          - Remove LocalCliConfig from LiveCli. Replace with Option<BackendConfig>.
+          - prepare_turn_runtime always calls build_runtime(config).
+          - --local flag sets BackendConfig { mode: Local, sidecar_url, ... }
+          - No flag = BackendConfig { mode: Api } (reads auth from env)
+
+        E. AUTO-WIRE GUARANTEE
+          - New phase adds a feature to stream() -> both backends get it
+          - New tool added to mvp_tool_specs() -> available to both backends
+          - New FSM state added -> tool filtering works for both backends
+          - New config field in BackendConfig -> readable by both paths
+          - Zero per-phase wiring work for future implementations
+
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace exits 0
+      - grep -r "AnthropicRuntimeClient" crates/cli/src/main.rs returns 0 hits
+      - grep -r "LocalRuntimeClient" crates/cli/src/main.rs returns 0 hits
+      - grep -r "CliApiClient" crates/cli/src/main.rs returns 0 hits (enum removed)
+      - grep -r "struct RuntimeClient" crates/cli/src/main.rs returns 1 hit
+      - cargo test -p elai-orchestrator --lib dispatcher returns 0 failures
+      - elai --local enters ConversationRuntime (same as before, no regression)
+    ADVERSARIAL:
+      - If RuntimeClient branches too much on backend inside stream(), it becomes
+        a god-object worse than the duplication. Guard: max 3 branch points on backend
+        (auth, tool policy, budget policy). Everything else is shared unconditionally.
+      - If BackendConfig grows unbounded with per-backend options, it becomes a
+        configuration-driven spaghetti. Guard: BackendConfig has max 10 fields.
+        Complex per-backend config goes into sub-structs (LocalConfig, ApiConfig).
+      - If tool_policy filtering has different semantics than the old per-client
+        filtering, tools may leak or get blocked unexpectedly. Guard: port existing
+        tests and add a new test that sends the same request through Api and Local
+        policies, asserting tool counts match the old behavior.
+    ACCEPTANCE:
+      - Single RuntimeClient replaces both AnthropicRuntimeClient and LocalRuntimeClient
+      - stream() has exactly ONE implementation with policy-based branching
+      - prepare_turn_runtime has no if/else on local_config
+      - Future phase adding a stream() feature touches ONE code path
+      - All existing tests pass, no behavioral regression
+
+    SESSION SUMMARY (3J.PIPELINE, 2026-04-09):
+      What was built in the preceding session that this step refactors:
+      - orchestrator/src/dispatcher.rs (NEW): DispatchContext, BackendMode, BackendConfig,
+        DispatchError (thiserror), build_dispatch_context(). 7 unit tests.
+      - orchestrator/src/fsm.rs: added Fsm::read_persisted_state() for sync FSM reads.
+      - orchestrator/src/lib.rs: pub mod dispatcher + re-exports.
+      - cli/main.rs: LocalRuntimeClient (AuthSource::None + sidecar base_url),
+        CliApiClient enum dispatch, start_sidecar() with exponential backoff + general
+        drive letter WSL path translation, build_local_runtime(), LiveCli::new_local(),
+        prepare_turn_runtime routing by local_config, sidecar /shutdown on CLI exit.
+      - python/server.py: /shutdown endpoint, real tokenizer token counting (replaced
+        len(prompt)//4 with input_ids.shape[1]).
+      - elai.bat: simplified to --local flag, HOME env fallback.
+      Patches applied:
+        patch-0.3: real tokenizer-based token counting in sidecar usage reports
+        patch-0.4: Idle=no tools, per-turn local routing, sidecar shutdown on exit
+      Auditor findings fixed:
+        - Drive letter hardcoding -> windows_to_wsl_path() general function
+        - FSM tool filtering missing -> added FsmState::check_tool_allowed in stream()
+        - FSM state permanently Idle -> reads persisted .fsm-state.msgpack per-turn
+        - Dead variants (Hybrid, Auto, ToolOverflow) -> removed
+        - sidecar_port redundancy -> removed
+        - WSL path quoting for spaces -> single-quoted in bash -c
+        - prepare_turn_runtime always called build_runtime (API) -> routes by local_config
+      Test results: 7/7 dispatcher GREEN, cargo check --workspace clean,
+        pre-commit Tiers 1-3 PASS (56 passed).
+
+  3J.WIRE.FOUNDATION — SSB + FSM + INTERACTIVE GATE IN CLI
+    PRE_GATE:
+      - 3J.UNIFIED passed (single RuntimeClient, cargo check clean)
+      - crates/orchestrator exports: Ssb, SsbConfig, Fsm, FsmConfig, InteractiveGate,
+        EvidenceSummary, GateDecision, RiskLevel (verify via grep before starting)
+    TASK:
+      Wire the core orchestrator infrastructure into LiveCli so the running CLI
+      actually uses the FSM, SSB, and interactive gate built in phases 3A-3B.
+
+      Current state: LiveCli has no Fsm, no Ssb, no InteractiveGate. The CLI's
+      external workflow tooling (RAG server) maintains its own FSM shadow via
+      .fsm-state.msgpack, but the CLI runtime itself is stateless.
+
+      Deliverables:
+        (1) Add to LiveCli: ssb: Ssb, fsm: Arc<Fsm>, clock: Arc<dyn ClockProvider>.
+            Construct in LiveCli::new() and LiveCli::new_local().
+            Ssb path: sessions/{sid}/ssb.db. Fsm path: sessions/{sid}/.fsm-state.msgpack.
+            ClockProvider: SystemClockProvider (already in elai_core).
+        (2) Implement CliInteractiveGate (impl InteractiveGate for terminal I/O).
+            present_gate(): print EvidenceSummary + RiskLevel, prompt user for
+            Approve/Reject/Modify/Redirect. LOW risk auto-advances (no prompt).
+            Wire into FSM transitions.
+        (3) Replace prepare_turn_runtime() FSM read: instead of
+            Fsm::read_persisted_state (sync file read), use self.fsm.get_state().
+            This means the CLI owns the FSM instance, not just reads a file.
+        (4) Wire Ssb into ConversationRuntime via with_session_tracer() — the
+            SessionTracer infrastructure exists but session_tracer is always None.
+            Create a SessionTracer backed by Ssb writes (turn_started, tool_execution,
+            turn_completed events become SsbPayload entries).
+        (5) Shutdown: Ssb::shutdown() in LiveCli drop/exit path. Fsm persists
+            automatically on transition (already implemented).
+
+      ADVERSARIAL GUARD:
+        - Ssb requires running Tokio runtime for write task. LiveCli already has
+          tokio::runtime::Runtime in RuntimeClient. Reuse it or create a shared one.
+          Do NOT create a second Tokio runtime (panics on nested block_on).
+        - Fsm::transition() is async. The CLI is sync. Use runtime.block_on() for
+          FSM transitions, same pattern as RuntimeClient::stream().
+
+      DETERMINISTIC_CHECK:
+        - cargo check --workspace exits 0
+        - grep "Ssb::new" crates/cli/src/main.rs -> >= 1 hit
+        - grep "Fsm::new\|Fsm::load" crates/cli/src/main.rs -> >= 1 hit
+        - grep "CliInteractiveGate" crates/cli/src/main.rs -> >= 1 hit
+        - cargo test -p elai-orchestrator --lib -> 0 new failures
+        - Existing 56 pre-commit tests still pass
+
+
+  3J.WIRE.BUDGET — REAL CONTEXT BUDGET SLOT ALLOCATION
+    PRE_GATE:
+      - 3J.WIRE.FOUNDATION passed (Ssb + Fsm wired in CLI)
+      - ContextBudget::compute exists with 8-slot allocation (verify)
+    TASK:
+      Replace the zeroed [0, 0, 0] placeholder in BudgetPolicy::Local with real
+      measured token counts for the 3 fixed slots.
+
+      Current state: RuntimeClient::stream() calls ContextBudget::compute with
+      fixed_slot_sizes=[0, 0, 0] and output_reserve=4096. The budget is computed
+      but never used — it's a no-op warning log.
+
+      Deliverables:
+        (1) Measure real fixed slot sizes at prompt assembly time:
+            - Slot 0 (SystemPrompt): system_prompt sections total chars / 4 (estimate)
+            - Slot 1 (Rules): 0 for now (rules not yet loaded, filled in WIRE.RULES)
+            - Slot 2 (PhaseSpec): 0 for now (plan not yet wired, filled in WIRE.PLAN)
+            Pass real values to ContextBudget::compute.
+        (2) Use the computed budget to set max_tokens in MessageRequest:
+            remaining = budget.total_allocated - budget.total_used
+            max_tokens = min(max_tokens_for_model, remaining)
+            This prevents requesting more output tokens than the context window allows.
+        (3) Wire ContextBudget into ConversationRuntime so it's available per-turn.
+            Store as field in RuntimeClient or pass through build_runtime.
+        (4) Log budget allocation in [pipeline] telemetry:
+            eprintln budget slots, allocated vs used, effective max_tokens.
+
+      ADVERSARIAL GUARD:
+        - Do NOT change the Api path budget. Api models have 200K+ context.
+          BudgetPolicy::ApiDefault should skip ContextBudget entirely.
+        - Token estimation (chars/4) is approximate. Use it for allocation,
+          but never trust it to be exact. The sidecar reports real input_tokens
+          in the response — log the delta for calibration.
+
+      DETERMINISTIC_CHECK:
+        - cargo check --workspace exits 0
+        - grep "fixed_slot_sizes.*\[0.*0.*0\]" crates/cli/src/main.rs -> 0 hits
+        - [pipeline] telemetry shows non-zero budget values
+        - cargo test -p elai-orchestrator --lib context_budget -> 0 failures
+
+
+  3J.WIRE.RULES — RULES ENGINE INTO PRE-TOOL HOOKS
+    PRE_GATE:
+      - 3J.WIRE.BUDGET passed
+      - crates/rules/ has DefaultRuleEngine, compile_predicate, evaluate (verify)
+      - 3F.7 seed data: if not loaded, load seed rules first (this step handles it)
+    TASK:
+      Wire the rules engine into the CLI's tool execution path so rules are
+      enforced programmatically, not via .md prompt instructions.
+
+      Current state: crates/rules has DefaultRuleEngine with 263 contract tests,
+      but zero rules are loaded. The engine exists but has no fuel. CLAUDE.md rules
+      are fed as system prompt text to the model, which interprets them probabilistically.
+
+      Deliverables:
+        (1) Seed rule loading: implement 3F.7 if not done — load rules from
+            domain-specific TOML/JSON files into rules.db at startup.
+            Start with engineering + security domains only (~30-40 core rules).
+            Rules map to existing CLAUDE.md rules: no .unwrap(), impact analysis
+            before changes, no silent error discard, etc.
+        (2) Wire DefaultRuleEngine into PreToolUse hook path:
+            Before each tool execution, evaluate active rules against the
+            EvaluationContext (action=tool_name, source=agent_input, file_path).
+            BLOCK verdict -> tool call rejected. WARN verdict -> logged to Ssb.
+            ESCALATE verdict -> InteractiveGate prompt.
+        (3) AstEvaluator stub: for now, return Pass for all AST_PATTERN rules.
+            Real tree-sitter evaluation is Phase 4C work. GREP_PATTERN and
+            METRIC_GATE rules work immediately.
+        (4) DkgQuerier stub: return empty graph. Real DKG is Phase 4B work.
+        (5) Update ContextBudget Slot 1 (Rules): measure loaded rules token count,
+            pass to fixed_slot_sizes[1] instead of 0.
+        (6) Strip CLAUDE.md rule content from local model system prompt: once rules
+            are enforced by the engine, the model doesn't need them in its prompt.
+            Add a flag to build_system_prompt() or SystemPromptBuilder to skip
+            instruction file loading when rules engine is active.
+
+      ADVERSARIAL GUARD:
+        - Do NOT remove CLAUDE.md loading for the Api path. Cloud models still
+          need the full system prompt. Only local mode skips it.
+        - Seed rules must be version-controlled (not generated at runtime).
+          Store in .elai_cc/data/rules/ as TOML files.
+        - Rule evaluation must be <5ms per tool call (Tier 1 target from 3F spec).
+          Benchmark and log timing in [pipeline] telemetry.
+
+      DETERMINISTIC_CHECK:
+        - cargo check --workspace exits 0
+        - grep "DefaultRuleEngine" crates/cli/src/main.rs -> >= 1 hit
+        - cargo test -p elai-rules -> 0 new failures (263+ existing pass)
+        - At least 10 seed rules loaded (grep count in seed data files)
+        - Local mode system prompt no longer contains instruction file content
+
+
+  3J.WIRE.SESSION — SESSION DAG REPLACING RAW PERSISTENCE
+    PRE_GATE:
+      - 3J.WIRE.FOUNDATION passed (Ssb available for stub recovery)
+      - SessionDag exports: SessionDag, Snapshot, TrimmedMessage, TrimConfig (verify)
+    TASK:
+      Replace the raw Session jsonl persistence with DAG-based snapshots and
+      context trimming from Phase 3H.
+
+      Current state: Session is saved/loaded as a flat jsonl file. No trimming,
+      no snapshots, no branches. Context grows unbounded until the model hits
+      its limit or the user runs /compact.
+
+      Deliverables:
+        (1) Create SessionDag alongside Session in LiveCli::new().
+            Path: sessions/{sid}/dag.db. Wire EntropySource + ClockProvider.
+        (2) Auto-snapshot after each turn: save_snapshot() with current FSM state,
+            phase label, and conversation messages converted to TrimmedMessage.
+        (3) Wire trim_context() into prepare_turn_runtime(): before building the
+            API request, check if context exceeds 85% of model budget (handoff
+            trigger from 3H spec). If so, trim tool results via the 3-pass
+            identify->stub->validate pipeline. Stubs reference Ssb seqs.
+        (4) Wire /resume to use SessionDag::load_snapshot() + parent_chain()
+            instead of raw Session::load_from_path().
+        (5) Wire /session fork to use SessionDag::create_branch().
+            Max 3 active branches (enforced by SessionDag).
+        (6) Stub recovery: when loading a snapshot with stubbed messages,
+            recover from Ssb via SessionDag::recover_stubs().
+
+      ADVERSARIAL GUARD:
+        - SessionDag uses synchronous SQLite (not WAL). Do not mix with Ssb's
+          WAL connection. Separate db files, separate connections.
+        - Token estimation for trim budget: SessionDag uses bytes/4 heuristic.
+          For local model this is acceptable. For Api model, use the real
+          tokenizer if available, fall back to heuristic.
+        - Do NOT break existing /compact. It should still work as a manual
+          override alongside automatic trimming.
+
+      DETERMINISTIC_CHECK:
+        - cargo check --workspace exits 0
+        - grep "SessionDag::new\|SessionDag::open" crates/cli/src/main.rs -> >= 1 hit
+        - grep "save_snapshot" crates/cli/src/main.rs -> >= 1 hit
+        - grep "trim_context" crates/cli/src/main.rs -> >= 1 hit
+        - cargo test -p elai-orchestrator --lib session_dag -> 0 failures
+        - /resume still works after wiring (manual test)
+
+
+  3J.WIRE.PLAN — PLAN SKELETON AWARENESS IN CLI
+    PRE_GATE:
+      - 3J.WIRE.SESSION passed (SessionDag available for phase tracking)
+      - PlanSkeleton exports: PlanSkeleton, PhaseEntry, PhaseDetail (verify)
+    TASK:
+      Make the CLI plan-aware: it can load, display, and track progress through
+      a PlanSkeleton, feeding phase context into the ContextBudget.
+
+      Current state: Plans are external .txt files managed by the workflow tooling.
+      The CLI has no concept of phases, dependencies, or contracts. The model
+      is told about plans via the system prompt (CLAUDE.md).
+
+      Deliverables:
+        (1) Add optional plan: Option<PlanSkeleton> to LiveCli.
+            Load from .elai_cc/plans/{pipeline_id}.toml if it exists.
+        (2) /plan slash command: display current skeleton (phases, status,
+            dependencies). /plan phase <id> shows PhaseDetail.
+        (3) Wire phase context into ContextBudget Slot 2 (PhaseSpec):
+            PlanSkeleton::load_phase_context() returns content + token_count.
+            Pass token_count to fixed_slot_sizes[2].
+        (4) Phase transition integration: when FSM transitions to a new state,
+            update the active phase in the skeleton. PlanSkeleton::propagate_changes()
+            notifies dependent phases via Ssb.
+        (5) Contract tracking: display input/output contracts for the active phase.
+            Show which contracts are satisfied vs pending.
+
+      ADVERSARIAL GUARD:
+        - Plan loading is optional. CLI must work fine with no plan loaded
+          (plan: None). All plan-dependent code paths must handle None gracefully.
+        - PlanSkeleton::load_phase_context() needs an LlmProvider for token counting.
+          For local mode, use the chars/4 estimator. For Api mode, use the
+          real tokenizer from AnthropicClient if available.
+        - Do NOT auto-create plans. Plans are authored by the user/workflow.
+          The CLI only reads and tracks them.
+
+      DETERMINISTIC_CHECK:
+        - cargo check --workspace exits 0
+        - grep "PlanSkeleton" crates/cli/src/main.rs -> >= 1 hit
+        - /plan command parses without error (manual test)
+        - cargo test -p elai-orchestrator --lib plan_skeleton -> 0 failures
+        - CLI starts and runs normally with no plan file present
+
+
+  3J.WIRE.STUBS — REPLACE PRODUCTION STUBS WITH REAL ADAPTERS
+    PRE_GATE:
+      - 3J.WIRE.RULES passed (DefaultRuleEngine + seed rules wired in CLI)
+      - DkgEngine.build_graph() is implemented (knowledge/src/dkg/mod.rs — verified)
+      - tree-sitter + tree-sitter-rust in knowledge/Cargo.toml (verified)
+    TASK:
+      Replace the two rule-engine stubs (PassAstEvaluator, EmptyDkgQuerier) with
+      real adapters backed by the existing knowledge crate infrastructure.
+
+      STUB INVENTORY (full codebase audit, session s-877904):
+        IN SCOPE (rule engine dependencies, wire here):
+          (a) PassAstEvaluator -> TreeSitterAstEvaluator
+          (b) EmptyDkgQuerier  -> DkgQuerierAdapter
+
+        DEFER (belong to their own phase domains):
+          (c) OllamaProvider 4x todo!()    — sidecar/provider phase
+          (d) OllamaEmbedder 4x todo!()    — sidecar/provider phase
+          (e) NetworkVerifier              — reasoning phase 2B
+          (f) NoopTestRunner               — reasoning phase 2B
+          (g) OrtSession::embed()          — knowledge vector phase (Step 4)
+          (h) VectorIndex readiness/rerank — knowledge vector phase (Step 4)
+
+      Deliverable (a): TreeSitterAstEvaluator
+        Location: crates/knowledge/src/ast_adapter.rs (new file)
+        Implements: elai_rules::predicate::AstEvaluator
+        Backed by: tree-sitter crate already in knowledge/Cargo.toml
+        Design:
+          - Holds HashMap<&'static str, tree_sitter::Language> for supported languages
+          - evaluate_query(language, source, query):
+              1. Get Language for language_id
+              2. Parse source with tree_sitter::Parser
+              3. Create tree_sitter::Query from query string
+              4. Run QueryCursor, collect matches
+              5. Map to Vec<AstMatch> with byte offsets + matched text
+          - validate_query(language, query):
+              1. Attempt Query::new(language, query)
+              2. Return Ok(()) or AstError::InvalidQuery
+        Dependency: knowledge already depends on tree-sitter. Add elai-rules
+          to knowledge/Cargo.toml for trait import (or re-export trait).
+        Note: RustGrammar + LanguageGrammar trait exist but are for node
+          extraction (DKG building), not query matching. AstEvaluator needs
+          the lower-level tree-sitter Query API directly.
+
+      Deliverable (b): DkgQuerierAdapter
+        Location: crates/knowledge/src/dkg_adapter.rs (new file)
+        Implements: elai_rules::predicate::DkgQuerier
+        Backed by: DkgEngine.conn (SQLite with dkg_nodes + dkg_edges tables)
+        Design:
+          - Holds Arc<DkgEngine> or a shared Connection
+          - query_reachability(params: &ReachabilityParams):
+              1. Find source nodes matching params.source_pattern (SQL LIKE on name)
+              2. Find sink nodes matching params.sink_pattern
+              3. BFS/DFS on dkg_edges up to params.max_depth
+              4. Filter by params.edge_types if non-empty
+              5. If params.must_not_exist: return empty if path found, match if not
+              6. If params.must_traverse: verify intermediate node on path
+              7. Return Vec<ReachabilityMatch> with path + edge_labels
+          - validate_params(params):
+              1. Check source_pattern and sink_pattern are non-empty
+              2. Check max_depth <= 20 (prevent runaway BFS)
+              3. Return Ok(()) or DkgError::InvalidParams
+        Note: DkgEngine currently has no query_reachability. build_graph()
+          populates dkg_nodes + dkg_edges. The adapter adds read-only path
+          queries on the populated graph.
+
+      Wire into CLI:
+        - In build_runtime (crates/cli/src/main.rs), replace:
+            PassAstEvaluator  -> TreeSitterAstEvaluator::new()
+            EmptyDkgQuerier   -> DkgQuerierAdapter::new(dkg_engine)
+          This requires DkgEngine to be built at startup (or lazily on first
+          rule eval). DkgEngine::build_graph() is expensive — consider lazy init.
+        - Add elai-knowledge dep to crates/cli/Cargo.toml (verify path first)
+        - Seed rules can now use AstPattern and GraphReachability predicates
+          (currently all 12 use GrepPattern — add 2-3 AST rules to test)
+
+      ADVERSARIAL GUARD:
+        - tree-sitter Query::new can panic on invalid grammar. Always catch
+          with Result, never unwrap.
+        - BFS on dkg_edges must have a visited set to prevent cycles.
+          max_depth alone is not sufficient — cycles cause exponential blowup.
+        - DkgEngine::build_graph() is O(project_size). Do NOT call per tool use.
+          Build once at startup, update incrementally if files change.
+        - If DkgEngine fails to initialize (no project, corrupt DB), fall back
+          to EmptyDkgQuerier silently with a warning log. Rule eval must not panic.
+        - AstEvaluator must handle unknown languages gracefully — return
+          AstError::UnsupportedLanguage, not panic.
+
+      DETERMINISTIC_CHECK:
+        - cargo check --workspace exits 0
+        - grep "TreeSitterAstEvaluator" crates/knowledge/src/ast_adapter.rs -> >= 1 hit
+        - grep "DkgQuerierAdapter" crates/knowledge/src/dkg_adapter.rs -> >= 1 hit
+        - grep "PassAstEvaluator" crates/cli/src/main.rs -> 0 hits (replaced)
+        - grep "EmptyDkgQuerier" crates/cli/src/main.rs -> 0 hits (replaced)
+        - cargo test -p elai-knowledge -> 0 new failures
+        - cargo test -p elai-rules --lib -> 0 new failures
+        - At least 1 AstPattern seed rule in data/rules/ evaluates without error
+
+
+  3J.13 VERIFY + MEASURE (E2B)
+    PRE_GATE:
+      - All steps 3J.1-3J.12 and 3J.WIRE.* completed (or documented as DEFER with reasoning)
+    TASK:
+      - Full workspace compile check: cargo check --workspace --all-features exits 0
+      - All Phase 0-3I tests still pass: cargo test --workspace exits 0
+      - vLLM integration benchmarks (all on Gemma4 E2B, RTX 3060 12GB):
+        HTTP roundtrip latency (p50/p95/p99)
+        DoLa latency overhead (% over baseline)
+        DoLa factuality delta (improvement/neutral/degradation on 20 prompts)
+        Steering vector application latency
+        Steering vector effectiveness (qualitative on 5 prompts per vector)
+        TurboQuant codebook generation time and roundtrip MSE
+        Model swap time with predictive pre-loading vs without
+      - Feature gate verification: non-vllm build still compiles and all tests pass
+      - Measure compile time impact from new dependencies
+      - Record all metrics in .elai_cc/metrics/phase_3J.toml:
+        test_model = "gemma4-e2b"
+        vllm_latency_p50_ms, vllm_latency_p95_ms, vllm_latency_p99_ms
+        dola_overhead_pct (or "deferred")
+        dola_factuality_delta (improvement/neutral/degradation)
+        turboquant_decision (FEASIBLE/DEFER)
+        turboquant_roundtrip_mse (if FEASIBLE)
+        milp_decision (ADOPT/DROP/EVALUATE)
+        steering_vector_count
+        steering_vectors_effective (count that produce measurable steering)
+        multiplexing_enabled (bool)
+        ssb_action_type_count
+        t1_hook_latency_median_ms
+        t2_hook_latency_median_ms
+        t3_hook_latency_median_ms
+        compile_time_delta_sec
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace exits 0
+      - Metrics file exists: .elai_cc/metrics/phase_3J.toml
+      - All deferred items have reasoning docs in workflow/reasoning/
+    ACCEPTANCE:
+      - Zero Phase 0-3I regressions
+      - All metrics recorded with E2B as test model
+      - Deferred items documented with clear reasoning and re-evaluation criteria
+      - Feature gates verified (non-vllm/non-mcp builds unaffected)
+
+  3J.14 WIRE.E2E — END-TO-END LOCAL PIPELINE
+    PURPOSE:
+      Make "elai.bat" start the full Phase 0-3 pipeline as a single command.
+      Primary backend: custom sidecar (DoLa + TurboQuant + NF4).
+      Fallback backend: OllamaProvider (gemma4:e2b via ollama).
+      Knowledge retrieval: QueryPipeline wired into prompt assembly so the model
+        receives relevant code context, not just raw user messages.
+      Release binary: cargo build --release produces elai.exe.
+
+    PRE_GATE:
+      - Step 3J.13 passed (all WIRE.* verified, workspace compiles)
+      - Sidecar server.py functional (tested in 3J.COMPOSE)
+      - OllamaProvider exists in providers crate (verified: crates/providers/src/providers/ollama.rs)
+      - QueryPipeline exists in knowledge crate (verified: crates/knowledge/src/pipeline.rs)
+      - Bm25Index, CatRag, AragOrchestrator, CrossEncoderReranker all compile
+
+    TASK:
+      A. OLLAMA FALLBACK IN LOCAL MODE:
+        - Add BackendMode::LocalWithFallback or fallback_url field to BackendConfig.
+          When sidecar health check fails at startup OR mid-session HTTP errors:
+            1. Log warning: "sidecar unavailable, falling back to ollama"
+            2. Switch base_url to ollama endpoint (default http://localhost:11434)
+            3. Use OllamaProvider for completion (no DoLa/TQ — plain inference)
+            4. On next turn, re-probe sidecar health. If healthy, switch back.
+        - Fallback is DEGRADED mode: no DoLa, no TurboQuant, no layer-level opts.
+          User sees "[degraded] using ollama fallback" in prompt prefix.
+        - If BOTH sidecar AND ollama are down: clear error message, do not crash.
+          "No local inference backend available. Start sidecar or ollama."
+        - Wire into run_local_repl(): start_sidecar() failure triggers fallback probe.
+        - Wire into RuntimeClient: HTTP errors on sidecar trigger fallback swap.
+        - OllamaProvider already implements LlmProvider trait — reuse it directly.
+        - Config in elai_cc.toml: [backend] fallback_url = "http://localhost:11434"
+
+      B. KNOWLEDGE RETRIEVAL IN PROMPT ASSEMBLY:
+        - On CLI startup (LiveCli::new_local and LiveCli::new):
+            1. Check if BM25 index exists at session/project path.
+               If not: index the current working directory (Bm25Index::index_directory).
+               If yes: open existing index.
+            2. Create QueryPipeline with Bm25Index + CatRag + AragOrchestrator.
+               CrossEncoderReranker is optional (skip if ONNX model not present).
+            3. Store pipeline as Optional field on LiveCli/RuntimeClient.
+        - Before each LLM call (in the prompt assembly path, near ContextBudget::compute):
+            1. Extract query from the user's latest message.
+            2. Run QueryPipeline::query(user_message) to get retrieval results.
+            3. Format top-K results as code context (file path, line range, snippet).
+            4. Inject into ContextBudget Slot 4 (CodeContext) or append to system prompt.
+            5. Respect budget: if retrieval results exceed allocated tokens, truncate by score.
+        - If QueryPipeline is None (index not built): skip retrieval, behave as today.
+        - BM25 index update: after file_write/file_edit tool calls, call
+          Bm25Index::update_file() on the changed file. Keeps index fresh within session.
+        - DKG integration: if dkg.db exists, use DkgEngine for PageRank-boosted results.
+          If not: skip PageRank stage (already handled by pipeline graceful degradation).
+
+      C. RELEASE BINARY:
+        - cargo build --release -p elai-cli
+        - Verify elai.bat starts and reaches the REPL prompt.
+        - Verify: type a message -> sidecar processes it -> response streams back.
+        - Verify: kill sidecar -> next message falls back to ollama -> response works.
+        - Verify: /plan command shows plan if plans/*.toml exists.
+        - Measure release binary size.
+
+      D. STARTUP SEQUENCE (what elai.bat triggers):
+        1. elai.exe --local starts
+        2. Probe sidecar health -> start if not running -> fallback to ollama if both fail
+        3. Open/create BM25 index for current directory
+        4. Create QueryPipeline (BM25 + CatRag + ARAG, optional cross-encoder)
+        5. Initialize Ssb, Fsm, SessionDag, RuleEngine, ContextBudget, PlanSkeleton
+        6. Display startup banner with: backend status, index status, session ID
+        7. Enter REPL loop with full pipeline active
+
+    DETERMINISTIC_CHECK:
+      - cargo build --release -p elai-cli exits 0
+      - target/release/elai.exe exists and runs with --help
+      - cargo test -p elai-cli -> 0 new failures
+      - cargo test -p elai-providers -> 0 new failures (fallback path)
+      - cargo test -p elai-knowledge -> 0 new failures (pipeline init)
+      - Integration test: start with sidecar down + ollama up -> fallback activates
+      - Integration test: BM25 index created on first run, reused on second
+      - grep "fallback" crates/cli/src/main.rs -> fallback logic present
+      - grep "QueryPipeline\|query_pipeline" crates/cli/src/main.rs -> pipeline wired
+
+    ADVERSARIAL:
+      - If BM25 indexing is too slow for large repos (>10K files): add progress bar,
+        index in background thread, serve first few turns without retrieval.
+        Measure: if indexing >30s, must be async.
+      - If retrieval results are noisy (irrelevant snippets): start with top-3 only,
+        measure quality after, tune K later. Over-retrieval wastes context budget.
+      - If ollama fallback produces significantly worse output than sidecar:
+        expected — no DoLa/TQ. Log the degradation, don't try to fix it here.
+        Hybrid mode (Phase 4G) addresses this with API escalation.
+      - If release binary is >100MB: check for debug symbols, ensure --release strips them.
+        Consider: cargo build --release with [profile.release] strip = true in Cargo.toml.
+      - If ONNX models (cross-encoder, vector) are missing: skip those stages.
+        The pipeline already handles this via graceful degradation (circuit breakers).
+
+    ACCEPTANCE:
+      - elai.bat starts and reaches interactive REPL within 60s (excluding model load)
+      - Sidecar primary + ollama fallback both produce completions
+      - User messages trigger BM25 retrieval and code context appears in prompt
+      - ContextBudget allocates non-zero tokens to CodeContext slot when retrieval active
+      - All existing tests pass (zero regressions)
+      - Release binary exists at target/release/elai.exe
+      - Startup banner shows: backend (sidecar/ollama/none), index status, session info
+
+  3J.15 GEMMA4 31B VALIDATION (CPU OFFLOAD)
+    PRE_GATE:
+      - Step 3J.14 passed (full E2E pipeline verified, release binary exists)
+      - Gemma4 31B Q4 model downloaded (~18GB, fits in 64GB RAM)
+      - vLLM or llama.cpp configured for CPU offload (model in RAM, inference on CPU)
+        Alternative: transformers + PyTorch with device_map="cpu" or "auto" (partial GPU offload)
+    TASK:
+      - Load Gemma4 31B via CPU offload. Expected speed: ~0.5-2 tok/sec. This is slow
+        but sufficient for artifact generation and validation. Not for benchmarking throughput.
+      - For each technique, apply the code built on E2B to the 31B model:
+
+      A. STEERING VECTORS (highest priority — most feasible on CPU):
+        - Compute at least 2 contrast pairs (skepticism, completeness) on 31B.
+          Each pair requires 2 short forward passes (~1-2 min each on CPU for short prompts).
+          Total time estimate: ~10-20 min for 2 pairs.
+        - Store 31B steering vectors as .safetensors or .npz.
+        - Evaluate steering effect: 5 prompts per vector, compare steered vs baseline.
+        - Compare 31B vectors to E2B vectors: do they steer in the same direction?
+          (Different magnitudes expected, but semantic direction should be consistent.)
+
+      B. DOLA EVALUATION:
+        - Run DoLa on 31B with candidate buckets [0,20), [20,40), [40,60).
+          31B has enough layers for proper 3-bucket DoLa (unlike E2B).
+        - Factuality evaluation: 20 test prompts, baseline vs DoLa output.
+          At ~0.5-2 tok/sec, each prompt takes ~1-5 min. Total: ~30-90 min.
+          This is slow but produces meaningful factuality data for the target model.
+        - Log results: DoLa should show improvement on 31B (within tested range in paper).
+
+      C. TURBOQUANT CODEBOOKS:
+        - Verify codebooks generated for E2B's head dimension work for 31B (if same d).
+        - If 31B has different head dimension: generate 31B-specific codebooks.
+        - Validate: quant -> dequant roundtrip on 31B KV cache vectors within expected MSE.
+
+      D. EAGLE-3 DRAFT MODEL TRAINING:
+        - SKIP on current hardware. EAGLE-3 requires thousands of forward passes through 31B
+          to extract hidden states for draft model training. At 0.5-2 tok/sec on CPU, this
+          would take weeks to months. Not feasible.
+        - Document: EAGLE-3 draft training for 31B requires 48GB GPU.
+        - Pre-work: define draft model architecture for 31B (single decoder layer + LM head,
+          reusing 31B's vocabulary and embedding dimensions). Save architecture config.
+          When 48GB hardware arrives, training can start immediately.
+
+      E. FULL PIPELINE TEST (optional, time permitting):
+        - Run a single complete inference pipeline on 31B: prompt -> DoLa -> steering -> output.
+        - Verify all components compose correctly on the production model.
+        - Expected time: ~5-10 min for one full pipeline pass. Worth doing once.
+
+      - Record all 31B results in .elai_cc/metrics/phase_3J_31b.toml:
+        test_model = "gemma4-31b-q4"
+        inference_mode = "cpu_offload"
+        inference_speed_tok_sec (measured)
+        steering_vectors_computed (count)
+        steering_vector_effectiveness (qualitative per vector)
+        dola_factuality_delta (improvement/neutral/degradation)
+        dola_candidate_buckets = "[0,20), [20,40), [40,60)"
+        turboquant_codebook_validated (bool)
+        eagle3_draft_architecture_defined (bool)
+        eagle3_draft_training_feasible = false
+        eagle3_deferred_reason = "requires 48GB GPU"
+        full_pipeline_test_passed (bool or "skipped")
+    DETERMINISTIC_CHECK:
+      - Metrics file exists: .elai_cc/metrics/phase_3J_31b.toml
+      - 31B steering vectors saved: ls .elai_cc/models/steering/gemma4-31b/ returns files
+      - 31B DoLa evaluation results documented
+      - EAGLE-3 draft architecture config saved: grep "eagle3_draft" in providers config
+    ADVERSARIAL:
+      - If CPU offload is too slow to complete even the reduced test suite within a day,
+        prioritize: steering vectors first (fastest), then DoLa (20 prompts), then TurboQuant.
+        EAGLE-3 is already marked SKIP. Document what was completed vs what timed out.
+      - If 31B on CPU produces different layer access patterns than GPU execution,
+        DoLa/steering results may not transfer to GPU. Mitigation: re-validate on 48GB GPU
+        (future), but CPU results still validate code paths and approximate quality.
+      - If vLLM CPU offload does not support layer hooks (R11), fall back to transformers
+        + PyTorch with hooks. This is Python-only, not Rust, but generates the same artifacts.
+    ACCEPTANCE:
+      - At least 2 steering vectors computed and stored for 31B
+      - DoLa evaluation completed on 31B (20 prompts, results logged)
+      - TurboQuant codebooks validated for 31B head dimension
+      - EAGLE-3 draft architecture defined, training deferred to 48GB with documented reason
+
+      F. 100B MODEL VALIDATION (gated on 48GB GPU availability):
+        - SKIP if 48GB GPU not available. This is a future validation step.
+        - When 48GB GPU arrives:
+          Q3 100B model (~37 GB) + TurboQuant 3-bit KV cache (~7.5 GB for 128K) = 44.5 GB.
+          Fits in 48GB with ~3.5 GB headroom.
+        - Test SUBSTITUTE_MODEL escalation path:
+          31B is default executor model. If anti-spiral triggers (3x same error),
+          orchestrator swaps to 100B for the specific failing task with enough context.
+          31B unloads, 100B loads (~30-60s swap time acceptable for escalation).
+        - Validate: 100B Q3 at 128K context produces coherent output (not quality-degraded
+          by aggressive model quantization). Compare 100B Q3 vs 31B Q4 on 10 complex prompts.
+        - Record results in .elai_cc/metrics/phase_3J_100b.toml if executed.
+      - All results in phase_3J_31b.toml
+      - Artifacts ready for immediate use when 48GB hardware arrives
+
+
+EXIT CRITERIA
+  vLLM provider implements LlmProvider trait and integrates with ModelPool.
+  Layer-level optimizations (DoLa, steering vectors) tested on Gemma4 E2B (RTX 3060 12GB).
+  DoLa and steering vectors validated on Gemma4 31B via CPU offload (slow, artifact generation).
+  TurboQuant KV cache evaluated with FEASIBLE/DEFER decision and evidence.
+  TurboQuant codebooks validated for both E2B and 31B head dimensions.
+  GPU multiplexing enforces VRAM safety margin, predictive pre-loading triggers on FSM state.
+  Workload profiling emits data at every phase boundary.
+  MILP scheduling evaluated with ADOPT/DROP decision and heuristic baseline always available.
+  MCP bridge connects to external servers with error recovery and security.
+  Tiered static analysis hooks meet performance targets (T1<1ms, T2<10ms, T3<5ms).
+  AppContainer isolation implemented for Windows with documented limitations.
+  All 17 SSB action_types have typed validation.
+  Zero regressions in Phase 0-3I tests.
+  EAGLE-3 draft model architecture defined for 31B, training deferred to 48GB hardware.
+  All 31B artifacts (steering vectors, codebooks, DoLa results) stored and ready for 48GB deploy.
+  All deferred items have documented reasoning and re-evaluation criteria.
+
+
+GROUNDING
+  "vLLM OpenAI-compatible API" -> VERIFIED: vLLM serves /v1/completions, /v1/chat/completions,
+    /v1/models endpoints. Does NOT expose per-layer logits via API.
+    Source: vLLM documentation (docs.vllm.ai).
+  "DoLa requires intermediate layer access" -> GROUNDED: DoLa paper (arxiv 2309.03883)
+    Section 3.2-3.3 requires q_j distributions at candidate premature layers J.
+    This is NOT available via standard API — requires model internals access.
+  "DoLa latency overhead 1-8%" -> GROUNDED: DoLa paper Section 7, Table showing
+    1.01x (65B) to 1.08x (13B) latency multiplier. Memory +0.6-1.1%.
+  "DoLa degrades on 335M" -> GROUNDED: DoLa paper Section 6.7, GPT2-Medium (335M)
+    shows degraded performance. 7B+ all improved. 1-7B range UNTESTED by paper.
+    Minimum effective size unknown — empirical evaluation required for 2B models.
+  "TurboQuant 3.5-bit matches full precision" -> GROUNDED: TurboQuant paper (arxiv 2504.19874)
+    Table 1: 3.5-bit score 0.997 on Needle-In-A-Haystack. LongBench: 50.06 vs 50.06 full.
+  "TurboQuant minimum dimension d >= 64" -> GROUNDED: turboquant-interface.md failure modes:
+    "Low-dimension (d small): Beta distribution does not approximate Gaussian."
+  "ActAdd steering vectors composable" -> GROUNDED: ActAdd paper (arxiv 2308.10248)
+    Section 9: "Composable (multiple steering vectors can be added)."
+  "ActAdd layer selection: mid layers most effective" -> GROUNDED: ActAdd paper Section 6.3,
+    Figure x3: peak at layers 5-15, declining after layer 25.
+  "EAGLE-3 vLLM throughput" -> GROUNDED: EAGLE-3 paper (arxiv 2503.01840) Table 5:
+    RTX 3090, vLLM, BS=2: 1.75x. Maintains >1.0x up to BS=56.
+  "Murakkab SLO tiers" -> GROUNDED: murakkab-interface.md: 4 tiers
+    (best/good/fair/basic) with quality/latency targets.
+  "Murakkab MILP optimization" -> GROUNDED: murakkab-interface.md:
+    "Time: O(MILP_optimization + workflow_composition) per epoch."
+  "good_lp crate" -> VERIFY: check crates.io for good_lp, version, HiGHS backend availability.
+  "vLLM plugin API for custom sampling" -> VERIFY: check vLLM docs for sampling hooks or
+    custom decoding strategies. This is the critical path for DoLa/steering integration.
+  "AppContainer Windows API" -> GROUNDED: orchestrator.txt S12 L599-607 specifies
+    CreateAppContainerProfile(). Available since Windows 8.
+  "tree-sitter <10ms for <5000 lines" -> GROUNDED: plugins.txt S3 specifies T2 target.
+    Actual performance needs measurement in step 3J.10.
+  "MCP protocol" -> GROUNDED: claw-code source (mcp_tool_bridge.rs 912 LOC,
+    mcp_lifecycle_hardened.rs 839 LOC) provides working reference implementation.
+  "TIDE adaptive speculation" -> GROUNDED: TIDE paper (arxiv 2602.05145):
+    Uses EAGLE-3 as draft architecture. Adaptive control via dual EMA + PracticalSpeedup model.
+    Built on SGLang and vLLM. Relevant for future Phase 4+ when draft model training added.
+    Not directly implemented in this phase but informs vLLM integration design.
+  "Gemma4 E2B fits on RTX 3060 12GB" -> GROUNDED: E2B ~2B params, Q4 ~4-5GB.
+    12GB - 5GB model - 2GB vLLM overhead = ~5GB headroom for KV cache + draft model.
+  "Gemma4 31B Q4 ~18GB fits in 64GB RAM" -> GROUNDED: 31B params at Q4 = ~18GB.
+    64GB RAM - 18GB model = ~46GB headroom. CPU inference feasible but slow (~0.5-2 tok/sec).
+  "ActAdd validated on 1.5B+ models" -> GROUNDED: ActAdd paper Section 7, tested on
+    GPT2-XL (1.5B), GPT-J-6B, OPT-6.7B, LLaMA-13B, LLaMA-3-8B. E2B (~2B) within range.
+  "EAGLE-3 draft training needs thousands of forward passes" -> GROUNDED: EAGLE-3 paper
+    Section 5, training data: ShareGPT ~68K entries at 1x scale. Each requires target model
+    forward pass to extract hidden states. Infeasible on CPU at 0.5-2 tok/sec.
+  "CPU inference ~0.5-2 tok/sec for 31B Q4" -> training:unverified. Based on typical
+    llama.cpp CPU performance for 30B+ models on consumer hardware. Measure in step 3J.14.

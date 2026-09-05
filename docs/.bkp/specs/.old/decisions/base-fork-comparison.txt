@@ -1,0 +1,51 @@
+DECISION: BASE FORK — CLAW-CODE-RUST-PORT
+Source: design_document.txt PART 30.1.
+Date: 2026-04-05, session 6.
+
+
+COMPARISON
+
+  CruciTitan:
+    68,084 LOC, 59 .rs files, 478 tests.
+    Kept more original CC code untouched.
+    tools/ crate: 6 files (7,157 LOC) with task/team/cron/config.
+    Runtime: 14,638 LOC across 20 modules.
+    Heavier deps in tools/ (toml, dirs, uuid, rmp-serde).
+    COMPILES: cargo check 44.99s, 1 warning.
+    Status: DEMOTED TO REFERENCE. Recovery source for tools/ if needed.
+
+  claw-code-rust-port:
+    59,449 LOC, 69 .rs files, 666 tests.  [STALE — re-measured 2026-04-06: 61,317 LOC, 684 tests]
+    Stripped user-facing tools, invested in production infrastructure.
+    tools/ crate: 2 files (7,361 LOC) — lane_completion only.  [STALE — tools/lib.rs is 7,345 LOC]
+    Runtime: 24,677 LOC across 38 modules (+18 vs CruciTitan).  [STALE — runtime is 25,035 LOC]
+    Lighter deps in tools/.
+    292 commits, 9 merged feature lanes, mock parity harness.
+    COMPILES: cargo check 26.24s, 0 errors, 13 cosmetic warnings.
+    Status: PRIMARY BASE.
+    NOTE: per-module LOC in this file may be stale (e.g. green_contract.rs listed as 4,061,
+      actual is 152). Always verify against actual files.
+
+
+DECISION RATIONALE
+
+  claw-code's 18 additional runtime modules map directly to elai_cc design:
+    worker_boot.rs (1,069 LOC)     -> AgentPool (~1000 LOC head start)
+    policy_engine.rs (581 LOC)     -> RuleEngine
+    green_contract.rs (4,061 LOC)  -> evidence gates + contract tests
+    bash_validation.rs (1,004 LOC) -> tool safety
+    recovery_recipes.rs (630 LOC)  -> crash recovery
+    + 13 more modules
+
+  Total head start: ~10,000 LOC of infrastructure matching our design.
+  39% more tests = better safety net during Phase 0 stripping.
+  Risk: compilation (CLOSED — R17 verified).
+  Fallback: cherry-pick into CruciTitan if critical claw-code modules broken.
+
+
+CRUCITITAN MODULES TO POTENTIALLY RECOVER
+
+  tools/task.rs  -> EVALUATE: task management for agents
+  tools/team.rs  -> EVALUATE: team coordination primitives
+  tools/cron.rs  -> EVALUATE: scheduled execution
+  tools/config.rs -> EVALUATE: configuration management tool

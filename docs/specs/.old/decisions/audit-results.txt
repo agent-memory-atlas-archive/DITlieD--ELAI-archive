@@ -1,0 +1,82 @@
+ADVERSARIAL AUDIT RESULTS
+Source: design_document.txt PART 17, design 31 audit notes.
+
+
+SESSION 5 AUDIT — 9 BLOCKs (all resolved)
+
+BLOCK 1: SQLite WAL single-writer
+  Claim: "WAL gives lock-free concurrent reads" — TRUE for reads, FALSE for writes.
+  Fix: single-writer via tokio::mpsc. See orchestrator.txt SSB section.
+  Sources: sqlite.org/wal.html, berthug.eu SQLITE_BUSY analysis.
+
+BLOCK 2: T3 inline validator latency
+  Claim: "1B model on CPU, 200-500ms" — FALSE. CPU inference = 10-100 seconds.
+  Fix: killed T3 model. Pattern-match heuristic library instead.
+  Sources: arxiv 2511.07425, Intel IPEX data.
+
+BLOCK 3: DAIRA TLSA mapping incorrect
+  Claim: "T1/T2/T3 maps to DAIRA's TLSA" — WRONG. TLSA is semantic trace transform.
+  Fix: renamed to "tiered static analysis hook." DAIRA in GRC observe.
+  Source: daira-interface.md line 59.
+
+BLOCK 4: BinaryOp channel non-determinism
+  Claim: "same writes = deterministic" — FALSE for non-commutative with concurrent writes.
+  Fix: dropped BinaryOp entirely. LastValue + Topic only.
+  Sources: LangGraph issue #1112, channels reference.
+
+BLOCK 5: Multi-project isolation missing
+  No project_id in SSB. PID reuse on Windows.
+  Fix: project_id namespace, physical isolation. See orchestrator.txt section 10.
+
+BLOCK 6: Self-improvement reward hacking
+  Auto-downgrading rules by false positive rate could kill rare safety rules.
+  Fix: security/safety/architecture rules never auto-adjusted. Human approval.
+  Source: Darwin Godel Machine (arxiv 2505.22954).
+
+BLOCK 7: Plan feasibility gap
+  Grounding sweep checks existence not feasibility.
+  Fix: FEASIBILITY_PROBE FSM state. See orchestrator.txt section 11.
+  Source: DAIRA Phase 1 pattern.
+
+BLOCK 8: Payload BLOB schema
+  Opaque msgpack BLOB with no schema enforcement.
+  Fix: typed action_type enum + ssb_files junction table.
+
+BLOCK 9: Context budget allocator terminal condition missing
+  Fix: ESCALATE (interactive, Phase 3) or SPLIT_TASK (autonomous, Phase 4G). Floors on all categories.
+
+
+SESSION 5 WARNs (accepted, documented):
+  - file_overlap_score undefined -> defined as intersection/agent_files ratio
+  - Template ranking formula -> written in self-modification.txt
+  - Superstep boundary condition -> defined as barrier + deferred cleanup
+  - tree-sitter T2 >10ms on large files -> file-size circuit breaker at 5000 lines
+  - TurboQuant vLLM PR #38280 unmerged -> add fallback for Phase 2
+  - Dual-GPU VRAM tight -> measure before parallel scheduling
+
+
+SESSION 7 AUDIT — 7 BLOCKs (from LangGraph/Aider analysis)
+
+BLOCK-1: UntrackedValue lifecycle
+  Resolution: memory monitoring + force-clear threshold.
+
+BLOCK-3: PageRank edge-weight vs personalization conflation
+  Resolution: separated into two distinct mechanisms.
+
+BLOCK-5: Deferred nodes incompatible with BSP barrier
+  Resolution: post-barrier cleanup phase, not BSP replacement.
+
+BLOCK-6: Checkpoint namespace collision for concurrent subgraphs
+  Resolution: AtomicU64 counter per subgraph type.
+
+WARN-2: Float cache key normalization
+  Resolution: NaN->sentinel, -0.0->0.0, round 6 decimals.
+
+WARN-4: Aider tier 4 fuzzy matching disabled in production
+  Resolution: not adopted. 3 tiers only.
+
+WARN-5: Prefill continuation conflicts with never-compact
+  Resolution: scoped to code generation in EXECUTING only.
+
+WARN-7: Commit hashes must persist across handoff
+  Resolution: included in handoff.msgpack.

@@ -1,0 +1,280 @@
+CRATE: tools/
+Purpose: file ops, bash, git, validation, AST scan, trace execution, edit matching.
+Source: design_document.txt PART 7.2-7.3, PART 16.1-16.2, design 30.4-30.5, 31.8-31.9, 31.12.
+Depends on: core/, knowledge/ (for tree-sitter AST)
+
+
+1. RESPONSIBILITIES
+
+  - File operations: read (with metadata/outline), write, edit
+  - Bash execution: sandboxed, timeout-controlled, isolated per agent
+  - Git operations: auto-commit, undo, branch management (git2 crate)
+  - Validation pipeline: 5 tiers
+  - DAIRA trace execution: runtime tracing with structured markers
+  - ShortCoder: AST-preserving code simplification
+  - Edit matching: 3-tier SEARCH/REPLACE
+  - Failure taxonomy: deterministic error classification
+  - Tool registry: phase-filtered execution
+  - Visibility filter: per-agent path allowlist, hidden paths return "not found"
+
+
+2. FILE READING ENHANCEMENT — design 31.12
+
+  read_file(path, start_line?, end_line?) -> FileReadResult
+  FileReadResult { path, total_lines, estimated_tokens, content: Full | Outline }
+
+  Full: complete content with line numbers (files <= 300 lines or range specified).
+  Outline: tree-sitter parsed sections (kind, signature, line range) for large files.
+    Model sees structure, requests specific sections. 5x token savings on 1000-line files.
+
+  force_full parameter:
+    read_file(path, start?, end?, force_full: bool = false)
+    force_full=true: return entire file content regardless of size.
+    force_full=false (default): threshold-based outline behavior.
+    Even with force_full=true: metadata header still comes first.
+
+  Token budget guard (prevents context window blowout):
+    If force_full=true AND estimated_tokens > context_budget_remaining * 0.5:
+      WARN: "File is ~{T} tokens, exceeds 50% of remaining budget ({B} tokens)."
+      INTERACTIVE mode (default, Phase 3): present warning, let user decide.
+      AUTONOMOUS mode (Phase 4G): auto-downgrade to outline (safety).
+
+
+3. 3-TIER EDIT MATCHING — design 31.8
+
+  Tier 1: exact string match.
+  Tier 2: whitespace-normalized match (preserves original indentation on replace).
+  Tier 3: ellipsis-elision ("..." matches any line sequence).
+  On failure: SequenceMatcher similarity hint ("did you mean [nearest chunk]?").
+  Never silently applies wrong match.
+
+
+4. GIT INTEGRATION — design PART 7.2, 31.11
+
+  git2 crate for native operations.
+  Auto-commit after each verified phase completion.
+  Commit messages from phase outcomes (deterministic, not LLM prose).
+  Branch per plan: plan-{pipeline_id}. Auto-gitignore heavy data.
+  Session-owned commit tracking with safe undo protocol.
+
+  Commit granularity:
+    Phase-level commits (not per-file-edit). Every non-WIP commit has passing tests.
+    Large EXECUTING phases (>5 file edits): intermediate WIP commits with prefix
+      "WIP phase-{N}: {step_description}" for mid-phase recovery points.
+    WIP commits squashed into phase commit on AUDITING success.
+    Main branch history: every commit passes tests (enforced by evidence gate).
+
+
+5. VALIDATION PIPELINE — design PART 7.3
+
+  Tier 1: Determinism (same input = same output, verified mathematically)
+  Tier 2: Quality (AST analysis, code smells, test quality, branch coverage)
+  Tier 3: Unit tests
+  Tier 4: Integration/contract tests
+  Tier 5: Stress/adversarial tests
+  All run by auditor agent. Executor NEVER runs own tests.
+
+
+6. DAIRA TRACE EXECUTION — design PART 16.1
+
+  trace_execution(script, trace_config) -> TraceReport
+  Lightweight tracer: tracing crate (Rust), sys.settrace (Python).
+  TraceReport: call stack, variable mutations, type transitions, timing.
+  Used in GRC observe step for runtime behavior analysis.
+
+  Structured execution markers (design 30.5):
+    [CALL], [RETURN], [MUTATION], [BRANCH] — execution flow
+    [ERROR], [PANIC], [TIMEOUT] — errors
+    [FINDING], [PATTERN], [ANOMALY] — semantic observations
+    [STAT:name], [DURATION:name], [MEMORY:name] — metrics
+    [CHECKPOINT], [STEP:n] — flow control
+
+  MarkerReport { findings, anomalies, mutations, errors, stats, raw_line_count, marker_line_count }
+  GRC reads markers progressively: findings first, then mutations, then full trace.
+
+  Adaptive scope reduction (DAIRA pattern, generalized):
+    AdaptiveTool<T: Tool> wrapper with budget parameter.
+    run -> check output size -> if > budget, reduce scope -> retry. Max 3 reductions.
+
+
+7. SHORTCODER — design PART 16.2
+
+  code_simplify(code, rules) -> SimplifiedCode
+  10 AST-preserving rules (NOT regex — tree-sitter transforms):
+    R1: remove redundant variable assignments
+    R2: simplify boolean expressions
+    R3: collapse single-use variables
+    R4: convert if/else to ternary (CONFIGURABLE)
+    R5: merge sequential operations
+    R6: convert loops to comprehensions (CONFIGURABLE)
+    R7: remove unnecessary parentheses
+    R8: simplify return statements
+    R9: remove dead code branches
+    R10: normalize string formatting
+  Applied as POST-PROCESSING on executor output, before auditor review.
+  18-38% token savings. No model fine-tuning needed.
+
+
+8. VISIBILITY FILTER (agent isolation Tier A)
+
+  Every file tool (read, write, edit, glob, grep) passes through visibility filter
+  before execution. Filter is transparent to the agent.
+
+  VisibilityFilter {
+    allowed_paths: Vec<GlobPattern>,   // what agent can see
+    hidden_paths: Vec<GlobPattern>,    // always invisible
+  }
+
+  Default hidden_paths (all agents):
+    .elai_cc/**           — harness state, SSB, rules, checkpoints, ONNX models
+    **/rules.db           — rule database
+    **/rules_seed.db      — seed rules
+    **/elai_cc.toml       — harness config (agent gets role_prompt via prompt, not file)
+    **/handoff.msgpack    — session state
+    **/ssb.db*            — shared state board
+
+  Default allowed_paths (per role):
+    executor:       project source code, test files, agent scratch dir
+    auditor:        project source code, test files, test results, agent scratch dir
+    context-compiler: project source code (read-only)
+    prompt-engineer:  nothing (receives context via prompt, not file reads)
+    memory-writer:    project source code (read-only), knowledge output dir
+
+  Behavior on hidden path access:
+    read_file("rules.db")  -> Error::NotFound("rules.db")
+    glob(".elai_cc/**")    -> [] (empty results)
+    grep("predicate", ".elai_cc/") -> [] (empty results)
+    write(".elai_cc/x")    -> Error::NotFound(".elai_cc/x")
+
+  Critical: the NotFound error type is identical for hidden and genuinely missing files.
+  No separate error variant. No log message visible to agent. No timing difference.
+  Filter runs in <0.1ms (glob matching, no I/O).
+
+  Error message sanitization (applied to all tool results returned to agent):
+    Strip: rule_id patterns (e.g. "trading.22", "auto.127")
+    Strip: predicate type names (AST_PATTERN, GREP_PATTERN, etc.)
+    Strip: SQLite error details mentioning rules/ssb tables
+    Strip: hook names (PreToolUse, PostToolUse)
+    Replace with: generic natural language description of the issue.
+    Example: "Rule trading.22 BLOCK: output missing trial_count field"
+          -> "Output rejected. Issue: missing trial_count field in report."
+
+  Tool schema sanitization (swarm-derived, applied to all tool schemas sent to agent):
+    Before serializing tool parameter schemas for the model prompt, strip any
+    internal parameters: _rule_context, _enforcement_tier, _session_lock,
+    _fsm_state, _agent_id, _visibility_filter.
+    These exist in ToolRequest internally but are injected by the orchestrator,
+    not by the agent. If the model sees them, it learns enforcement structure.
+    Derived from: swarm core.py __CTX_VARS_NAME__ stripping pattern.
+    Implementation: 5-line filter in tool registry schema serialization.
+
+
+9. BASH SANDBOX (agent isolation Tier B — Phase 3-4)
+
+  Bash commands from agents execute in isolated sandbox, not on host.
+
+  Phase 0-1 (minimal sandbox, no VM):
+    chroot into project source directory.
+    PATH restricted to: project-local tools + system compilers/interpreters.
+    Environment: sanitized, no HOME, no ELAI_CC paths, no API keys.
+    Timeout: per-command, inherited from current implementation.
+
+  Phase 3-4 (Firecracker/gVisor):
+    See orchestrator.txt section 12 (Tier B) for full spec.
+    tools/ crate provides BashSandbox trait:
+      fn execute(command, sandbox_config) -> BashResult
+    Implementations: HostBash (Phase 0-1), FirecrackerBash (Phase 3+), GvisorBash (fallback).
+    Sandbox config per agent role stored in elai_cc.toml [agents.{role}.sandbox].
+
+
+10. INCREMENTAL COMPILATION FEEDBACK (Phase 4B)
+
+  During EXECUTING, after each file write by the executor agent:
+    1. Orchestrator runs cargo check (Rust), mypy/ruff (Python), tsc (TypeScript)
+       on the modified file. Language detected from file extension.
+    2. If compilation/type check fails:
+       - Error message sanitized (strip file paths outside project, internal details).
+       - Fed back to executor via IPC as ToolResult with error category COMPILATION_ERROR.
+       - Executor gets retry opportunity to fix the specific file.
+    3. Round semantics: round 1 = initial check, round 2 = retry after fix, round 3 = final.
+       Max 3 rounds total (2 retry opportunities). Prevents infinite loops.
+    4. After round 3 failure: mark file as NEEDS_AUDIT, continue to next file.
+       Auditor receives the compilation error as additional context.
+    5. If error references unresolved import from a file not yet written during EXECUTING:
+       classify as DEFERRED (not COMPILATION_ERROR), skip retry. These are expected
+       during incremental development when dependencies are written in order.
+
+  Expected impact: ~30% reduction in auditor BLOCK findings for syntax/type errors.
+  These errors are currently caught only at AUDITING phase, wasting a full agent turn.
+
+  Execution model: ASYNC. Compilation check runs in background while executor proceeds
+  to next file (risk-register R51). Results delivered via IPC when ready. Executor is
+  NOT blocked during compilation check.
+
+  Cost: 2-5 seconds per file for cargo check. Bounded by max 3 retries.
+  For Python: ruff check runs in <500ms. mypy in <2s per file.
+  (Latency estimates are UNGROUNDED training-derived. Measure during Phase 4B.5.)
+
+  NOT applied during TESTING_FIRST (test files are expected to fail compilation
+  until EXECUTING implements the actual code).
+
+  Language support:
+    Rust:       cargo check --message-format=json (parse diagnostics)
+    Python:     ruff check + mypy --no-error-summary (parse line:col:message)
+    TypeScript: tsc --noEmit --pretty false (parse line:col:message)
+    Go:         go vet (parse line:col:message)
+    Other:      skip compilation check, rely on auditor.
+
+
+11. FAILURE TAXONOMY — design 30.4
+
+  classify_failure(error_output) -> FailureClassification
+  Deterministic pattern-match (regex, no LLM):
+    SYNTAX_ERROR, TYPE_ERROR, IMPORT_ERROR, ASSERTION_ERROR,
+    TIMEOUT, EMPTY_OUTPUT, RUNTIME_PANIC, PERMISSION_DENIED, RESOURCE_EXHAUSTED,
+    DEFERRED (unresolved import from unwritten module during incremental development).
+  Each category has deterministic suggested_action.
+  Auditor reads classification BEFORE raw output (reduces context by 200-500 tokens).
+  3+ same-category failures in one phase -> anti-spiral trigger.
+
+
+12. CLAW-CODE MODULE MAPPING
+
+  bash_validation.rs (1,004 LOC) -> pre-execution safety checks
+  lsp_client.rs (746 LOC)       -> potential code intelligence (evaluate)
+  stale_branch.rs (416 LOC)     -> git integration
+  lane_completion only in tools/ -> EXTEND with all tools above
+
+
+13. DEPENDENCIES
+
+  ADD: git2, tree-sitter + grammars (shared with knowledge/)
+  KEEP: existing bash execution infrastructure from claw-code
+
+
+14. TESTABLE INVARIANTS
+
+  - File outline sections cover 100% of file lines (no gaps)
+  - Edit tier 1 tried before tier 2 before tier 3 (strict ordering)
+  - Failed edit never silently applies wrong match
+  - Every trace output contains parseable markers
+  - ShortCoder output is AST-equivalent to input (tree-sitter verify)
+  - Failure classification is deterministic (same input -> same category)
+  - Adaptive scope reduction bounded to 3 attempts
+  - Visibility filter: hidden path returns NotFound identical to missing path
+  - Visibility filter: glob/grep on hidden paths returns empty (no partial leak)
+  - Visibility filter: no timing side-channel (filter runs before I/O, <0.1ms)
+  - Error sanitization: no rule_id, predicate type, or hook name in agent-visible output
+  - Bash sandbox: agent cannot read .elai_cc/ from bash commands
+  - force_full=true bypasses outline threshold but NOT budget guard
+  - Budget guard prevents single file from consuming >50% remaining context
+  - Metadata header ALWAYS present (even for 1-line files)
+  - Every non-WIP commit on main has passing tests (enforced by evidence gate)
+  - WIP commits only exist during EXECUTING phase (squashed after AUDITING)
+  - Branch naming follows pattern: plan-{pipeline_id}
+  - Tool schema sent to agent contains zero internal parameters (_rule_context etc.)
+  - Bash sandbox: agent cannot access network unless role=researcher
+  - Incremental compilation check runs after every file write during EXECUTING
+  - Compilation feedback max 3 retries per file (bounded, no infinite loops)
+  - Compilation check NOT applied during TESTING_FIRST phase
+  - Compilation error messages sanitized before reaching executor agent

@@ -1,0 +1,111 @@
+Agentic Workflows Post DAG Orchestration Search
+
+Paradigm Shift: Static DAGs → Distributed Actor Model
+- DAGs incompatible with autonomous agentic workflows
+- Require non-deterministic reasoning loops and dynamic self-correction
+- Need cyclic computational graphs with real-time feedback
+- Transition to distributed systems principles and Actor model
+
+Core Architectural Principles:
+
+Inter-Process Communication (IPC) Evolution:
+- From data transfer conduit to cognitive isolation mechanism
+- Preserves context windows without token pollution
+- Enables fault-tolerant cyclic recovery
+- Critical for agent hallucination and deadlock mitigation
+
+Stateful Agent Isolation:
+- Agents as isolated, stateful processes computing asynchronously
+- Peer-to-peer task negotiation vs monolithic controller
+- Strict context window boundaries
+- Dynamic resource allocation based on real-time needs
+
+Post-DAG Frameworks (2024-2026):
+
+LangGraph (LangChain):
+- Stateful graph-based agent workflows
+- Built-in persistence and checkpointing
+- Dynamic graph traversal with human-in-the-loop
+- Supports cyclic reasoning loops and self-correction
+
+OpenAI Swarm:
+- Decentralized handoff architecture
+- Stateless agents prevent memory leaks and deadlocks
+- Peer-to-peer execution transfer
+- Horizontal scaling for exploratory tasks
+
+DarwinNet (2026):
+- Physical network protocol redesign for agentic software
+- Tri-layered dual-path topology
+- Decouples protocol intelligence from transmission mechanics
+- Fast path optimization between sandboxed environments
+
+AutoB2G (2026):
+- LLM-traversed topological simulation graphs
+- Dynamic executable path construction
+- Building-to-Grid industrial applications
+- Sandbox isolation maintaining data fidelity
+
+Murakkab (2025):
+- Multi-tenant resource constraint management
+- Offline profiling with online adaptation
+- Declarative workflow specification
+- Dynamic SLO satisfaction without hard-coding
+
+FlashResearch (2025):
+- Real-time task state monitoring
+- Dynamic compute resource reallocation
+- Parallel branch failure isolation
+- Asynchronous agent suspension without halting workflows
+
+Contextual Memory Virtualisation (CMV) (2026):
+- DAG-based state management with lossless trimming
+- Version-controlled memory snapshots
+- Three-pass compression algorithms
+- Deep context reuse and rollback capabilities
+
+Critical IPC Mechanisms:
+
+Communication Protocols:
+- Unix domain sockets for low-latency local communication
+- gRPC for distributed agent coordination
+- JSON-RPC via Model Context Protocol (MCP)
+- 9P filesystem semantics for capability-based access
+
+Isolation Technologies:
+- V8 Wasm isolates for sandboxed execution
+- Custom VM capability handles (Turn)
+- Containerization with OS-level integration
+- Unforgeable capability token systems
+
+Fault Tolerance Mechanisms:
+
+Supervision Trees:
+- Hierarchical process monitoring
+- Automatic restart and recovery
+- Microreboot patterns for partial failures
+- Spawn_link patterns for process linking
+
+State Checkpointing:
+- CRIU (Checkpoint/Restore in Userspace) integration
+- Byzantine fault tolerance for stochastic workflows
+- Version-controlled state snapshots
+- Rollback from corrupted states
+
+Dynamic Resource Management:
+- Real-time SLO monitoring and adaptation
+- Hardware configuration swapping
+- Cross-tenant interference minimization
+- Energy consumption optimization
+
+Performance Metrics:
+- IPC latency: <1ms for local Unix domain sockets
+- Context window efficiency: 60-80% reduction via isolation
+- Fault recovery time: <100ms for microreboots
+- Resource utilization: 40-60% improvement via dynamic allocation
+
+Future Trajectory (Agent-OS):
+- Complete dissolution of AI/distributed systems boundaries
+- Comprehensive Agent Operating Systems
+- Unprecedented computational complexity handling
+- Industry-wide security-by-design adoption

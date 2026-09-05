@@ -217,8 +217,8 @@ async fn blast_radius_blocked_roundtrips_both_kind_arms() {
         SsbPayload::BlastRadiusBlocked(BlastRadiusBlockedPayload {
             kind: BlastRadiusKind::FsEscape,
             pre_expansion_command: "rm -rf ~/important".into(),
-            post_expansion_command: "/home/maintainer/important".into(),
-            target_or_host: "/home/maintainer/important".into(),
+            post_expansion_command: "/home/user/important".into(),
+            target_or_host: "/home/user/important".into(),
             worktree_root_blake3: "abc1234567890def".into(),
             trust_label: String::new(),
             ts_ms: 1_700_000_000_000,

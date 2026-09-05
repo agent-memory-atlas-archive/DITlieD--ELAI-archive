@@ -1,0 +1,790 @@
+ELAI_CC COMPLETE PROJECT SUMMARY
+Lossless non-technical summary of all specs for design context.
+Generated: 2026-04-15 (updated with cloud-mode, dashboard, focus-tunnel designs)
+Source files: architecture-overview, all crate specs, all integration specs,
+  all guide design docs, phase indexes, implementation order, update phase map.
+
+
+================================================================================
+WHAT ELAI IS
+================================================================================
+
+elai_cc is a Rust-native development engine (not a chat assistant). A human gives
+it a task; the system designs, builds, tests, and validates the solution automatically.
+It runs on consumer hardware (12-48GB VRAM GPUs) using local LLMs, with optional
+cloud API fallback for hard problems.
+
+Two deliverables: D1 (standalone tool), D2 (Empire ecosystem integration, deferred).
+
+Core philosophy: the intelligence is in the infrastructure, not the model. A 3B
+parameter local model produces correct output because the system makes each task
+so small, so precisely defined, and so thoroughly verified that even a weak model
+succeeds -- eventually. Time replaces parameters. System compensation replaces
+model capability. The model is a worker; the code is the orchestrator.
+
+
+================================================================================
+THE 9-CRATE ARCHITECTURE
+================================================================================
+
+All code lives in .elai_cc/crates/. Dependency order (leaf to root):
+
+CORE (no deps)
+  Config parsing (elai_cc.toml), cross-platform paths, logging (tracing crate),
+  serialization (msgpack for storage, postcard for wire), platform detection.
+  Entropy quarantine: all time/randomness via injectable traits (ClockProvider,
+  EntropySource). Production uses real OS time/RNG. Testing uses seeded
+  deterministic versions. Same seed = identical output across runs. This enables
+  deterministic simulation testing later.
+  HashMap ban: std HashMap/HashSet banned (non-deterministic iteration order).
+  Replaced by BTreeMap (sorted), IndexMap (insertion order), or FxHashMap (when
+  order doesn't matter).
+
+PROVIDERS (depends on core)
+  LLM provider abstraction. Trait: complete (streaming), embed, token_count,
+  token_count_estimate (sampling-based, 95% accurate, 10x cheaper).
+  Implementations: Anthropic, OpenAI, Ollama, vLLM (Phase 2+), LlamaCpp.
+  ModelPool: tracks which models are loaded on which GPUs, manages load/unload
+  lifecycle, predictive pre-loading based on FSM state (if executing, pre-load
+  the auditor model). SLO quality tiers per agent role (auditor=BEST, executor=GOOD,
+  memory-writer=BASIC). GPU multiplexing for small models on spare VRAM.
+  Tier 2 enforcement: two modes for structured output. GRAMMAR mode uses grammar
+  constraints at generation time (for robust models like Gemma/Qwen). INSTRUCTOR
+  mode uses free generation + post-hoc JSON validation + retry (for reasoning
+  models like DeepSeek-R1 that need chain-of-thought). Auto-selects based on
+  model metadata.
+  Node-level cache with TTL and float normalization. Assistant prefill continuation
+  for code generation (max 3 continuations when output truncated).
+
+KNOWLEDGE (depends on core, providers)
+  Codebase understanding engine. 7 layers, each adding capability:
+  Layer 1 - DKG: tree-sitter parses source code into a dependency graph stored in
+    SQLite. Every function, struct, trait, import relationship mapped. Currently
+    Rust-only; Python/TS/Go grammars planned. Concept annotations per node
+    (one-line descriptions, regenerated when file changes). Effect tagging on
+    functions (unsafe, filesystem, network, database, auth).
+  Layer 2 - BM25: full-text keyword search via tantivy. Sub-millisecond queries.
+    Every non-binary file indexed (tree-sitter failures fall back to line windows).
+  Layer 3 - Vectors: dual embedding models per chunk. GraphCodeBERT for structural
+    code similarity (768d). Granite for natural language similarity (384d). Both
+    via ONNX Runtime. Cache in SQLite keyed by content hash. Immediate cache
+    invalidation on file edit (prevents stale embeddings during same session).
+  Layer 3.25 - SPLADE: optional sparse keyword expansion. Catches semantic synonyms
+    BM25 misses. Conditional on measured recall improvement (drop if <5% gain).
+  Layer 3.5 - PageRank repo map: ranks code symbols by importance using PageRank
+    on the DKG graph. Personalized (task-mentioned nodes boosted 10x). Token-budget
+    fitted via binary search. Derived from aider's repomap with improvements
+    (density guard, sqrt ref scaling, dangling node handling).
+  Layer 4 - CatRAG: query-aware graph traversal. Evidence chains from DKG.
+  Layer 5 - A-RAG: hierarchical retrieval. 55-87% token savings on context retrieval.
+  Cross-encoder reranker after A-RAG (ms-marco-MiniLM, CPU-only, <50ms).
+  Full query pipeline: query -> BM25+SPLADE -> dual-vector -> PageRank -> CatRAG
+    -> A-RAG -> cross-encoder rerank -> token-budget fit -> context.
+  Graceful degradation: HYBRID -> SPARSE_ONLY -> BM25_ONLY on component failure.
+  Per-model circuit breakers with exponential backoff. Startup readiness gate
+  with canary query and embedding drift check. Index versioning and migration.
+  Per-project isolation (project A's index never contaminates project B).
+
+REASONING (depends on core, providers, tools)
+  Grounded Reasoning Chain (GRC) engine. All reasoning must cite sources.
+  State machine per topic: observe -> hypothesize -> plan_action -> act -> verify.
+  Budget system: per-topic call and character limits. Overflow forces convergence.
+  Grounding verification: 6 methods (file check, source check, test check, web
+  check, API check, API registry check). Each returns binary pass/fail.
+  Plan grounding sweep: before executing, scans ALL claims in the plan. Blocks
+  execution if any claim is ungrounded.
+  Per-agent GRC configuration: executor gets full chain (8/1200 budget), auditor
+  gets double-verify and must find at least 1 issue (10/1200), context-compiler
+  gets observe-only (3/600), memory-writer gets minimal (2/400).
+  Counterfactual Safety Questions (CSQ): before finalizing non-trivial logic,
+  asks "if assumption X is wrong, code will Y" and requires guards for dangerous
+  consequences. Mandatory for functions touching files, network, money, auth.
+  Inline feasibility check during execution: max 2 quick checks for novel claims
+  not in the plan. Pass = proceed, fail = use original approach.
+  Under process isolation (Phase 4+), agents request verification via IPC and the
+  orchestrator proxies all external checks.
+
+RULES (depends on core)
+  Self-improving deterministic behavior enforcement. Rules are DATA in SQLite,
+  not markdown files. Evaluated by Rust code, not by the LLM.
+  6 predicate types: AST_PATTERN (tree-sitter queries), GREP_PATTERN (regex),
+  SCHEMA_REQUIRED (JSON schema validation), METRIC_GATE (numeric thresholds),
+  COMPOSITE (AND/OR/NOT combinations), GRAPH_REACHABILITY (DKG path queries for
+  cross-file architectural enforcement like auth chokepoints, layer isolation).
+  Three enforcement tiers:
+    Tier 1 - Deterministic (<1ms): code physically cannot violate. Model never
+      sees these rules. PostToolUse hooks evaluate predicates on output. BLOCK
+      rejects output and re-prompts.
+    Tier 2 - Constrained decoding: structurally forced output format. Model cannot
+      produce output missing required fields. Grammar or JSON schema enforcement.
+    Tier 3 - Prompt guidance: semantic rules injected into prompt (3-10 rules,
+      ~100-300 tokens). Auditor double-verifies. Least trusted tier.
+  Rule lifecycle: PROPOSED -> CANDIDATE -> SHADOW -> ACTIVE -> RETIRED. All
+  transitions are pure arithmetic (false positive rate, true positive rate,
+  counterfactual causal rate). Zero LLM involvement in promotion.
+  Self-discovery: when auditor catches the same violation pattern 3+ times, the
+  system auto-proposes a new rule. Proposed rules need independent validation.
+  Counterfactual shadow testing (CEL-derived): tests whether a SHADOW rule actually
+  CAUSES better outcomes, or just catches what the auditor already catches.
+  EDCT counterfactual: tests whether the rule reacts to the actual violation or a
+  spurious correlated feature (generates fixed version, checks if rule still fires).
+  Time-aware confidence decay: rules with no true positives in 90 days lose
+  confidence. Below 0.25 = auto-deprecated. Resets on each true positive.
+  Safety/security rules (mutable=0) can never be auto-adjusted or auto-retired.
+  ~120 seed rules across 7 domains (trading, dashboard, application, game, reverse
+  engineering, engineering, security), each classified by tier and with contract
+  tests. Property-based testing via proptest for predicate edge cases.
+
+TOOLS (depends on core, knowledge)
+  File operations (read with outline mode for large files, write, edit with 3-tier
+  matching: exact -> whitespace-normalized -> ellipsis-elision).
+  Bash execution: sandboxed, timeout-controlled, isolated per agent. Phase 0-1 uses
+  chroot; Phase 3+ uses Firecracker/gVisor microVMs.
+  Git integration via git2: auto-commit after verified phase completion, branch per
+  plan, session-owned commit tracking with safe undo protocol. Phase-level commits
+  (not per-edit). WIP commits squashed after audit success.
+  Validation pipeline (5 tiers): determinism, quality/AST, unit tests, integration
+  tests, stress tests. All run by auditor -- executor never runs own tests.
+  DAIRA trace execution: structured runtime tracing with markers for call/return/
+  mutation/branch/error/finding. Used in GRC observe step for behavior analysis.
+  ShortCoder: 10 AST-preserving simplification rules (remove redundant assignments,
+  simplify booleans, collapse single-use variables, etc.). 18-38% token savings.
+  Applied as post-processing on executor output before auditor review.
+  Failure taxonomy: deterministic regex-based error classification (9 categories).
+  Auditor reads classification BEFORE raw output (saves 200-500 tokens).
+  Visibility filter: per-agent path allowlist. Hidden paths return "not found"
+  (identical to genuinely missing files -- no information leak). Error messages
+  sanitized (no rule IDs, predicate types, or internal details visible to agent).
+  Tool schema sanitization: internal parameters stripped before model sees schemas.
+  Incremental compilation feedback (Phase 4B): after each file write during
+  execution, runs language-specific build check asynchronously. Errors fed back
+  to executor for immediate retry (max 3 rounds). Not applied during test-writing
+  phase (tests are expected to fail until implementation exists).
+
+PLUGINS (depends on core, rules)
+  Hook system: PreToolUse, PostToolUse, Stop, PreCompact. Under process isolation,
+  hooks intercept IPC messages in the orchestrator before forwarding to agents.
+  Hook verdicts (ALLOW/BLOCK/WARN) never leak to agents -- BLOCK produces a generic
+  error message. Findings feed the rules self-discovery mechanism.
+  Tiered static analysis: T1 (predicate DSL from rules.db, <1ms), T2 (tree-sitter
+  AST parse, <10ms), T3 (pattern-match, no LLM, <5ms, fires only on WARN).
+  No LLM in the validation hot path.
+  MCP bridge: connects to external MCP servers for tool access.
+
+ORCHESTRATOR (depends on core, providers, reasoning, rules, tools)
+  The largest and most complex crate. Controls everything.
+  FSM engine: 9 states (IDLE, PLANNING, FEASIBILITY_PROBE, TESTING_FIRST,
+  EXECUTING, AUDITING, MEMORIZING, COMPLETE, CONFIGURING). Phase-aware tool and
+  rule loading per state (e.g., EXECUTING gets edit tools but not planning tools).
+  SSB (Shared State Board): inter-agent communication via SQLite WAL. Single-writer
+  guarantee. 17 action types. Append-only within session. Conflict detection on
+  file paths across sessions. ~50K inserts/sec ceiling.
+  BSP supersteps: deterministic macro-level orchestration. Phase transitions are
+  superstep boundaries. 4 channel types: LastValue (last writer wins), Topic
+  (append-only list), UntrackedValue (in-memory only, never checkpointed),
+  EphemeralValue (cleared on zero-write superstep).
+  Context budget allocator: 8 fixed slots (system prompt, rules, phase spec, repo
+  map, code context, SSB entries, GRC history, output reserve). Two cache
+  breakpoints for provider prefix caching. Adaptive reduction (3 attempts max).
+  Auditor gets DKG blast radius subgraph injected into code context slot.
+  Agent system: spawning, lifecycle, checkpointing (5 msgpack files per agent),
+  crash recovery (restart from last checkpoint), Erlang-derived supervision tree
+  (max 3 restarts per phase), anti-spiral detection (3x same step = escalate).
+  4 death classifications: clean exit, crash, timeout, budget exceeded.
+  Structured reasoning trace: every agent action produces a machine-readable record
+  in SSB. Enables post-mortem debugging, compliance audit, self-modification fuel,
+  and cognitive isolation metrics.
+  Session handoff: DAG-based state versioning (CMV-derived). Structurally lossless
+  trimming: large tool results replaced with stubs (recoverable from SSB). User and
+  assistant messages never stubbed. Branch-and-explore (max 3 active branches).
+  Hierarchical plan management: two-artifact representation. Skeleton (~2-4K tokens,
+  always in context) + per-phase detail (loaded on demand). Contract extraction
+  before elaboration. Coherence enforcement by auditor.
+  Project isolation: per-project directory with its own SSB, knowledge DB, rules DB,
+  sessions. One project on GPU at a time.
+  Agent isolation model (3 tiers, incremental):
+    Tier A - Invisible walls (Phase 0+): filesystem visibility filter. Agents see
+      only allowed paths. Hidden paths return "not found." Knowledge engine excludes
+      harness internals. Error messages sanitized.
+    Tier B - Sandbox execution (Phase 3+): Bash commands in Firecracker/gVisor
+      microVMs. Read-only project source mount. No network (except researcher role).
+      Resource limits per agent (CPU, memory, disk, time).
+    Tier C - Process separation (Phase 4+): each agent is a separate OS process.
+      Agent binary has NO LLM client, NO network, NO tools. Everything proxied via
+      IPC (unix socket / named pipe). Wire format: version + length + postcard.
+      15 message types. GRC budget enforced by orchestrator externally. Linux:
+      namespace isolation (NEWNS, NEWPID, NEWNET) + seccomp-bpf allowlist + zero
+      capabilities. Windows: AppContainer (preferred) or restricted token + Job object.
+  Evidence gate protocol: every FSM transition requires artifacts, not self-assessment.
+    PLANNING -> TESTING_FIRST: zero ungrounded claims.
+    TESTING_FIRST -> EXECUTING: all tests fail for right reasons.
+    EXECUTING -> AUDITING: at least 1 test flipped from fail to pass.
+    AUDITING -> MEMORIZING: zero BLOCK findings remaining.
+  Deterministic dispatch protocol: two dispatch tables (meta for PLANNING/CONFIGURING,
+  plan-based for execution states). Prompt assembly from 4 sources: role prompt
+  (~80 tokens) + tier 3 rules (~200 tokens) + code context + task spec. Total
+  meta-instructions ~330 tokens per turn (vs 1600-2600 in prompt-based workflows).
+  ReplanRequest: executor can signal the plan is fundamentally wrong (MINOR = fast
+  track replan, MAJOR = requires human approval).
+  Phase completion protocol: atomic durability marker in SSB written before model
+  unload. Crash recovery semantics fully specified per failure point.
+
+CLI (depends on core, orchestrator, tools, providers)
+  Thin REPL shell. Slash-command routing: /task (normal workflow), /config (edit
+  config), /workflow (edit tooling), /fix (debugging), /continue (resume handoff),
+  /explore (read-only query), /status (current state). Fallback classifier for
+  bare messages. Extensible with custom commands from .elai_cc/commands.toml.
+  Mode switching: INTERACTIVE (default) <-> AUTONOMOUS (Phase 4G+).
+
+
+================================================================================
+THE PIPELINE FACTORY (how tasks become pipelines)
+================================================================================
+
+Three-layer architecture for turning any user goal into an executable pipeline:
+
+L1 - PIPELINE DESIGNER (LLM-driven, grounded):
+  A distinct Designer agent (not the executor) receives the user's task and produces
+  a PipelineSpec. The designer uses a Research Agent for deep research via a
+  tree-structured research engine (FlashResearch-derived).
+  Research engine: not a single web search. Tree of sub-questions with parallel
+  expansion, speculative execution, dual-threshold convergence (goal satisfaction +
+  quality). Source quality tiered deterministically (arxiv/official docs = tier 1,
+  GitHub/StackOverflow = tier 2, blogs = tier 3, spam = tier 4). Contradictions
+  surfaced, never silently resolved.
+  Designer receives SystemConstraints (model context budget, available tokens,
+  average file sizes) so it can size phases to fit the model's capabilities.
+
+L2 - PIPELINE BUILDER (deterministic, no LLM):
+  Takes PipelineSpec, validates components exist, creates FSM states, configures
+  agents, estimates resources, generates dependency graph with Kahn's cycle
+  detection. Phase Sizing: splits phases that exceed the model's available context
+  (split by contract boundaries, max depth 2). Produces ExecutablePipeline.
+  DAG repair (AutoB2G-derived): reorder for cycles, substitute for missing tools.
+  Max 10 repair rounds.
+
+L3 - PIPELINE EXECUTOR (existing FSM + agents):
+  Runs the ExecutablePipeline through the FSM in INTERACTIVE or AUTONOMOUS mode.
+
+Plan elaboration: 5-stage pipeline (research -> plan assembly -> structural
+validation -> phase sizing -> feasibility probe).
+
+QualitySpec: defines measurable quality per pipeline. QualityMetric (name, target,
+unit, method, phase, hard_fail). MediaSpec for visual outputs. PerfSpec for
+performance. L2 validates every metric has an automated check method.
+
+Pipeline templates: completed pipelines become reusable. Stored with outcomes.
+Ranked by first-try ratio, coverage, block ratio, token efficiency. Minimum 3
+executions before ranking applies.
+
+
+================================================================================
+PROMPT ARCHITECTURE (how the model is kept simple)
+================================================================================
+
+The core insight: in elai_cc, the Rust binary controls the workflow. The model is
+a worker that receives a structured prompt, produces output, and the code validates
+it. The model NEVER decides FSM transitions, spawns agents, loads rules, manages
+sessions, decides what context to load, calls RAG tools, accesses the network
+(except researcher), or sees enforcement logic.
+
+Current prompt-based workflow costs: ~1600-2600 tokens of meta-instructions per turn.
+elai_cc cost: ~330 tokens per turn (role prompt + tier 3 rules + output format).
+Savings: 1300-2300 tokens freed for actual code context. On 8K context: 16-29%
+more for code. Critical for local models.
+
+Additional savings from process isolation: agent reasoning chains execute in
+separate processes and never enter the orchestrator's context window. On 8K model:
+if agents generate 12K tokens internally, isolation saves 150% of context window --
+makes complex tasks possible where in-process execution would overflow.
+
+Every current .md file in the workflow gets replaced by Rust code:
+  session-protocol.md -> orchestrator::session_init()
+  multi-session.md -> SSB + session locks (automatic, model never knows)
+  conditional-routing.md -> rules::domain_detection() (deterministic file-path-to-domain)
+  output-formatting.md -> role_prompt (1 sentence) + MEMORIZING phase code
+  planning-workflow SKILL -> orchestrator FSM engine
+  prompt-transform SKILL -> orchestrator::prompt_transform() (3-line function)
+  rag-tools SKILL -> knowledge::KnowledgeEngine (internal, no model involvement)
+  CLAUDE.md -> elai_cc.toml + Rust code
+  Agent .md files -> role_prompt in elai_cc.toml (50-100 tokens each)
+
+
+================================================================================
+SELF-MODIFICATION SYSTEM
+================================================================================
+
+Core safety property: the modifying agent NEVER evaluates its own modifications.
+Deterministic benchmarks judge. The agent proposes, code decides.
+
+Three layers:
+  Layer 1 - Data (automatic, no approval): template rankings, rule trigger counts,
+    pipeline outcome metrics. Pure arithmetic. Security/safety rules never touched.
+  Layer 2 - Config (full pipeline, auditor approval): new rules, GRC budgets,
+    context ratios, model assignments. Log-driven proposals (reads SSB traces to
+    identify WHERE reasoning failed). Config archive (DGM sigmoid-weighted parent
+    selection, max 50 variants). Staged evaluation (10/50/200 tasks, early
+    termination on failure). Proof gate (soundness check against canonical test
+    traces). Slot-restricted patches (max 1 config slot per proposal). Anti-reward-
+    hacking: metrics code, gate definitions, auditor config, test suite all
+    READ-LOCKED during self-modification.
+  Layer 3 - Structure (human approval, always): FSM state additions, new agent
+    roles, GRC protocol changes.
+
+Modification Solidification Index (MSI): tracks whether self-modification is
+improving, stagnating, or diverging. IMPROVING = continue. STABILIZING = reduce
+frequency. DIVERGING = pause and alert user. Auto-revert on >10% degradation.
+
+Self-referential alignment: pipeline execution quality directly informs self-
+modification quality through the log-driven proposal mechanism. But weaker than
+full DGM because the foundation model is frozen -- only configs/rules change.
+
+
+================================================================================
+MEDIA VALIDATOR
+================================================================================
+
+Validates non-code outputs (images, 3D models, audio, UI screenshots). Only loaded
+when PipelineSpec contains media-producing steps.
+
+Tier 1 - Deterministic (<100ms): format, resolution, SSIM/LPIPS, vertex counts,
+sample rates. External tools: ImageMagick, Blender CLI, FFmpeg, Tesseract.
+Tier 2 - VLM qualitative (~2-5s): advisory only, Tier 1 has veto power. Two modes:
+Mode A for single deep image analysis (Qwen3.5-VL-30B MoE), Mode B for sequential
+image flows (InternVL3.5-38B via SGLang only).
+CLAP model for audio-text similarity scoring.
+
+Render-Capture-Evaluate architecture: MediaRenderAdapter trait abstracts "render
+output to image(s)." Adapters: Playwright for web, Blender CLI for 3D, FFmpeg for
+animation, direct file read for screenshots, ComfyUI for AI-generated images.
+Visual feedback loop: execute -> render -> VLM evaluates -> structured feedback ->
+executor iterates. Max iterations before escalation. Convergence check stops when
+issues unchanged between iterations.
+
+
+================================================================================
+EMPIRE INTEGRATION (D2, deferred)
+================================================================================
+
+Empire is an existing engine hierarchy (MKI/MKII/MKIII) with IPC dispatch, hooks,
+buses, HTTP, events, persistence, WebSocket. Two bus layers: FactoryLine control
+socket and IPC engine socket, both newline-JSON over Unix streams.
+
+6-step integration plan: (1) elai_cc speaks FactoryLine protocol, (2) registers
+as a brain, (3) replaces broken brainctl CLI, (4) subscribes to Empire events,
+(5) exposes capabilities as MCP server, (6) fixes Empire's known issues.
+
+Empire has verified working parts (IPC, FactoryLine bus, hooks, bus registries,
+multi-brain isolation, FSB binary transport) and verified broken parts (circular
+deps, hard imports, stdlib shadow). elai_cc brings self-improvement TO Empire.
+
+
+================================================================================
+IMPLEMENTATION PHASES (what's done and what's next)
+================================================================================
+
+COMPLETE (Phases pre-0 through 3J including all sub-phases):
+  Pre-0: Windows platform fixes for claw-code base
+  0: Fork and strip -- 9-crate workspace, minimal FSM loop, entropy quarantine
+  1A-1I: Full knowledge engine (DKG, BM25, vectors, PageRank, CatRAG, A-RAG,
+    speculative decoding eval, cross-encoder, SPLADE eval, resilience layer)
+  2A-2D: Full reasoning engine (GRC state machine, grounding verification,
+    per-agent config, CSQ and inline feasibility)
+  3A-3I: Full orchestration (FSM, SSB, agent system, BSP supersteps, context
+    budget, rules engine, plan management, session handoff, DST)
+  3J: vLLM integration, advanced providers, plugins, orchestrator hardening,
+    sidecar server, CLI wiring, end-to-end local pipeline
+  3K: RAG production hardening
+
+NOT YET STARTED (Phase 4):
+  4A: Agent process isolation (Tier C)
+  4B: Full tool suite (git, validation, trace, edit matching, compilation)
+  4C: Plugins (hooks + tiered static analysis in production)
+  4D: Pipeline Factory L1 (designer + FlashResearch + recursive decomposition)
+  4E: Pipeline Factory L2 (builder + DAG repair + phase sizing + decomposition tree)
+  4F: Feasibility probe
+  4G: Autonomous mode enablement
+  4H: Self-modification (DGM/CEL/DarwinNet-derived)
+  4I: Media validator (conditional)
+  4J: Empire integration (conditional)
+  4K: Dashboard (interactive + autonomous monitoring UI)
+
+
+================================================================================
+9 UPDATE DESIGNS (extend completed phases + feed Phase 4)
+================================================================================
+
+These are design documents for improvements that span multiple existing phases
+and integrate with Phase 4 when it's built:
+
+1. PROJECT INTELLIGENCE (project-intelligence-design.txt)
+  Auto-detect project language, build system, frameworks, test runner, linter,
+  conventions, architecture. 3 tiers: structural discovery (filesystem, <5s),
+  convention extraction (DKG + regex, <30s), semantic understanding (LLM, <60s).
+  ProjectProfile feeds context telescope, prompt assembly, decomposition, rules.
+  Supports ~20 build systems, ~200 frameworks, 7+ languages. Override file for
+  manual corrections that survive regeneration.
+  New phase 3L (8 steps). Dependencies: 3J wired, 3F rules engine.
+  Implementation steps: A-4, A-5, A-11, A-16, A-32, A-33, A-35, A-36, A-38.
+
+2. ANTI-STALENESS ENFORCEMENT (anti-staleness-enforcement.txt)
+  Combats LLM tendency to use outdated APIs/libraries from training data.
+  4-layer defense: pre-generation (freshness scoring in RAG, VERSION_GATE rules,
+  constitutional injection), during-generation (ETC entropy monitoring, freshness
+  steering vectors, constrained decoding for imports), post-generation (T1/T2 hooks,
+  deterministic-first auditor), maintenance (nightly dep audit across 7 registries,
+  freshness recalculation, steering vector refresh).
+  VERSION_GATE predicate type + deprecated_patterns table in rules.db.
+  Language-parameterized: covers Rust/Python/TS/Go/Java/C#/Ruby ecosystems.
+  No new phase. Sub-steps added to existing phases.
+  Implementation steps: A-2, A-3, A-6, A-7, A-8, A-9, A-13, A-14, A-15, A-39, A-41.
+
+3. TOKEN EFFICIENCY (token-efficiency-design.txt)
+  Makes local models produce frontier-quality output by understanding 3 ceilings:
+  VRAM (what fits), context window (KV cache limit), attention quality (effective
+  attention). Measured data: 3B NF4+FA2 on 12GB = 40K tokens, 100% pass to 16K+.
+  7B NF4+FA2 = 25K tokens, 90% pass rate. FA2 is 4x improvement over SDPA.
+  Gemma 4 rejected (mixed head_dim blocks FA2). Qwen2.5-Coder family chosen.
+  Model tier table: 8GB/12GB/16GB/24GB/48GB with per-tier context budgets.
+  Baby step sizing calibrated per model (3B = 25 LOC/step, 7B = 40, 32B = 100).
+  Prompt strategy: literal over abstract, show don't tell (few-shot mandatory for
+  small models), fill-in-the-blank templates, structured output with adaptive
+  constraints. Retry strategy: structural modifications only (decompose, template,
+  few-shot, simplify, best-of-3). Instructional retries ("write complete code!")
+  empirically worsen scores.
+  Benchmark harness: 7 measurements (attention curve, retry rate, few-shot delta,
+  structured output, template fill, TurboQuant impact, swap latency). A-1 DONE.
+  New sub-phase 3J.BASELINE. Implementation steps: A-1, A-10, A-18, A-24.
+
+4. PIPELINE MODES (pipeline-modes-design.txt)
+  Two new modes reusing existing infrastructure:
+  Surgical Mode: for existing codebases. DKG is primary grounding source. Blast
+    radius analysis via graph traversal. Complexity classification (TRIVIAL/SMALL/
+    MEDIUM/LARGE). Max decomposition depth 2 (vs 4 for greenfield). Regression
+    gates after every step (existing tests breaking = STOP). Research priority:
+    codebase first, then existing deps' docs, then external.
+  Oracle Mode: grounded research/question answering. 7-phase pipeline: query
+    formulation -> search -> source tier classification (deterministic domain
+    lookup, 4 tiers) -> fact extraction (with exact quotes) -> cross-verification
+    -> synthesis (constrained, every sentence must cite a fact) -> post-verification.
+    "I don't know" is a first-class output.
+  Context Telescope: compressed ancestry chain that travels with every baby step
+    (project vision 200tok + concept 150tok + phase 100tok + step 100tok + task).
+  New FSM state: RESEARCHING (or sub-state of PLANNING).
+  Sub-phases of 4D. Implementation step: A-22.
+
+5. CODE COMPLETENESS (code-completeness-enforcement-design.txt)
+  Combats lazy generation (todo!(), pass, placeholder returns) and monolith drift
+  (500+ line files). Language-agnostic enforcement.
+  Two-tier: responsibility metrics (BLOCK level: cyclomatic complexity max 10,
+  coupling score max 15) + line count limits (WARN level, language-specific:
+  Rust 100/200, Python 120/250, Java 200/300, etc. Hard BLOCK at 4x).
+  5-layer enforcement: decomposition constraints (FILE_PLAN block, LOC budget,
+  module tree template), template-enforced structure (skeleton-first generation
+  with fill protocol and mini-critic), post-generation hooks (T1 lazy code regex,
+  T1 file size, T2 AST completeness + responsibility metrics), auditor enforcement
+  (deterministic checks before LLM audit), recovery (accept-and-complete for
+  majority-good output, structural retry sequence, automatic file splitting).
+  No new phase. Integrates into 4D/4E. Implementation step: A-21.
+
+6. REASONING ARCHITECTURE (reasoning-architecture-design.txt)
+  6-layer externalized reasoning pipeline for when errors can't be fixed by retrying:
+  Layer 1 - Deterministic (no LLM, <100ms, ~60-70% of errors): classify error via
+    regex taxonomy, localize via compiler diagnostics + DKG traversal, generate fix
+    instruction from templates. Projected >95% pass rate on template-directed fixes.
+  Layer 2 - Micro-reflection (local LLM, ~600 tokens, 2-5s, ~20-25%): one focused
+    JSON-constrained question. Max 50 token output. Long reflection ACTIVELY HARMS
+    sub-10B models (ARLCP finding).
+  Layer 3 - Interrogation tree (local LLM, 3-7 multiple-choice questions, ~10-30s,
+    ~5-8%): system-guided Q&A through language-parameterized decision trees.
+  Layer 4 - AB-MCTS tree search (local LLM, branching at failure point, ~30-90s,
+    ~3-5%): generate 3+ alternatives with different temperatures, score using GG
+    intrinsic verification (token confidence + generation novelty from sidecar).
+  Layer 5 - Cloud diagnostic ($0.002-$0.05, ~2-4%): diagnosis only, never generates
+    code. Haiku -> Sonnet -> Opus escalation.
+  Layer 6 - Cloud generation (last resort, expensive, ~0.5-1%): cloud generates code,
+    local pipeline validates.
+  MistakeBook: structured constraint store (NOT narrative). Forbidden diffs + failure
+  categories + line numbers. Max 150 tokens injected. Variable names and code
+  snippets from failed attempts NEVER shown to model (CTIM-Rover: degrades 42% to
+  31-40%). Compressed context replay: fresh 1400-token assembly per retry. Model
+  never sees its own failed chain-of-thought. Temperature 1.0 for repair loops
+  (prevents cyclic traps, FixAudit validated).
+  Cloud budget projection: typical daily session costs $0.01-$0.05 API spend.
+  No new phase. Integrates into 4B/4D/4E/4G.
+  Implementation steps: A-17, A-18, A-19, A-20, A-23, A-25.
+
+7. CLOUD MODE (cloud-mode-design.txt)
+  First-class API/cloud execution path. Three modes: LOCAL (default, full local
+  pipeline), CLOUD (cloud model generates, local harness validates), HYBRID (local
+  first, auto-escalate to cloud on Layer 3+ failure). Cloud mode is NOT "use Claude
+  instead of ELAI" -- it's "use Claude INSIDE ELAI's validation pipeline."
+  Provider routing via existing providers crate. Cost tracking in SSB (per-task and
+  per-day spend ceilings, pre-task cost estimation). Context budget recalculation:
+  cloud 200K context means baby steps jump from 25-40 LOC to 300-500 LOC, phase
+  decomposition depth drops from 4 to 2. A MEDIUM task goes from ~30 local steps to
+  ~4-6 cloud steps (10-50x speedup). Reasoning layers 2-5 skipped in cloud mode
+  (cloud model is capable enough). Layer 1 deterministic checks STILL RUN -- rules,
+  AST, linter, tests unchanged. Validation pipeline identical across all modes.
+  Privacy controls: redaction patterns, blocked paths, audit trail of all cloud calls.
+  No new FSM states. Mode is session metadata.
+  No new phase. Integrates into 3J/3E/4D/4G.
+  Implementation steps: A-40, A-41, A-42, A-43, A-44.
+
+8. DASHBOARD (dashboard-design.txt)
+  Two UIs for two interaction patterns. Visual identity: teal primary (#2dd4a8) on
+  dark charcoal (#0d1117), GitHub dark mode palette with ELAI brand accent. Monospace
+  typography throughout. Information density over whitespace.
+  Interactive dashboard: three-column layout (plan tree | activity stream | context
+  inspector). Activity stream shows agent actions as diff cards, validation results,
+  reasoning chains (collapsible). Context inspector shows current file, DKG neighbors,
+  active rules, token budget visualization, cost tracker. Intervention controls:
+  pause, skip step, retry step, switch to cloud, abort task.
+  Monitoring dashboard (autonomous mode): pipeline progress bar with phase markers,
+  health metrics (pass rate, retry rate, avg step time, errors/hr), reasoning
+  escalation histogram (L1-L6 distribution), cost tracker, timeline of last N events,
+  intervention queue (replan requests, spend warnings, repeated failures). Browser/OS
+  notifications for task complete, intervention needed, error spikes.
+  Tech stack: Axum local web server + Svelte/SolidJS frontend for v1. SSB (SQLite
+  WAL) as sole data source via read-only connection. Polling or WebSocket for live
+  updates. New SSB action types: HEALTH_SNAPSHOT, INTERVENTION_REQUEST,
+  INTERVENTION_RESPONSE.
+  New phase 4K (8 sub-steps). Dependencies: SSB (3B), FSM (3A), CLI (3J).
+  Implementation steps: A-45, A-46, A-47, A-48, A-49, A-50.
+
+9. FOCUS TUNNEL (focus-tunnel-design.txt)
+  Zero-overhead LLM execution path. Three generation modes selected per step:
+  FIM (fill-in-middle): model outputs raw code between prefix/suffix. No tool
+    schemas, no JSON wrapper. ~350 tokens saved per step. Used for single-region
+    edits in existing files. Qwen2.5-Coder supports FIM natively.
+  DIFF: model outputs unified diff. System applies via 3-tier edit matching. ~30-50%
+    smaller than full file output. Supports multi-region edits.
+  STRUCTURED: current default, fallback for new files and cloud mode.
+  Mode selection is deterministic based on step type and model capabilities.
+  Streaming validation: token-level checks during generation (constrained decoding
+  blocks deprecated imports, lazy code detection stops generation early at token 50
+  instead of waiting for token 500). Chunk-level AST parse every ~50 tokens catches
+  structural impossibility early.
+  Pipeline parallelism: while step N validates, pre-assemble context for step N+1.
+  Saves 100-500ms per step when validation passes (~88% of the time). Depth limited
+  to 1 (only one step ahead).
+  Speculative file routing: plan specifies target files per step, model never needs
+  to specify file paths. System writes output to correct location automatically.
+  Automated dependency management: detect missing deps from import statements,
+  check anti-staleness database, resolve version, install. Model never runs package
+  managers directly.
+  Token budget impact: ~6,800 tokens saved on 30-step task = 27% of 25K budget.
+  Combined with ShortCoder: ~45-65% effective budget increase.
+  No new phase. Integrates into 3J/4B/4D/4E.
+  Implementation steps: A-51, A-52, A-53, A-54, A-55, A-56, A-57.
+
+
+================================================================================
+DETERMINISTIC HARNESS DESIGN
+================================================================================
+
+Replaces .md spaghetti with system-level enforcement. The key insight: every AI
+coding tool today (Claude Code, Cursor, Aider, Windsurf, etc.) writes rules in
+markdown files, injects them into the model's context, and hopes the model follows
+them. This is fundamentally non-deterministic. ELAI's approach: the system rejects
+code containing .unwrap() BEFORE the model ever sees the result.
+
+Three rule classification tiers (all existing .md rules classified):
+  Tier 1 - Deterministic: regex/AST patterns, <1ms. ZERO prompt tokens.
+  Tier 2 - Structural: tree-sitter parse + pattern check, <10ms. ZERO tokens.
+  Tier 3 - Semantic: LLM judgment needed, 3-5 rules in prompt. ~50-100 tokens.
+
+Three rule derivation sources:
+  Source 1 - Language best practices: delegate to existing linters (clippy, ruff,
+    eslint, golangci-lint). ELAI uses the project's OWN linter config. Incremental
+    linting with caching for <1s per-file re-lint after initial build.
+  Source 2 - Project conventions: auto-detected from codebase (naming patterns,
+    error handling style, module organization). Rules DERIVED from code, not authored.
+  Source 3 - Domain rules: curated rule packs (trading, gamedev, security, ML, web)
+    distributed as TOML/SQLite files, installable via CLI.
+
+Migration path: CLI tool (elai rules import) converts existing .md rules to SQLite.
+Expected ~60% become Tier 1/2 (system-enforced, zero tokens).
+
+Token savings: before = 1500+ tokens of rules per turn. After = 50-100 tokens of
+Tier 3 semantic rules only. For MICRO tier (3K budget), this is 47% more usable
+context for actual code.
+
+New Phase 3L (7 sub-steps). Depends on project intelligence and rules engine.
+
+
+================================================================================
+IMPLEMENTATION ORDER (what comes next)
+================================================================================
+
+GROUP A - FOUNDATIONS (before Phase 4, extends completed phases):
+  Most steps are 1 implementation session each. Key ordering:
+  A-1 (DONE): baseline measurement harness. Key findings: FA2 critical (4x ceiling),
+    7B 90% pass@1, 3B 72%, DoLa HARMFUL on 7B, steering NEUTRAL.
+  A-2: fix T1/T2 hooks (currently stubs that do nothing)
+  A-3 (DONE): model.generate migration in sidecar
+  A-4 through A-39: project intelligence tiers, VERSION_GATE, constitutional
+    injection, freshness steering, ETC monitoring, context budget adaptation,
+    deterministic auditor, RAG freshness, AST import extraction, nightly dep audit,
+    GG sidecar signals, repair context profile, interrogation tree, mistake book,
+    code completeness hooks, RESEARCHING FSM state, micro-reflection types,
+    ShortCoder compression, tool routing, bash safety, git commit tool, agent
+    prompt template, output postprocessor, action classifier, and more.
+  A-40 through A-44: cloud mode (provider routing, cost tracking, cloud context
+    budget, privacy redaction, HYBRID escalation, cost estimation display).
+  A-45 through A-50: dashboard (SSB data extraction, Axum server, interactive
+    dashboard, monitoring dashboard, intervention controls, notifications).
+  A-51 through A-57: focus tunnel (FIM assembly, diff parser, mode selection,
+    streaming validation, pipeline parallelism, dependency resolution, file routing).
+
+GROUP B - Phase 4 design additions (integrate when implementing each phase):
+  4B additions: FailureTaxonomy expansion, DiagnosticResult types, diff parser,
+    streaming validation hooks, pipeline parallelism
+  4D additions: surgical/oracle modes, complexity classification, baby step sizing,
+    generation mode hints, cloud mode recommendation per complexity
+  4E additions: DecompositionTree integration, BubbleUp with reasoning pipeline,
+    mode selection logic in ExecutablePipeline
+  4G additions: auto-advance evaluator, cloud spend tracking, reasoning exhaustion,
+    cloud mode spend tracking for autonomous sessions
+  4H additions: self-modification wiring for anti-staleness, reasoning, completeness
+  4K (NEW): dashboard phase (SSB viewer, Axum server, interactive + monitoring UI,
+    intervention controls, notification system)
+
+Cross-cutting files (modified by multiple designs): phase-3E (4 designs), phase-3F
+(4 designs), phase-3J (5 designs), phase-4D (5 designs), phase-4E (5 designs),
+phase-4B (2 designs), phase-4G (2 designs).
+
+
+================================================================================
+HARDWARE AND MODEL DECISIONS
+================================================================================
+
+Phase 0 hardware: 1x RTX 3060 12GB.
+Production target: 2x RTX 3090 24GB (48GB total).
+Model family: Qwen2.5-Coder-Instruct (dense, uniform layers, head_dim=128).
+  7B NF4+FA2: 5.18GB weights, ~25K context, 90% code pass rate. Default on 12GB.
+  3B NF4+FA2: 1.92GB weights, ~40K context, 72% pass rate. Long-context fallback.
+  32B NF4+FA2+TQ4: production default on 48GB. 64 dense layers enable DoLa.
+Gemma 4: REJECTED (mixed head_dim blocks FA2, 18x larger KV cache -- dead end).
+MoE models: REJECTED for DoLa/steering (expert routing breaks layer contrasting).
+FA2 (flash-attention 2): MANDATORY. Without it, attention ceiling drops 4x (from
+  16K+ to ~4K). Requires Python 3.12 env (no 3.13 wheel on Windows).
+DoLa: HARMFUL on 7B (-15% code quality, -6% factuality, 4.7x slower). Viable only
+  on 32B+ (64 layers, untested but projected).
+Steering vectors: NEUTRAL on 7B with generic contrast pairs. Infrastructure works.
+  Needs domain-specific pairs. Ship DISABLED by default.
+Inference: custom sidecar server (python/elai_inference/), not ollama. Sidecar
+  provides FA2, DoLa, steering, TQ8/TQ4. Ollama is fallback only.
+Model storage: local HF format at .elai_cc/models/, not ollama format.
+
+
+================================================================================
+KEY DESIGN PRINCIPLES
+================================================================================
+
+- Code is the orchestrator, prompts are minimal (~330 tokens vs 1600+)
+- Rules are data in SQLite, not markdown files
+- Every FSM transition requires artifacts (evidence gates), not self-assessment
+- The model never sees enforcement logic, rule IDs, or internal details
+- Same seed = identical output (entropy quarantine + deterministic channels)
+- Graceful degradation everywhere (never crash, always fall back)
+- Process isolation is a context efficiency mechanism (not just security)
+- Self-modification is bounded (config archive, staged evaluation, human gates)
+- "I don't know" is a valid and preferred output over uncertain answers
+- Deterministic tools handle 60-70% of errors; the model handles the rest
+- Retry structure, not instruction ("write complete code!" empirically fails)
+- Fresh context per retry (never show model its own failed chain-of-thought)
+- Cloud as scalpel (~$0.01-$0.05/day), not crutch -- or as accelerator (user chooses)
+- Every claim must be grounded before it influences decisions
+- The system works for any language and any project, not just Rust
+- The model is a code printer; the system handles file routing and validation
+- Speed is a user-controlled dial: local (free/slow) to cloud (paid/fast)
+
+
+================================================================================
+SOURCE FILE INDEX
+================================================================================
+
+For full technical detail (types, schemas, formulas, predicates, test invariants),
+read the original source files listed below. Paths relative to D:\.ELAI_workflow\.
+
+ARCHITECTURE OVERVIEW
+  docs/specs/architecture-overview.txt
+
+CRATE SPECS (per-crate technical detail)
+  docs/specs/crates/cli.txt
+  docs/specs/crates/core.txt
+  docs/specs/crates/knowledge.txt
+  docs/specs/crates/orchestrator.txt
+  docs/specs/crates/plugins.txt
+  docs/specs/crates/providers.txt
+  docs/specs/crates/reasoning.txt
+  docs/specs/crates/rules.txt
+  docs/specs/crates/tools.txt
+
+INTEGRATION SPECS (cross-crate systems)
+  docs/specs/integration/empire.txt
+  docs/specs/integration/media-validator.txt
+  docs/specs/integration/pipeline-factory.txt
+  docs/specs/integration/prompt-architecture.txt
+  docs/specs/integration/self-modification.txt
+
+GUIDE - DESIGN DOCUMENTS (update designs extending completed phases)
+  docs/specs/guide/anti-staleness-enforcement.txt
+  docs/specs/guide/code-completeness-enforcement-design.txt
+  docs/specs/guide/deterministic-harness-design.txt
+  docs/specs/guide/pipeline-modes-design.txt
+  docs/specs/guide/project-intelligence-design.txt
+  docs/specs/guide/reasoning-architecture-design.txt
+  docs/specs/guide/token-efficiency-design.txt
+  docs/specs/guide/cloud-mode-design.txt
+  docs/specs/guide/dashboard-design.txt
+  docs/specs/guide/focus-tunnel-design.txt
+
+GUIDE - IMPLEMENTATION REFERENCES
+  docs/specs/guide/implementation-guide.txt
+  docs/specs/guide/update-implementation-order.txt
+  docs/specs/guide/update-phase-map.txt
+
+GUIDE - PHASE INDEXES (concise summaries of all phases)
+  docs/specs/guide/steps/phase-index-pre0-2D.txt
+  docs/specs/guide/steps/phase-index-3A-4J.txt
+
+GUIDE - INDIVIDUAL PHASE STEP FILES (full implementation detail per phase)
+  docs/specs/guide/steps/pre-phase-0.txt          Pre-Phase 0: Windows platform fixes
+  docs/specs/guide/steps/phase-0.txt               Phase 0: Fork and strip (walking skeleton)
+  docs/specs/guide/steps/phase-1A.txt              Phase 1A: DKG (tree-sitter -> SQLite graph)
+  docs/specs/guide/steps/phase-1B.txt              Phase 1B: BM25 (tantivy full-text search)
+  docs/specs/guide/steps/phase-1C.txt              Phase 1C: Vector search (dual-model ONNX)
+  docs/specs/guide/steps/phase-1D.txt              Phase 1D: PageRank repo map
+  docs/specs/guide/steps/phase-1E.txt              Phase 1E: CatRAG + A-RAG (query pipeline)
+  docs/specs/guide/steps/phase-1F.txt              Phase 1F: Speculative decoding evaluation
+  docs/specs/guide/steps/phase-1G.txt              Phase 1G: Cross-encoder reranker
+  docs/specs/guide/steps/phase-1H.txt              Phase 1H: SPLADE keyword expansion (conditional)
+  docs/specs/guide/steps/phase-1I.txt              Phase 1I: Resilience layer (circuit breaker, degradation)
+  docs/specs/guide/steps/phase-2A.txt              Phase 2A: GRC state machine (basic)
+  docs/specs/guide/steps/phase-2B.txt              Phase 2B: Grounding verification
+  docs/specs/guide/steps/phase-2C.txt              Phase 2C: Per-agent GRC configuration
+  docs/specs/guide/steps/phase-2D.txt              Phase 2D: CSQ and inline feasibility
+  docs/specs/guide/steps/phase-3A.txt              Phase 3A: Full FSM (INTERACTIVE mode)
+  docs/specs/guide/steps/phase-3B.txt              Phase 3B: SSB (Shared State Board)
+  docs/specs/guide/steps/phase-3C.txt              Phase 3C: Agent system
+  docs/specs/guide/steps/phase-3D.txt              Phase 3D: BSP supersteps + channels
+  docs/specs/guide/steps/phase-3E.txt              Phase 3E: Context budget allocator
+  docs/specs/guide/steps/phase-3F.txt              Phase 3F: Rules engine (self-improving)
+  docs/specs/guide/steps/phase-3G.txt              Phase 3G: Hierarchical plan management
+  docs/specs/guide/steps/phase-3H.txt              Phase 3H: Session handoff (CMV-derived DAG)
+  docs/specs/guide/steps/phase-3I.txt              Phase 3I: Deterministic simulation testing (DST)
+  docs/specs/guide/steps/phase-3J.txt              Phase 3J: vLLM + providers + plugins + orchestrator hardening
+  docs/specs/guide/steps/phase-3K.txt              Phase 3K: RAG production hardening
+  docs/specs/guide/steps/phase-4A.txt              Phase 4A: Agent process isolation (Tier C)
+  docs/specs/guide/steps/phase-4B.txt              Phase 4B: Tools (git, validation, trace, edit, compilation)
+  docs/specs/guide/steps/phase-4C.txt              Phase 4C: Plugins (hooks + tiered static analysis)
+  docs/specs/guide/steps/phase-4D.txt              Phase 4D: Pipeline Factory L1 (designer + FlashResearch)
+  docs/specs/guide/steps/phase-4E.txt              Phase 4E: Pipeline Factory L2 (builder + DAG repair)
+  docs/specs/guide/steps/phase-4F.txt              Phase 4F: Feasibility probe
+  docs/specs/guide/steps/phase-4G.txt              Phase 4G: Autonomous mode enablement
+  docs/specs/guide/steps/phase-4H.txt              Phase 4H: Self-modification (DGM/CEL/DarwinNet)
+  docs/specs/guide/steps/phase-4I.txt              Phase 4I: Media validator (conditional)
+  docs/specs/guide/steps/phase-4J.txt              Phase 4J: Empire integration (conditional)
+  docs/specs/guide/steps/phase-4K.txt              Phase 4K: Dashboard (interactive + autonomous monitoring)

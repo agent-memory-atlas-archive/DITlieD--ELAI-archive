@@ -1,0 +1,448 @@
+PHASE 3F: RULES ENGINE (self-improving, three-tier enforcement)
+Prerequisites: Phase 3D complete (parallel with 3E).
+  Implicit: Phase 1A complete (tree-sitter available in knowledge/ crate for AST_PATTERN).
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Deterministic rule enforcement replacing probabilistic prompt-based rules.
+Predicate DSL with 5 types. Self-discovery from auditor violation patterns.
+Rules are DATA in SQLite, evaluated by Rust interpreter.
+Three-tier enforcement: Tier 1 (deterministic code), Tier 2 (constrained decoding),
+Tier 3 (prompt guidance + auditor backup).
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/rules.txt                 Full file (schema, DSL, lifecycle, seed data,
+                                               counterfactual testing, contract tests, proptest)
+  docs/specs/integration/prompt-architecture.txt  Why rules must be code, not prompts
+                                               (sections 1-2: problem + solution,
+                                                section 4.3: conditional-routing replacement,
+                                                section 5: enforcement comparison,
+                                                section 6: context budget impact)
+  docs/specs/decisions/risk-register.txt      R25 (mitigated by design -- this IS the mitigation)
+
+RISKS TO WATCH
+  R25: LLM ignores domain rules. This phase IS the fix -- three-tier enforcement.
+  NEW: Malformed predicates from self-discovery (invalid regex, bad tree-sitter query).
+    Mitigation: compile-time validation before DB insertion (step 3F.7).
+  NEW: tree-sitter version mismatch between rules/ and knowledge/ crates.
+    Mitigation: rules/ re-exports tree-sitter-facade from knowledge/, no separate dep.
+
+ARCHITECTURE DECISION: TREE-SITTER DEPENDENCY
+  AST_PATTERN predicates require tree-sitter query evaluation.
+  Phase 1A adds tree-sitter to knowledge/ crate (DKG uses it for code graph).
+  Rules/ crate MUST NOT add a separate tree-sitter dependency.
+  Instead: knowledge/ exposes a tree-sitter-facade module (query compilation + evaluation).
+  Rules/ depends on knowledge/ for AST evaluation only.
+  Crate map already shows: rules/ depends on core/ only.
+  This means either: (a) rules/ adds knowledge/ as dependency, or
+  (b) AST evaluation is delegated to knowledge/ via a trait (AstEvaluator).
+  Option (b) preserves the current dependency graph. Recommended.
+  Trait: knowledge::AstEvaluator { fn evaluate_query(lang, source, query) -> Vec<Match> }
+  Rules/ takes Box<dyn AstEvaluator> at construction time. Testable with mock.
+
+PREDICATE EVALUATION ORDER
+  When multiple rules are active, evaluate in this order (cheapest first, short-circuit on BLOCK):
+    1. METRIC_GATE  -- O(1) numeric comparison, no parsing
+    2. GREP_PATTERN -- O(n) regex on raw text, no AST
+    3. AST_PATTERN  -- requires tree-sitter parse (amortized if cached per-file)
+    4. COMPOSITE    -- recursive, depends on children
+  Within same type: sort by severity DESC (BLOCK rules before WARN).
+  Short-circuit: first BLOCK verdict stops evaluation, returns immediately.
+  WARN collection: accumulated WARN verdicts before a BLOCK are preserved in the
+    response alongside the BLOCK. The BLOCK verdict carries all prior WARNs as context.
+  Rationale: METRIC_GATE and GREP are 10-100x cheaper than AST parse.
+    Evaluating cheap rules first means most BLOCK verdicts resolve without AST cost.
+
+NEW DEPENDENCIES (dev-only unless noted)
+  proptest (dev): property-based contract tests (~1400 lines across 7 domains)
+  criterion (dev): benchmark rule evaluation latency (<1ms target)
+  jsonschema (runtime): SCHEMA_REQUIRED predicate validation (pin version in Cargo.toml)
+  tree-sitter (runtime, via knowledge/ AstEvaluator trait): AST_PATTERN evaluation
+
+
+STEPS
+
+3F.1 SQLITE SCHEMA
+  PRE_GATE:
+    - Phase 3D contract tests pass: cargo test -p orchestrator --lib -- bsp 2>&1 | grep "test result: ok"
+    - rusqlite available in workspace: grep -q "rusqlite" .elai_cc/Cargo.toml
+  TASK:
+    - Create rules/ crate SQLite schema: rules, rule_metrics, contract_tests, violation_patterns
+    - Include all columns from rules.txt section 2 (rule_id, domain, tier, status, predicate,
+      phase_mask, severity, mutable, source, etc.)
+    - Include violation_patterns scoring columns (score_clarity, score_frequency, score_precision)
+    - Add counterfactual columns to rule_metrics: causal_catches, spurious_catches
+    - Migration: version-stamped schema (schema_version table)
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- schema 2>&1 | grep "test result: ok"
+    - SQLite file created at test temp dir, all tables exist:
+      sqlite3 {db} ".tables" shows: rules, rule_metrics, contract_tests, violation_patterns
+    - All CHECK constraints enforced:
+      INSERT with invalid tier (e.g. tier=4) returns error
+      INSERT with invalid status (e.g. 'BOGUS') returns error
+      INSERT with invalid source returns error
+  ADVERSARIAL:
+    - If schema allows NULL in non-nullable columns, rules with missing predicates enter DB silently.
+      Test: INSERT INTO rules (rule_id, predicate) VALUES ('test', NULL) must fail.
+    - If schema_version migration is skipped, old DBs break on upgrade.
+      Test: open DB with schema v1, run v2 migration, verify all v1 data preserved.
+  ACCEPTANCE:
+    - All 4 tables create successfully with correct column types
+    - All CHECK constraints reject invalid data
+    - Schema version tracked and migration is idempotent
+
+3F.2 PREDICATE DSL TYPES
+  PRE_GATE:
+    - Step 3F.1 complete: cargo test -p rules --lib -- schema 2>&1 | grep "test result: ok"
+  TASK:
+    - Define Rust types for 5 predicate types: AST_PATTERN, GREP_PATTERN, SCHEMA_REQUIRED,
+      METRIC_GATE, COMPOSITE
+    - Define Verdict enum: ALLOW, WARN, BLOCK, ESCALATE(EscalationTarget)
+    - Define EscalationTarget enum: Auditor, Human, NextTierRule(RuleId)
+    - Predicate serialization: serde to/from TEXT column in SQLite (JSON or postcard)
+    - AstEvaluator trait definition (for knowledge/ crate to implement):
+      fn evaluate_query(language: &str, source: &str, query: &str) -> Result<Vec<AstMatch>>
+      fn validate_query(language: &str, query: &str) -> Result<(), AstError>
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- predicate_types 2>&1 | grep "test result: ok"
+    - Each predicate type round-trips through serde: serialize -> deserialize -> equal
+    - Verdict enum has all 4 variants
+    - EscalationTarget has all 3 variants
+  ADVERSARIAL:
+    - If COMPOSITE allows infinite recursion (A -> B -> A), evaluation hangs.
+      Test: construct circular COMPOSITE, verify evaluation returns error within 1ms.
+    - If predicate serde format changes, old rules.db becomes unreadable.
+      Test: serialize v1 predicate, change field, verify deserialization either succeeds
+      with default or returns explicit version error.
+  ACCEPTANCE:
+    - All 5 predicate types defined with correct fields per rules.txt section 3
+    - Verdict and EscalationTarget enums complete
+    - Round-trip serialization passes for all types
+
+3F.3 RULEENGINE TRAIT
+  PRE_GATE:
+    - Step 3F.2 complete: cargo test -p rules --lib -- predicate_types 2>&1 | grep "test result: ok"
+  TASK:
+    - Define RuleEngine trait per implementation-guide.txt trait boundary:
+      evaluate(action, context) -> ALLOW|BLOCK|WARN
+      get_active_rules(fsm_state, file_context) -> Vec<Rule>
+    - Add: compile_predicate(raw: &str) -> Result<CompiledPredicate, PredicateError>
+      Validates regex (Regex::new), tree-sitter queries (via AstEvaluator::validate_query),
+      and JSON schemas (jsonschema crate) at insertion time, not evaluation time.
+    - Evaluation order: METRIC_GATE -> GREP_PATTERN -> AST_PATTERN -> COMPOSITE
+    - Short-circuit on first BLOCK verdict
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- rule_engine_trait 2>&1 | grep "test result: ok"
+    - Trait is object-safe (can be used as dyn RuleEngine)
+    - compile_predicate rejects invalid regex: compile_predicate("([invalid") returns Err
+    - compile_predicate rejects invalid JSON schema: compile_predicate with bad $ref returns Err
+  ADVERSARIAL:
+    - If compile_predicate accepts everything, malformed self-discovered predicates corrupt DB.
+      Test: feed 10 known-invalid regex patterns, verify all rejected with specific error type.
+    - If evaluation order is wrong, expensive AST parse runs before cheap GREP.
+      Test: mock AstEvaluator that panics, add GREP rule that BLOCKs first, verify AST never called.
+  ACCEPTANCE:
+    - RuleEngine trait compiles and is object-safe
+    - compile_predicate rejects all classes of malformed input
+    - Evaluation order verified by mock test
+
+3F.4 RULE LIFECYCLE STATE MACHINE
+  PRE_GATE:
+    - Step 3F.3 complete: cargo test -p rules --lib -- rule_engine_trait 2>&1 | grep "test result: ok"
+  TASK:
+    - Implement lifecycle: PROPOSED -> CANDIDATE -> SHADOW -> ACTIVE -> RETIRED
+    - Transition guards (all deterministic arithmetic, no LLM):
+      PROPOSED -> CANDIDATE: >= 3 contract tests AND all pass
+      CANDIDATE -> SHADOW: contract tests pass AND human approves predicate logic
+        (OR independent second-auditor verifies — finding-source auditor CANNOT approve)
+      SHADOW -> ACTIVE: false_positive_rate < 5% AND true_positive_rate > 80%
+        AND counterfactual_causal_rate > 50% AND no safety regressions
+      ACTIVE -> RETIRED: false_positive_rate > 30% over 10 pipelines,
+        OR superseded, OR human request
+    - Safety invariant: mutable=0 rules reject auto-retirement
+    - Safety invariant: mutable=0 rules exempt from causal rate gate (human-promotable only)
+    - Every transition logged with timestamp, metrics snapshot, and reason
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- lifecycle 2>&1 | grep "test result: ok"
+    - PROPOSED -> CANDIDATE with 2 tests returns Err (need >= 3)
+    - PROPOSED -> CANDIDATE with 3 passing tests returns Ok
+    - SHADOW -> ACTIVE with false_positive_rate=6% returns Err (gate: fpr < 5%)
+    - SHADOW -> ACTIVE with true_positive_rate=79% returns Err (gate: tpr > 80%)
+    - SHADOW -> ACTIVE with counterfactual_causal_rate=49% returns Err (gate: ccr > 50%)
+    - SHADOW -> ACTIVE with safety_regression=true returns Err (gate: no regressions)
+    - SHADOW -> ACTIVE with all thresholds met returns Ok
+    - CANDIDATE -> SHADOW with source=AUDITOR approval by same auditor returns Err (circular trust)
+    - CANDIDATE -> SHADOW with human approval returns Ok
+    - mutable=0 rule + auto-retire attempt returns Err
+    - Transition log entry written to DB for each successful transition
+  ADVERSARIAL:
+    - If counterfactual_causal_rate is computed with 0 denominator (no shadow evaluations yet),
+      division by zero. Test: rule with 0 causal + 0 spurious catches, verify transition blocked
+      with "insufficient shadow data" error, not panic.
+    - If RETIRED rules are deleted instead of kept, historical audit trail is lost.
+      Test: retire a rule, verify it still exists in DB with status=RETIRED.
+    - If PROPOSED rules from source=AUDITOR auto-promote, circular trust (auditor validates own rules).
+      Test: insert PROPOSED rule with source=AUDITOR, attempt CANDIDATE transition without
+      human/second-auditor approval, verify rejection per rules.txt section 6 constraint.
+  ACCEPTANCE:
+    - All 5 lifecycle states reachable via valid transitions
+    - All transition guards enforce correct thresholds
+    - mutable=0 invariant holds for retirement AND causal rate exemption
+    - Division-by-zero safe for all rate computations
+
+3F.5 PREDICATE DSL INTERPRETER
+  PRE_GATE:
+    - Steps 3F.1-3F.4 complete
+    - tree-sitter available via AstEvaluator mock (real impl in knowledge/ crate, Phase 1A)
+  TASK:
+    - Implement Rust interpreter for all 5 predicate types
+    - AST_PATTERN: delegate to AstEvaluator trait (tree-sitter query execution)
+    - GREP_PATTERN: compile regex once at predicate compilation, reuse compiled regex
+    - SCHEMA_REQUIRED: validate JSON output against schema (jsonschema crate)
+    - METRIC_GATE: numeric comparison with operators: lt, gt, eq, between
+    - COMPOSITE: recursive AND/OR/NOT with depth limit (max 8 levels, prevent stack overflow)
+    - All evaluations return Verdict { rule_id, result, evidence: String }
+    - ESCALATE routing: Auditor (SHADOW rules), Human (mutable=0 promotion),
+      NextTierRule (tier chain)
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- interpreter 2>&1 | grep "test result: ok"
+    - AST_PATTERN: detects df[].mean() without shift (using mock AstEvaluator)
+    - GREP_PATTERN: detects bare except:pass
+    - SCHEMA_REQUIRED: rejects missing required fields
+    - METRIC_GATE: blocks LOC > threshold
+    - COMPOSITE: AND/OR/NOT combinations produce correct verdicts
+    - ESCALATE: SHADOW rule returns Escalate(Auditor), mutable=0 returns Escalate(Human)
+    - Determinism: same code + same predicate = same verdict (run 100x, assert identical)
+  ADVERSARIAL:
+    - If COMPOSITE depth is unlimited, attacker-crafted rule causes stack overflow.
+      Test: COMPOSITE nested 100 levels deep returns Err(DepthExceeded), not panic.
+    - If GREP regex has catastrophic backtracking (e.g. (a+)+$), evaluation hangs.
+      Test: regex with known ReDoS pattern, verify evaluation completes within timeout
+      (regex crate is safe by default -- linear time guarantee -- but verify).
+    - If AST_PATTERN query returns empty on valid code, rule silently passes violations.
+      Test: known-violating code with correct tree-sitter query, verify BLOCK returned.
+  ACCEPTANCE:
+    - All 5 predicate types evaluate correctly against known inputs
+    - ESCALATE verdict routes to correct target
+    - COMPOSITE depth limited to 8
+    - Determinism verified over 100 repetitions
+
+3F.6 PHASE-AWARE AND DOMAIN-AWARE ACTIVATION
+  PRE_GATE:
+    - Step 3F.5 complete: cargo test -p rules --lib -- interpreter 2>&1 | grep "test result: ok"
+    - FSM state enum available from orchestrator/ crate
+  TASK:
+    - Implement phase_mask bitmask filtering per rules.txt section 7
+    - Implement domain detection from file paths per rules.txt section 7
+    - get_active_rules query: status=ACTIVE AND phase_mask match AND domain match
+      SQL must include: OR domain IN ('engineering', 'security')
+      (NOT just 'engineering' -- security rules are cross-cutting, mutable=0)
+    - Domain detection configurable via elai_cc.toml [rules.domain_mapping]
+    - Engineering and security domains always active (cross-cutting)
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- activation 2>&1 | grep "test result: ok"
+    - Rule with phase_mask for EXECUTING only: active in EXECUTING, inactive in PLANNING
+    - Trading rule: active for file "src/trading/signal.py", inactive for "src/ui/button.tsx"
+    - Engineering rule: active for ALL file paths
+    - Security rule (mutable=0): active for ALL file paths
+    - Domain detection: "src/backtest/runner.py" -> includes "trading" domain
+  ADVERSARIAL:
+    - If domain detection is case-sensitive, "Trading" vs "trading" in path causes miss.
+      Test: file path with mixed case, verify domain still detected.
+    - If phase_mask=0 (no phases), rule is never active but wastes DB space.
+      Test: rule with phase_mask=0 never returned by get_active_rules for any state.
+  ACCEPTANCE:
+    - Phase filtering matches bitmask specification exactly
+    - Domain detection covers all 5 domains + engineering + security
+    - Cross-cutting domains always active regardless of file path
+
+3F.7 SELF-DISCOVERY MECHANISM
+  PRE_GATE:
+    - Steps 3F.1-3F.6 complete
+    - Phase 3C complete (agent system available for auditor IPC)
+  TASK:
+    - Implement violation pattern normalization (orchestrator side, NOT auditor side)
+    - Pattern hashing: blake2s of normalized pattern text
+    - Occurrence counting: increment on matching hash
+    - Auto-proposal trigger: occurrences >= 3 -> generate Predicate DSL
+    - Predicate generation: extract tree-sitter query from common AST structure,
+      fall back to regex, fall back to Tier 3 only
+    - COMPILE-TIME VALIDATION: all generated predicates pass compile_predicate()
+      before insertion. Invalid predicates logged and discarded, not inserted.
+    - Auto-contract-test generation from violation examples:
+      each example_code -> test_type=BLOCK test
+      orchestrator generates ALLOW counterexamples (NOT the auditor)
+    - Trust boundary: PROPOSED rules from source=AUDITOR require human approval
+      OR independent second-auditor verification before CANDIDATE promotion
+    - Violation pattern scoring: 3-axis composite (clarity, frequency, precision)
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- self_discovery 2>&1 | grep "test result: ok"
+    - 3 identical violation patterns -> PROPOSED rule auto-created
+    - 2 identical violation patterns -> no rule created
+    - Generated predicate passes compile_predicate validation
+    - Invalid generated predicate (e.g. broken regex) -> logged, not inserted
+    - Auto-generated contract tests: >= 1 BLOCK test per violation example
+    - source=AUDITOR rule blocked from auto-promotion to CANDIDATE
+  ADVERSARIAL:
+    - If pattern normalization is too aggressive, distinct violations collapse to same hash.
+      Test: two semantically different violations with similar text, verify distinct hashes.
+    - If pattern normalization is too weak, same violation gets different hashes each time.
+      Test: same violation with whitespace/comment differences, verify same hash.
+    - If the auditor can influence pattern normalization (e.g. by crafting finding text),
+      circular trust. Test: normalization runs in orchestrator process, not auditor.
+  ACCEPTANCE:
+    - Auto-proposal fires at exactly occurrences >= 3 (not 2, not 4)
+    - All generated predicates validated before insertion
+    - Trust boundary enforced: auditor-sourced rules need independent approval
+    - Scoring composite in [0, 15] range
+
+3F.8 SEED DATA LOADING
+  PRE_GATE:
+    - Steps 3F.1-3F.7 complete
+  TASK:
+    - Create rules_seed.db from domain rule files (rules.txt section 8, 10)
+    - Ship ~33 highest-value rules first (engineering + security + top trading rules + post-tool completeness)
+    - Seed rules enter as status=ACTIVE, source=SEED, skip lifecycle
+    - Domain rules activate only when domain detection matches
+    - Engineering and security rules activate for all code
+    - Post-tool completeness GREP rules (Tier 1, engineering domain, PostToolUse hook):
+        GREP_PATTERN: web_fetch results containing <img> tags -> WARN "N images not extracted"
+        GREP_PATTERN: web_fetch results containing <table> tags -> WARN "N tables not extracted"
+        GREP_PATTERN: file_read results containing TODO/FIXME -> INFO "N TODO/FIXME items"
+      These fire in PostToolUse hook, <1ms, deterministic. No pre-execution I/O.
+      Source: technical-analysis-v3.txt Concern 3 Mechanism 2, rules.txt section 8.6.
+    - Merge logic: global seeds + project-specific rules. Project rules override by rule_id.
+    - Seed contract tests shipped alongside seed rules
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- seed 2>&1 | grep "test result: ok"
+    - rules_seed.db loads into empty project rules.db without errors
+    - All seed rules have status=ACTIVE and source=SEED
+    - Seed rule count >= 33 (initial shipment, including 3 post-tool completeness GREP rules)
+    - Every seed Tier 1 rule has >= 3 contract tests
+    - Every seed Tier 2 rule has >= 2 contract tests
+    - Merge: project rule with same rule_id overrides global seed
+    - Merge: mutable=0 seed rules CANNOT be overridden by project rules with mutable=1
+  ADVERSARIAL:
+    - If seed DB is corrupt or missing, project init fails silently with no rules.
+      Test: absent rules_seed.db -> explicit error "Seed database not found at {path}".
+    - If merge overwrites project-specific rules with older seeds, custom rules lost.
+      Test: project has custom rule "custom.1", seed has no "custom.1", after merge "custom.1" preserved.
+    - If project rule overrides mutable=0 security seed with mutable=1, security enforcement weakened.
+      Test: project rule with same rule_id as security seed + mutable=1, verify merge rejects override.
+  ACCEPTANCE:
+    - Seed DB loads cleanly
+    - >= 33 seed rules with correct status/source (including post-tool completeness rules)
+    - Contract tests present for all Tier 1/2 seed rules
+    - Merge preserves project-specific rules
+
+3F.9 CONTRACT TEST SUITE (STATIC + PROPERTY-BASED)
+  PRE_GATE:
+    - Steps 3F.1-3F.8 complete
+    - proptest crate added to Cargo.toml dev-dependencies
+  TASK:
+    - Write static contract tests: minimum 3 per Tier 1 rule (BLOCK + ALLOW + EDGE),
+      minimum 2 per Tier 2 rule (valid + invalid schema)
+    - Write proptest property-based tests per rules.txt section 9A:
+      violation_generator, valid_generator, mutation_invariant, fix_mutation
+    - COMPOSITE predicate proptest: prop_recursive generates AND/OR/NOT trees (depth 8, size 64)
+      (depth must match MAX_COMPOSITE_DEPTH=8 to cover all valid depths)
+    - De Morgan invariant: NOT(A AND B) == NOT A OR NOT B
+    - Associativity invariant: same operator evaluation
+    - Shrunk counter-examples auto-inserted into contract_tests table as source=GENERATED
+    - Total static contract tests: >= 254 (per rules.txt section 9A arithmetic)
+    - Total proptest lines: ~1400 across 7 domains (~200 per domain)
+  DETERMINISTIC_CHECK:
+    - cargo test -p rules --lib -- contract 2>&1 | grep "test result: ok"
+    - cargo test -p rules --lib -- proptest 2>&1 | grep "test result: ok"
+    - Test count >= 254 static: cargo test -p rules -- --list 2>&1 | grep "contract" | wc -l
+    - proptest runs 256 cases per rule without failure
+    - De Morgan invariant holds for all generated COMPOSITE trees
+  ADVERSARIAL:
+    - If proptest finds a counter-example that breaks a predicate, the predicate is wrong.
+      Test: verify any shrunk counter-example is reproducible and inserted into contract_tests.
+    - If contract tests are READ-LOCKED during self-modification but the lock isn't enforced,
+      self-mod can corrupt the test suite.
+      Test: attempt contract_tests INSERT during self-modification flag=true, verify rejection.
+  ACCEPTANCE:
+    - >= 254 static contract tests passing
+    - proptest passes 256 cases per Tier 1 rule
+    - De Morgan and associativity invariants verified
+    - Contract test READ-LOCK enforced during self-modification
+
+3F.10 BENCHMARK AND MEASURE
+  PRE_GATE:
+    - Steps 3F.1-3F.9 complete
+    - criterion crate added to Cargo.toml dev-dependencies
+  TASK:
+    - Benchmark rule evaluation latency using criterion:
+      single GREP_PATTERN rule on 100-line file
+      single AST_PATTERN rule on 100-line file (with mock AstEvaluator)
+      single METRIC_GATE rule
+      10 mixed rules on 100-line file (realistic workload)
+    - Target: <1ms per rule for GREP/METRIC, <5ms for AST (parse-dependent)
+    - Record: contract test pass rate, seed rule count, proptest counter-examples found,
+      lifecycle transition count
+  DETERMINISTIC_CHECK:
+    - cargo bench -p rules -- eval_latency 2>&1 shows results
+    - GREP_PATTERN median < 1ms
+    - METRIC_GATE median < 0.1ms
+    - 10-rule mixed evaluation median < 10ms
+  ADVERSARIAL:
+    - If benchmark uses trivial input (1-line file), real-world performance unknown.
+      Test: benchmark includes 100-line and 1000-line inputs to show scaling behavior.
+  ACCEPTANCE:
+    - All benchmarks run without panic
+    - GREP and METRIC under 1ms median
+    - Benchmark results stored in .elai_cc/metrics/phase_3F.toml
+
+COUNTERFACTUAL TESTING SCOPE NOTE
+  The counterfactual shadow testing mechanism (rules.txt section 5A) is DEFINED and
+  DATA-MODELED in this phase (schema columns, rate computation logic, transition guards).
+  The RUNTIME INTEGRATION (actually running counterfactual auditor passes during AUDITING)
+  depends on orchestrator + auditor coordination, which is Phase 3C+3A territory.
+  Phase 3I (DST) should include counterfactual testing in its simulation model.
+  This phase tests the LOGIC (given these counts, does the gate pass/fail?) not the ORCHESTRATION.
+
+EXIT CRITERIA
+  Rules evaluate deterministically (same code + same predicate = same verdict, 100x verified).
+  Lifecycle works (all transitions, all guards, mutable=0 invariant).
+  Self-discovery proposes rules from 3+ violations (compile-time validated).
+  Contract tests pass (>= 254 static + proptest 256 cases per rule).
+  Benchmarks recorded (GREP <1ms, METRIC <0.1ms).
+  Trust boundary enforced (auditor-sourced rules need independent approval).
+
+MEASUREMENTS
+  Rule evaluation latency (GREP, AST, METRIC, mixed — criterion benchmarks)
+  Contract test pass rate (static + proptest)
+  Seed rule count (target: >= 33 initial)
+  Proptest counter-examples found (expect 0 if predicates correct; nonzero = predicate bug found)
+  Lifecycle transition count (all 5 states reachable)
+
+GROUNDING
+  "254+ contract tests" -> VERIFIED: arithmetic from rules.txt section 9A
+    (25*3 + 5*2 + 11*3 + 11*3 + 2*2 + 10*3 + 7*3 + 10*3 + 6*3 = 254 minimum)
+  "<1ms per rule" -> UNGROUNDED (target only, no existing benchmark).
+    Assumed because: regex crate is O(n) linear, METRIC_GATE is O(1) comparison.
+    Will be verified empirically in step 3F.10 with criterion.
+  "5 predicate types" -> GROUNDED: rules.txt section 3 defines all 5 with fields and examples.
+  "PROPOSED->CANDIDATE requires >= 3 contract tests" -> GROUNDED: rules.txt section 5 line 179.
+  "false_positive_rate < 5% for ACTIVE" -> GROUNDED: rules.txt section 5 line 189.
+  "counterfactual_causal_rate > 50% for ACTIVE" -> GROUNDED: rules.txt section 5A line 226.
+  "mutable=0 cannot be auto-retired" -> GROUNDED: rules.txt section 5 line 196.
+  "policy_engine.rs (581 LOC)" -> VERIFIED: file exists in .elai_cc/rust/crates/tools/src/.
+  "permission_enforcer.rs (546 LOC)" -> VERIFIED: file exists in .elai_cc/rust/crates/runtime/src/.
+  "tree-sitter in knowledge/ crate" -> VERIFIED: NOT yet in codebase (added Phase 1A).
+    Rules/ uses AstEvaluator trait + mock for testing until knowledge/ provides real impl.
+  "proptest crate" -> VERIFIED: NOT in Cargo.toml yet. Must be added as dev-dependency.
+  "criterion crate" -> VERIFIED: NOT in Cargo.toml yet. Must be added as dev-dependency.
+  "ESCALATE verdict" -> GROUNDED: rules.txt section 3 lines 136-142 define variants and targets.
+  "Auditor-sourced rules need independent validation" -> GROUNDED: rules.txt section 6 lines 275-278.
+  "Evaluation order optimization (METRIC < GREP < AST)" -> GROUNDED: standard algorithmic
+    complexity ordering. METRIC=O(1), GREP=O(n), AST=O(n*query_complexity).
+  "COMPOSITE depth limit" -> UNGROUNDED (not in rules.txt). Added as defensive measure against
+    stack overflow from self-discovered COMPOSITE rules. Assumed depth=8 is sufficient because
+    no existing seed rule exceeds depth 3.
+  "regex crate linear time guarantee" -> VERIFIED: regex crate README states
+    "This implementation uses finite automata and guarantees linear time matching."
+    Will verify via WebSearch during implementation.

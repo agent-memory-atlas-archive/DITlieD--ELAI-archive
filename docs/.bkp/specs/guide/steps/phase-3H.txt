@@ -1,0 +1,521 @@
+PHASE 3H: SESSION HANDOFF (CMV-derived DAG state management)
+Prerequisites: Phase 3G complete (hierarchical plan management — PlanSkeleton in snapshots),
+  Phase 3B complete (SSB operational — stub recovery reads SSB seq entries),
+  Phase 3E complete (context budget allocator — trimming target derived from slot allocation),
+  providers::token_count callable (stub_threshold measured in tokens)
+Depends on: orchestrator::SSB (stub recovery via ssb.query(seq)),
+  orchestrator::ContextBudget (trimming target = model_window - allocated_slots - output_reserve),
+  orchestrator::PlanSkeleton (persisted in snapshot.findings as plan state),
+  providers::token_count (measuring stub_threshold, trimmed context size)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+DAG-based session state versioning with structurally lossless trimming.
+Sessions can branch, explore alternatives, and merge.
+Checkpoint triggers: after every GRC step, tool call, phase transition.
+Handoff triggers: at token budget threshold (configurable, default 85%).
+Paper reference: arxiv 2602.22402 (CMV). Interface map: workflow/papers/cmv-interface.md.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          Section 10 (SessionDag, trimming, branch, handoff)
+  docs/specs/architecture-overview.txt        Section 5 (SessionDag cross-cutting)
+  docs/specs/crates/orchestrator.txt          Section 3 (SSB schema — stub recovery source)
+  docs/specs/crates/orchestrator.txt          Section 6 (context budget — trimming target)
+  workflow/papers/cmv-interface.md             CMV paper interface map (invariants, failure modes)
+
+SPEC AMENDMENTS REQUIRED (resolve before implementing):
+  1. snapshot_context schema: this phase expands orchestrator.txt L293-294 from a BLOB-per-snapshot
+     design (role TEXT, trimmed_messages BLOB, stub_count INTEGER) to a per-message row design
+     (seq, role, content, is_stubbed, stub_ssb_seq). Rationale: per-message rows enable selective
+     stub recovery without deserializing entire context BLOB. Update orchestrator.txt Section 10
+     to reflect the adopted schema before implementing.
+  2. SSB action_type for branch operations: orchestrator.txt L57-63 lists 16 action_types.
+     Branch abandonment needs either: (a) a new action_type 'branch_abandon' added to the spec,
+     or (b) reuse existing 'checkpoint' action_type with branch metadata in payload.
+     Decision required before implementing 3H.4.
+  3. SSB cleanup on branch merge: orchestrator.txt L312 says "Only winning branch's SSB entries
+     kept." This is ambiguous — SSB is append-only (L47). Clarify: does "kept" mean
+     (a) physical deletion of losing branch entries, or (b) logical exclusion via query filter?
+     This phase assumes (b) — query exclusion, no physical deletes. Confirm or override.
+
+
+TYPES (expanded from orchestrator.txt L286-325 — see SPEC AMENDMENTS above for divergences)
+
+  SQLite schema (session_dag.db, one per session):
+
+    CREATE TABLE snapshots (
+        snap_id     TEXT PRIMARY KEY,       -- UUID v4 via EntropyProvider
+        parent_id   TEXT REFERENCES snapshots(snap_id),  -- NULL for root
+        session_id  TEXT NOT NULL,
+        fsm_state   TEXT NOT NULL,          -- FSM state at snapshot time
+        phase       TEXT,                   -- current plan phase (e.g. "3H")
+        step        TEXT,                   -- current step within phase (e.g. "3H.2")
+        findings    BLOB,                   -- msgpack: Vec<AuditFinding> (from auditor)
+        code_changes BLOB,                  -- msgpack: Vec<FileChange> (files touched)
+        tests_written BLOB,                 -- msgpack: Vec<TestRef> (tests added/modified)
+        commit_hashes TEXT,                 -- comma-separated git commit SHAs owned by session
+        created_at  INTEGER NOT NULL,       -- unix millis via ClockProvider
+        tag         TEXT                    -- "handoff", "branch:{name}", or NULL
+    );
+
+    CREATE TABLE snapshot_context (
+        snap_id     TEXT NOT NULL REFERENCES snapshots(snap_id),
+        seq         INTEGER NOT NULL,       -- message ordering within conversation
+        role        TEXT NOT NULL CHECK(role IN ('system','user','assistant','tool')),
+        content     BLOB NOT NULL,          -- msgpack: original or stubbed message content
+        is_stubbed  INTEGER NOT NULL DEFAULT 0,  -- 1 if this message was stubbed by trimming
+        stub_ssb_seq INTEGER,               -- SSB seq for recovery (NULL if not stubbed)
+        PRIMARY KEY (snap_id, seq)
+    );
+
+    CREATE INDEX idx_snapshots_session ON snapshots(session_id);
+    CREATE INDEX idx_snapshots_tag ON snapshots(tag) WHERE tag IS NOT NULL;
+    CREATE INDEX idx_context_stubbed ON snapshot_context(snap_id) WHERE is_stubbed = 1;
+
+  Rust types:
+
+    struct SessionDag {
+        db: rusqlite::Connection,           -- session_dag.db (not WAL — single writer per session)
+        session_id: String,
+        active_branches: Vec<BranchRef>,    -- max 3 enforced
+    }
+
+    struct Snapshot {
+        snap_id: String,                    -- UUID v4
+        parent_id: Option<String>,
+        session_id: String,
+        fsm_state: String,
+        phase: Option<String>,
+        step: Option<String>,
+        findings: Vec<u8>,                  -- msgpack blob
+        code_changes: Vec<u8>,
+        tests_written: Vec<u8>,
+        commit_hashes: Vec<String>,
+        created_at: u64,                    -- via ClockProvider
+        tag: Option<String>,
+    }
+
+    struct TrimmedMessage {
+        seq: u32,                           -- conversation ordering
+        role: MessageRole,                  -- system/user/assistant/tool
+        content: Vec<u8>,                   -- msgpack: original content or stub
+        is_stubbed: bool,
+        stub_ssb_seq: Option<u64>,          -- SSB seq for recovery
+    }
+
+    struct Stub {
+        original_type: String,              -- e.g. "tool_result", "file_content"
+        original_tokens: usize,             -- token count of original content
+        summary_hash: [u8; 32],             -- blake3 hash of original content
+        ssb_seq: u64,                       -- SSB seq where original is stored
+    }
+
+    struct BranchRef {
+        name: String,                       -- branch name (from tag "branch:{name}")
+        tip_snap_id: String,                -- latest snapshot in this branch
+        created_at: u64,
+    }
+
+    enum MergeResult {
+        Winner { branch: BranchRef, abandoned: Vec<BranchRef> },
+        -- NOTE: orchestrator.txt L312 says "pick winning branch" without conflict detection.
+        -- A Conflict variant is UNGROUNDED (see SPEC AMENDMENTS #3). If spec confirms
+        -- always-pick-winner, remove this variant. If spec adds conflict detection, keep it.
+        Conflict { reason: String },        -- e.g. both branches modified same file (optional)
+    }
+
+
+RISKS TO WATCH
+  R-3H-1: DAG cycle formation during branching. CMV paper lists this as failure mode #3.
+    Mitigation: parent_id is always the snapshot being branched FROM (existing, immutable).
+    New snapshots append only. Verify acyclicity: parent chain walk terminates at root (NULL).
+  R-3H-2: Orphan stub references — stub points to SSB seq that was pruned or corrupted.
+    CMV paper failure mode #2. Mitigation: Pass 3 validates every stub against SSB before
+    committing trimmed context. If SSB seq missing, keep original content (don't stub).
+  R-3H-3: Token counting inaccuracy in trimming — stubbed context still exceeds model window.
+    CMV paper failure mode #4. Mitigation: measure trimmed context with exact token_count
+    (not estimate) before writing to snapshot_context. Reject if exceeds budget.
+  R-3H-4: Branch explosion — more than 3 active branches consume excessive SQLite storage.
+    Mitigation: hard limit of 3 active branches enforced on branch creation (orchestrator.txt L314).
+    Must close/merge a branch before opening a new one.
+  R-3H-5: Prompt cache invalidation during trimming — if trimming changes Slots 1-3 prefix,
+    cache miss on next invocation wastes tokens. Mitigation: trimming only operates on
+    Slot 6+ content (SSB entries, GRC history). Slots 1-3 (system prompt, rules, phase spec)
+    are never stubbed. Slot 4-5 (repo map, code context) are regenerated per invocation anyway.
+  R-3H-6: Compaction boundary detection failure (CMV failure mode #1). If handoff trigger
+    (85% token budget) is miscalculated, trimming fires too early (wastes context) or too late
+    (context overflow before handoff). Mitigation: handoff trigger checks actual token usage
+    via exact token_count, not estimate. Test: inject context at exactly 85% -> handoff triggers;
+    inject at 84.9% -> no handoff.
+  R-3H-7: Session file corruption (CMV failure mode #5). If session_dag.db is partially written
+    (crash during transaction), the file may be corrupted. Mitigation: SQLite transactions
+    ensure atomicity (DELETE journal mode). On open, run PRAGMA integrity_check. If it fails,
+    return Err(DatabaseCorrupted) — caller decides whether to start fresh or abort.
+  R-3H-8: TrimConfig.allocated_slots_tokens coupling to Phase 3E. The trimming target formula
+    (model_window - allocated_slots - output_reserve) requires Phase 3E to expose a method
+    returning total allocated tokens for Slots 1-7. If 3E does not expose this, TrimConfig
+    cannot be populated. PRE_GATE in 3H.3 should verify this interface exists.
+
+
+STEPS
+
+  3H.1 SQLITE SCHEMA AND TYPES
+    PRE_GATE:
+      - Phase 3G tests pass: cargo test -p orchestrator --lib plan -- --exact
+      - SSB operational: cargo test -p orchestrator --lib ssb -- --exact
+      - providers::token_count callable: cargo test -p providers --lib token_count -- --exact
+      - Session directory structure exists: .elai_cc/sessions/ directory writable
+    TASK:
+      - Define SessionDag, Snapshot, TrimmedMessage, Stub, BranchRef, MergeResult types
+      - Implement SessionDag::new(session_id, path) — creates session_dag.db, runs CREATE TABLE
+      - Implement SessionDag::open(session_id, path) — opens existing db, validates schema,
+        runs PRAGMA integrity_check (see R-3H-7). If corrupt, return Err(DatabaseCorrupted).
+      - Schema migration: version table for future schema changes
+      - Use rusqlite (already a dependency for SSB). Not WAL mode — single writer per session,
+        no concurrent readers needed (unlike SSB which has multi-agent reads)
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib session_dag_schema -- --exact
+      - SessionDag::new creates db file at expected path
+      - SessionDag::new on existing db returns Ok (idempotent CREATE TABLE IF NOT EXISTS)
+      - SessionDag::open on nonexistent path returns Err(DatabaseNotFound)
+      - Schema has exactly 2 tables: snapshots, snapshot_context
+      - Schema has 3 indexes: idx_snapshots_session, idx_snapshots_tag, idx_context_stubbed
+      - All Rust types implement serde Serialize/Deserialize
+      - Stub struct msgpack round-trip: serialize -> deserialize -> field equality
+      - SessionDag::open on corrupted db (manually truncate file) -> Err(DatabaseCorrupted)
+    ADVERSARIAL:
+      - If session_dag.db is created with WAL mode but session crashes mid-write, WAL file
+        lingers and blocks reopening on Windows. Test: use default journal mode (DELETE),
+        verify crash recovery by killing mid-transaction and reopening successfully.
+        Evidence: SQLite docs state WAL requires -shm/-wal cleanup; DELETE mode is self-contained.
+      - If snap_id UUID generation uses system randomness instead of EntropyProvider,
+        deterministic replay breaks. Test: create 2 snapshots with same EntropyProvider seed,
+        verify identical snap_ids. Different seeds -> different snap_ids.
+      - If parent_id FK is not enforced (SQLite FK off by default), orphan snapshots possible.
+        Test: PRAGMA foreign_keys = ON in SessionDag::new. Insert with nonexistent parent_id
+        -> Err(ForeignKeyViolation).
+    ACCEPTANCE:
+      - snapshots table matches orchestrator.txt L289-292 exactly (column names, types, constraints)
+      - snapshot_context table implements expanded per-message schema (see SPEC AMENDMENTS #1)
+        Requires orchestrator.txt update before implementation. If not updated, fall back to
+        spec schema (role TEXT, trimmed_messages BLOB, stub_count INTEGER).
+      - All types compile, serialize, deserialize
+      - FK enforcement active
+      - Idempotent creation
+    GROUNDING:
+      - "snapshots schema" -> GROUNDED: orchestrator.txt L289-292
+      - "snapshot_context schema" -> DIVERGES FROM SPEC: orchestrator.txt L293-294 specifies
+        (role TEXT, trimmed_messages BLOB, stub_count INTEGER). This phase proposes per-message
+        rows instead. See SPEC AMENDMENTS #1 for rationale and resolution path.
+      - "single writer per session" -> GROUNDED: one session_dag.db per session (orchestrator.txt L287)
+      - "SQLite FK off by default" -> VERIFIED: SQLite docs (PRAGMA foreign_keys defaults to OFF)
+      - "EntropyProvider for UUID" -> GROUNDED: implementation-guide.txt L46 (entropy quarantined)
+
+  3H.2 SNAPSHOT SAVE AND LOAD
+    PRE_GATE:
+      - 3H.1 schema and types exist and compile
+      - SessionDag::new creates valid db
+    TASK:
+      - Implement SessionDag::save_snapshot(snapshot, messages: Vec<TrimmedMessage>) -> Result<()>
+        - Insert into snapshots table
+        - Insert each TrimmedMessage into snapshot_context (batch insert for performance)
+        - Transaction: both inserts in same transaction (atomic)
+      - Implement SessionDag::load_snapshot(snap_id) -> Result<(Snapshot, Vec<TrimmedMessage>)>
+        - Query snapshots + snapshot_context JOIN
+        - Order messages by seq
+      - Implement SessionDag::latest_snapshot(tag: Option<&str>) -> Result<Option<Snapshot>>
+        - If tag provided: latest snapshot with that tag (by created_at DESC)
+        - If no tag: latest snapshot overall
+      - Implement SessionDag::parent_chain(snap_id) -> Result<Vec<Snapshot>>
+        - Walk parent_id chain to root. Verify acyclicity (visited set).
+        - Return in root-to-tip order
+    DETERMINISTIC_CHECK:
+      - Save snapshot -> load same snap_id -> field equality (all columns match)
+      - Save with 100 messages -> load -> all 100 messages present, ordered by seq
+      - latest_snapshot(None) returns most recently created
+      - latest_snapshot(Some("handoff")) returns latest with tag="handoff", ignores others
+      - latest_snapshot on empty db returns Ok(None)
+      - parent_chain for root snapshot (parent_id=NULL) returns vec![root]
+      - parent_chain for A -> B -> C returns [A, B, C] (root first)
+      - parent_chain detects cycle (manually inserted via raw SQL): returns Err(CycleDetected)
+      - Batch insert performance: 1000 messages in < 100ms (SQLite batch insert is ~50K/sec)
+    ADVERSARIAL:
+      - If transaction is not used, crash between snapshots INSERT and snapshot_context INSERTs
+        leaves orphan snapshot with no context. Test: simulate crash (drop connection after
+        first INSERT, before COMMIT). Reopen -> snapshot not present (transaction rolled back).
+      - If parent_chain walk has no visited set, a corrupted cycle (injected via raw SQL)
+        causes infinite loop. Test: insert A(parent=B), B(parent=A) via raw SQL.
+        parent_chain("A") returns Err(CycleDetected) within max_depth (1000 iterations).
+      - If load_snapshot returns messages in INSERT order instead of seq order, conversation
+        reconstruction is wrong. Test: save messages with seq=[3,1,2], load -> ordered [1,2,3].
+    ACCEPTANCE:
+      - Save/load round-trip preserves all data (snapshot fields + all messages)
+      - Transaction atomicity verified (no partial writes on crash)
+      - Parent chain acyclicity enforced
+      - Message ordering by seq guaranteed
+    GROUNDING:
+      - "checkpoint trigger" -> GROUNDED: orchestrator.txt L296 ("after every GRC step, tool call, phase transition")
+      - "handoff trigger" -> GROUNDED: orchestrator.txt L297 ("at token budget threshold")
+      - "acyclic parent chain" -> GROUNDED: orchestrator.txt L629 ("Session DAG is always acyclic")
+      - "batch insert ~50K/sec" -> VERIFIED: SQLite documentation (within single transaction)
+
+  3H.3 STRUCTURALLY LOSSLESS 3-PASS TRIMMING
+    PRE_GATE:
+      - 3H.2 snapshot save/load works
+      - providers::token_count callable (needed for stub_threshold measurement)
+      - SSB operational (Pass 3 validates stubs against SSB)
+      - Phase 3E context budget allocator exposes total_allocated_tokens() or equivalent
+        (needed for TrimConfig.allocated_slots_tokens). Verify: grep for method in 3E code.
+    TASK:
+      - Implement SessionDag::trim_context(messages, config) -> Result<Vec<TrimmedMessage>>
+        config: TrimConfig { stub_threshold: usize, model_context_window: usize,
+          allocated_slots_tokens: usize, output_reserve: usize }
+        target_tokens = model_context_window - allocated_slots_tokens - output_reserve
+      - Pass 1 (identify): stream through messages. For each tool-result message, measure
+        token count via providers::token_count. If > stub_threshold, mark for stubbing.
+        User and assistant messages: NEVER marked (structurally lossless invariant).
+      - Pass 2 (stub): for marked messages, replace content with Stub struct (msgpack).
+        Stub contains: original_type, original_tokens, summary_hash (blake3 of original),
+        ssb_seq (the SSB seq where this tool result was recorded).
+        Set is_stubbed=true, stub_ssb_seq=ssb_seq on the TrimmedMessage.
+      - Pass 3 (validate): for each stubbed message, verify ssb_seq exists in SSB
+        (ssb.query_seq(seq) returns Some). If SSB seq missing: UNSTUB — restore original
+        content (cannot recover later, so keep it now). Measure total trimmed token count.
+        If total > target_tokens: return Err(TrimBudgetExceeded { actual, target }).
+      - Prompt cache awareness: messages in Slots 1-3 positions (system prompt, rules,
+        phase spec) are never candidates for stubbing. Only Slot 6+ content (SSB entries,
+        GRC history, tool results) eligible.
+    DETERMINISTIC_CHECK:
+      - 10 messages, 3 tool results >500 tokens each -> 3 stubbed, 7 unchanged
+      - All user/assistant messages preserved verbatim (byte comparison)
+      - Stub.summary_hash matches blake3(original_content) for each stub
+      - Stub.ssb_seq is valid (SSB lookup returns original content)
+      - SSB seq missing for one stub -> that message unstubbed (original preserved)
+      - Total trimmed tokens < target_tokens for valid input
+      - Input with all messages < stub_threshold -> 0 stubs, output identical to input
+      - token_reduction = sum(original_tokens) - sum(trimmed_tokens) >= 0 (invariant from CMV)
+      - Same input + same seed -> identical output (determinism)
+    ADVERSARIAL:
+      - If token_count is slow (~10ms per call) and context has 500 messages, Pass 1 takes 5s.
+        Acceptable for handoff (infrequent). But test: measure Pass 1 wall time with 500 messages,
+        verify < 10s. If too slow, batch token counting (concatenate then count once) as fallback.
+      - If blake3 hash collision occurs (astronomically unlikely), stub recovery returns wrong
+        content. Test: this is not testable probabilistically. Mitigation: ssb_seq is the primary
+        recovery key, hash is integrity check only. Verify: recovered content hash matches stub hash.
+      - If stub_threshold is set very low (e.g. 10 tokens), nearly everything gets stubbed,
+        including small tool results that are cheap to keep. Test: minimum stub_threshold enforced
+        at 100 tokens (CMV paper hyperparameter range [100, 1000]).
+      - If trimming runs AFTER prompt cache prefix is computed, stubs in Slots 1-3 break cache.
+        Test: assert no message with seq <= slot_3_boundary is ever stubbed.
+    ACCEPTANCE:
+      - All user/assistant messages preserved (zero content changes)
+      - Token reduction >= 0
+      - Every stub recoverable from SSB (or unstubbed if SSB missing)
+      - Trimmed output fits within target_tokens
+      - stub_threshold enforced in [100, 1000] range
+    GROUNDING:
+      - "3 streaming passes" -> GROUNDED: orchestrator.txt L300-304, CMV paper (O(3*N))
+      - "stub_threshold default 500" -> GROUNDED: orchestrator.txt L301, CMV hyperparameters
+      - "structurally lossless" -> GROUNDED: orchestrator.txt L630 ("preserves ALL user and assistant messages")
+      - "every stub references valid SSB seq" -> GROUNDED: orchestrator.txt L631
+      - "prompt cache prefix Slots 1-3" -> GROUNDED: orchestrator.txt L635, context budget L143
+      - "stub_threshold range [100, 1000]" -> GROUNDED: CMV interface map hyperparameters
+      - "blake3 for hashing" -> UNGROUNDED: orchestrator.txt does not specify hash algorithm.
+        Assumed because: blake3 is fast (3.5 GB/s) and already common in Rust ecosystem.
+        Alternative: sha256. Decision deferred to implementation.
+
+  3H.4 BRANCH AND MERGE OPERATIONS
+    PRE_GATE:
+      - 3H.2 snapshot save/load works
+      - 3H.3 trimming works (branches may need trimmed context)
+    TASK:
+      - Implement SessionDag::create_branch(name, from_snap_id) -> Result<BranchRef>
+        - Verify active_branches.len() < 3 (hard limit from orchestrator.txt L314)
+        - Create snapshot with tag="branch:{name}", parent_id=from_snap_id
+        - Copy snapshot_context from parent snapshot (new branch starts with same context)
+        - Add to active_branches
+      - Implement SessionDag::list_branches() -> Vec<BranchRef>
+      - Implement SessionDag::merge_branch(winner_name) -> Result<MergeResult>
+        - Winner branch: create NEW snapshot with winner tip's content and parent_id set to
+          current trunk tip. Do NOT mutate existing parent_id (snapshots are immutable).
+          This extends the trunk DAG with the winning branch's state.
+        - Abandoned branches: mark snapshots with tag="abandoned:{name}"
+        - SSB recording: use action_type='checkpoint' (existing, orchestrator.txt L58) with
+          payload { event: "branch_merge", winner: name, abandoned: [names], snap_ids }.
+          BLOCKER: see SPEC AMENDMENTS #2 — if a dedicated action_type is preferred,
+          'branch_abandon' must be added to orchestrator.txt L57-63 CHECK constraint first.
+        - SSB entries from abandoned branches: see SPEC AMENDMENTS #3 for cleanup semantics.
+          Default assumption: logical exclusion (query filter), not physical deletion.
+        - Return MergeResult::Winner { branch, abandoned }
+      - Implement SessionDag::close_branch(name) -> Result<()>
+        - Remove from active_branches. Mark snapshots as abandoned.
+      - Branch naming: alphanumeric + hyphens only, max 64 chars.
+    DETERMINISTIC_CHECK:
+      - Create branch from snapshot A -> new snapshot with tag="branch:test", parent=A
+      - Create 3 branches -> success. Create 4th -> Err(BranchLimitExceeded { max: 3 })
+      - list_branches returns exactly the active branches (not abandoned ones)
+      - merge_branch("b1") with branches [b1, b2, b3] -> b1 is winner, b2+b3 abandoned
+      - After merge: active_branches = [] (all resolved), trunk continues from b1 tip
+      - close_branch on nonexistent name -> Err(BranchNotFound)
+      - Branch name with spaces -> Err(InvalidBranchName)
+      - SSB contains checkpoint entry with branch_merge event after merge
+    ADVERSARIAL:
+      - If merge does not create a new trunk snapshot from winner's tip, the trunk is stale.
+        Test: create branch, add 5 snapshots to branch, merge. Load trunk tip ->
+        context matches branch tip's latest snapshot content.
+      - If two branches modify the same file (both have code_changes with same path),
+        merge is ambiguous. Test: detect file overlap in code_changes BLOBs of both branches.
+        Return MergeResult::Conflict { reason } instead of silently picking one.
+      - If abandoned branch snapshots are deleted instead of tagged, parent_id references
+        from other snapshots break FK. Test: abandoned snapshots remain in DB (queryable),
+        only excluded from active queries via WHERE tag NOT LIKE 'abandoned:%'.
+    ACCEPTANCE:
+      - Branch limit of 3 enforced
+      - Merge creates new trunk snapshot from winner tip (immutable DAG, no parent_id mutation)
+      - Merge tags losing branches as abandoned
+      - SSB records merge via checkpoint action_type (or spec-amended action_type)
+      - File conflict detection on merge (optional — depends on SPEC AMENDMENTS #3 resolution)
+      - Abandoned snapshots preserved in DB (not deleted), excluded from active queries
+    GROUNDING:
+      - "max 3 active branches" -> GROUNDED: orchestrator.txt L314, L632
+      - "pick winning branch" -> GROUNDED: orchestrator.txt L312
+      - "SSB append-only" -> GROUNDED: orchestrator.txt L47 ("append-only within session")
+      - "branch tag format" -> GROUNDED: orchestrator.txt L310 ("tag='branch:{name}'")
+      - "file conflict on merge" -> UNGROUNDED: orchestrator.txt does not specify conflict
+        detection on merge. Assumed because: two branches modifying same file is an ambiguous
+        merge — silently choosing one risks data loss. Safe default: detect and report.
+
+  3H.5 STUB RECOVERY FROM SSB
+    PRE_GATE:
+      - 3H.3 trimming works (stubs exist in snapshot_context)
+      - SSB query by seq operational (Phase 3B)
+    TASK:
+      - Implement SessionDag::recover_stubs(snap_id, ssb: &Ssb) -> Result<Vec<TrimmedMessage>>
+        - Load trimmed messages for snap_id
+        - For each message where is_stubbed=true: parse Stub from content, query SSB by stub.ssb_seq
+        - Verify: blake3(recovered_content) == stub.summary_hash (integrity check)
+        - Replace stub content with recovered original. Set is_stubbed=false, stub_ssb_seq=None.
+        - Return fully recovered message list
+      - Implement SessionDag::recover_single_stub(snap_id, seq, ssb: &Ssb) -> Result<TrimmedMessage>
+        - Recover one specific message (for on-demand recovery during session)
+      - Recovery failure modes:
+        - SSB seq not found -> Err(StubRecoveryFailed { seq, reason: "SSB entry missing" })
+        - Hash mismatch -> Err(StubRecoveryFailed { seq, reason: "integrity check failed" })
+    DETERMINISTIC_CHECK:
+      - Stub with valid SSB seq -> recovered content matches original (byte equality)
+      - blake3(recovered) == stub.summary_hash for all recovered stubs
+      - SSB seq missing -> Err(StubRecoveryFailed) with descriptive reason
+      - Hash mismatch (simulated by corrupting SSB entry) -> Err with integrity reason
+      - recover_stubs on snapshot with 0 stubs -> returns messages unchanged
+      - recover_single_stub on non-stubbed message -> returns message unchanged
+      - Round-trip: original -> trim -> save -> load -> recover -> byte-equal to original
+    ADVERSARIAL:
+      - If SSB was pruned between sessions (old entries removed for storage), stubs become
+        unrecoverable. Test: create stub pointing to SSB seq=100, delete SSB entries <200,
+        recover -> Err. Mitigation: SSB pruning must check for referencing stubs first.
+        Note: SSB pruning is not currently specified — flag as future risk.
+      - If recovered content is larger than original (SSB stored modified version), token count
+        assumptions break. Test: verify recovered_tokens == stub.original_tokens.
+        If mismatch, warn but allow (content may have been re-encoded).
+    ACCEPTANCE:
+      - Full round-trip: original messages -> trim -> save -> load -> recover = original
+      - Integrity verification via hash
+      - Clear error messages on recovery failure
+      - Single-stub recovery works independently
+    GROUNDING:
+      - "stubs recoverable from SSB" -> GROUNDED: orchestrator.txt L306
+      - "re-execute tool call or read from SSB" -> GROUNDED: orchestrator.txt L306
+      - "every stub references valid SSB seq" -> GROUNDED: orchestrator.txt L631
+      - "SSB pruning not specified" -> VERIFIED: grep for "prune" in orchestrator.txt returns 0 hits
+
+  3H.6 HANDOFF AND INTEGRATION TEST
+    PRE_GATE:
+      - All prior steps (3H.1-3H.5) pass individually
+      - SSB operational, context budget allocator operational
+      - providers::token_count callable
+    TASK:
+      - Implement SessionDag::create_handoff(messages, config, ssb) -> Result<Snapshot>
+        - Run 3-pass trimming on messages
+        - Create snapshot with tag="handoff"
+        - Save snapshot + trimmed messages
+        - Return snapshot for caller to use
+      - Implement SessionDag::load_handoff() -> Result<Option<(Snapshot, Vec<TrimmedMessage>)>>
+        - Find latest snapshot with tag="handoff"
+        - If branch exists: load branch tip instead of trunk (orchestrator.txt L319)
+        - Load snapshot + messages
+      - Compaction boundary test (R-3H-6):
+        - Inject context at exactly 85% of model_context_window -> handoff triggers
+        - Inject context at 84.9% -> no handoff triggered
+        - Inject context at 100% -> handoff triggers (late but not missed)
+      - Integration test: full session lifecycle
+        1. Create SessionDag, save initial snapshot (empty context)
+        2. Add 50 messages (mix of user, assistant, tool results)
+        3. Create handoff -> trimming stubs large tool results
+        4. Open new SessionDag (simulating new session), load handoff
+        5. Verify: all user/assistant messages preserved verbatim
+        6. Recover stubs from SSB -> original content restored
+        7. Create 2 branches from handoff snapshot
+        8. Add snapshots to each branch
+        9. Merge: pick winner, verify abandoned branches tagged
+        10. Verify: parent chain from final snapshot is acyclic
+        11. Verify: commit_hashes persist across handoff
+    DETERMINISTIC_CHECK:
+      - Full lifecycle completes without error
+      - Handoff snapshot has tag="handoff"
+      - Trimmed context token count < model_context_window (via real token_count)
+      - All user/assistant messages byte-equal before and after handoff
+      - Stub recovery produces byte-equal originals
+      - Branch create/merge/abandon cycle works end-to-end
+      - Parent chain: root -> ... -> handoff -> branch_tip is acyclic
+      - commit_hashes: save ["abc123", "def456"], load handoff -> same hashes present
+      - Session DAG acyclic: parent_chain for every snapshot terminates at root
+      - Prompt cache prefix (Slots 1-3 messages) never stubbed
+      - Run 100x with same EntropyProvider seed: identical snap_ids, identical trimming
+    ADVERSARIAL:
+      - If load_handoff ignores branches and always returns trunk, branched work is lost.
+        Test: create handoff on trunk, then branch, add 3 snapshots to branch.
+        load_handoff -> returns branch tip (not trunk handoff).
+      - If concurrent sessions both write to same session_dag.db (should never happen —
+        one db per session), data corruption possible. Test: SessionDag::new with same
+        session_id but different path -> separate dbs. Same path -> second open gets
+        Err(DatabaseLocked) or successfully shares (single-writer serializes).
+      - If created_at timestamps are not from ClockProvider, ordering is non-deterministic
+        across replays. Test: two snapshots created with deterministic ClockProvider,
+        latest_snapshot returns the one with higher created_at (consistent ordering).
+    ACCEPTANCE:
+      - Handoff save/load round-trip preserves all data
+      - Branch tip loaded when branches exist
+      - Full lifecycle: 50 messages -> trim -> handoff -> load -> recover = original
+      - commit_hashes persist
+      - Deterministic across 100 runs
+    GROUNDING:
+      - "tag=handoff" -> GROUNDED: orchestrator.txt L317, L633
+      - "load branch tip not trunk" -> GROUNDED: orchestrator.txt L319
+      - "no summarization" -> GROUNDED: orchestrator.txt L320
+      - "commit_hashes per session" -> GROUNDED: orchestrator.txt L324
+      - "knowledge engine, RAG, git state persist on disk" -> GROUNDED: orchestrator.txt L321
+
+
+MEASURE
+  - Snapshot save latency (target: <50ms for 100-message context, SQLite single INSERT)
+  - Snapshot load latency (target: <50ms for 100-message context)
+  - Trimming wall time for 500 messages (target: <10s including token counting)
+  - Token reduction ratio: (original - trimmed) / original (target: >0.3 for tool-heavy sessions)
+  - Stub recovery success rate (target: 100% when SSB is intact)
+  - Branch create/merge latency (target: <100ms)
+  - Session DAG size on disk (target: <10MB for 1000-snapshot session)
+  - Determinism: 100 runs with same seed produce identical output
+
+
+EXIT CRITERIA
+  - Sessions save, restore, branch, and trim without data loss
+  - All user/assistant messages preserved across trimming (structurally lossless)
+  - Every stub recoverable from SSB (or unstubbed if SSB entry missing)
+  - Session DAG always acyclic (parent chain walk terminates at root)
+  - Max 3 active branches enforced
+  - Trimmed context fits within model context window
+  - Prompt cache prefix (Slots 1-3) never stubbed
+  - Handoff loads branch tip when branches exist
+  - commit_hashes persist across handoff
+  - Deterministic: same seed produces identical DAG state across runs

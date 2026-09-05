@@ -1,0 +1,3 @@
+make sure we arent making something proprietary that should be opensource
+
+legal responsabilities - already used names/patented stuff (copyright)

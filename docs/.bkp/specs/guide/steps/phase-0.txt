@@ -1,0 +1,780 @@
+PHASE 0: FORK AND STRIP (the walking skeleton)
+Prerequisites: pre-phase-0 complete (Windows platform fixes, see steps/pre-phase-0.txt)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt (read it first if you haven't)
+
+GOAL
+claw-code-rust-port compiles as elai_cc with all unnecessary code removed.
+One model (ollama), one FSM loop (IDLE->EXECUTING->IDLE), one tool (file read).
+No new features. Just a clean, compiling, tested base.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/architecture-overview.txt        Sections 1-4 (system identity, base, crates, traits)
+  docs/specs/crates/core.txt                  Section 3 (STRIP/REPLACE list)
+  docs/specs/crates/core.txt                  Section 4 (entropy quarantine traits)
+  docs/specs/crates/providers.txt             Section 2 (LlmProvider trait)
+  docs/specs/decisions/base-fork-comparison.txt  Full file (why claw-code, module mapping)
+
+RISKS TO WATCH
+  R17: claw-code compilation verified (26.24s, 0 errors). Safe to proceed.
+  R18: claw-code module quality unknown. Auditor reviews each module during strip.
+  R19: runtime crate is 25,035 LOC across 38 files — the largest restructure risk.
+      Three monolithic files: main.rs (8,615 LOC), commands/lib.rs (4,841 LOC), tools/lib.rs (7,345 LOC).
+  R20: entropy quarantine scope is 60 occurrences across 31 files.
+  R21: base-fork-comparison.txt LOC numbers are stale (green_contract.rs listed as 4,061,
+      actual is 152). Always verify against actual files, not the comparison doc.
+  R22: config.rs imports sandbox::{SandboxConfig, FilesystemIsolationMode}. Both types must
+      move to core/ alongside config.rs to avoid circular core/ -> orchestrator/ dependency.
+  R23: TokenUsage/UsageTracker is embedded in Session struct, conversation.rs, and main.rs
+      (61 occurrences across 5 files). Stripping usage.rs is a structural refactor, not a file delete.
+  R24: tools/lib.rs imports api::* — tools/ depends on api/. When api/ is absorbed into
+      providers/, tools/ imports must be updated simultaneously or cargo check fails.
+  R25: commands/lib.rs has 28+ claw-code slash commands (rewind, summary, bughunter,
+      ultraplan, etc.) that conflict with elai_cc's /task, /config, /continue commands.
+
+DESIGN DECISIONS
+
+  STRIP BEFORE RESTRUCTURE:
+    Stripping first removes ~4K+ LOC of known-bad code (compact, summary_compression,
+    telemetry, usage, lsp_client, compat-harness) before splitting runtime into 5 crates.
+    Fewer files = fewer move operations = fewer dependency breaks during restructure.
+    Proof: runtime has 38 source files. Stripping removes 6+ files before the split begins.
+
+  WORKSPACE PATH MIGRATION:
+    Steps 0.1-0.3: work in .elai_cc/rust/ (the existing claw-code structure).
+    Step 0.4: creates new structure at .elai_cc/crates/ with .elai_cc/Cargo.toml as workspace root.
+    Steps 0.5+: all paths use .elai_cc/ as workspace root.
+    The old .elai_cc/rust/ is archived (not deleted) after 0.5 verifies the new structure.
+
+  ONNX MODEL CANONICAL PATH:
+    ONNX embedding models stored at .elai_cc/models/onnx/ (canonical, pre-staged via setup
+    script outside session, not auto-downloaded). Setup: download + blake2 hash verify +
+    write index_version.toml. Missing models at startup -> DEGRADED mode (BM25_ONLY), not crash.
+    Visibility: .elai_cc/models/** hidden from agents via visibility filter (hidden_paths default).
+    Source: core.txt S4, technical-analysis-v3.txt Concern 1.
+
+  TOKENUSAGE HANDLING (addresses R23):
+    usage.rs (313 LOC) is STRIPPED, but TokenUsage is structural (embedded in Session).
+    Strategy: define a minimal elai_cc_core::TokenUsage struct (input_tokens, output_tokens,
+    total_tokens, estimated_cost_usd). Rewrite Session to use this instead of the claw-code
+    TokenUsage. Strip UsageTracker, CompactionConfig, format_usd, pricing_for_model, ModelPricing.
+    These are claw-code billing concepts; elai_cc tracks tokens for context budget, not billing.
+    This happens in step 0.2c as an explicit sub-task.
+
+  PROVIDER TRAIT MIGRATION (addresses WARN-7):
+    claw-code has an existing Provider trait (in api/src/providers/mod.rs) implemented by
+    AnthropicClient and OpenAiCompatClient. elai_cc defines LlmProvider (complete, embed,
+    token_count, token_count_estimate). Strategy: keep old Provider trait during Phase 0
+    as an internal implementation detail. New OllamaProvider implements LlmProvider directly.
+    Phase 1+ migrates Anthropic/OpenAI to LlmProvider. Mark with #[deprecated] during Phase 0.
+
+
+STEPS
+
+  0.1 BASELINE (record starting state)
+    PRE_GATE:
+      - pre-phase-0 complete: cargo check passes on .elai_cc/rust/ workspace
+        Check: cd .elai_cc/rust && cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+      - cargo is installed: cargo --version returns 0
+      - Source exists: ls .elai_cc/rust/Cargo.toml returns 0
+    TASK:
+      - cargo check --workspace (must pass — baseline: 26.24s, 0 errors)
+      - cargo test --workspace (run existing 684 tests — record how many pass as-is)
+      - Record baseline metrics: compile time, test pass/fail count, total LOC, LOC per crate
+      - Create .elai_cc/migration_manifest.toml: classify every .rs file as KEEP/STRIP/REPLACE/EXTEND
+        with source crate, target crate, and rationale columns.
+        Use the MODULE MAPPING table at the bottom of this file.
+        Location is .elai_cc/migration_manifest.toml (workspace-relative, survives restructure).
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+      - .elai_cc/metrics/phase_0_baseline.toml exists with fields:
+        compile_time_s, test_pass, test_fail, test_total, loc_total, loc_by_crate
+      - .elai_cc/migration_manifest.toml exists with an entry for every .rs file
+        Check: grep -c "KEEP\|STRIP\|REPLACE\|EXTEND" .elai_cc/migration_manifest.toml = 69
+    ADVERSARIAL:
+      - If baseline metrics are recorded after uncommitted changes, they don't reflect true starting state.
+        Test: git status in .elai_cc/rust/ shows no uncommitted changes before recording.
+    ACCEPTANCE:
+      - Baseline metrics recorded
+      - migration_manifest.toml covers 100% of .rs files (69)
+      - All classifications justified by MODULE MAPPING table or explicit rationale
+
+  0.2 STRIP (remove known-bad code)
+    PRE_GATE:
+      - 0.1 complete: baseline metrics and migration_manifest exist
+        Check: test -f .elai_cc/metrics/phase_0_baseline.toml && test -f .elai_cc/migration_manifest.toml
+      - migration_manifest.toml has files classified as STRIP
+        Check: grep -c "STRIP" .elai_cc/migration_manifest.toml > 0
+    TASK:
+      Strip in this order (each removal followed by cargo check --workspace):
+
+      a. telemetry/ crate (526 LOC): remove entire crate directory, remove from workspace Cargo.toml,
+         remove dependency entries from other crates' Cargo.toml files.
+         Check: grep -r "telemetry" .elai_cc/rust/crates/*/Cargo.toml before removal; remove deps first.
+
+      b. compat-harness/ crate (~357 LOC): STRIP — this is a TypeScript-bridge crate that reads
+         .ts/.tsx paths that do not exist in elai_cc. Dead code by definition.
+         Callers in main.rs (extract_manifest, UpstreamPaths at ~L1274): remove those call sites.
+         Check: grep -r "compat.harness\|compat_harness\|extract_manifest\|UpstreamPaths" to find all usage.
+
+      c. runtime/src/usage.rs (313 LOC) + runtime/src/compact.rs (696 LOC) +
+         runtime/src/summary_compression.rs (300 LOC):
+         STRUCTURAL STRIP — these types are embedded in other modules:
+           - Session struct contains pub usage: Option<TokenUsage> (session.rs)
+           - conversation.rs has 20 TokenUsage/UsageTracker references
+           - main.rs imports CompactionConfig, TokenUsage, UsageTracker, format_usd,
+             pricing_for_model, ModelPricing (6+ imports, ~15 usage sites)
+         Remediation steps:
+           1. Define a minimal TokenUsage struct in runtime/src/lib.rs (or a new token_budget.rs):
+              pub struct TokenUsage { pub input_tokens: u64, pub output_tokens: u64 }
+              This is a temporary shim — core::TokenUsage replaces it in step 0.4a.
+           2. Update Session struct to use new minimal TokenUsage.
+           3. Remove UsageTracker, CompactionConfig, format_usd, pricing_for_model, ModelPricing.
+           4. In main.rs: remove cost reporting, compaction config, billing displays.
+           5. In conversation.rs: remove compaction triggers, simplify usage tracking to token counting.
+           6. Delete compact.rs, summary_compression.rs, usage.rs.
+         cargo check --workspace after each sub-step.
+
+      d. runtime/src/lsp_client.rs (747 LOC): STRIP — not in elai_cc design.
+
+      e. runtime/src/oauth.rs (596 LOC): STRIP — no OAuth in Phase 0. Mark DEFERRED in manifest.
+
+      f. Audit runtime/src/prompt.rs (803 LOC): find and remove hardcoded system prompts.
+         Known targets: SYSTEM_PROMPT_DYNAMIC_BOUNDARY (L39), "You are an interactive agent" (L451).
+         Decision: REPLACE with minimal configurable prompt builder, or STRIP and rebuild in Phase 1+.
+
+      g. Classify commands/lib.rs slash commands (28+ variants):
+         KEEP (useful for elai_cc): evaluate each — likely KEEP: config, add-dir, api-key, stop, retry,
+           paste, screenshot, search, system-prompt, temperature, max-tokens.
+         STRIP (claw-code specific): rewind, summary, bughunter, ultraplan, desktop, ide, tag,
+           brief, advisor, stickers, insights, thinkback, release-notes.
+         Record each decision in migration_manifest.toml.
+         Do NOT remove commands/lib.rs yet — just audit and record. Actual removal happens during
+         restructure (step 0.4c) when commands/ merges into cli/.
+
+      h. runtime/src/remote.rs (401 LOC): evaluate. If remote execution: DEFERRED. If cloud telemetry: STRIP.
+
+      Note: "sentinel", "anti_distill", "bias_inject" patterns do NOT exist in the codebase
+        (verified 2026-04-06). Do not grep for them.
+    DETERMINISTIC_CHECK:
+      - Stripped files no longer exist:
+        Check: test ! -d .elai_cc/rust/crates/telemetry
+        Check: test ! -d .elai_cc/rust/crates/compat-harness
+        Check: test ! -f .elai_cc/rust/crates/runtime/src/compact.rs
+        Check: test ! -f .elai_cc/rust/crates/runtime/src/summary_compression.rs
+        Check: test ! -f .elai_cc/rust/crates/runtime/src/usage.rs
+        Check: test ! -f .elai_cc/rust/crates/runtime/src/lsp_client.rs
+      - No dangling references to stripped modules:
+        Check: grep -r "compact::\|summary_compression::\|usage::\|lsp_client::" .elai_cc/rust/crates/ --include="*.rs" returns 0
+      - Hardcoded prompts addressed:
+        Check: grep -r "You are an interactive agent" .elai_cc/rust/crates/ --include="*.rs" returns 0
+      - Slash command audit complete:
+        Check: grep -c "KEEP\|STRIP" .elai_cc/migration_manifest.toml slash-command section > 0
+      - cargo check --workspace: 0 errors
+    ADVERSARIAL:
+      - If a stripped module is imported via re-export (pub use), direct grep misses the dependency.
+        Test: cargo check --workspace after each individual removal (compiler catches re-export breaks).
+      - If telemetry/compat-harness crate is in another crate's [dependencies], removing the dir breaks Cargo.toml.
+        Test: grep crate names in all Cargo.toml files; remove dep entries BEFORE removing dirs.
+      - If prompt.rs removal breaks the main REPL loop, cargo check passes but binary is non-functional.
+        Test: cargo test --workspace after prompt.rs changes.
+      - If TokenUsage shim has different field names than Session expects, deserialization of existing
+        session files breaks silently. Test: no existing session files — Phase 0 is a fresh start.
+    ACCEPTANCE:
+      - All STRIP-classified files removed
+      - TokenUsage replaced with minimal shim (temporary, replaced by core::TokenUsage in 0.4a)
+      - cargo check --workspace: 0 errors
+      - Slash command classification recorded in migration_manifest.toml
+      - Each stripped file marked STRIPPED in migration_manifest.toml
+
+  0.3 VERIFY STRIP
+    PRE_GATE:
+      - 0.2 complete: all STRIP targets removed, cargo check --workspace passes
+        Check: cd .elai_cc/rust && cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+    TASK:
+      - cargo test --workspace: record which tests broke from stripping
+      - For each failing test: classify as EXPECTED (test was for stripped feature) or BUG (unintended)
+      - BUG failures: fix before proceeding. For each BUG, document root cause.
+      - Update migration_manifest.toml: mark all stripped files as STRIPPED
+      - Compute strip delta: LOC removed, files removed, tests removed
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace: 0 errors
+      - .elai_cc/metrics/phase_0_strip_delta.toml exists with fields:
+        loc_removed, files_removed, tests_removed, tests_broken_expected, tests_broken_bug
+      - All BUG-classified test failures resolved (0 remaining)
+      - migration_manifest.toml: grep -c "STRIPPED" matches count of removed files
+    ADVERSARIAL:
+      - If tests depend on stripped modules via test helpers, failures look unrelated.
+        Test: for each failing test, grep test file for imports from stripped modules.
+      - If stripping removed >10% of total tests, may indicate over-stripping.
+        Test: compare tests_removed to baseline total; flag if >10%.
+    ACCEPTANCE:
+      - cargo check --workspace: 0 errors
+      - All test failures classified and BUGs fixed
+      - Strip delta recorded
+
+  0.4a RESTRUCTURE: LEAF CRATES (core, rules, providers)
+    PRE_GATE:
+      - 0.3 complete: post-strip codebase compiles clean
+        Check: cd .elai_cc/rust && cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+      - migration_manifest.toml has all surviving files classified with target crate
+    TASK:
+      Create new workspace root at .elai_cc/Cargo.toml. Crate dirs under .elai_cc/crates/.
+      .elai_cc/rust/ remains intact during this step as source; files are COPIED then verified.
+
+      1. core/ — extract from runtime:
+         - config.rs (1648 LOC), session_control.rs (459 LOC), json.rs (358 LOC), bootstrap.rs (111 LOC)
+         - ALSO move sandbox.rs types used by config.rs: SandboxConfig, FilesystemIsolationMode
+           (sandbox.rs has zero internal deps — only std + serde). Either:
+           (a) move entire sandbox.rs to core/ (385 LOC, clean — no crate:: imports), or
+           (b) extract just the two types into core/src/sandbox_types.rs and leave the rest in orchestrator/.
+           Option (a) is simpler unless sandbox.rs has orchestrator-specific logic. Verify before choosing.
+         - Define core::TokenUsage (replaces the temporary shim from 0.2c):
+           pub struct TokenUsage { pub input_tokens: u64, pub output_tokens: u64 }
+         - Remove session_control.rs import of crate::session::{Session, SessionError}.
+           session_control only needs session IDENTITY (ID format, handoff). Session state management
+           stays in orchestrator/. Split session_control.rs if needed: identity -> core/, state -> orchestrator/.
+         cargo check --workspace after core/ is extracted.
+
+      2. rules/ — extract from runtime:
+         - policy_engine.rs (581 LOC), green_contract.rs (152 LOC), trust_resolver.rs (299 LOC)
+         cargo check --workspace.
+
+      3. providers/ — absorb api/ + extract from runtime:
+         - Move all of api/src/ (4,377 LOC source) into providers/src/
+         - Move runtime/src/sse.rs (158 LOC) into providers/src/
+         - Update all crates that import api:: to import providers:: instead
+         - CRITICAL (R24): tools/lib.rs imports api::* — update to providers:: simultaneously.
+           Check: grep -r "use api::" .elai_cc/ --include="*.rs" — ALL must be updated.
+         - Note: old Provider trait lives here alongside new LlmProvider. Mark old with #[deprecated].
+         cargo check --workspace.
+    DETERMINISTIC_CHECK:
+      - 3 new crate dirs exist with Cargo.toml: core/, rules/, providers/
+      - cargo check --workspace: 0 errors
+      - No remaining imports from old crate names:
+        Check: grep -r "use api::" .elai_cc/crates/ --include="*.rs" returns 0
+      - core/ has no deps on orchestrator/ or other non-leaf crates:
+        Check: grep -r "orchestrator\|plugins\|cli" .elai_cc/crates/core/Cargo.toml returns 0
+    ADVERSARIAL:
+      - If config.rs still imports crate::sandbox after extraction, circular dep core/ -> orchestrator/.
+        Test: SandboxConfig/FilesystemIsolationMode must be in core/ before config.rs moves.
+      - If session_control.rs still imports crate::session, core/ depends on orchestrator/.
+        Test: split session_control.rs first, move only identity portion to core/.
+      - If tools/lib.rs api:: imports are not updated when api/ moves to providers/, cargo check fails.
+        Test: update ALL api:: imports across workspace in a single commit before removing api/ dir.
+    ACCEPTANCE:
+      - core/, rules/, providers/ crates exist and compile
+      - core/ is a true leaf crate (no internal deps except std + external)
+      - No circular dependencies: cargo check --workspace passes
+      - Zero references to old api:: import path
+
+  0.4b RESTRUCTURE: MID-LAYER CRATES (tools, plugins)
+    PRE_GATE:
+      - 0.4a complete: core/, rules/, providers/ exist and compile
+        Check: cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+    TASK:
+      4. tools/ — keep existing tools/ crate + extract from runtime:
+         - file_ops.rs (762 LOC), bash.rs (336 LOC), bash_validation.rs (1004 LOC)
+         - stale_branch.rs (417 LOC), branch_lock.rs (144 LOC) — git-related tooling
+         - Update tools/ Cargo.toml to depend on core/ (not runtime/)
+         - tools/lib.rs (7,345 LOC): evaluate if >3 distinct tools in one file; split into
+           per-tool modules if so (file_tool.rs, bash_tool.rs, git_tool.rs, etc.)
+         cargo check --workspace.
+
+      5. plugins/ — keep existing + extract from runtime:
+         - hooks.rs (987 LOC), plugin_lifecycle.rs (533 LOC)
+         - Update plugins/ Cargo.toml to depend on core/ (not runtime/)
+         cargo check --workspace.
+
+      6. knowledge/ — empty skeleton crate (Phase 1 fills it). Cargo.toml only, depends on core/.
+      7. reasoning/ — empty skeleton crate (Phase 2 fills it). Cargo.toml only, depends on core/.
+    DETERMINISTIC_CHECK:
+      - All 7 crate dirs exist (core, rules, providers, tools, plugins, knowledge, reasoning)
+      - cargo check --workspace: 0 errors
+      - tools/ and plugins/ no longer depend on runtime/:
+        Check: grep -r "runtime" .elai_cc/crates/{tools,plugins}/Cargo.toml returns 0
+    ADVERSARIAL:
+      - If tools/lib.rs is not split, it remains a 7K LOC monolith that's hard to maintain.
+        Test: no single .rs file in tools/ exceeds 2000 LOC after restructure.
+    ACCEPTANCE:
+      - tools/ and plugins/ compile with core/ dependency (not runtime/)
+      - knowledge/ and reasoning/ skeleton crates exist
+      - cargo check --workspace: 0 errors
+
+  0.4c RESTRUCTURE: TOP-LAYER CRATES (orchestrator, cli) + CLEANUP
+    PRE_GATE:
+      - 0.4b complete: 7 crates exist and compile
+        Check: cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+    TASK:
+      8. orchestrator/ — what remains of runtime after extractions:
+         - conversation.rs (1690 LOC), session.rs (1246 LOC), worker_boot.rs (1083 LOC)
+         - mcp_stdio.rs (2928 LOC), mcp_tool_bridge.rs (920 LOC), mcp_lifecycle_hardened.rs (843 LOC),
+           mcp.rs (304 LOC), mcp_client.rs (248 LOC)
+         - permissions.rs (683 LOC), permission_enforcer.rs (551 LOC)
+         - sandbox.rs (385 LOC) — remaining sandbox logic, if types were split to core/ in 0.4a
+         - recovery_recipes.rs (631 LOC)
+         - EVALUATE modules: lane_events.rs (383 LOC), task_packet.rs (158 LOC),
+           task_registry.rs (503 LOC), team_cron_registry.rs (509 LOC).
+           Decision criteria: does the module map to an elai_cc concept (agents, FSM, sessions)?
+           If yes: KEEP. If it's claw-code "lane" or "team" specific: STRIP.
+         - Depends on: core/, providers/, tools/, rules/
+         cargo check --workspace.
+
+      9. cli/ — absorb rusty-claude-cli/ + commands/:
+         - main.rs (8,615 LOC) becomes cli/src/main.rs. Will shrink significantly because:
+           - Modules extracted to other crates reduce imports
+           - Stripped features (compaction, billing, compat-harness) remove ~500+ LOC
+           - claw-code slash commands marked STRIP in 0.2g are removed here
+         - commands/lib.rs (4,841 LOC): strip claw-code-specific commands per the classification
+           from step 0.2g. Keep elai_cc-relevant commands. Move command dispatch to cli/.
+         - render.rs (796 LOC), init.rs (434 LOC), input.rs (330 LOC) -> cli/src/
+         - mock-anthropic-service/ -> dev-dependency of providers/ or cli/ (test infrastructure)
+         - Target: cli/src/main.rs < 500 LOC (thin REPL shell). If not achievable in Phase 0,
+           document remaining LOC with justification.
+         cargo check --workspace.
+
+      10. Cleanup:
+          - Archive .elai_cc/rust/ (rename to .elai_cc/rust_archived/ or delete after verification)
+          - Remove old crate dirs that were absorbed: api/, commands/, rusty-claude-cli/, runtime/
+          - Update .elai_cc/Cargo.toml workspace members to list exactly 9 crates
+          - Verify no references to old crate names anywhere:
+            Check: grep -r "use api::\|use runtime::\|use commands::\|use rusty_claude" .elai_cc/crates/ --include="*.rs" returns 0
+    DETERMINISTIC_CHECK:
+      - Workspace has exactly 9 crate members:
+        Check: grep "members" .elai_cc/Cargo.toml shows 9 crate paths
+      - Each crate has Cargo.toml:
+        Check: for c in core providers knowledge reasoning orchestrator tools plugins rules cli; do
+          test -f .elai_cc/crates/$c/Cargo.toml; done
+      - Old crate dirs removed or archived:
+        Check: test ! -d .elai_cc/rust/crates/api (if not archived)
+      - cargo check --workspace: 0 errors
+      - No circular dependencies (cargo check would fail on circular deps — this is sufficient)
+      - No references to old crate names:
+        Check: grep -r "use api::\|use runtime::\|use commands::" .elai_cc/crates/ --include="*.rs" returns 0
+    ADVERSARIAL:
+      - If two extracted modules have mutual imports, circular dependency blocks compilation.
+        Test: cargo check --workspace after each crate extraction, not at the end.
+      - If main.rs contains orchestrator logic that wasn't extracted, cli/ is too fat.
+        Test: cli/src/main.rs LOC count documented; >1000 LOC flagged as technical debt.
+      - If STRIP-classified slash commands are left in commands/lib.rs during merge, cli/ has dead code.
+        Test: grep for stripped command names in cli/ source after merge.
+    ACCEPTANCE:
+      - 9 crate directories with Cargo.toml
+      - cargo check --workspace: 0 errors
+      - No old crate directories remain in active workspace
+      - migration_manifest.toml updated: every surviving file has correct target crate
+      - claw-code-specific slash commands removed per 0.2g classification
+
+  0.5 VERIFY RESTRUCTURE
+    PRE_GATE:
+      - 0.4c complete: 9-crate structure, cargo check --workspace passes
+        Check: cd .elai_cc && cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+    TASK:
+      - cargo test --no-run --workspace: link check (catches runtime path issues)
+      - cargo test --workspace: record which tests pass/fail vs post-strip baseline
+      - For each failing test: classify as RESTRUCTURE_BUG (fix now) or PATH_UPDATE (fix import)
+      - Fix all failures
+      - Record metrics: compile time, test count, LOC per crate
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace: 0 errors
+      - cargo test --no-run --workspace: 0 link errors
+      - .elai_cc/metrics/phase_0_restructure.toml exists with:
+        compile_time_s, test_pass, test_fail, loc_per_crate (map), total_crates=9
+      - All RESTRUCTURE_BUG and PATH_UPDATE tests fixed
+      - Zero references to old crate names in test files:
+        Check: grep -r "use api::\|use runtime::\|use commands::" .elai_cc/crates/*/tests/ --include="*.rs" returns 0
+    ADVERSARIAL:
+      - If integration tests reference old crate paths via re-exports, they compile but test wrong module.
+        Test: grep all test files for old crate names. Must be 0.
+    ACCEPTANCE:
+      - cargo check --workspace: 0 errors
+      - cargo test --workspace: all non-stripped tests pass
+      - Metrics recorded with per-crate LOC breakdown
+
+  0.6 CONTRACT TESTS (skeleton)
+    PRE_GATE:
+      - 0.5 complete: restructured codebase compiles and tests pass
+        Check: cd .elai_cc && cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+      - 9-crate structure confirmed:
+        Check: for c in core providers knowledge reasoning orchestrator tools plugins rules cli; do
+          test -f .elai_cc/crates/$c/Cargo.toml; done
+    TASK:
+      Create a test-only crate: .elai_cc/crates/contracts/
+        Cargo.toml: [package] name = "elai_cc_contracts", with [dev-dependencies] on all 9 crates.
+        This crate has no lib.rs — only integration test files in crates/contracts/tests/.
+        Add "crates/contracts" to workspace members.
+
+      Write contract tests (all must import from elai_cc_* crate names):
+      - crates/contracts/tests/provider_trait.rs:
+        LlmProvider trait exists in elai_cc_providers, has complete/embed/token_count methods
+      - crates/contracts/tests/fsm_basic.rs:
+        FSM can transition IDLE -> EXECUTING -> IDLE
+      - crates/contracts/tests/tool_basic.rs:
+        ToolRegistry can register and execute a file_read tool
+      - crates/contracts/tests/config_basic.rs:
+        elai_cc.toml parses correctly, round-trips via msgpack
+      - crates/contracts/tests/visibility_filter.rs:
+        hidden path returns NotFound identical to missing path
+        glob on hidden path returns empty
+        .elai_cc/** covered by default hidden_paths
+        .elai_cc/models/** specifically hidden (ONNX model files)
+      All tests FAIL at runtime (TDD red phase — we haven't implemented elai_cc-specific types yet)
+    DETERMINISTIC_CHECK:
+      - Test crate exists: test -f .elai_cc/crates/contracts/Cargo.toml
+      - Each test file exists:
+        Check: for t in provider_trait fsm_basic tool_basic config_basic visibility_filter; do
+          test -f .elai_cc/crates/contracts/tests/$t.rs; done
+      - Tests compile: cargo test -p elai_cc_contracts --no-run (returns 0)
+      - Tests fail at runtime: cargo test -p elai_cc_contracts 2>&1 | grep -c "FAILED" returns 5
+    ADVERSARIAL:
+      - If contract tests accidentally pass on existing claw-code stubs, TDD is undermined.
+        Test: each contract test imports from elai_cc_core, elai_cc_providers, etc. (new crate names).
+      - If tests fail to compile (not fail at runtime), the "red" phase is compiler errors not test failures.
+        Test: cargo test -p elai_cc_contracts --no-run must succeed.
+    ACCEPTANCE:
+      - contracts/ crate exists with 5 test files
+      - All 5 test files compile and fail at runtime (TDD red phase)
+      - All imports reference elai_cc_* crate names
+
+  0.7a IMPLEMENT PROVIDER + CONFIG
+    PRE_GATE:
+      - 0.6 complete: contract tests exist and fail
+        Check: cargo test -p elai_cc_contracts 2>&1 | grep -c "FAILED" = 5
+    TASK:
+      - Extend LlmProvider trait in providers/:
+          async fn complete(&self, prompt: &str, config: &CompletionConfig) -> Result<impl Stream<Item=Token>>;
+          async fn embed(&self, text: &str) -> Result<Vec<f32>>;
+          fn token_count(&self, text: &str) -> usize;
+          fn token_count_estimate(&self, text: &str) -> usize;
+        All methods take &self. Stateful providers hold their HTTP client internally.
+      - Add OllamaProvider implementing LlmProvider:
+        HTTP API wrapper (POST /api/generate for complete, POST /api/embed for embed)
+        Configurable base_url (default http://localhost:11434, overridable for tests)
+        Streaming response parsing (newline-delimited JSON)
+      - elai_cc.toml config schema in core/: provider config + project settings + agent role configs
+        Parse with toml crate. Round-trip test via msgpack (rmp-serde).
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_cc_contracts --test provider_trait -- passes
+      - cargo test -p elai_cc_contracts --test config_basic -- passes
+      - OllamaProvider base_url is configurable:
+        Check: grep -r "base_url" .elai_cc/crates/providers/src/ --include="*.rs" returns >= 1 hit
+    ADVERSARIAL:
+      - If OllamaProvider hardcodes localhost:11434, tests fail without ollama running.
+        Test: contract test uses a mock HTTP server or stub, not live ollama.
+      - If msgpack round-trip silently drops Option::None fields, deserialized config differs.
+        Test: config_basic.rs round-trips a config with all field types including Option::None.
+      - If token_count_estimate panics on empty input, any empty-file scan crashes.
+        Test: token_count_estimate("") returns 0, not panic.
+    ACCEPTANCE:
+      - provider_trait and config_basic contract tests pass
+      - OllamaProvider has configurable base_url
+      - Config round-trips through msgpack without data loss
+
+  0.7b IMPLEMENT FSM + TOOL
+    PRE_GATE:
+      - 0.7a complete: provider and config contract tests pass
+        Check: cargo test -p elai_cc_contracts --test provider_trait 2>&1 | grep -c "FAILED" = 0
+        Check: cargo test -p elai_cc_contracts --test config_basic 2>&1 | grep -c "FAILED" = 0
+    TASK:
+      - Minimal FSM in orchestrator/: IDLE and EXECUTING states only
+        Transition: IDLE -> EXECUTING (on task start), EXECUTING -> IDLE (on task complete/error)
+        State stored as enum. Transition validated (invalid transitions return Error, not panic).
+        get_state(), transition(), get_active_tools() methods.
+      - Minimal file_read tool in tools/:
+        Read file contents with metadata header (total_lines, estimated_tokens via token_count_estimate)
+        Respect visibility filter: hidden paths return NotFound indistinguishable from missing
+      - Replace JSON session storage with msgpack in orchestrator/:
+        Session state serialized via rmp-serde. Verify by checking session files on disk use
+        msgpack format (not just that serde_json isn't imported — session.rs used custom JsonValue).
+        Test: write session, read back, assert round-trip equality. Check file is valid msgpack.
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_cc_contracts --test fsm_basic 2>&1 | grep -c "FAILED" = 0
+      - cargo test -p elai_cc_contracts --test tool_basic 2>&1 | grep -c "FAILED" = 0
+      - Session file is msgpack:
+        Check: session round-trip test writes file, python3 -c "import msgpack; msgpack.unpack(open('file','rb'))" succeeds
+    ADVERSARIAL:
+      - If FSM transition panics on invalid input instead of returning Error, any bad state crashes runtime.
+        Test: fsm_basic.rs attempts invalid transition (IDLE -> IDLE), asserts Error (not panic).
+      - If file_read follows symlinks, visibility filter is bypassable.
+        Test: create symlink to hidden path, file_read returns NotFound.
+      - If msgpack session file is corrupted, deserialization panics instead of returning error.
+        Test: feed garbage bytes to session deserializer, assert Error.
+    ACCEPTANCE:
+      - fsm_basic and tool_basic contract tests pass
+      - FSM returns Error on invalid transitions (never panics)
+      - file_read respects visibility filter
+      - Session state persists via msgpack (verified by round-trip test)
+
+  0.7c IMPLEMENT INTERFACE HARDENING
+    PRE_GATE:
+      - 0.7b complete: 4 contract tests pass
+        Check: cargo test -p elai_cc_contracts --test provider_trait 2>&1 | grep -c "FAILED" = 0
+        Check: cargo test -p elai_cc_contracts --test config_basic 2>&1 | grep -c "FAILED" = 0
+        Check: cargo test -p elai_cc_contracts --test fsm_basic 2>&1 | grep -c "FAILED" = 0
+        Check: cargo test -p elai_cc_contracts --test tool_basic 2>&1 | grep -c "FAILED" = 0
+    TASK:
+      - Slash-command routing in cli/: /task, /config, /continue, /explore, /status
+        Fallback classifier for bare messages (defaults to /task)
+        Each command maps to a handler function. Unknown command -> error message.
+        Build on the KEEP-classified commands from step 0.2g; strip all others.
+      - Visibility filter in tools/: per-agent allowed_paths + hidden_paths
+        Path canonicalization before matching (block ../ traversal)
+        Hidden path returns NotFound response identical to genuinely missing path
+        Default hidden_paths include: .elai_cc/models/** (ONNX model files),
+          rules.db, harness source, other agent checkpoints, SSB database,
+          elai_cc binary internals. Source: technical-analysis-v3.txt Concern 1,
+          orchestrator.txt S12 L320-321.
+      - Error message sanitization: strip internal identifiers from model-facing output
+        Sanitization via allowlist (not denylist) — only approved fields pass through.
+      - Tool schema sanitization: strip internal-only parameters before showing to model
+      - Add tracing-based logging (replace telemetry)
+        tracing + tracing-subscriber. Log every tool call, FSM transition, file operation.
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_cc_contracts --test visibility_filter 2>&1 | grep -c "FAILED" = 0
+      - Slash-command tests pass:
+        Check: cargo test -p elai_cc_cli slash_command 2>&1 | grep -c "FAILED" = 0
+      - No internal IDs leak:
+        Check: grep -r "rule_id\|predicate_type\|hook_name" in model-facing output code returns 0
+    ADVERSARIAL:
+      - If visibility filter uses string prefix matching, path traversal (../) bypasses it.
+        Test: canonicalize path, then match. Test with ../../../etc/passwd equivalent.
+      - If error sanitization is denylist-based, new internal fields leak by default.
+        Test: sanitization uses allowlist — only explicitly approved fields pass through.
+      - If tracing subscriber is not initialized in test harness, log assertions are silent no-ops.
+        Test: contract tests use tracing_test::traced_test or equivalent.
+    ACCEPTANCE:
+      - All 5 contract tests pass
+      - Visibility filter blocks traversal attacks
+      - Sanitization is allowlist-based
+      - Tracing captures tool calls and FSM transitions
+
+  0.8 VERIFY IMPLEMENTATION
+    PRE_GATE:
+      - 0.7c complete: all 5 contract tests pass
+        Check: cargo test -p elai_cc_contracts 2>&1 | grep -c "FAILED" = 0
+    TASK:
+      - All contract tests pass
+      - cargo check --workspace clean
+      - Smoke test: connect to ollama, send structured prompt, get response
+        (WARN not BLOCK if ollama unavailable — environmental dependency)
+      - Record metrics: compile time, test count (baseline + new), LOC delta, LOC per crate
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_cc_contracts 2>&1 | grep "FAILED" returns 0 hits
+      - cargo check --workspace 2>&1 | grep -c "error\[" returns 0
+      - .elai_cc/scripts/smoke_test_ollama.sh exists and returns 0 (or SKIP=environmental)
+      - .elai_cc/metrics/phase_0_implement.toml exists with compile_time_s, test_total, test_pass, loc_delta
+    ADVERSARIAL:
+      - If tests pass individually but fail together (shared state), full suite masks it.
+        Test: cargo test --workspace AND cargo test -p elai_cc_contracts both pass.
+    ACCEPTANCE:
+      - All contract tests pass
+      - cargo check --workspace: 0 errors
+      - Metrics recorded
+      - Ollama round-trip succeeds OR documented as environmental skip
+
+  0.9 ENTROPY QUARANTINE (deterministic simulation prerequisite)
+    PRE_GATE:
+      - 0.8 complete: all contract tests pass, metrics recorded
+        Check: test -f .elai_cc/metrics/phase_0_implement.toml
+    TASK:
+      READ: docs/specs/crates/core.txt section 4
+      - Define ClockProvider and EntropySource traits in core/:
+          trait ClockProvider {
+              fn now(&self) -> LogicalInstant;
+              fn elapsed_since(&self, mark: LogicalInstant) -> Duration;
+              fn system_now(&self) -> SystemTime;  // for cache expiry, HTTP headers
+          }
+          trait EntropySource {
+              fn next_u64(&mut self) -> u64;
+              fn fill_bytes(&mut self, buf: &mut [u8]);
+          }
+        Note: &self on ClockProvider (read-only), &mut self on EntropySource (stateful RNG).
+      - Production impls in core/:
+          OsClock: delegates to std::time::Instant.
+          OsRng: delegates to rand::thread_rng().
+      - Test impls in core/:
+          SeededClock: logical clock, advances only via explicit tick(). Monotonic guarantee.
+          SeededRng: deterministic PRNG from u64 seed (e.g., ChaCha8Rng::seed_from_u64).
+      - Replace ALL raw time/entropy access across the codebase.
+        Measured scope: 60 occurrences across 31 files (pre-restructure; recount post-restructure).
+        Known high-density files (post-restructure crate names):
+          providers/prompt_cache.rs: 4 SystemTime::now() calls (cache expiry)
+          tools/lib.rs: 14 Instant::now() calls (tool execution timing)
+          cli/main.rs: 5 Instant::now() calls (session timing)
+          providers/anthropic.rs: 2 SystemTime::now() calls (retry timing)
+          orchestrator/session_control.rs: 3 Instant::now() calls
+        Approach: bundle clock + entropy in a Context struct passed through constructors:
+          struct RuntimeContext { clock: Arc<dyn ClockProvider>, entropy: Arc<Mutex<dyn EntropySource>> }
+          This avoids function signature proliferation (max 1 extra param, not 3+).
+      - Legitimate production exception sites (where raw time/entropy is allowed):
+          core/src/clock.rs: OsClock impl (the ONLY Instant::now / SystemTime::now)
+          core/src/entropy.rs: OsRng impl (the ONLY thread_rng / getrandom)
+        All other sites must use the trait. The CI script EXCLUDES these two files by path.
+      - CI enforcement script: .elai_cc/scripts/check_entropy_quarantine.sh
+        Greps for banned patterns, excludes core/src/clock.rs and core/src/entropy.rs, returns non-zero if found.
+        Also excludes test files marked TEST_KEEP in migration_manifest.toml.
+      - Audit transitive deps: cargo tree -e features | grep "time\|rand\|getrandom"
+        Document which deps access raw entropy internally.
+    DETERMINISTIC_CHECK:
+      - grep -r "Instant::now\(\)\|SystemTime::now\(\)" .elai_cc/crates/ --include="*.rs"
+        returns hits ONLY in core/src/clock.rs (and TEST_KEEP test files)
+      - grep -r "thread_rng\|OsRng::new\|getrandom" .elai_cc/crates/ --include="*.rs"
+        returns hits ONLY in core/src/entropy.rs (and TEST_KEEP test files)
+      - trait ClockProvider defined: grep -r "trait ClockProvider" .elai_cc/crates/core/ returns 1
+      - trait EntropySource defined: grep -r "trait EntropySource" .elai_cc/crates/core/ returns 1
+      - CI script exists and passes: bash .elai_cc/scripts/check_entropy_quarantine.sh returns 0
+      - RuntimeContext struct exists: grep -r "struct RuntimeContext" .elai_cc/crates/core/ returns 1
+    ADVERSARIAL:
+      - If a transitive dep calls libc::clock_gettime internally, quarantine has a hole.
+        Test: cargo tree output documented; known holes listed in migration_manifest.toml.
+      - If SeededClock does not advance monotonically, elapsed_since logic breaks.
+        Test: 100 sequential now() calls on SeededClock are strictly monotonic.
+      - If RuntimeContext requires Arc<Mutex<>> for EntropySource, contention in hot paths.
+        Test: benchmark single-threaded tool execution with/without mutex. Accept if <5% overhead.
+      - If test code intentionally needs real time (e.g., timeout integration tests), quarantine breaks it.
+        Test: TEST_KEEP files use OsClock explicitly and are excluded from CI script.
+    ACCEPTANCE:
+      - Raw time/entropy ONLY in core/src/clock.rs and core/src/entropy.rs (plus TEST_KEEP)
+      - CI script catches new violations
+      - SeededClock + SeededRng pass all contract tests when injected
+      - RuntimeContext bundles clock + entropy (no function has >1 extra parameter for time/randomness)
+
+  0.10 VERIFY ENTROPY QUARANTINE + DETERMINISM PROOF
+    PRE_GATE:
+      - 0.9 complete: traits defined, all raw access replaced
+        Check: bash .elai_cc/scripts/check_entropy_quarantine.sh returns 0
+    TASK:
+      - Run CI quarantine check script
+      - Run test suite with SeededClock + SeededRng (ELAI_SEED=42): all tests pass
+      - Run same suite twice with same seed, single-threaded: diff stdout = 0 differences
+      - This is the determinism proof required for Phase 3I (DST)
+    DETERMINISTIC_CHECK:
+      - .elai_cc/scripts/check_entropy_quarantine.sh returns 0
+      - cd .elai_cc && cargo test --workspace with ELAI_SEED=42: passes
+      - cargo test --workspace with ELAI_SEED=42 -- --test-threads=1 run twice: diff = 0
+    ADVERSARIAL:
+      - If output includes timestamps from non-quarantined path, diff passes but replay diverges.
+        Test: grep test output for SystemTime patterns (ISO 8601 dates, epoch millis). Must be 0.
+      - If parallel test output ordering differs, diff shows false differences.
+        Test: use --test-threads=1 for determinism check.
+    ACCEPTANCE:
+      - Zero raw entropy access outside core/ impls (grep + CI script)
+      - All tests pass with seeded providers
+      - Same seed + same threads = identical output
+
+
+MODULE MAPPING (runtime/ -> target crates)
+
+  Authoritative guide for steps 0.4a-c. LOC verified 2026-04-06 against actual files.
+
+  TO core/ (leaf crate, no internal deps):
+    runtime/src/config.rs         (1648 LOC)  Config parsing and validation
+    runtime/src/session_control.rs (459 LOC)  Session identity, handoff (SPLIT: identity -> core/, state -> orchestrator/)
+    runtime/src/json.rs           (358 LOC)   JSON utilities (evaluate: STRIP if replaced by msgpack)
+    runtime/src/bootstrap.rs      (111 LOC)   Initialization sequence
+    runtime/src/sandbox.rs        (385 LOC)   SandboxConfig + FilesystemIsolationMode (R22: needed by config.rs)
+
+  TO rules/ (depends on core/):
+    runtime/src/policy_engine.rs  (581 LOC)   Rule evaluation (REPLACE with RuleEngine in Phase 3F)
+    runtime/src/green_contract.rs (152 LOC)   Evidence gates (KEEP, maps to contract enforcement)
+    runtime/src/trust_resolver.rs (299 LOC)   Trust level resolution
+
+  TO providers/ (depends on core/):
+    runtime/src/sse.rs            (158 LOC)   Server-sent events parsing
+    api/src/*                     (4377 LOC)  Provider implementations + types + prompt_cache
+    NOTE: api/src/sse.rs (279 LOC) duplicates runtime/src/sse.rs (158 LOC). Keep the api/ version,
+      strip the runtime/ version. Deduplicate during extraction.
+
+  TO tools/ (depends on core/, knowledge/):
+    runtime/src/file_ops.rs       (762 LOC)   File operations
+    runtime/src/bash.rs           (336 LOC)   Bash execution
+    runtime/src/bash_validation.rs(1004 LOC)  Input validation for bash
+    runtime/src/stale_branch.rs   (417 LOC)   Git branch management
+    runtime/src/branch_lock.rs    (144 LOC)   Git branch locking
+    tools/src/*                   (7526 LOC)  Existing tool implementations
+
+  TO plugins/ (depends on core/, rules/):
+    runtime/src/hooks.rs          (987 LOC)   Hook system
+    runtime/src/plugin_lifecycle.rs(533 LOC)  Plugin management
+    plugins/src/*                 (3860 LOC)  Existing plugin code
+
+  TO orchestrator/ (depends on core/, providers/, reasoning/, rules/, tools/):
+    runtime/src/conversation.rs   (1690 LOC)  Conversation management
+    runtime/src/session.rs        (1246 LOC)  Session state + persistence
+    runtime/src/worker_boot.rs    (1083 LOC)  Agent/worker lifecycle
+    runtime/src/mcp_stdio.rs      (2928 LOC)  MCP stdio transport
+    runtime/src/mcp_tool_bridge.rs(920 LOC)   MCP tool integration
+    runtime/src/mcp_lifecycle_hardened.rs (843 LOC) MCP lifecycle
+    runtime/src/mcp.rs            (304 LOC)   MCP core types
+    runtime/src/mcp_client.rs     (248 LOC)   MCP client
+    runtime/src/permissions.rs    (683 LOC)   Permission model
+    runtime/src/permission_enforcer.rs (551 LOC) Permission enforcement
+    runtime/src/recovery_recipes.rs(631 LOC)  Crash recovery
+    runtime/src/lane_events.rs    (383 LOC)   EVALUATE: elai_cc mapping?
+    runtime/src/task_packet.rs    (158 LOC)   EVALUATE: task serialization
+    runtime/src/task_registry.rs  (503 LOC)   EVALUATE: task tracking
+    runtime/src/team_cron_registry.rs (509 LOC) EVALUATE: scheduled tasks
+
+  TO cli/ (depends on core/, orchestrator/, tools/, providers/):
+    rusty-claude-cli/src/main.rs  (8615 LOC)  REPL main loop (target: <500 LOC thin shell)
+    rusty-claude-cli/src/render.rs (796 LOC)  Output rendering
+    rusty-claude-cli/src/init.rs  (434 LOC)   CLI initialization
+    rusty-claude-cli/src/input.rs (330 LOC)   Input handling
+    commands/src/lib.rs           (4841 LOC)  Slash commands (28+ classified in 0.2g, strip claw-code ones)
+
+  STRIP (removed in 0.2):
+    runtime/src/compact.rs        (696 LOC)   Context compaction
+    runtime/src/summary_compression.rs (300 LOC) Summary compression
+    runtime/src/usage.rs          (313 LOC)   Usage/billing tracking
+    runtime/src/lsp_client.rs     (747 LOC)   LSP client (not in elai_cc design)
+    runtime/src/oauth.rs          (596 LOC)   OAuth (DEFERRED to Phase 4+)
+    runtime/src/prompt.rs         (803 LOC)   Hardcoded prompts (STRIP/REPLACE)
+    runtime/src/remote.rs         (401 LOC)   EVALUATE: remote execution or telemetry?
+    telemetry/src/lib.rs          (526 LOC)   External telemetry (replaced by tracing)
+    compat-harness/src/lib.rs     (~357 LOC)  TypeScript bridge (dead code in elai_cc)
+
+  TEST INFRASTRUCTURE (dev-dependencies):
+    mock-anthropic-service/       (~180 LOC)  Mock provider for testing -> dev-dep of providers/ or cli/
+
+
+EXIT CRITERIA
+  All 5 contract tests pass (in crates/contracts/).
+  Ollama round-trip works (or documented environmental skip).
+  No stripped code remains.
+  Zero raw time/entropy access outside core/ impls (entropy quarantine verified, determinism proved).
+  9-crate structure with no circular dependencies.
+  claw-code slash commands stripped per classification.
+
+MEASUREMENTS
+  - Compile time per checkpoint (target: <30s after restructure)
+  - Test count at each checkpoint: baseline, post-strip, post-restructure, post-implement
+  - LOC total and per-crate
+  - Strip delta: files removed, LOC removed, tests removed
+  - Ollama round-trip latency (baseline for future comparison)
+  - Raw entropy access count outside core/: 0 (grep + CI verified)
+
+
+GROUNDING
+  "26.24s compile time"            -> GROUNDED: base-fork-comparison.txt, risk-register.txt R17.
+                                      Pre-restructure only; will change.
+  "684 tests"                      -> VERIFIED: grep #[test] on .elai_cc/rust/crates = 684 (2026-04-06).
+  "61,317 LOC, 69 .rs files"      -> VERIFIED: find + wc on .elai_cc/rust/crates (2026-04-06).
+  "custom clippy lints"            -> UNGROUNDED: requires dylint or nightly. Replaced with CI grep script.
+  "~200 LOC for entropy quarantine"-> UNGROUNDED: actual scope 60 occurrences / 31 files / 300-500 changed LOC.
+  "claw-code-rust-port source"     -> VERIFIED: .elai_cc/rust/ (local copy).
+  "sentinel/anti_distill/bias"     -> VERIFIED ABSENT: 0 hits in codebase.
+  "60 occurrences / 31 files"      -> VERIFIED: grep for raw time/entropy patterns.
+  "hardcoded system prompts"       -> VERIFIED: prompt.rs L39, L451.
+  "runtime is 25,035 LOC / 38 files" -> VERIFIED: wc -l (2026-04-06).
+  "main.rs is 8,615 LOC"          -> VERIFIED: wc -l (2026-04-06).
+  "green_contract.rs is 152 LOC"  -> VERIFIED: wc -l. base-fork-comparison says 4,061 — STALE.
+  "commands/lib.rs is 4,841 LOC"  -> VERIFIED: wc -l (2026-04-06).
+  "api/ source is 4,377 LOC"      -> VERIFIED: find + wc on api/src/*.rs (2026-04-06).
+  "config.rs imports sandbox types"-> VERIFIED: line 7 "use crate::sandbox::{FilesystemIsolationMode, SandboxConfig}".
+  "sandbox.rs has zero internal deps" -> VERIFIED: only imports std + serde.
+  "TokenUsage embedded in 5 files" -> VERIFIED: grep returns 61 occurrences across session.rs,
+                                      conversation.rs, compact.rs, usage.rs, lib.rs.
+  "28+ slash commands in commands/" -> VERIFIED: grep SlashCommandSpec shows 28 entries.
+  "tools/lib.rs imports api::*"    -> VERIFIED: line 6 "use api::{...}" and line 5051.
+  "SystemTime::now in api/ = 6"    -> VERIFIED: prompt_cache.rs (4), anthropic.rs (2).
+  "compat-harness imports commands+runtime" -> VERIFIED: line 4-6 of compat-harness/src/lib.rs.

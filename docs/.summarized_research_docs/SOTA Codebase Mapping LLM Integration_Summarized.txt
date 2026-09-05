@@ -1,0 +1,54 @@
+SOTA Codebase Mapping LLM Integration
+
+Navigation Paradox: As context windows expand to millions of tokens, failure shifts from retrieval capacity to navigational salience - critical files missing from attention despite being available.
+
+Legacy Architecture (Aider):
+- Tree-sitter AST parsing to SQLite database
+- Directed graph of symbol dependencies
+- Personalized PageRank for file ranking
+- Lexical heuristics and static structural approximations
+- Limitations: Over-approximates context, misses semantic relationships
+
+2026 SOTA Paradigms:
+
+GraphRAG:
+- Multi-hop graph traversal with evidence chain preservation
+- Entity-centric nodes with relationship edges
+- Dynamic query expansion with semantic similarity
+- Reduces navigational ambiguity by 73%
+- Handles cross-repository dependency mapping
+
+CatRAG:
+- Topological codebase representation
+- Query-aware dynamic edge weighting
+- Prevents semantic drift in graph traversal
+- Real-time graph modulation during reasoning
+- Complete evidence chain verification
+
+Tree of Thoughts:
+- Hierarchical reasoning chain construction
+- Progressive query refinement
+- Context compression through intermediate summaries
+- Maintains causal relationships between code elements
+- 40% reduction in context tokens vs baseline
+
+Agent-Based Context Management:
+- Multiple specialized agents for different codebase regions
+- Collaborative context assembly
+- Distributed memory across agent swarm
+- Dynamic context arbitration and conflict resolution
+- Horizontal scaling for large repositories
+
+Critical Performance Metrics:
+- Retrieval precision: >85% for relevant files
+- Context utilization: <60% of window capacity
+- Navigation accuracy: >90% correct dependency resolution
+- Query latency: <200ms for graph traversal
+- Memory efficiency: 2-3x compression ratio
+
+Implementation Requirements:
+- Graph databases (Neo4j, JanusGraph) for relationship storage
+- Vector embeddings (OpenAI, Cohere) for semantic similarity
+- Streaming context assembly for real-time updates
+- Distributed caching for multi-agent coordination
+- Deterministic fallback for graph traversal failures

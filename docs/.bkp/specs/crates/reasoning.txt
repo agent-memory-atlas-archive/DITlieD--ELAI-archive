@@ -1,0 +1,288 @@
+CRATE: reasoning/
+Purpose: GRC engine + hallucination mitigation + grounding verification + CSQ.
+Source: design_document.txt PART 5 (all subsections), PART 5.3 ADDENDUM, PART 5.9.
+Depends on: core/, providers/ (for model invocation), tools/ (for verification checks)
+
+
+1. RESPONSIBILITIES
+
+  - GRC state machine: structured reasoning protocol replacing model-internal thinking
+  - Budget system: per-topic call and character limits
+  - Grounding verification: claim checking before any action
+  - Plan grounding sweep: validate entire plans before EXECUTING
+  - Fact-based planning protocol: plans assembled only from verified facts
+  - Counterfactual safety (CSQ): "if X wrong, code will Y" checks
+  - Per-agent GRC configuration: different budgets/steps per role
+  - Inline feasibility check: catch ungrounded claims during EXECUTING
+
+
+2. GRC STATE MACHINE (per topic)
+
+  observe(grounding) -> hypothesize(grounding) -> plan_action -> act -> verify(grounding)
+
+  Each step MUST cite grounding source.
+  Steps without grounding are rejected by the engine.
+  The model receives ONLY the structured prompt for the current step.
+  No <thinking> tags, no chain-of-thought tokens consumed by the model.
+
+  Model interaction protocol:
+    GRC sends: "Given these verified facts: [F1, F2, F3]. Produce: [specific output format]."
+    Model returns raw completion.
+    GRC validates: format correct? grounding cited? new claims introduced?
+    New ungrounded claims -> flagged for verification before next step.
+
+
+3. BUDGET SYSTEM
+
+  Per-topic: max_calls (1-12), max_chars (200-1500).
+  Global default configurable in elai_cc.toml.
+  Overflow -> forced convergence (must produce conclusion) or escalation (hand to human).
+  Budget scales: simple=3/600, moderate=5/800, complex=8/1200.
+
+
+4. GROUNDING VERIFICATION
+
+  Verification methods:
+    FILE_CHECK:         does file/function/class exist? (grep/glob)
+    API_CHECK:          does API/library work as claimed? (test call or docs lookup)
+    WEB_CHECK:          is algorithm/method real? (web search)
+    SOURCE_CHECK:       does referenced source code do what we think? (read)
+    TEST_CHECK:         does a test confirm this behavior? (run test)
+    API_REGISTRY_CHECK: does API exist, is it free, does it respond? (design 5.3 addendum)
+      Sources: public-apis GitHub (~1400 free), RapidAPI free tier, package managers.
+      INTERACTIVE mode (default): user approves API selection.
+      AUTONOMOUS mode (Phase 4G): only keyless/free APIs auto-selected.
+      Auth credentials in .elai_cc/projects/{id}/.env (gitignored).
+
+  Grounding levels:
+    VERIFIED:  searched, tested, or read from source
+    HIGH:      code just read in this session
+    UNCERTAIN: from training, not verified — MUST be resolved before acting
+
+  Plan grounding sweep:
+    Before EXECUTING, GRC scans ALL claims in plan.
+    Each classified: GROUNDED, VERIFY_NEEDED, UNGROUNDED.
+    UNGROUNDED blocks execution until resolved.
+
+
+5. FACT-BASED PLANNING PROTOCOL
+
+  1. GRC breaks task into sub-questions (observe step)
+  2. Each sub-question answered via VERIFIED sources (not training)
+  3. If LLM doesn't know -> web search, source read, or "I don't know"
+  4. Plan assembled ONLY from verified facts
+  5. Pre-implementation tests written from plan (TESTING_FIRST)
+  6. Adversarial review by auditor agent
+  7. Only then: EXECUTING
+
+
+6. COUNTERFACTUAL SAFETY (CSQ)
+
+  Before finalizing any non-trivial logic:
+    "If [assumption X] is wrong, code will [consequence Y]."
+    Dangerous consequence (data loss, security, financial) -> MUST add guard.
+    Minimum 1 CSQ per function touching: files, network, money, auth.
+
+
+7. PER-AGENT GRC CONFIGURATION
+
+  executor (Gemma 4 31B):
+    budget: complex (8/1200)
+    required_steps: [observe, hypothesize, plan_action, act, verify]
+    grounding: all steps require source citation
+    csq: mandatory for file/network/money/auth functions
+    require_scope_enumeration: true
+
+  auditor (DeepSeek-R1-32B):
+    budget: high (10/1200)
+    required_steps: [observe, hypothesize, verify, verify] — double verify
+    grounding: VERIFIED only (no HIGH or UNCERTAIN accepted)
+    extra: must find >= 1 issue per review (anti-rubber-stamp)
+    csq: mandatory on every finding
+
+  designer (Gemma 4 31B, reuses executor model):
+    budget: complex (8/1200)
+    required_steps: [observe, hypothesize, plan_action, verify, converge]
+    grounding: must cite Research Report + verified sources
+    csq: not required (planning, not execution)
+    require_scope_enumeration: true
+
+  context-compiler:
+    budget: low (3/600)
+    required_steps: [observe]
+    grounding: FILE_CHECK and SOURCE_CHECK only
+    no csq (read-only agent)
+    require_scope_enumeration: false
+
+  prompt-engineer:
+    budget: moderate (5/800)
+    required_steps: [observe, hypothesize, converge]
+    grounding: must cite plan + context package
+
+  memory-writer:
+    budget: minimal (2/400)
+    required_steps: [observe, converge]
+    grounding: must cite diff + test results
+    require_scope_enumeration: false
+
+  Per-agent FSM sub-states:
+    IDLE -> LOADING -> REASONING -> ACTING -> DONE
+    Persisted in agent checkpoint. Orchestrator reads for scheduling.
+
+
+8. INLINE FEASIBILITY CHECK (design 5.9)
+
+  During EXECUTING, if GRC verify detects a NEW claim not in:
+    PipelineSpec, Research Report, or DKG:
+  Quick check (max 2 GRC calls): web search OR grep OR API_REGISTRY_CHECK.
+  PASS -> grounded, proceed. FAIL -> must use plan's original approach.
+  Fundamentally different approach requires EXECUTING -> BLOCK -> PLANNING.
+
+
+9. GRC VERIFICATION UNDER PROCESS ISOLATION (Tier C)
+
+  Agents are isolated processes with no network access (except researcher).
+  GRC verification methods that require external access are proxied via IPC.
+
+  Agent emits GroundingRequest { method, claim } over IPC.
+  Orchestrator executes verification and returns GroundingResult.
+
+  Per-method availability:
+    FILE_CHECK:         orchestrator reads file via visibility filter. Available to all roles.
+    SOURCE_CHECK:       orchestrator reads + parses source. Available to all roles.
+    TEST_CHECK:         orchestrator runs test in sandbox. Available to executor, auditor.
+    WEB_CHECK:          orchestrator performs web search (has network access). Available to all.
+    API_CHECK:          orchestrator makes test API call. Available to all.
+    API_REGISTRY_CHECK: orchestrator queries registry. Available to all.
+
+  Key change: agents never perform WEB_CHECK/API_CHECK directly.
+  Orchestrator proxies these using its own network access.
+  Agent does not know whether the check was performed locally or over network.
+
+  Budget enforcement: orchestrator counts GroundingRequest messages per topic.
+  Counted against the same per-topic GRC budget as ThinkStep messages.
+
+
+10. KEY TYPES (formal Rust definitions — phase 2A implements items marked [2A])
+
+  [2A] GrcState enum { Observe, Hypothesize, PlanAction, Act, Verify, Converge, Status }
+    fn allowed_next(&self) -> &[GrcState]  // valid transitions from this state
+    Status is free (no budget, no grounding). Converge allowed from any state.
+
+  [2A] ThinkStep { step_type: GrcState, content: String, topic: String,
+                    grounding: Option<String>, conclusion: Option<String>,
+                    scope: Option<Vec<String>> }
+    scope: when require_scope_enumeration=true (AgentGrcConfig), Observe step must
+      enumerate all task components/modalities before proceeding. Orchestrator validates
+      every scope item appears in subsequent plan_action. Unaddressed items -> WARN
+      injected into agent context. No new GrcState. Backward compatible.
+
+  [2A] GrcBudget { max_calls: u32, max_chars: u32, calls_used: u32, chars_used: u32 }
+    fn remaining_calls(&self) -> u32
+    fn remaining_chars(&self) -> u32
+    fn is_exhausted(&self) -> bool
+    fn must_converge(&self) -> bool  // remaining_calls <= 1
+
+  [2A] GroundingLevel enum { Verified, High, Uncertain }
+    Verified: tested or searched. High: code just read. Uncertain: from training.
+
+  [2A] GrcError enum {
+    UngroundedStep { step_type, topic },
+    BudgetExhausted { topic, calls_used, max_calls },
+    InvalidTransition { from: GrcState, to: GrcState, allowed: Vec<GrcState> },
+    MalformedGrounding { raw: String, reason: String }
+  } // implements std::error::Error via thiserror
+
+  [2A] ThinkResult { step: ThinkStep, budget_remaining: GrcBudget,
+                     grounding_level: Option<GroundingLevel>, warnings: Vec<String> }
+
+  [2B] VerificationMethod enum { FileCheck, SourceCheck, TestCheck, WebCheck, ApiCheck, ApiRegistryCheck }
+    fn requires_network(&self) -> bool  // WebCheck, ApiCheck, ApiRegistryCheck = true
+    fn requires_tools(&self) -> bool    // FileCheck, SourceCheck, TestCheck = true
+
+  [2B] GroundingResult { claim: String, method: VerificationMethod, level: GroundingLevel,
+                         source: String, verified_at: u64 }
+    Note: method is VerificationMethod enum (not String). verified_at from TimeSource trait.
+
+  [2B] VerificationResult { claim: String, passes: bool, evidence: String,
+                            method_used: VerificationMethod }
+    Note: method_used is VerificationMethod enum (not String).
+
+  [2B] PlanGroundingResult { claims: Vec<GroundingResult>, all_grounded: bool,
+                             ungrounded: Vec<String>, verify_needed: Vec<String> }
+    verify_needed: "training:" claims that failed auto-resolution (subset of ungrounded).
+    all_grounded = ungrounded.is_empty().
+
+  [2B] trait Verifier: Send + Sync {
+    fn verify(&self, method: VerificationMethod, claim: &str, context: &str)
+      -> Result<VerificationResult, GrcError>;
+    fn supported_methods(&self) -> &[VerificationMethod];
+  }
+
+  [2B] trait TestRunner: Send + Sync {
+    fn run_test(&self, name: &str, crate_name: &str) -> TestRunResult;
+  }
+    Implementations: CargoTestRunner (production, uses BashSandbox::execute), MockTestRunner (tests).
+
+  [2B] GrcError += VerificationError { method: VerificationMethod, claim: String, reason: String }
+
+  [2B] GrcEngine trait updates (breaking changes from 2A stubs):
+    fn verify_claim(&self, claim: &str, source: &str, context: &str) -> Result<VerificationResult, GrcError>
+      (added context param for SOURCE_CHECK file path and TEST_CHECK crate name)
+    fn ground_plan(&self, plan: &str) -> PlanGroundingResult
+      (was Vec<GroundingResult> in 2A — PlanGroundingResult wraps with metadata)
+
+  [2C] AgentGrcConfig { budget, required_steps, grounding_level, csq_required,
+                        require_scope_enumeration: bool }
+    require_scope_enumeration: default true for executor and designer, false for
+      memory-writer and context-compiler. When true, Observe step must populate
+      ThinkStep.scope. Orchestrator validates scope coverage in plan_action.
+  [2D] CsqSeverity enum { Critical, Warning }
+  [2D] CsqCheck { assumption: String, consequence: String,
+                   severity: CsqSeverity, guard_added: bool }
+  [2D] CsqResult { function_id: String, checks: Vec<CsqCheck> }
+    fn passed(&self) -> bool  // all Critical checks have guard_added == true
+  [2D] InlineFeasibilityState { checks_used: u32, max_checks: u32 }
+    fn is_exhausted(&self) -> bool  // checks_used >= max_checks
+    fn record_check(&mut self)     // saturating_add
+    fn reset(&mut self)            // checks_used = 0, called by orchestrator between phases
+    Default: max_checks = 2 (hardcoded from spec)
+  [2D] FeasibilityMethod enum { SourceMatch }
+    Typed enum following VerificationMethod pattern. Future: WebSearch, Grep, ApiRegistryCheck.
+  [2D] FeasibilityOutcome enum { Pass, Fail, Blocked }
+  [2D] InlineFeasibilityResult { claim: String, method: FeasibilityMethod,
+                                  outcome: FeasibilityOutcome }
+  [4A] GroundingRequest { method, claim, context }  // IPC message type (process isolation)
+
+
+11. TESTABLE INVARIANTS (phase that tests each)
+
+  [2A] Every GRC step without grounding is rejected (returns GrcError::UngroundedStep)
+  [2A] Budget overflow forces convergence or returns GrcError::BudgetExhausted (never silently ignored)
+  [2A] Invalid state transitions rejected (returns GrcError::InvalidTransition)
+  [2A] Malformed grounding strings rejected (returns GrcError::MalformedGrounding)
+  [2A] Status steps are free (no budget consumed, no grounding required)
+  [2A] Per-topic budgets are independent (exhausting topic A does not affect topic B)
+  [2A] Forced convergence when remaining_calls <= 1 (must_converge returns true)
+  [2B] Plan grounding sweep blocks EXECUTING if any UNGROUNDED claims remain
+  [2B] Empty plan = trivially GROUNDED (all_grounded=true, no panic)
+  [2B] FILE_CHECK returns passes=true for existing files, passes=false for missing
+  [2B] UNCERTAIN grounding auto-resolved via FILE_CHECK/SOURCE_CHECK when claim is resolvable
+  [2B] Network-dependent methods (WEB/API/API_REGISTRY) return typed VerificationError, not panic
+  [2B] Verifier trait is object-safe (Box<dyn Verifier> compiles)
+  [2C] Per-agent config correctly routes: auditor gets double-verify, compiler gets observe-only
+  [2D] CSQ produces at least 1 check per financial/file/network/auth function
+  [2D] CSQ Critical severity without guard_added = CsqResult.passed() returns false
+  [2D] CSQ Warning severity without guard_added = CsqResult.passed() returns true (no block)
+  [2D] CSQ with empty sensitive_ops = empty checks, passed=true
+  [2D] Inline feasibility max 2 calls (bounded via InlineFeasibilityState counter)
+  [2D] Inline feasibility Pass on claim found in sources, Fail on unknown claim
+  [2D] Inline feasibility Blocked outcome returned for CONTRADICTS_PLAN: prefixed claims
+  [3A+] Blocked outcome triggers ReplanRequest(MAJOR) emission (orchestrator integration)
+  [2D] InlineFeasibilityState resets cleanly between phases
+  [2A] ThinkStep.scope present when require_scope_enumeration=true in AgentGrcConfig
+  [2A] Every scope item addressed in subsequent plan_action (WARN if not)
+  [2C] Designer role gets distinct config from executor (separate GRC steps, scope required)
+  [4A] Budget enforcement is in orchestrator, not agent (orchestrator counts IPC messages)
+  [4A] GroundingRequest proxied by orchestrator: agent never makes network calls for verification
+  [4A] WEB_CHECK/API_CHECK available to all roles via IPC proxy (no direct network needed)

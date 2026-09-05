@@ -1,0 +1,107 @@
+RESEARCH SUMMARIZATION METHODS
+
+WORKFLOW:
+1. Read entire file content in chunks to get full context
+2. Create concise, token-efficient summary following output formatting rules
+3. Remove verbosity, explanations, and decorative elements
+4. Preserve all technical content, thresholds, and implementation details
+5. Save to .summarized_research_docs directory with _Summarized.txt suffix
+6. Update SUMMARIZATION_TODO.txt to track progress
+
+FORMATTING RULES (from .claude/rules/output-formatting.md):
+- Deterministic code or structured data only
+- Zero filler, zero emojis, no preambles/postscripts
+- Plain text only, no markdown headers, bold, decorations
+- Every token must carry meaning
+- Skip standard boilerplate, obvious getters/setters
+- Combine related one-liners
+- Remove print/logging unless showing important state
+- Skip docstrings, use 1-line comments only if non-obvious
+- Keep thresholds, magic numbers, config values, algorithms
+- Skip philosophy/rationale, add only extremely important phrases
+
+CONTENT PRIORITIES:
+HIGH PRIORITY:
+- All thresholds, magic numbers, config values with meaning
+- Custom algorithms, detection logic, state machines
+- Field names and structure for save/load/checkpoint
+- Integration patterns, how components connect
+- Enums and state definitions
+- Performance metrics and exact computation methodology
+- Sample size and time period for benchmarks
+- Confidence intervals where applicable
+- Known limitations and edge cases
+- Security mechanisms and validation frameworks
+- Mitigation strategies and implementation patterns
+
+MEDIUM PRIORITY:
+- Non-obvious logic requiring explanation
+- Multiple examples of same pattern (show once)
+- Type hints where obvious from context
+- Domain-specific architectural decisions
+- Error handling patterns that aren't standard
+- Deployment configuration examples
+- Integration patterns requiring setup
+- Testing strategies and validation approaches
+- Optimization techniques and performance considerations
+
+LOW PRIORITY:
+- Standard patterns you'd write anyway
+- Try/except boilerplate, basic loops
+- Verbose error messages, multiple examples
+- Type hints where obvious, standard imports
+- Obvious getter/setter patterns
+- Simple configuration examples
+- Basic class structure without custom logic
+- Standard deployment patterns
+
+SKIP ENTIRELY:
+- Philosophy/rationale (you infer from code)
+- Verbose explanations of obvious concepts
+- Multiple examples of standard library usage
+- Marketing language or exaggerated claims
+- Repetitive introductory content
+- Obvious setup instructions
+- Generic best practices without specifics
+- Standard troubleshooting guides
+- Basic usage examples without complexity
+
+FILE NAMING CONVENTION:
+Original_Filename_Summarized.txt
+- Maintains traceability to source
+- Clear indication of processing status
+- Consistent directory organization
+
+COMPRESSION RATIOS ACHIEVED:
+- Source files: 25-45KB → Summaries: 8-12KB
+- 70-80% size reduction while preserving technical content
+- Token efficiency optimized for LLM ingestion
+- All critical technical details retained
+
+QUALITY VALIDATION:
+- All technical thresholds preserved
+- Implementation details maintained
+- Code examples kept for clarity
+- Configuration parameters retained
+- Performance metrics included
+- Security considerations documented
+
+NEXT SESSION CONTINUATION:
+1. Read SUMMARIZATION_TODO.txt for remaining files
+2. Continue with next highest-priority unprocessed file
+3. Follow same chunked reading approach for large files
+4. Maintain same formatting standards
+5. Update progress tracking after each completion
+6. Clean up temporary files after each session
+
+COMPLETED FILES TRACKING:
+- Mark COMPLETED in SUMMARIZATION_TODO.txt
+- Maintain running count of processed files
+- Track total bytes processed vs summary sizes
+- Note any special processing requirements
+
+DIRECTORY STRUCTURE:
+Input: F:\.ELAI_workflow\docs\.research\
+Output: F:\.ELAI_workflow\docs\.summarized_research_docs\
+Tracking: F:\.ELAI_workflow\docs\.summarized_research_docs\SUMMARIZATION_TODO.txt
+Methods: F:\.ELAI_workflow\docs\.summarized_research_docs\METHODS_SUMMARY.txt

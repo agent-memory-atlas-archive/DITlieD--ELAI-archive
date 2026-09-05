@@ -1,0 +1,3 @@
+How API keys are held, get rid of all the JSON serializing and switch to Postcard for serde_derive, anything being stored in nJSON will be swapped to msgpack binaries. 
+
+heapless for half the JSON logic (as it will now be msgpack)

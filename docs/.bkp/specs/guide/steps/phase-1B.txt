@@ -1,0 +1,424 @@
+PHASE 1B: BM25 (tantivy full-text search)
+Canonical path: .elai_cc/crates/knowledge/ (same as Phase 1A)
+Prerequisites: Phase 1A complete (knowledge/ crate exists, DKG tests pass, KnowledgeEngine trait defined)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Full-text search over codebase via tantivy BM25 index.
+Per-project index isolation. Sub-10ms queries for indexes under 100K documents.
+Zero orphan files: every text file in the project appears in the BM25 index, even if
+tree-sitter cannot parse it (unsupported language, syntax errors). Binary files (null bytes
+in first 8KB) are the sole exception.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/knowledge.txt             Layer 2 (BM25), line ~35
+  docs/specs/crates/knowledge.txt             Dependencies section, line ~103 (ADD: tantivy)
+  docs/specs/crates/knowledge.txt             Storage format, line ~200 (bm25_format field)
+  docs/specs/crates/knowledge.txt             Tree-sitter fallback, line ~168-177 (BM25 indexes unparseable files)
+  docs/specs/crates/knowledge.txt             Invariants section, line ~254 (zero orphan files, <10ms, incremental <5s)
+  docs/specs/crates/knowledge.txt             Index versioning, line ~195 (path convention: .elai_cc/projects/{id}/)
+  docs/specs/architecture-overview.txt        Section 4 (TRAIT BOUNDARIES), line ~80 (KnowledgeEngine trait at ~94)
+
+RISKS TO WATCH
+  R1: tantivy index format version. Pin exact crate version. Verify INDEX_FORMAT_VERSION
+      matches expectations (tantivy uses a u32 constant, not a string label).
+      NOTE: knowledge.txt L200 says bm25_format = "tantivy_v21" but this is a spec-level label,
+      not a tantivy internal identifier. The actual format version is INDEX_FORMAT_VERSION (u32)
+      in tantivy's source. Record which tantivy crate version we pin and its INDEX_FORMAT_VERSION.
+  R2: Index corruption on crash. tantivy uses directory-based indexes — need atomic commit.
+  R3: Windows path handling. tantivy index paths must use valid Windows paths.
+  R4: Memory usage on large repos. tantivy loads segments into memory.
+  R5: Binary file indexing. Must not panic on non-UTF8 content — skip, log warning.
+  R6: Chunking strategy mismatch. BM25 chunks must align with how later layers (vectors, reranker) chunk.
+  R7: path field schema. The path field used for delete_term MUST be STRING (untokenized),
+      not TEXT (tokenized). Tantivy tokenizes TEXT fields, splitting paths on / . - which
+      makes exact-match deletion impossible. Verified from tantivy examples.
+
+
+STEPS
+
+  1B.1 ADD TANTIVY DEPENDENCY
+    PRE_GATE:
+      - knowledge/ crate Cargo.toml exists: test -f .elai_cc/crates/knowledge/Cargo.toml
+      - Phase 1A DKG tests pass: cargo test -p knowledge --lib 2>&1 | grep -q "test result: ok"
+      - No existing tantivy dep: ! grep -q "tantivy" .elai_cc/crates/knowledge/Cargo.toml
+    TASK:
+      - Verify tantivy crate exists on crates.io before adding (anti-slopsquatting)
+      - Add tantivy dependency to .elai_cc/crates/knowledge/Cargo.toml
+      - Pin a specific version. Record which INDEX_FORMAT_VERSION (u32) that version uses.
+        The spec label "tantivy_v21" is a project identifier, not a tantivy internal value.
+        The implementer must check tantivy source for the actual INDEX_FORMAT_VERSION constant
+        of the pinned version and record it in decision doc.
+    DETERMINISTIC_CHECK:
+      - cargo check -p knowledge compiles with 0 errors
+      - grep -q "tantivy" .elai_cc/crates/knowledge/Cargo.toml
+    ADVERSARIAL:
+      - If tantivy version is too new and changes index format, old indexes become unreadable.
+        Test: check tantivy changelog for breaking format changes between pinned version and latest.
+      - If tantivy pulls in incompatible dependency versions, cargo check fails.
+        Test: cargo check -p knowledge exits 0.
+    ACCEPTANCE:
+      - knowledge crate compiles with tantivy dependency: cargo check -p knowledge exits 0
+
+  1B.2 BM25 MODULE SKELETON WITH CORRECT API SHAPE
+    PRE_GATE:
+      - Step 1B.1 complete: grep -q "tantivy" .elai_cc/crates/knowledge/Cargo.toml
+      - knowledge crate compiles: cargo check -p knowledge exits 0
+    TASK:
+      - Create bm25.rs module in .elai_cc/crates/knowledge/src/
+      - Define BM25 chunk type owned by this module:
+          pub struct BM25Chunk {
+              pub path: PathBuf,
+              pub content: String,
+              pub line_start: u32,
+              pub line_end: u32,
+              pub kind: ChunkKind,
+          }
+          pub enum ChunkKind { Function, LineBlock, File }
+        NOTE: Phase 1A's DKG exports DkgNode (AST metadata: kind, name, start/end lines) but NOT
+        file content. BM25Chunk includes content because BM25 must index text. The conversion from
+        DKG nodes to BM25Chunks requires reading file content at the line ranges DKG provides.
+        This conversion is BM25's responsibility, not DKG's.
+      - Define Bm25Index struct:
+          new(project_root: &Path, project_id: &str) -> Result<Self>
+          project_id is passed explicitly (not derived) — matches knowledge.txt L274 which requires
+          project_id as a first-class input. The caller (KnowledgeEngine) manages project_id assignment.
+      - Index path: {project_root}/.elai_cc/projects/{project_id}/bm25/
+      - Tantivy schema:
+          path:       STRING | STORED  (untokenized — required for exact-match delete_term)
+          content:    TEXT | STORED    (tokenized — this is what BM25 searches)
+          line_start: u64 STORED
+          line_end:   u64 STORED
+          chunk_kind: STRING | STORED  (serialized from ChunkKind enum, not free-form text)
+        CRITICAL: path MUST be STRING, not TEXT. Tantivy tokenizes TEXT fields (splits on /, ., -).
+        delete_term on a tokenized path field will not produce exact-match deletion, causing silent
+        data corruption (orphaned documents or wrong deletions). Verified from tantivy's
+        deleting_updating_documents.rs example: primary-key fields use STRING.
+      - Define methods:
+          index_file(path: &Path, chunks: Option<Vec<BM25Chunk>>) -> Result<usize>
+            If chunks provided: index each chunk as a document.
+            If chunks=None: read file, generate BM25Chunks using 50-line sliding window fallback.
+            Binary files: skip (log warning). Detection: null bytes in first 8KB.
+          index_directory(root: &Path, dkg: Option<&DkgIndex>) -> Result<IndexStats>
+            Walk directory. For each file: query DKG for node ranges, read content at those ranges
+            to create BM25Chunks. If DKG has no nodes for a file, use line-level fallback.
+            Return IndexStats { files_indexed, chunks_indexed, files_skipped_binary, elapsed_ms }.
+          query(query_text: &str, limit: usize) -> Result<Vec<BM25Hit>>
+            BM25Hit { path: String, line_start: u32, line_end: u32, score: f32,
+                      chunk_kind: ChunkKind, snippet: String }
+            snippet: first 200 chars of matching content (simple truncation, not tantivy SnippetGenerator).
+          delete_file(path: &Path) -> Result<usize>  (returns docs deleted)
+            Uses delete_term on STRING path field for exact match.
+          update_file(path: &Path, chunks: Option<Vec<BM25Chunk>>) -> Result<usize>
+            Atomic: delete_file + index_file in single writer.commit(). <5s for single file.
+            Writer serialization note: Bm25Index holds a single IndexWriter. index_directory holds
+            the writer for the entire batch commit duration. Concurrent update_file calls from other
+            threads will block until the writer is released. This is by design (tantivy single-writer
+            model) but callers must be aware that index_directory blocks all update_file calls.
+      - Register module in .elai_cc/crates/knowledge/src/lib.rs
+      - Create contract test stub: .elai_cc/tests/contracts/bm25_contract.rs with one test per
+        public method of Bm25Index (index_file, index_directory, query, delete_file, update_file).
+        Contract tests verify the public API contract, not implementation details.
+    DETERMINISTIC_CHECK:
+      - File exists: test -f .elai_cc/crates/knowledge/src/bm25.rs
+      - Module registered: grep -q "mod bm25" .elai_cc/crates/knowledge/src/lib.rs
+      - Compiles: cargo check -p knowledge exits 0
+      - All existing tests still pass: cargo test -p knowledge --lib exits 0
+      - BM25Hit struct has required fields: grep -q "score" bm25.rs && grep -q "chunk_kind" bm25.rs
+      - IndexStats struct exists: grep -q "IndexStats" bm25.rs
+      - BM25Chunk struct defined: grep -q "pub struct BM25Chunk" bm25.rs
+      - Path field is STRING not TEXT: grep -q "STRING" bm25.rs (schema definition)
+      - Contract test file exists: test -f .elai_cc/tests/contracts/bm25_contract.rs
+    ADVERSARIAL:
+      - If bm25 module name conflicts with existing module, compile fails.
+        Test: cargo check -p knowledge exits 0.
+      - If path field is accidentally TEXT instead of STRING, delete_file silently fails.
+        Test: index a file at "src/deep/nested/file.rs", delete_file("src/deep/nested/file.rs"),
+        query for content from that file, assert zero results. This test WILL FAIL with TEXT field.
+      - If index path uses hardcoded separator, Windows paths break.
+        Test: use std::path::PathBuf::join, not format!("{}/bm25/").
+    ACCEPTANCE:
+      - bm25.rs exists, compiles, and is registered in lib.rs
+      - API has index_file, index_directory, query, delete_file, update_file methods
+      - Index path follows spec convention .elai_cc/projects/{id}/bm25/
+      - ChunkKind enum (not strings) used for chunk classification
+      - BM25Chunk struct defined with content field (distinct from DKG's DkgNode)
+      - Path schema field is STRING (untokenized), not TEXT
+      - Contract test file exists with stubs
+
+  1B.3 WRITE FAILING TESTS (TDD)
+    PRE_GATE:
+      - Step 1B.2 complete: test -f .elai_cc/crates/knowledge/src/bm25.rs
+      - Stubs compile: cargo check -p knowledge exits 0
+    TASK:
+      - Write unit tests in bm25.rs or tests/bm25_tests.rs.
+        ALL TESTS USE SYNTHETIC FILES IN TEMPDIR. No real codebase paths.
+
+        CORE FUNCTIONALITY:
+        (a) Index a single synthetic Rust file containing "fn hello_world() { ... }",
+            query "hello_world", get the file back with correct line range.
+        (b) Index a tempdir with 3 synthetic files (one containing "fn complete(input: &str)"),
+            query "fn complete", verify result contains the correct file.
+        (c) Delete a file from index, query returns empty for that file's unique symbol.
+        (d) Query non-existent term returns empty Vec (not error).
+
+        ZERO ORPHAN INVARIANT:
+        (e) Create a file with .xyz extension (unsupported by tree-sitter), index with chunks=None,
+            query a keyword from that file, get result back. Proves line-level fallback works.
+        (f) Create temp dir with 1 text file + 1 binary file (content with null bytes).
+            Index. Assert files_indexed=1, files_skipped_binary=1 in IndexStats.
+
+        INCREMENTAL UPDATE:
+        (g) Index a file with content "fn old_function", then update_file with "fn new_function".
+            Query "new_function" succeeds, query "old_function" returns empty.
+
+        PER-PROJECT ISOLATION:
+        (h) Two Bm25Index instances with different project_id and project_root.
+            Index different content in each. Query project A, assert no results from project B.
+
+        CHUNKING STRATEGY:
+        (i) Index with BM25Chunks provided (kind=Function): each chunk is a separate document.
+            Index with chunks=None on a 120-line file: file split into 50-line windows.
+            Assert chunk_kind field is correct (Function vs LineBlock) in query results.
+
+        PATH FIELD CORRECTNESS (regression guard for BLOCK fix):
+        (j) Index a file at path "src/deep/nested/module.rs". Delete exactly that path.
+            Query for content unique to that file. Assert zero results.
+            This test guards against path field being TEXT (tokenized) instead of STRING.
+
+      - Tests MUST FAIL at this point (stubs return empty)
+    DETERMINISTIC_CHECK:
+      - Tests exist: cargo test -p knowledge --lib -- bm25 --list 2>&1 | grep -c "test" >= 10
+      - Tests fail (expected): cargo test -p knowledge --lib -- bm25 2>&1 | grep -q "FAILED"
+    ADVERSARIAL:
+      - If test uses hardcoded paths that don't exist in CI, tests fail for wrong reason.
+        Test: all test paths use tempdir().
+      - If test doesn't clean up tantivy index dirs, subsequent runs fail on stale locks.
+        Test: each test creates unique tempdir that is dropped on completion.
+      - If test (j) passes with TEXT field (because tantivy happens to match), the guard is useless.
+        Test: use a path with multiple segments (src/deep/nested/module.rs) and verify delete is precise
+        — it should NOT delete a different file at "src/deep/nested/other.rs".
+    ACCEPTANCE:
+      - At least 10 BM25 test functions exist and all currently fail (TDD red phase)
+
+  1B.4 IMPLEMENT BM25 INDEX
+    PRE_GATE:
+      - Step 1B.3 complete: failing tests exist
+      - cargo test -p knowledge --lib -- bm25 2>&1 | grep -q "FAILED"
+    TASK:
+      CORE INDEX:
+      - Implement tantivy index creation with schema:
+          path:       STRING | STORED (untokenized — for exact delete_term)
+          content:    TEXT | STORED   (tokenized — BM25 search target)
+          line_start: u64 STORED
+          line_end:   u64 STORED
+          chunk_kind: STRING | STORED (from ChunkKind enum)
+      - Index storage at {project_root}/.elai_cc/projects/{project_id}/bm25/
+
+      INDEX_FILE (two modes):
+      - With BM25Chunks (from DKG-derived conversion): each chunk becomes one tantivy document.
+        chunk_kind = ChunkKind::Function.
+      - Without chunks (line-level fallback): read file content, split into 50-line sliding windows
+        with 10-line overlap. Each window becomes one document. chunk_kind = ChunkKind::LineBlock.
+        Rationale: 50-line windows match vector embedding chunk size (spec L173: "50-line sliding window").
+        10-line overlap prevents splitting a function across two chunks where neither has full context.
+        NOTE (from audit): overlap is primarily beneficial for embedding-based search, not BM25
+        (BM25 scores terms independently). The overlap is carried over from the vector layer for
+        implementation simplicity and cross-layer chunk alignment. This is an UNGROUNDED design choice
+        for BM25 specifically — the overlap adds ~20% more documents with no proven BM25 retrieval benefit.
+      - Small files (<50 lines): index as single document. chunk_kind = ChunkKind::File.
+
+      BINARY DETECTION:
+      - Read first 8KB of file. If contains null byte (\0), classify as binary, skip, log warning.
+      - Return count of skipped binary files in IndexStats.
+
+      INDEX_DIRECTORY:
+      - Walk directory recursively. Skip hidden dirs (.*), skip .elai_cc/ dir itself.
+      - For each file: query DKG for node ranges, read content to create BM25Chunks.
+        If DKG has no nodes, use line-level fallback.
+      - Atomic commit: one writer.commit() after all files indexed (not per-file).
+      - Writer serialization: index_directory holds the IndexWriter for the entire batch.
+        No concurrent update_file calls possible during index_directory execution.
+        Document this constraint in Bm25Index struct-level docs.
+      - Return IndexStats.
+
+      QUERY:
+      - BM25 query via tantivy QueryParser on content field.
+      - Return top N results sorted by score descending.
+      - Each result: BM25Hit { path, line_start, line_end, score, chunk_kind, snippet }.
+      - snippet: first 200 chars of stored content (simple truncation).
+
+      DELETE_FILE:
+      - delete_term on STRING path field for exact match. Return count deleted.
+      - Single writer.commit() after deletion.
+
+      UPDATE_FILE:
+      - Atomic: delete_term(path) then add_document(new chunks) in single writer.commit().
+      - Readers only see committed state — no intermediate state where file is absent.
+      - Target: <5s for any single file (spec L265 invariant).
+
+    DETERMINISTIC_CHECK:
+      - All BM25 tests pass: cargo test -p knowledge --lib -- bm25 2>&1 | grep "test result: ok"
+      - No warnings on bm25.rs: cargo check -p knowledge 2>&1 | grep -c "warning.*bm25" = 0
+      - Existing DKG tests still pass: cargo test -p knowledge --lib -- dkg exits 0
+    ADVERSARIAL:
+      - If index_directory encounters a file deleted between walk and read, should skip gracefully.
+        Test: simulate race, assert graceful skip + log warning (not panic).
+      - If two Bm25Index instances opened for same project_id, tantivy lock file prevents second writer.
+        Test: second Bm25Index::new returns Err (not panic or deadlock).
+      - If 50-line window splits a function at line 48-52, query may return low-relevance results.
+        Test: 10-line overlap ensures function appears in at least one chunk with full context.
+      - If file is valid UTF-8 but contains only whitespace, still indexed (not binary).
+        Test: whitespace-only file indexed, no error.
+    ACCEPTANCE:
+      - All 10+ BM25 tests pass (TDD green phase)
+      - Binary file (null bytes) does not cause panic, is skipped, counted in IndexStats
+      - Unparseable text file (.xyz) IS indexed via line-level fallback (zero orphan for text files)
+      - delete_file uses exact-match on STRING path field (test j passes)
+      - update_file is atomic: no intermediate state where file is absent
+      - No regression in existing knowledge tests (DKG)
+      - Per-project isolation: two indexes with different project_id cannot cross-contaminate
+
+  1B.5 MEASURE AND VALIDATE INVARIANTS
+    PRE_GATE:
+      - Step 1B.4 complete: all BM25 tests pass
+      - cargo test -p knowledge --lib -- bm25 2>&1 | grep "test result: ok"
+    TASK:
+      PERFORMANCE MEASUREMENT:
+      - Write a benchmark test (not unit test — separate binary or #[bench]):
+        (a) Index the .elai_cc/rust/ codebase (69 .rs files, ~61K LOC)
+        (b) Measure index build time
+        (c) Run 10 diverse queries ("fn main", "struct Config", "impl Display", "error handling",
+            "async fn", "pub mod", "#[test]", "use std::", "trait", "Result<")
+        (d) Measure p50 and p99 query latency
+        (e) Measure single-file update_file latency
+
+      INVARIANT VALIDATION:
+      - After indexing .elai_cc/rust/:
+        (f) Count text files on disk vs files in index. Assert every non-binary file is indexed (zero orphan).
+        (g) Verify index path is at expected location under .elai_cc/projects/{id}/bm25/
+        (h) Verify update_file completes in <5s (spec L265)
+
+      RECORD:
+      - Write results to .elai_cc/metrics/phase_1B.toml with fields:
+          index_build_time_ms, file_count, chunk_count, binary_skipped,
+          query_p50_ms, query_p99_ms, update_file_p99_ms,
+          orphan_files (should be 0), index_size_bytes,
+          tantivy_version (pinned crate version), index_format_version (u32 from tantivy)
+    DETERMINISTIC_CHECK:
+      - Metrics file exists: test -f .elai_cc/metrics/phase_1B.toml
+      - Contains required fields: grep -q "query_p99_ms" .elai_cc/metrics/phase_1B.toml
+      - Contains orphan count: grep -q "orphan_files" .elai_cc/metrics/phase_1B.toml
+      - Latency check (environment-aware):
+          If CI=true env var set: assert query_p99_ms < 50
+          Else (dev machine): assert query_p99_ms < 10
+      - update_file < 5s: parse update_file_p99_ms and compare
+    ADVERSARIAL:
+      - If measurement runs on cold cache (first tantivy open), latency may be >10ms.
+        Test: measure after warm-up query (discard first result).
+      - If CI machine is slower than dev machine, 10ms target may fail.
+        Test: CI uses 50ms threshold, dev uses 10ms. DETERMINISTIC_CHECK uses CI env var to select.
+      - If index build is O(n^2) instead of O(n), it will pass on 69 files but fail on real projects.
+        Test: record chunk_count and index_build_time_ms. Verify ratio is reasonable (<1ms per chunk).
+    ACCEPTANCE:
+      - Query p99 latency < 10ms on dev machine, < 50ms on CI (69 .rs files)
+      - Single-file update_file < 5s
+      - Zero orphan text files (orphan_files = 0 in metrics)
+      - Metrics file written to .elai_cc/metrics/phase_1B.toml with all required fields
+      - Index build completes in < 5 seconds for 69 files
+
+
+EXIT CRITERIA
+  BM25 query returns relevant files within 10ms (p99, dev machine, 69 .rs files).
+  All BM25 tests pass (10+ tests). No regression in Phase 1A DKG tests.
+  Per-project index isolation verified by test (separate project_id, separate index dirs).
+  Zero orphan text files: every non-binary file in project appears in BM25 index.
+  Binary files detected (null bytes in first 8KB) and skipped gracefully (no panics).
+  Incremental update_file is atomic and completes in <5s for single file.
+  Chunking strategy defined: DKG-derived chunks when available, 50-line sliding window fallback.
+  Index stored at spec-correct path: .elai_cc/projects/{project_id}/bm25/
+  Path field uses STRING (untokenized) for correct delete_term behavior.
+  Contract tests exist in .elai_cc/tests/contracts/bm25_contract.rs.
+  Metrics recorded in phase_1B.toml including tantivy_version and index_format_version.
+
+DECISIONS MADE IN THIS PHASE (to be recorded in workflow/reasoning/phase-1B-decisions.md)
+  D1: Chunking fallback uses 50-line sliding windows with 10-line overlap.
+      Why: matches vector embedding chunk size (knowledge.txt L173). Overlap prevents
+      splitting functions across chunk boundaries where neither chunk has full context.
+      CAVEAT: overlap is UNGROUNDED for BM25 specifically (BM25 scores terms independently).
+      Carried over from vector layer for cross-layer chunk alignment and implementation simplicity.
+  D2: Binary detection via null byte in first 8KB, not MIME type.
+      Why: fast (no external dependency), reliable for source code repos. Same heuristic
+      used by git (core.autocrlf detection). Binary files are the only zero-orphan exception.
+  D3: BM25Hit includes chunk_kind field for downstream filtering.
+      Why: later layers (reranker 1G, CatRAG 1E) may weight function-level chunks differently
+      from line-block chunks. Carrying this metadata avoids re-parsing.
+  D4: Index path follows .elai_cc/projects/{project_id}/bm25/ convention.
+      Why: knowledge.txt L195 specifies this layout. All knowledge layers share the same
+      project directory, enabling unified versioning (1I.7).
+  D5: update_file is atomic (delete+insert in single commit).
+      Why: prevents intermediate state where file is absent from index. Critical for
+      EXECUTING -> AUDITING transitions where auditor must see current file state.
+      NOTE: single-writer model means index_directory blocks concurrent update_file calls.
+  D6: path field uses STRING (untokenized), not TEXT.
+      Why: tantivy tokenizes TEXT fields, splitting paths on / . - characters. delete_term
+      requires exact match on the stored term. Using TEXT would cause silent deletion failures.
+      Verified from tantivy's deleting_updating_documents.rs example.
+  D7: BM25Chunk is a BM25-owned type, distinct from DKG's DkgNode.
+      Why: DkgNode stores AST metadata (kind, name, start/end lines) but not file content.
+      BM25 needs content for indexing. Conversion from DkgNode to BM25Chunk (reading file
+      content at DKG line ranges) is BM25's responsibility, keeping DKG decoupled.
+  D8: project_id is passed explicitly to Bm25Index::new, not derived from project_root.
+      Why: knowledge.txt L274 states "Query without project_id is rejected" — it is a first-class
+      input, not a derived value. KnowledgeEngine (the caller) manages project_id assignment.
+  D9: snippet uses simple 200-char truncation, not tantivy SnippetGenerator.
+      Why: adequate for Phase 1B scope. tantivy's SnippetGenerator provides keyword highlighting
+      which may be added in later phases if reranker or UI needs it. Deliberate simplification.
+
+
+GROUNDING
+  "tantivy full-text index"
+    -> VERIFIED: knowledge.txt L36, L103. Crate exists on crates.io.
+  "Sub-ms queries" / "<10ms latency target"
+    -> VERIFIED: knowledge.txt L36, L255.
+  "Per-project index (not shared across projects)"
+    -> VERIFIED: knowledge.txt L37.
+  "tantivy_v21 format"
+    -> CORRECTED: knowledge.txt L200 uses "tantivy_v21" as a spec-level label. This is NOT
+       a tantivy internal identifier. Tantivy uses INDEX_FORMAT_VERSION (u32 constant).
+       Phase updated to record actual tantivy crate version and INDEX_FORMAT_VERSION in metrics.
+       knowledge.txt L200 should be updated to clarify this is a project label, not tantivy API.
+  "query fn complete -> returns provider files"
+    -> CORRECTED: fn complete exists at rusty-claude-cli/src/input.rs:58, NOT in providers/.
+       Tests now use synthetic files in tempdir — no dependency on real codebase paths.
+  "Section 4 (KnowledgeEngine trait)" in architecture-overview.txt
+    -> VERIFIED: Section 4 "TRAIT BOUNDARIES" exists at line ~80. KnowledgeEngine trait at line ~94.
+       Earlier SPEC_GAP finding was incorrect — sections are numbered (1-11).
+  "knowledge/ crate exists (prerequisite from Phase 1A)"
+    -> VERIFIED: Phase 1A (phase-1A.txt L21) creates knowledge/ crate at .elai_cc/crates/knowledge/.
+  "Chunk struct from Phase 1A"
+    -> CORRECTED: Phase 1A exports DkgNode (AST metadata without content), not a Chunk struct.
+       BM25Chunk defined as BM25-owned type with content field. Conversion is BM25's responsibility.
+  "Crate path .elai_cc/rust/crates/knowledge/"
+    -> CORRECTED: Phase 1A canonical path is .elai_cc/crates/knowledge/ (phase-1A.txt L3).
+       All paths in phase-1B updated to match.
+  "69 .rs files"
+    -> VERIFIED: implementation-guide.txt L29.
+  "Zero orphan files"
+    -> VERIFIED: knowledge.txt L177, L254.
+  "50-line sliding window"
+    -> VERIFIED: knowledge.txt L173 (vector layer uses same size).
+       10-line overlap: UNGROUNDED for BM25 (benefits embedding, not keyword search).
+       Carried over for cross-layer consistency.
+  "Incremental update <5s for single file"
+    -> VERIFIED: knowledge.txt L265.
+  "Index path .elai_cc/projects/{id}/"
+    -> VERIFIED: knowledge.txt L195.
+  "path field must be STRING not TEXT"
+    -> VERIFIED: tantivy deleting_updating_documents.rs example uses STRING for primary-key fields.
+       TEXT fields are tokenized, breaking exact-match delete_term operations.
+  "project_id as first-class input"
+    -> VERIFIED: knowledge.txt L274 "Query without project_id is rejected."
+  Circuit breaker, SearchMode, query validation, readiness, tracing, versioning
+    -> SCOPED OUT: owned by Phase 1I (phase-1I.txt L1-16). Phase 1B builds the BM25 layer only.

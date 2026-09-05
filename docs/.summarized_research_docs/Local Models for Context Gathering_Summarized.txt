@@ -1,0 +1,180 @@
+Local Models for Context Gathering - Technical Summary
+
+PARADIGM SHIFT 2026:
+From cloud APIs to federated local deployment:
+- Data sovereignty and zero-latency requirements
+- Hardware autonomy and vendor lock-in mitigation
+- Reasoning capability gap narrowed to <1%
+- Multi-million token context windows standard
+
+CONTEXT WINDOW REVOLUTION:
+Critical Insight: Raw context length ≠ faithful recall
+- Effective reasoning deteriorates before max window reached
+- Architectural support required for large contexts
+- Multi-document ingestion demands expanded capabilities
+
+ARCHITECTURAL INNOVATIONS:
+
+iRope Technology (Meta Llama 4):
+- Novel attention permutation without positional embeddings
+- Inference-time temperature scaling
+- Llama 4 Maverick: 512K-10M token capacity
+- Llama 4 Scout: Optimized for massive contexts
+- Early fusion multimodality (visual + auditory tokens)
+
+Ring Attention:
+- Sequential attention processing for unlimited context
+- Memory-efficient token management
+- Prevents exponential compute decay
+- Enables native repository processing
+
+MODEL TAXONOMY:
+
+Ultra-Lightweight Edge (<10B):
+- GPT-OSS-20B: 3.6B active, 16GB laptop capable
+- Foundation-Sec-8B: Cybersecurity specialized
+- MiniCPM-2.4B: Mobile deployment optimized
+- Hardware: RTX 3060, edge NPUs
+
+Consumer Workstation (10-100B):
+- Qwen 2.5 Coder 32B/72B: Repository-level FIM training
+- Llama 3.3 70B: Dense architecture stability
+- Kimi K2.5: 1T total/32B active, agentic coding leader
+- Hardware: Dual RTX 4090, Mac Studio
+
+Frontier Enterprise (>100B):
+- Qwen3.5-397B-A17B: 262K context, vision-language fusion
+- DeepSeek-V3.2: 685B total/37B active, cost breakthrough
+- GLM-5: 744B total/40B active, MIT license
+- Llama 4 Maverick: 400B total/17B active, iRope technology
+
+SPECIALIZED MODELS:
+
+Document Parsing (OmniDocBench 1.5):
+GLM-OCR: 94.6% composite score (SOTA)
+- Surpasses Gemini 3 Pro and GPT-5.2
+- Mathematical formula extraction excellence
+- Multi-layout document processing
+
+PaddleOCR-VL-1.5B: 92.86% accuracy
+- Optimal for scanned textbooks
+- Historical archive digitization
+- Multi-page layout handling
+
+dots.ocr-3B: 88.41% accuracy
+- 100+ language support
+- Open-source multilingual leader
+- Cross-document translation
+
+BENCHMARK PERFORMANCE:
+
+Context Retrieval (Needle-in-Haystack):
+- Llama 4 Scout: 95% at 8M tokens
+- Qwen3.5: Superior long-form reasoning
+- Kimi K2.5: Cross-modal integration
+- Traditional models fail beyond 200K tokens
+
+Scientific Comprehension (GPQA Diamond):
+- Claude Opus 4.6: 77%+ on PhD-level questions
+- Local equivalents: Comparable performance
+- Structured academic task excellence
+- Multi-step reasoning capability
+
+Human-Level Abstraction (HLE):
+- Open-source MoEs: 42-45% scores
+- Performance gap vs human experts
+- Complex logical reasoning challenge
+- Retrieval mechanism limitations
+
+HARDWARE OPTIMIZATION:
+
+Heterogeneous Computing (KTransformers):
+- MoE expert offloading to CPU RAM
+- Attention matrices on GPU
+- Dynamic expert loading as-needed
+- 35.7 tokens/second on 309B models
+
+Configuration Example:
+- 4x RTX 5090 GPUs + 2x AMD EPYC CPUs
+- Consumer-grade frontier deployment
+- Democratizes access to massive models
+- Cost-effective vs datacenter allocations
+
+ECONOMIC ANALYSIS:
+
+Cost Comparison (per million tokens):
+- Claude Opus 4.5: $5.00 input, $25.00 output
+- GPT-5.2: $1.75 input, $14.00 output
+- Self-hosted: Infrastructure amortization only
+
+ROI Impact:
+- 25% higher ROI with open-source infrastructure
+- High-volume analysis economic advantages
+- Elimination of ongoing API costs
+- Hardware amortization over 3-5 years
+
+Strategic Model Routing:
+- Small models for preliminary analysis
+- Medium models for core processing
+- Large models for final validation
+- Cost-optimized pipeline design
+
+DEPLOYMENT STRATEGIES:
+
+Edge Deployment:
+- Ultra-low latency requirements
+- Mobile scanning applications
+- Real-time document processing
+- Battery-powered operation constraints
+
+Workstation Deployment:
+- Professional content analysis
+- Repository-scale code understanding
+- Multi-document synthesis
+- Cost-performance balance
+
+Enterprise Deployment:
+- Massive context ingestion
+- Multi-modal document processing
+- High-throughput requirements
+- Compliance and data sovereignty
+
+CRITICAL THRESHOLDS:
+
+Context Performance:
+- 200K tokens: Most models maintain >90% accuracy
+- 1M tokens: Only specialized models excel
+- 5M+ tokens: Requires iRope/Ring Attention
+- 10M tokens: Llama 4 Scout territory
+
+Hardware Requirements:
+- 16GB VRAM: Up to 70B dense models (INT4)
+- 24GB VRAM: 100B+ MoE models
+- 48GB VRAM: 300B+ frontier models
+- 128GB+ RAM: Expert offloading support
+
+Cost Efficiency:
+- <1M tokens/month: Cloud APIs competitive
+- 1-10M tokens/month: Hybrid approach optimal
+- >10M tokens/month: Self-hosting essential
+- >100M tokens/month: Enterprise infrastructure required
+
+FUTURE DIRECTIONS:
+
+Architectural Evolution:
+- Beyond iRope attention mechanisms
+- Unified multimodal processing
+- Real-time context adaptation
+- Zero-shot cross-domain transfer
+
+Hardware Trends:
+- Specialized AI accelerators
+- Memory bandwidth improvements
+- Heterogeneous computing standardization
+- Energy efficiency optimization
+
+Application Domains:
+- Legal document analysis
+- Medical record processing
+- Software repository understanding
+- Scientific literature synthesis

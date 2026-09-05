@@ -127,8 +127,8 @@ mod tests {
         let payload = SsbPayload::BlastRadiusBlocked(BlastRadiusBlockedPayload {
             kind: BlastRadiusKind::FsEscape,
             pre_expansion_command: "rm -rf ~/x".into(),
-            post_expansion_command: "/home/maintainer/x".into(),
-            target_or_host: "/home/maintainer/x".into(),
+            post_expansion_command: "/home/user/x".into(),
+            target_or_host: "/home/user/x".into(),
             worktree_root_blake3: "abc123".into(),
             trust_label: String::new(),
             ts_ms: 1,

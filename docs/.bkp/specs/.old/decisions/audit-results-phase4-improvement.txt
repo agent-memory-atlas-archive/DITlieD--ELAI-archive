@@ -1,0 +1,447 @@
+ADVERSARIAL AUDIT RESULTS — PHASE 4A IMPROVEMENT (plan-mode)
+Auditor: claude-sonnet-4-6
+Date: 2026-04-06
+Scope: Improved phase-4A.txt vs prior audit-results-phase4.txt (9 BLOCKs + 9 WARNs).
+  Verifies: BLOCK coverage, WARN acknowledgment, spec sync, block quality, new gaps.
+
+PROGRESS SUMMARY: Tests: 0/0 passing | Tiers: N/A (plan-mode audit, no tests run) |
+  TestQuality: N/A | Regression: none | BLOCKs: 3 | Score: N/A (plan audit)
+
+CoVe VERIFICATION (baseline -> questions -> independent answers -> reconciliation)
+
+  Baseline assessment: The improved phase-4A.txt has significantly expanded structure.
+  Risk register updated to R34-R39. orchestrator.txt S12 is authoritative and was
+  recently updated. Phase file claims to address all 9 prior BLOCKs and 9 WARNs.
+
+  Q1: Does the IMPLEMENT section (4A.5) match orchestrator.txt S12 on rlimits?
+    Answer: NO. orchestrator.txt L524: "RLIMIT_NPROC=1, RLIMIT_FSIZE=100MB, RLIMIT_AS=512MB".
+    phase-4A.txt L257: "PID namespace: agent is PID 1. RLIMIT_NPROC=1." — RLIMIT_FSIZE
+    and RLIMIT_AS are missing. If implemented from this spec, memory and disk limits
+    are not applied. An agent binary could allocate unlimited memory (OOM attack on host)
+    or write unlimited data to scratch. This is a spec-to-implementation gap.
+    Additionally: orchestrator.txt L521 specifies "/proc: masked (hidepid=2 or not mounted).
+    /sys: not mounted." — neither appears in 4A.5 IMPLEMENT.
+
+  Q2: Do the GroundingRequest tests in 4A.3 cover role-based method restrictions
+    from reasoning.txt S9?
+    Answer: NO. reasoning.txt L141-146 (Section 9) defines per-role availability:
+      TEST_CHECK: available to executor and auditor only.
+      FILE_CHECK, SOURCE_CHECK, WEB_CHECK, API_CHECK, API_REGISTRY_CHECK: all roles.
+    phase-4A.txt L148 only tests "GroundingRequest with disallowed method for role ->
+    rejected" — no test specifies WHICH method is disallowed for WHICH role. The test
+    is underspecified. A context-compiler or prompt-engineer agent attempting TEST_CHECK
+    must be rejected; this specific case is not enumerated. The role-method matrix from
+    reasoning.txt S9 is not validated.
+
+  Q3: Is WARN-3 (ShortCoder placement under Tier C) addressed or explicitly deferred?
+    Answer: NOT ADDRESSED, NOT DEFERRED. WARN-3 states ShortCoder must run in orchestrator
+    after receiving AgentResponse (not inside agent binary). Phase-4A.txt has no mention
+    of ShortCoder. The grounding doc for 4A does not reference WARN-3. The prior audit
+    said "this must appear in the 4B implementation spec" — no such deferral is explicit
+    in phase-4A.txt. No WARN-3 tracking entry exists in the phase file or its grounding.
+
+  Q4: Does the DETERMINISTIC_CHECK for 4A.1 give implementors enough information to
+    verify "exactly 15 variants"?
+    Answer: MARGINALLY. The check says "message type enum has exactly 15 variants
+    (grep + count)" — but the grep pattern to count enum variants is not specified.
+    In Rust, `grep -c "^\s*[A-Z][a-zA-Z]*" src/ipc.rs` is ambiguous (matches struct
+    fields, impl blocks, constants). The correct check is more specific:
+    `cargo expand` or `grep -P "^\s{4}[A-Z]" src/types/ipc.rs | wc -l`. As written,
+    the check could pass while the enum has 14 or 16 variants depending on grep pattern.
+    This is weak but not a BLOCK.
+
+  Q5: Is the GroundingRequest budget-counting test sufficient?
+    Answer: PARTIAL. reasoning.txt L152 states GroundingRequest messages count toward
+    per-topic budget (same counter as ThinkStep). Phase-4A.txt L148 states "GroundingRequest
+    counts toward per-topic budget" as a test assertion. BUT: no adversarial test covers
+    an agent that sends GroundingRequest without a ThinkStep topic context, or sends
+    GroundingRequest with a topic field that does not match any active ThinkStep topic.
+    If the orchestrator's budget counter assumes GroundingRequests reference an active
+    topic, an agent sending GroundingRequests for a non-existent topic could bypass
+    budget enforcement. This gap is not covered.
+
+  Reconciliation: Q1 reveals two concrete missing items (RLIMIT_FSIZE/RLIMIT_AS, /proc and
+  /sys masking) that are BLOCK-level — implementing from the phase spec produces an agent
+  with no disk or memory limits and /proc visible. Q2 and Q5 are test gaps — WARN-level.
+  Q3 is an untracked WARN from the prior audit. Q4 is marginal.
+
+
+================================================================================
+BLOCK FINDINGS (must fix before Phase 4A implementation begins)
+================================================================================
+
+BLOCK-1: IMPLEMENT section (4A.5) omits RLIMIT_FSIZE and RLIMIT_AS from rlimit spec
+  File: phase-4A.txt line 257 vs orchestrator.txt line 524
+  phase-4A.txt specifies only "RLIMIT_NPROC=1" for the agent process rlimits.
+  orchestrator.txt L524 requires all three:
+    RLIMIT_NPROC=1, RLIMIT_FSIZE=100MB, RLIMIT_AS=512MB (configurable).
+  Effect of omission: an agent compiled from this spec has no disk write limit
+  (RLIMIT_FSIZE) and no address space limit (RLIMIT_AS). A runaway agent or
+  adversarial agent can:
+    - Write unbounded data to /tmp scratch (filling the host disk despite orchestrator.txt
+      S12's "100MB scratch space" requirement).
+    - Allocate unlimited virtual address space (triggering OOM on the host or overcommit
+      pressure across all agents).
+  Both limits are in the authoritative spec. Both are absent from the phase file.
+  Implementors reading only the phase file will not apply them.
+  Fix: add "RLIMIT_FSIZE=100MB, RLIMIT_AS=512MB (configurable)" to 4A.5 IMPLEMENT
+    Linux process isolation section. Add DETERMINISTIC_CHECK: verify /proc/PID/limits
+    shows correct values after spawn.
+
+BLOCK-2: IMPLEMENT section (4A.5) omits /proc masking and /sys unmounting
+  File: phase-4A.txt lines 249-258 vs orchestrator.txt line 521
+  orchestrator.txt L521: "/proc: masked (hidepid=2 or not mounted). /sys: not mounted."
+  phase-4A.txt L255-258 describes the mount namespace as:
+    "Bind-mount project source (RO) + scratch (RW). .elai_cc/ not mounted."
+    (plus self-mod variant for locked paths)
+  Neither /proc masking nor /sys unmounting appears.
+  Effect: an agent process can read /proc/1/maps (its own map) and other /proc
+  pseudo-files. More critically, if the PID namespace is entered via CLONE_NEWPID
+  but /proc is not remounted for the new namespace, the old /proc remains visible.
+  The agent could enumerate /proc/{low_pids}/ to probe the orchestrator's host-side
+  process layout, leaking information about the enforcement environment.
+  /sys exposes kernel subsystem state (hardware, power, block devices) that should
+  not be visible to an agent.
+  This is NOT merely a latent risk — implementing from this spec produces isolation
+  weaker than what orchestrator.txt specifies.
+  Fix: add to 4A.5 IMPLEMENT mount namespace section: "/proc: masked (hidepid=2 or
+    not mounted). /sys: not mounted." Add to 4A.3 TEST: agent cannot read /proc/1/net/
+    (hidden) or access /sys (ENOENT). Add to DETERMINISTIC_CHECK for 4A.5.
+
+BLOCK-3: Prior audit WARN-3 (ShortCoder placement) is untracked — no deferral entry
+  File: phase-4A.txt; audit-results-phase4.txt WARN-3
+  WARN-3 identified that under Tier C, ShortCoder must run in the orchestrator process
+  after receiving AgentResponse — if it runs inside the agent binary, the agent can
+  return a ShortCoded version that passes transforms but re-expands differently when
+  the auditor reviews the written file. Prior audit said "this must appear in the 4B
+  implementation spec."
+  Phase-4A.txt has no mention of ShortCoder. The grounding doc (phase-4A-grounding.md)
+  also has no entry for WARN-3. The EXIT CRITERIA do not include a "ShortCoder runs
+  in orchestrator" invariant. There is no explicit deferral with justification.
+  A finding is not resolved by silence. WARN-3 must either:
+    a) Be addressed with a TASK entry in 4A.5 IMPLEMENT: "ShortCoder fires in orchestrator
+       on AgentResponse receipt, before writing to auditor view filesystem."
+    b) Be explicitly deferred to phase-4B with a dated entry and justification.
+  Without either, the implementor has no guidance and 4A can complete without establishing
+  the invariant. Phase-4B then has no documented pre-gate requiring it.
+  Downgraded from WARN to BLOCK because the prior audit explicitly said this must appear
+  in a spec file and no spec file contains it. The gap propagates forward.
+
+
+================================================================================
+WARN FINDINGS (should fix, document justification if skipped)
+================================================================================
+
+WARN-1: GroundingRequest role-method restriction matrix not tested
+  File: phase-4A.txt line 148 vs reasoning.txt section 9
+  reasoning.txt S9 specifies per-role restrictions. TEST_CHECK is available only to
+  executor and auditor. The test at L148 states "GroundingRequest with disallowed method
+  for role -> rejected" but does not enumerate which method/role combination is under
+  test. Concretely: context-compiler or memory-writer attempting TEST_CHECK should fail.
+  prompt-engineer attempting TEST_CHECK should fail. These are the most probable
+  accidental miscalls in practice (an agent tries to verify a claim by running a test,
+  not knowing it lacks the permission).
+  Fix: add specific test cases: "context-compiler sends GroundingRequest{TEST_CHECK}
+    -> rejected with role-method error" and "executor sends GroundingRequest{TEST_CHECK}
+    -> accepted". Both cited against reasoning.txt S9.
+
+WARN-2: GroundingRequest with orphaned topic not tested (budget bypass vector)
+  File: phase-4A.txt line 148
+  reasoning.txt L152: GroundingRequest counts against per-topic budget. The adversarial
+  battery in 4A.4 tests ThinkStep bursts but not GroundingRequest bursts with an orphaned
+  topic (no active ThinkStep for that topic). If the orchestrator only counts
+  GroundingRequests against active topics, an agent could send unlimited GroundingRequests
+  using a synthetic topic name that has no budget entry yet, exhausting orchestrator
+  web-search resources or rate limits without hitting any budget limit.
+  Fix: add adversarial test: "send 100 GroundingRequest{WEB_CHECK, topic=X} where topic X
+    has no active ThinkStep budget -> all 100 rejected or charged against a default budget".
+
+WARN-3: 4A.3 TEST functional isolation uses "getpid == 1" — incorrect for current Linux
+    kernel with CLONE_NEWPID
+  File: phase-4A.txt line 116
+  "Agent cannot see other agent processes (PID namespace, getpid == 1)"
+  With CLONE_NEWPID, the first process in the new namespace gets PID 1 inside the
+  namespace. This is correct. However: the test as written says "getpid == 1" which
+  implies the test code will call getpid() from INSIDE the agent namespace to verify.
+  This is valid. But the test description does not specify HOW the orchestrator verifies
+  this — the agent could be asked to send its PID via IPC, and a compromised agent
+  could lie. The correct test is: orchestrator reads /proc/PID_in_host_ns/status and
+  verifies NSpid field == 1, not by trusting the agent's self-report.
+  Fix: clarify the test mechanism: "orchestrator reads /proc/{spawned_pid}/status,
+    verifies NSpid: 1". Do not rely on agent-reported PID.
+
+WARN-4: DETERMINISTIC_CHECK for 4A.1 "exactly 15 variants (grep + count)" is ambiguous
+  File: phase-4A.txt line 77
+  The check does not specify the grep command. In Rust, counting enum variants via grep
+  is fragile: the same pattern matches struct fields, match arms, and associated types.
+  A reliable check requires either:
+    - `cargo expand --package elai_cc_agent | grep -c 'IpcMessage::'`
+    - A dedicated test: `assert_eq!(IpcMessageType::VARIANT_COUNT, 15);` using a
+      const or discriminant count.
+  As written, a developer runs an unspecified grep, gets ambiguous output, and either
+  accepts a false positive or wastes time debugging the check.
+  Fix: specify the exact shell command or require a compile-time const assertion.
+
+WARN-5: Phase-4A has no explicit coverage mapping for prior WARN-7 (MAX_FRAME_SIZE
+    enforced in frame reader before allocation)
+  File: phase-4A.txt lines 169, 219-220
+  WARN-7 from the prior audit called for MAX_FRAME_SIZE enforcement. The improved phase
+  addresses this at the test level (L169: "Oversized frame (>10MB) -> rejected, no
+  allocation") and in IMPLEMENT (L241: "check length prefix BEFORE alloc"). However,
+  the adversarial test at L219 extends this to "send length=u32::MAX, verify no
+  allocation" — which is correct and more stringent than L169's 11MB test.
+  Gap: the test at L169 sends an 11MB frame. The test at L219 sends a u32::MAX-length
+  frame (4GB claimed). These are different tests and both should be present and labeled.
+  As written, L169 is in 4A.4 TASK and L219 is in 4A.4 ADVERSARIAL — but L169 says
+  ">10MB" while L219 says "length=u32::MAX". A developer implementing only L169's test
+  might allocate u32::MAX/2 (2GB) before rejecting. The u32::MAX test at L219 is
+  critical (it tests the pre-allocation check, not just the size check). These two tests
+  should both appear in the TASK section with explicit assertions, not split between
+  TASK and ADVERSARIAL where the ADVERSARIAL one risks being treated as optional.
+  Fix: move "send length=u32::MAX -> verify no allocation" into 4A.4 TASK as a required
+    test, not into ADVERSARIAL.
+
+WARN-6: 4A.3 GRC budget tests do not cover the phase transition from agent-enforced
+    (phases 0-3) to orchestrator-enforced (phase 4A+)
+  File: phase-4A.txt lines 136-139 vs orchestrator.txt lines 483-491
+  orchestrator.txt L483-491 explicitly states that Phase 4A transitions GRC budget
+  authority from agent-side GrcEngine to orchestrator IPC message counter. The same
+  GrcBudget struct and AgentGrcConfig are used in both modes; only enforcement location
+  changes. This is a non-trivial behavior change: in phase 4A, agent-side budget calls
+  (GrcBudget::is_exhausted()) return stale values because the orchestrator may have
+  injected a convergence signal the agent has not yet processed. No test covers this
+  transition edge case: "agent believes budget has 2 calls remaining, orchestrator count
+  shows 0 -> orchestrator injects convergence, agent must converge even though its local
+  count disagrees". If the agent ignores the convergence signal when its local count
+  is non-zero, the enforcement fails.
+  Fix: add test: "agent local budget count != 0, orchestrator count == 0 -> orchestrator
+    sends convergence signal -> agent must stop emitting ThinkStep messages regardless
+    of local count". Cite orchestrator.txt L483-491.
+
+WARN-7: Phase-4A.txt does not address prior WARN-9 (chroot capability drop + binary
+    contents)
+  File: phase-4A.txt; audit-results-phase4.txt WARN-9
+  Prior WARN-9 addressed Phase 0-1 chroot isolation (CAP_SYS_CHROOT not dropped, absolute
+  path escapes, dev-only labeling). Phase-4A is specifically about Tier C (Phase 4), so
+  WARN-9 technically belongs to a Phase 0-1 spec. But no phase file between 0-1 and 4A
+  has been improved to address WARN-9. The gap exists in the spec suite. Phase-4A cannot
+  close this — but should note it as explicitly out of scope and flag the relevant phase
+  file (tools.txt S9 or a Phase 0-1 spec) as requiring a fix before Tier C provides
+  any uplift (since Tier A uses chroot and WARN-9 exposes it as escapable).
+  Fix: add INFO note to EXIT CRITERIA: "WARN-9 (Phase 0-1 chroot capability drop) is
+    out of scope for 4A; requires fix in tools.txt S9 before Tier A provides real isolation."
+
+
+================================================================================
+INFO FINDINGS (noted, no action required)
+================================================================================
+
+INFO-1: Prior BLOCKs 1-9 are comprehensively addressed
+  BLOCK-1 (seccomp IPC_BASELINE): addressed in RISKS, 4A.1 SKELETON, 4A.5 IMPLEMENT.
+  BLOCK-2 (CAP_NET_RAW -> veth+iptables): addressed in RISKS and 4A.5 IMPLEMENT.
+  BLOCK-3 (LLM via IPC proxy): addressed in RISKS, 4A.1 SKELETON, 4A.5 IMPLEMENT.
+  BLOCK-4 (GRC budget in orchestrator): addressed in RISKS, 4A.3 TEST, 4A.5 IMPLEMENT.
+  BLOCK-5 (0700 socket dir + SO_PEERCRED): addressed in RISKS, 4A.1 SKELETON, 4A.5.
+  BLOCK-6 (auditor PROPOSED gate + second auditor): addressed in RISKS, 4A.4 TEST, 4A.5.
+  BLOCK-7 (Windows weaker + AppContainer): addressed in RISKS, 4A.4 TEST, 4A.5.
+  BLOCK-8 (self-mod IPC + FS + git): addressed in RISKS, 4A.4 TEST, 4A.5 IMPLEMENT.
+  BLOCK-9 (adversarial IPC battery): addressed comprehensively in 4A.4 TEST.
+  All 9 prior BLOCKs verified against the improved phase file.
+
+INFO-2: Prior WARNs 1, 2, 4, 5, 6, 7, 8 are addressed
+  WARN-1 (SO_PEERCRED): addressed in 4A.1 (connection sequence step 4) + 4A.4 TEST.
+  WARN-2 (GroundingRequest IPC proxy): addressed in 4A.3 TEST + GROUNDING section.
+  WARN-4 (Windows Firewall admin pre-config): addressed in 4A.5 Windows section
+    (AppContainer as primary mechanism, fallback documented-weaker).
+  WARN-5 (risk register R34-R39): risk register updated — confirmed via grep.
+  WARN-6 (SSB write synchronous): addressed in 4A.4 crash recovery tests + IMPLEMENT.
+  WARN-7 (MAX_FRAME_SIZE): partially addressed (see WARN-5 above for residual gap).
+  WARN-8 (agent_id UUID v4): addressed in 4A.1 SKELETON (agent_id: UUID v4) and
+    GROUNDING section.
+
+INFO-3: Risk register R34-R39 entries present and accurate
+  R34 (IPC attack surface), R35 (GRC self-attestation), R36 (auditor circular trust),
+  R37 (Windows weaker), R38 (self-mod bash bypass), R39 (protocol version mismatch).
+  All map to prior BLOCK/WARN findings. Mitigation descriptions match phase-4A content.
+
+INFO-4: SEPARATION COSTS section is grounded and realistic
+  Values sourced from orchestrator.txt L553-557. The INFO-3 from the prior audit
+  (dynamic fan-out scaling risk: 10 agents * 20MB = 200MB overhead) is acknowledged
+  in the SEPARATION COSTS note. This is the correct level of tracking.
+
+INFO-5: Phase-4A-grounding.md is accurate and complete relative to its claims
+  All grounding entries verified against cited file + line numbers.
+  UNGROUNDED claims are correctly labeled and scheduled for empirical measurement in 4A.6.
+
+INFO-6: 4A.6 MEASURE acceptance criteria are appropriately conservative
+  IPC latency <1ms p99 labeled UNGROUNDED. orchestrator.txt L554 estimates ~0.1ms per
+  message. The <1ms target provides 10x headroom over the spec estimate — reasonable
+  for a first measurement. Not inflated.
+
+
+================================================================================
+CROSS-SPEC CHECKS (new contradictions introduced by the improvement)
+================================================================================
+
+  1. phase-4A.txt L257 vs orchestrator.txt L524: CONTRADICTION (BLOCK-1 above).
+     rlimits incomplete in phase file.
+
+  2. phase-4A.txt L255 vs orchestrator.txt L521: CONTRADICTION (BLOCK-2 above).
+     /proc masking and /sys unmounting absent from phase file.
+
+  3. phase-4A.txt L77 ("exactly 15 variants") vs orchestrator.txt L443-465:
+     COUNT IS CORRECT. Both list: AgentRequest, AgentResponse, InferRequest, InferResponse,
+     ToolRequest, ToolResult, BashRequest, BashResult, GroundingRequest, GroundingResult,
+     ThinkStep, CheckpointSync, AgentHeartbeat, AgentKill, ReplanRequest = 15. Consistent.
+
+  4. phase-4A.txt L116 ("getpid == 1") is accurate for CLONE_NEWPID but the test
+     mechanism is underspecified (WARN-3 above). Not a contradiction.
+
+  5. phase-4A.txt L148 ("GroundingRequest counts toward per-topic budget") correctly
+     reflects reasoning.txt L152. Consistent.
+
+  6. phase-4A.txt L119 ("Researcher agent CAN access allowlisted HTTPS endpoints via
+     veth"): consistent with orchestrator.txt L497 + L513-515. No contradiction.
+
+  No new contradictions introduced that are not already captured as BLOCKs.
+
+
+================================================================================
+ADVERSARIAL STRESS TEST GAPS (items the adversarial battery misses)
+================================================================================
+
+  GAP-1: No test for partial frame across two consecutive agent sessions
+    orchestrator.txt L470-472 states partial frames are discarded by closing the fd.
+    No test exercises: agent writes half a frame, crashes, orchestrator respawns a
+    new agent to the SAME socket path (after unlinking). The partial frame bytes are
+    in the kernel socket buffer. When the orchestrator closes the fd, are they
+    discarded? The spec says yes (close discards), but no test verifies that the new
+    agent's first message is not interpreted as a continuation of the partial frame
+    from the dead agent. This is a correctness test, not just an adversarial one.
+
+  GAP-2: No test for AF_UNIX socket creation from INSIDE the agent namespace
+    The seccomp BPF checks "socket(AF_UNIX)" — but the agent is allowed to call
+    socket(AF_UNIX). The test at L118 verifies "socket(AF_INET) returns EPERM."
+    Missing: agent attempts to create a SECOND unix domain socket (to impersonate
+    another agent or exfiltrate data to a co-located process). Is this blocked?
+    The seccomp profile allows AF_UNIX for all roles (needed for IPC). A second
+    AF_UNIX socket from inside the agent namespace could be used for covert channels
+    between concurrent agents if they share a /tmp mount. The PID namespace prevents
+    seeing other agents, but the mount namespace question is: do concurrent agents
+    share the same /tmp/elai_cc_{session}/ directory or each get a private /tmp mount?
+    If they share /tmp, one agent can create a socket and another can connect to it,
+    bypassing the "concurrent agents cannot see each other" invariant.
+    This test gap should be added: "two agents in same session cannot communicate via
+    AF_UNIX socket in /tmp/elai_cc_{session}/" — or the mount design must be clarified.
+
+  GAP-3: No test for ReplanRequest evidence hash collision
+    4A.4 TEST L184 tests "MINOR replan with evidence -> auditor fast-track review."
+    Missing: two ReplanRequests with identical evidence content (same hash) from the
+    same agent within one phase. The spec says max 1 per agent per phase, which prevents
+    the second. But what if the same evidence is sent as the first ReplanRequest in two
+    consecutive phase restarts? The "max 1 per phase" counter must reset per phase, not
+    persist across replans. If it persists, an agent can never trigger a second replan
+    even after a legitimate phase restart.
+
+
+================================================================================
+DEAD END ASSESSMENT
+================================================================================
+
+No dead end. The two BLOCKs (BLOCK-1, BLOCK-2) are spec omissions — additive fixes,
+not architectural flaws. BLOCK-3 (WARN-3 tracking) requires a single line in EXIT
+CRITERIA and a deferral entry. None require redesign.
+
+The improvement is structurally sound. The prior audit's 9 BLOCKs are addressed.
+The residual issues are: two items the improved spec omits compared to orchestrator.txt,
+one untracked prior WARN, and six test coverage gaps.
+
+
+================================================================================
+RESOLUTION CHECKLIST (what must change before implementation begins)
+================================================================================
+
+BLOCK-1: Add RLIMIT_FSIZE=100MB + RLIMIT_AS=512MB to 4A.5 IMPLEMENT.
+BLOCK-2: Add /proc masking + /sys unmounting to 4A.5 IMPLEMENT mount namespace section.
+         Add test in 4A.3: "agent cannot read /proc/1/net/ (ENOENT or empty)".
+BLOCK-3: Add ShortCoder placement note to EXIT CRITERIA (deferred to 4B, explicit).
+
+WARN-1: Add role-specific GroundingRequest tests (context-compiler TEST_CHECK -> rejected).
+WARN-2: Add GroundingRequest orphaned-topic burst test to 4A.4.
+WARN-3: Fix test description at L116 to specify orchestrator-side NSpid verification.
+WARN-4: Specify grep command for enum variant count check (or use compile-time assert).
+WARN-5: Move u32::MAX frame test from ADVERSARIAL to TASK in 4A.4.
+WARN-6: Add convergence-signal override test (local count != 0, orchestrator count == 0).
+WARN-7: Add out-of-scope note for WARN-9 (chroot cap drop) in EXIT CRITERIA.
+
+GAP-2 (critical): Clarify whether concurrent agents share /tmp/elai_cc_{session}/
+  mount or each get a private /tmp. Add test if shared.
+
+
+================================================================================
+================================================================================
+
+ADVERSARIAL AUDIT RESULTS — PHASE 4C IMPROVEMENT REVIEW
+Auditor: claude-sonnet-4-6 (adversarial-auditor agent)
+Date: 2026-04-06
+Scope: Phase 4C improved spec (hooks + tiered static analysis).
+Cross-referenced: plugins.txt, orchestrator.txt, rules.txt, audit-results.txt,
+  audit-results-phase4.txt.
+
+PROGRESS SUMMARY: Tests: 0/0 | Tiers: N/A (plan-mode audit) | BLOCKs: 4 | WARNs: 6
+
+All BLOCKs and WARNs resolved in phase-4C.txt same session.
+
+
+BLOCK FINDINGS (all resolved)
+
+BLOCK-1: "session registry" undefined term
+  phase-4C.txt used "session registry" but no spec defines this. Actual mechanism:
+  SSB file lock query via JOIN on ssb_files (orchestrator.txt section 3).
+  Resolution: replaced with "SSB file lock query (orchestrator.txt section 3
+  conflict detection)".
+
+BLOCK-2: ShortCoder placement missing from PostToolUse
+  Under Tier C, ShortCoder (code_simplify()) must run in orchestrator PostToolUse
+  on AgentResponse receipt, before auditor view filesystem (tools.txt section 7).
+  Was absent from phase-4C.
+  Resolution: added to 4C.5 PostToolUse TASK. Added contract tests 29-30.
+  Closes audit-results-phase4.txt WARN-3.
+
+BLOCK-3: SCHEMA_REQUIRED (5th predicate type) unhandled by T1
+  T1 listed 4 predicate types but rules.txt section 3 defines 5. SCHEMA_REQUIRED
+  requires provider-tier constrained decoding. T1 must return Escalate{target=ProviderTier}.
+  Resolution: added to design decisions + 4C.5 T1 TASK. Added contract test 27.
+
+BLOCK-4: Line number citations invalid in GROUNDING sections
+  orchestrator.txt and rules.txt use section headers, not stable line numbers.
+  Resolution: replaced all with section references.
+
+
+WARN FINDINGS (all addressed)
+
+WARN-1: T3 fires on T1=BLOCK + T2=WARN compound case (logic flaw)
+  Resolution: corrected to "(WARN exists) AND (no BLOCK exists)". Added test 28.
+
+WARN-2: ruff is subprocess-only (~50-200ms), no PostToolUse latency target
+  Verified: astral-sh/ruff #12351 confirms no Rust library API.
+  Resolution: added subprocess acknowledgment, circuit breaker (>10000 lines),
+  PostToolUse latency target <500ms to 4C.6 MEASURE.
+
+WARN-3: T1 cache invalidation on mid-phase rule promotion
+  Resolution: added per-BSP superstep cache invalidation to 4C.5 T1 TASK.
+
+WARN-4: PreCompact trigger mechanism unspecified
+  Resolution: specified 85% token budget threshold (orchestrator.txt section 10).
+
+WARN-5: Benchmarks should use Criterion, not inline Instant
+  Resolution: specified Criterion crate in plugins/benches/ in ACCEPTANCE.
+
+WARN-6: Prior 4A WARNs 1 and 6 unacknowledged in 4C scope
+  Resolution: added PRIOR AUDIT ITEMS IN SCOPE section with impact analysis.
+
+
+DEAD END ASSESSMENT: None. All findings were additive. Architecture is sound.
+
+Test count: 36 -> 40 (30 contract + 10 adversarial) after BLOCK fixes.
+Sources: astral-sh/ruff #12351 (ruff API discussion).

@@ -1,0 +1,6 @@
+some rules;
+
+everything must be deterministic and checked using deterministic TDD methods (mathematics proves results), EVEN simple things like LOC count.
+
+
+

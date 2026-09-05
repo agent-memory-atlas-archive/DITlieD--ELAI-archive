@@ -1,0 +1,496 @@
+PHASE 2C: PER-AGENT GRC CONFIGURATION
+Prerequisites: Phase 2B complete (grounding verification methods implemented, plan sweep blocks ungrounded claims)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+
+GOAL
+Different agent roles get different GRC budgets, step sequences, grounding constraints,
+and allowed verification methods. The GRC engine routes configuration by role at spawn
+time. Auditor gets double-verify with VERIFIED-only grounding. Context-compiler gets
+observe-only with FILE_CHECK/SOURCE_CHECK only. Config is layered: global defaults in
+elai_cc.toml, per-role overrides in [agents.{role}.grc] tables, validated at load time.
+
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/reasoning.txt             Section 7 (per-agent config: 5 role definitions)
+  docs/specs/crates/reasoning.txt             Section 9 (GRC under process isolation: IPC proxy)
+  docs/specs/crates/reasoning.txt             Section 10 (KEY TYPES: AgentGrcConfig)
+  docs/specs/crates/reasoning.txt             Section 11 (TESTABLE INVARIANTS: item 9 is phase-2C)
+  docs/specs/architecture-overview.txt        Section 9 (agent roles and model assignments)
+  docs/specs/crates/orchestrator.txt          Section 7 (agent supervision, checkpoint, restart)
+  docs/specs/crates/orchestrator.txt          Lines 440-444 (budget enforcement in orchestrator)
+  docs/specs/integration/prompt-architecture.txt  Lines 61-86 ([agents.{role}] TOML pattern)
+
+
+DESIGN DECISIONS (grounded)
+
+  D1. Per-agent transition maps extending GrcState::allowed_next().
+      The auditor requires [observe, hypothesize, verify, verify] — double verify.
+      Phase 2A's allowed_next() defines the default chain: observe->hypothesize->
+      plan_action->act->verify. It does NOT permit verify->verify. Without extension,
+      the auditor's required_steps would trigger GrcError::InvalidTransition on the
+      second verify step. Solution: AgentGrcConfig carries an optional
+      transition_overrides: HashMap<GrcState, Vec<GrcState>> that the engine merges
+      with the default allowed_next() for that agent's session. Auditor's override:
+      {Verify: [Verify, Observe]}. This is additive (cannot remove default transitions,
+      only add new ones) to prevent misconfiguration from breaking valid chains.
+      Grounding: reasoning.txt section 7 line 97 specifies auditor required_steps
+      includes double-verify. Phase 2A's GrcState::allowed_next() has no Verify->Verify
+      path. Without this, the spec is unimplementable.
+
+  D2. Config validation at load time (fail-fast).
+      AgentGrcConfig is validated when parsed from elai_cc.toml, not at first GRC call.
+      Validation rules: (a) required_steps is non-empty, (b) required_steps forms a
+      valid chain through default + overridden transitions, (c) budget.max_calls >=
+      required_steps.len() (budget must allow completing the chain), (d) if csq_required
+      is true, required_steps must include at least one Verify step, (e) allowed_methods
+      is a subset of all known VerificationMethod variants.
+      Grounding: standard fail-fast config validation (common engineering practice).
+      Provable benefit: catches impossible configs (e.g., budget=1 with 5 required_steps)
+      before any work starts. Without validation, these fail at runtime with confusing
+      BudgetExhausted errors mid-reasoning.
+
+  D3. TOML layering: global defaults + per-role overrides.
+      Global GRC defaults defined in [grc.defaults] table. Per-role overrides in
+      [agents.{role}.grc] table. Merge strategy: per-role values override globals
+      field-by-field (not deep merge). Missing per-role fields inherit from global.
+      This matches the existing TOML pattern: [agents.{role}.supervision] (orchestrator),
+      [agents.{role}.slo_tier] (providers), [agents.{role}.sandbox] (tools),
+      [agents.{role}.role_prompt] (prompt-architecture).
+      Grounding: reasoning.txt section 3 line 38 says "Global default configurable in
+      elai_cc.toml." Five existing specs use [agents.{role}.X] pattern (grep confirmed).
+      NOTE: existing TOML keys use underscores (e.g., [agents.context_compiler],
+      [agents.prompt_engineer]) per prompt-architecture.txt lines 74-82. Phase 2C MUST
+      follow this convention: [agents.context_compiler.grc], NOT [agents.context-compiler.grc].
+      Hyphenated keys would be valid TOML but silently mismatched with existing tables.
+
+  D4. Allowed verification methods per role (policy layer).
+      AgentGrcConfig gains an allowed_methods: Vec<VerificationMethod> field. This is a
+      POLICY restriction: it limits which grounding methods an agent is permitted to
+      request, independent of what the infrastructure makes available.
+      Distinction from reasoning.txt section 9 (CAPABILITY layer): section 9 lines
+      140-146 describe IPC proxy capabilities — what the orchestrator CAN provide to
+      each role (e.g., "WEB_CHECK: Available to all" via IPC proxy). The allowed_methods
+      field is what the role's GRC config PERMITS it to request. Policy <= Capability.
+      Context-compiler policy: [FILE_CHECK, SOURCE_CHECK] only (reasoning.txt section 7
+      lines 105-106), even though the orchestrator could proxy WEB_CHECK for it.
+      Executor/auditor policy: all methods (matching full capability set).
+      In phase 2C, the policy is enforced in-process (GRC engine rejects disallowed
+      method requests before they reach the orchestrator). In phase 4A, the orchestrator
+      adds a second enforcement layer on GroundingRequest IPC messages.
+      SPEC UPDATE NEEDED: reasoning.txt line 186 AgentGrcConfig should add
+      allowed_methods: Vec<VerificationMethod> and transition_overrides: HashMap<GrcState, Vec<GrcState>>.
+      (Cannot edit reasoning.txt — owned by session s-1003192. Flag for reconciliation.)
+
+  D5. Anti-rubber-stamp enforcement for auditor.
+      The auditor "must find >= 1 issue per review" (reasoning.txt line 99). This is
+      not just a prompt instruction — it is enforced in GRC. When the auditor's GRC
+      session reaches Converge, the engine checks that at least one ThinkStep in the
+      session's history has step_type=Verify with a finding (content contains a
+      structured finding marker, e.g., "FINDING:" prefix). If no finding exists, the
+      Converge step is rejected with a new GrcError variant: InsufficientFindings.
+      Grounding: reasoning.txt section 7 line 99.
+      Provable benefit: without enforcement, the anti-rubber-stamp rule is advisory-only
+      and the auditor model can skip verification with no consequence. The auditor is the
+      last line of defense before code is accepted — a rubber-stamp auditor defeats the
+      entire adversarial review architecture.
+
+
+STEPS
+
+  2C.1 SKELETON: AgentGrcConfig type + config loading stubs
+    PRE_GATE:
+      - Phase 2B tests pass (grounding verification works)
+        Command: cd .elai_cc && cargo test -p reasoning 2>&1 | grep -E "test result:" | grep -q "0 failed"
+      - GrcEngine trait exists with think/set_budget/get_budget/reset_topic
+        Command: grep -q "fn think" .elai_cc/crates/reasoning/src/engine.rs
+      - VerificationMethod enum exists (from phase 2B)
+        Command: grep -q "enum VerificationMethod\|enum GroundingMethod" .elai_cc/crates/reasoning/src/types.rs
+    TASK:
+      - Define AgentGrcConfig in reasoning/src/types.rs:
+          AgentGrcConfig {
+            role: String,
+            budget: GrcBudget,
+            required_steps: Vec<GrcState>,
+            grounding_level: GroundingLevel,   // minimum accepted level
+            csq_required: bool,
+            allowed_methods: Vec<VerificationMethod>,
+            transition_overrides: HashMap<GrcState, Vec<GrcState>>,
+            require_scope_enumeration: bool,   // default: true for executor, false for memory_writer
+          }
+          require_scope_enumeration: when true, the Observe step's ThinkStep.scope field
+          must be populated with all task components/modalities. Orchestrator validates
+          every scope item appears in subsequent plan_action. Unaddressed items -> WARN.
+          Source: reasoning.txt section 10, technical-analysis-v3.txt Concern 3 Mechanism 1.
+      - Add GrcError::InsufficientFindings { role: String, expected_min: usize }
+      - Add GrcError::ConfigValidation { role: String, reason: String }
+      - Define AgentGrcConfigLoader trait in reasoning/src/config.rs:
+          fn load_config(role: &str, global_defaults: &GrcDefaults) -> Result<AgentGrcConfig, GrcError>
+          fn validate_config(config: &AgentGrcConfig) -> Result<(), GrcError>
+      - Define GrcDefaults struct: { budget: GrcBudget, grounding_level: GroundingLevel,
+          csq_required: bool, allowed_methods: Vec<VerificationMethod> }
+      - Stub implementation: TomlConfigLoader that reads from elai_cc.toml
+      - Add per-role config routing to GrcEngine:
+          fn with_agent_config(&mut self, config: AgentGrcConfig)
+          fn get_agent_config(&self) -> Option<&AgentGrcConfig>
+      - Re-export from reasoning/src/lib.rs
+    DETERMINISTIC_CHECK:
+      - cargo check succeeds with 0 errors
+        Command: cd .elai_cc && cargo check 2>&1 | grep -c "error\[" | grep -q "^0$"
+      - AgentGrcConfig exists:
+        Command: grep -c "pub struct AgentGrcConfig" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+      - InsufficientFindings error variant exists:
+        Command: grep -q "InsufficientFindings" .elai_cc/crates/reasoning/src/types.rs
+      - ConfigValidation error variant exists:
+        Command: grep -q "ConfigValidation" .elai_cc/crates/reasoning/src/types.rs
+      - Config loader trait exists:
+        Command: grep -q "fn load_config\|fn validate_config" .elai_cc/crates/reasoning/src/config.rs
+      - GrcEngine has with_agent_config method:
+        Command: grep -q "fn with_agent_config" .elai_cc/crates/reasoning/src/engine.rs
+    ADVERSARIAL:
+      - If AgentGrcConfig uses String for role instead of an enum, typos in config go
+        undetected (e.g., "exector" instead of "executor"). Test: consider AgentRole enum
+        but verify it does not conflict with orchestrator's role definitions. Decision:
+        use String for now (cross-crate enum coupling is worse), validate against known
+        roles at load time.
+      - If transition_overrides allows removing default transitions (not just adding),
+        a misconfigured role could break the base GRC chain. Test: validate that overrides
+        are additive-only (merged via union, not replacement).
+    ACCEPTANCE:
+      - cargo check succeeds (workspace)
+      - AgentGrcConfig has 8 fields (role, budget, required_steps, grounding_level,
+        csq_required, allowed_methods, transition_overrides, require_scope_enumeration)
+        Command: grep -A 10 "pub struct AgentGrcConfig" .elai_cc/crates/reasoning/src/types.rs | grep "pub " | wc -l
+      - GrcError has InsufficientFindings and ConfigValidation variants
+
+  2C.2 VERIFY: compilation check
+    PRE_GATE:
+      - Step 2C.1 complete (AgentGrcConfig type defined)
+        Command: grep -q "pub struct AgentGrcConfig" .elai_cc/crates/reasoning/src/types.rs
+    TASK:
+      - Run cargo check on full workspace. Fix any compile errors.
+      - Verify reasoning/ does not gain new crate deps (still core/ + phase-2B deps only).
+      - Verify no new external dependencies added (toml parsing comes from core/ Config).
+    DETERMINISTIC_CHECK:
+      - cargo check returns 0 errors
+        Command: cd .elai_cc && cargo check 2>&1 | grep "error\[" | wc -l | grep -q "^0$"
+      - No new dependency crates added:
+        Command: diff <(git show HEAD:crates/reasoning/Cargo.toml) .elai_cc/crates/reasoning/Cargo.toml | grep "^+" | grep -v "^+++" | wc -l
+        (new dep lines should be 0 or minimal — toml not needed if config loaded via core::Config)
+    ADVERSARIAL:
+      - If reasoning/ depends on toml crate directly for config parsing, it bypasses
+        core::Config and creates a parallel config path. Test: reasoning/ should receive
+        parsed AgentGrcConfig from orchestrator, not parse TOML itself. The TOML parsing
+        lives in core/ or orchestrator/ — reasoning/ receives typed structs.
+    ACCEPTANCE:
+      - cargo check exit code 0
+      - reasoning/ Cargo.toml has no toml/toml_edit dependency
+
+  2C.3 TEST: write failing tests (TDD)
+    PRE_GATE:
+      - Step 2C.2 passes (workspace compiles clean)
+      - AgentGrcConfig struct defined in types.rs
+        Command: grep -q "pub struct AgentGrcConfig" .elai_cc/crates/reasoning/src/types.rs
+    TASK:
+      Write tests in reasoning/tests/agent_config.rs (all must FAIL against stubs):
+
+      T1. auditor_gets_double_verify:
+          Create AgentGrcConfig for auditor with required_steps=[Observe,Hypothesize,Verify,Verify]
+          and transition_overrides={Verify: [Verify, Observe]}.
+          Set config on engine via with_agent_config().
+          Call think(Observe), think(Hypothesize), think(Verify), think(Verify).
+          Assert: all 4 calls succeed. The second Verify does NOT return InvalidTransition.
+          Invariant: reasoning.txt section 7 line 97, section 11 item 9.
+
+      T2. context_compiler_observe_only:
+          Create AgentGrcConfig for context-compiler with required_steps=[Observe].
+          Set config. Call think(Observe) — succeeds. Call think(Hypothesize) — must
+          return Err(InvalidTransition) because context-compiler is observe-only.
+          Invariant: reasoning.txt section 7 lines 103-106.
+
+      T3. executor_budget_8_1200:
+          Create AgentGrcConfig for executor with budget=(8, 1200).
+          Set config. Verify get_budget returns max_calls=8, max_chars=1200.
+          Call think() 8 times. 9th call returns BudgetExhausted.
+
+      T4. memory_writer_budget_2_400:
+          Create AgentGrcConfig for memory-writer with budget=(2, 400).
+          Set config. Call think() twice. 3rd call returns BudgetExhausted.
+
+      T5. config_validation_empty_steps_rejected:
+          Create AgentGrcConfig with required_steps=[]. Call validate_config().
+          Assert returns Err(ConfigValidation) with reason mentioning empty steps.
+
+      T6. config_validation_budget_too_small:
+          Create AgentGrcConfig with budget.max_calls=2 and required_steps with 5 entries.
+          Call validate_config(). Assert returns Err(ConfigValidation) with reason
+          mentioning budget insufficient for required chain.
+
+      T7. auditor_anti_rubber_stamp:
+          Create auditor config. Run a GRC session: Observe, Hypothesize, Verify (with
+          content that has NO "FINDING:" marker), then attempt Converge.
+          Assert: Converge returns Err(InsufficientFindings).
+          Then: add a Verify step with "FINDING: unused variable" in content, then Converge.
+          Assert: Converge succeeds.
+          Invariant: reasoning.txt section 7 line 99.
+
+      T8. auditor_rejects_uncertain_grounding:
+          Create auditor config with grounding_level=Verified (VERIFIED only).
+          Call think(Observe) with grounding="training:unverified_claim".
+          Assert: returns error (grounding level Uncertain is below minimum Verified).
+
+      T9. context_compiler_allowed_methods:
+          Create context-compiler config with allowed_methods=[FILE_CHECK, SOURCE_CHECK].
+          Attempt to request WEB_CHECK grounding.
+          Assert: rejected (method not in allowed_methods).
+          Note: actual method execution is phase 2B/4A. This tests the config filter.
+
+      T10. global_defaults_with_per_role_override:
+          Create GrcDefaults with budget=(5, 800).
+          Load executor config that overrides budget to (8, 1200) but inherits other defaults.
+          Assert: executor budget is (8, 1200), other fields match defaults.
+
+      T11. transition_overrides_are_additive:
+          Create config with transition_overrides={Observe: [Verify]}.
+          Call think(Observe). Next allowed states should include BOTH Hypothesize
+          (from default allowed_next) AND Verify (from override). Not just Verify.
+
+      T12. auditor_budget_10_1200:
+          Create AgentGrcConfig for auditor with budget=(10, 1200).
+          Set config. Call think() 10 times. 11th call returns BudgetExhausted.
+          Invariant: reasoning.txt section 7 line 96.
+
+      T13. prompt_engineer_budget_5_800:
+          Create AgentGrcConfig for prompt-engineer with budget=(5, 800),
+          required_steps=[Observe, Hypothesize, Converge].
+          Set config. Call think() 5 times. 6th call returns BudgetExhausted.
+          Invariant: reasoning.txt section 7 lines 109-111.
+
+      T14. designer_config_distinct_from_executor:
+          Create AgentGrcConfig for Designer role with budget=(8, 1200),
+          required_steps=[Observe, Hypothesize, PlanAction, Verify, Converge],
+          require_scope_enumeration=true.
+          Assert: Designer config differs from executor config in role name,
+          required_steps, and role_prompt (Designer produces PipelineSpec, not code).
+          Designer reuses executor model but has separate AgentGrcConfig.
+          Invariant: technical-analysis-v3.txt Concern 5, reasoning.txt section 7.
+
+      T15. require_scope_enumeration_per_role:
+          Create executor config with require_scope_enumeration=true.
+          Create memory_writer config with require_scope_enumeration=false.
+          Verify executor's Observe step requires scope field, memory_writer's does not.
+
+    DETERMINISTIC_CHECK:
+      - All 15 tests exist and FAIL (TDD)
+        Command: cd .elai_cc && cargo test -p reasoning --test agent_config --no-run 2>&1
+        (compile errors or runtime failures expected since stubs return todo!())
+      - Test count:
+        Command: grep -c "#\[test\]" .elai_cc/crates/reasoning/tests/agent_config.rs
+        (should be >= 15)
+    ADVERSARIAL:
+      - If tests pass against stubs, stubs are too permissive. Stubs must use todo!()
+        or unimplemented!(), never placeholder Ok values.
+      - If anti-rubber-stamp test (T7) uses exact string matching on "FINDING:", it is
+        brittle. Use a structured FindingMarker type or at minimum a case-insensitive
+        prefix check. The test should document the contract for what counts as a finding.
+      - If T11 does not verify that default transitions are preserved, additive-only
+        merge could regress silently if the merge logic replaces instead of unions.
+    ACCEPTANCE:
+      - >= 15 test functions exist in reasoning/tests/agent_config.rs
+      - All tests fail to compile or fail at runtime (TDD contract)
+      - Zero timing-dependent tests (grep for sleep/Duration/Instant returns 0)
+
+  2C.4 IMPLEMENT: config loading, per-role routing, transition extension
+    PRE_GATE:
+      - Step 2C.3 complete (tests written, all currently fail)
+      - No other session owns reasoning/ files
+        (checked by mcp_session_claim at EXECUTING entry)
+    TASK:
+      Implement in reasoning/src/:
+
+      I1. Config validation (config.rs):
+          validate_config() checks all 5 rules from D2:
+            (a) required_steps non-empty
+            (b) required_steps forms valid chain through merged transitions
+            (c) budget.max_calls >= required_steps.len()
+            (d) csq_required implies at least one Verify in required_steps
+            (e) allowed_methods subset of VerificationMethod variants
+          Returns Err(GrcError::ConfigValidation) on first failure with specific reason.
+
+      I2. Transition override merging + step whitelist (engine.rs):
+          When AgentGrcConfig is set via with_agent_config(), the engine stores the config.
+          On each think() call, effective_allowed_next(state) computes:
+            base: GrcState::allowed_next(state)
+            plus: config.transition_overrides.get(state).unwrap_or_default()
+            merged: base.union(overrides) — additive only, never removes base transitions.
+          THEN: if config.required_steps is non-empty, filter merged set to only include
+          states that appear in required_steps (plus Status and Converge, which are always
+          allowed). This is the step whitelist: it restricts the agent to only the step
+          types its role permits. Without this filter, context-compiler's required_steps=
+          [Observe] would have no effect — default allowed_next(Observe)=[Hypothesize]
+          would still allow Hypothesize. The filter ensures only Observe (and the always-
+          allowed Status/Converge) remain reachable.
+          Whitelist: reachable_states = required_steps + [Status, Converge].
+          effective_allowed = merged.intersect(reachable_states).
+
+      I3. Grounding level enforcement (engine.rs):
+          On think() with grounding, classify the GroundingLevel.
+          If level < config.grounding_level (e.g., Uncertain < Verified), reject step.
+          New error variant or extend UngroundedStep with a "level_insufficient" reason.
+          Ordering: Verified > High > Uncertain. Implement PartialOrd on GroundingLevel.
+          CRITICAL: enum variant order MUST be { Uncertain=0, High=1, Verified=2 } so that
+          derived PartialOrd gives Uncertain < High < Verified. If declared as
+          { Verified, High, Uncertain } (phase 2A default), derived Ord inverts:
+          Verified=0 < Uncertain=2, and the `level < config.grounding_level` check passes
+          when it should reject. Phase 2A's GroundingLevel enum order must be corrected
+          or an explicit PartialOrd impl must be provided (not derived).
+          Test: assert!(GroundingLevel::Verified > GroundingLevel::Uncertain) — add to T8.
+
+      I4. Anti-rubber-stamp (engine.rs):
+          On think(Converge) when agent config role == "auditor":
+            scan session history for Verify steps with "FINDING:" prefix in content.
+            if count < 1: return Err(InsufficientFindings { role, expected_min: 1 }).
+          The finding marker is a const FINDING_PREFIX: &str = "FINDING:".
+          Contract: a finding is any Verify step whose content starts with FINDING_PREFIX
+          (case-sensitive, after trimming leading whitespace). This is an internal protocol
+          between the GRC engine and auditor prompt — not natural language parsing.
+          Tests must cover: exact prefix, leading whitespace, content without prefix.
+
+      I5. Config loading from TOML (config.rs):
+          TomlConfigLoader::load_config(role, defaults):
+            reads from core::Config (already parsed from elai_cc.toml)
+            merges [grc.defaults] with [agents.{role}.grc] per D3
+            calls validate_config() before returning
+          If role not found in config: use defaults only (no error — allows dynamic roles).
+          If role found but validation fails: return error (misconfiguration).
+
+      I6. Per-role routing (engine.rs):
+          with_agent_config() stores the config and resets topic state.
+          All subsequent think() calls use the config's budget, transitions, grounding level.
+          get_agent_config() returns the current config (for orchestrator inspection).
+          If no agent config set, engine uses global defaults (backward-compatible with 2A).
+          BUDGET ENFORCEMENT SCOPE: in phase 2C (in-process, pre-isolation), the agent-
+          side GrcEngine enforces budgets directly. In phase 4A (Tier C process isolation),
+          orchestrator.txt lines 440-444 state: "Agent binary budget tracking is advisory
+          only. Enforcement is in the orchestrator." Phase 2C's enforcement is the
+          AUTHORITATIVE enforcement for phases 0-3 (in-process). Phase 4A transitions
+          authority to the orchestrator and demotes agent-side to advisory. This phase
+          does NOT need to anticipate that demotion — phase 4A handles the transition.
+          The same GrcBudget struct is used in both modes; only who enforces changes.
+
+    DETERMINISTIC_CHECK:
+      - All 15 tests from step 2C.3 pass
+        Command: cd .elai_cc && cargo test -p reasoning --test agent_config -- --nocapture 2>&1 | grep -E "test result:" | grep -q "0 failed"
+      - Plus all phase 2A and 2B tests still pass (no regression)
+        Command: cd .elai_cc && cargo test -p reasoning 2>&1 | grep -E "test result:" | grep -q "0 failed"
+      - No todo!() or unimplemented!() in config.rs or engine.rs
+        Command: grep -c "todo!\|unimplemented!" .elai_cc/crates/reasoning/src/config.rs .elai_cc/crates/reasoning/src/engine.rs | grep -v ":0$" | wc -l | grep -q "^0$"
+      - No unwrap() in config.rs or engine.rs
+        Command: grep -c "\.unwrap()" .elai_cc/crates/reasoning/src/config.rs .elai_cc/crates/reasoning/src/engine.rs | grep -v ":0$" | wc -l | grep -q "^0$"
+      - GroundingLevel implements PartialOrd:
+        Command: grep -q "PartialOrd" .elai_cc/crates/reasoning/src/types.rs
+    ADVERSARIAL:
+      - If FINDING_PREFIX is hardcoded string matching, model output format drift breaks
+        detection. Test: use a structured FindingReport type if feasible, or at minimum
+        document the contract and add a test with varied formatting (leading whitespace,
+        mixed case). Decision: keep simple prefix for now (it is an internal protocol,
+        not natural language parsing). Document contract in code comment.
+      - If with_agent_config() does not reset topic state, leftover state from a previous
+        config could leak. Test: set config A, run some steps, set config B, verify
+        topic state is clean (no leftover budget counts from config A).
+      - If config loading fails silently (returns defaults on parse error), misconfigurations
+        go undetected. Test: malformed [agents.executor.grc] table must return error, not
+        silently fall back to defaults. Only missing table falls back.
+      - If PartialOrd on GroundingLevel has wrong ordering (Uncertain > Verified), auditor
+        accepts untested claims. Test: assert Verified > High > Uncertain explicitly.
+    ACCEPTANCE:
+      - cargo test -p reasoning: 0 failures, all 2A + 2B + 2C tests pass
+      - cargo check --workspace: 0 errors
+      - grep for todo!/unimplemented!/unwrap() in engine.rs and config.rs: 0 matches
+      - GroundingLevel has PartialOrd (grep confirms)
+      - FINDING_PREFIX constant defined (grep confirms)
+
+  2C.5 MEASURE: config overhead and correctness metrics
+    PRE_GATE:
+      - Step 2C.4 complete (all tests pass)
+    TASK:
+      - Measure config load + validation time per role (target: <1ms — pure struct construction + validation)
+      - Measure per-step overhead from config routing vs no-config baseline (target: <10% overhead)
+      - Measure memory per AgentGrcConfig (target: <2KB including transition_overrides)
+      - Record: test count, LOC delta from phase 2B, compile time delta
+      - Write metrics to .elai_cc/metrics/phase_2C.toml
+    DETERMINISTIC_CHECK:
+      - Metrics file exists and contains required fields
+        Command: test -f .elai_cc/metrics/phase_2C.toml && grep -q "config_load_us" .elai_cc/metrics/phase_2C.toml
+      - Config load overhead < 1ms (1000 microseconds)
+        Command: grep "config_load_us" .elai_cc/metrics/phase_2C.toml
+        (value must be < 1000)
+      - Per-step routing overhead < 10% of baseline
+        Command: grep "routing_overhead_pct" .elai_cc/metrics/phase_2C.toml
+        (value must be < 10.0)
+    ADVERSARIAL:
+      - If measurement includes TOML parsing time, it conflates I/O with config logic.
+        Test: measure config validation separately from file I/O. Report both.
+      - If AgentGrcConfig with large transition_overrides maps uses excessive memory,
+        the <2KB target may fail for pathological configs. Test: measure with max
+        reasonable overrides (7 states x 7 targets = 49 entries).
+    ACCEPTANCE:
+      - .elai_cc/metrics/phase_2C.toml exists with all required fields
+      - config_load_us < 1000
+      - routing_overhead_pct < 10.0
+      - cargo test -p reasoning: 0 failures
+
+
+EXIT CRITERIA
+  Each of the 6 agent roles (including Designer) has correct GRC budget and step sequence (verified by dedicated tests).
+  Designer role has distinct AgentGrcConfig from Executor (same model, different role_prompt/steps).
+  Auditor gets double-verify via transition_overrides (verify->verify allowed).
+  Context-compiler gets observe-only (hypothesize/plan_action/act/verify rejected).
+  Auditor anti-rubber-stamp enforced: converge without finding is rejected.
+  Grounding level enforcement: auditor rejects Uncertain, context-compiler accepts High.
+  Config validation catches: empty steps, budget < steps, missing verify for csq, invalid methods.
+  Global defaults + per-role overrides merge correctly (field-by-field, not deep merge).
+  Transition overrides are additive-only (default transitions preserved).
+  require_scope_enumeration enforced per-role (true for executor/designer, false for memory_writer).
+  All phase 2A + 2B tests still pass (no regression).
+  All 15+ phase 2C tests pass. Zero todo!/unimplemented!/unwrap() in new code.
+
+
+GROUNDING SUMMARY
+  "Auditor required_steps includes double-verify" -> GROUNDED: reasoning.txt section 7 line 97
+  "Context-compiler is observe-only with FILE_CHECK/SOURCE_CHECK" -> GROUNDED: reasoning.txt section 7 lines 103-106
+  "Executor budget 8/1200, memory-writer 2/400" -> GROUNDED: reasoning.txt section 7 lines 89-91, 115-116
+  "Global default configurable in elai_cc.toml" -> GROUNDED: reasoning.txt section 3 line 38
+  "[agents.{role}] TOML pattern" -> VERIFIED: grep confirms 5 specs use this pattern (orchestrator, providers, tools, prompt-architecture, plus role_prompt)
+  "Anti-rubber-stamp: must find >= 1 issue" -> GROUNDED: reasoning.txt section 7 line 99
+  "Per-agent FSM sub-states: IDLE->LOADING->REASONING->ACTING->DONE" -> GROUNDED: reasoning.txt section 7 lines 118-120
+  "AgentGrcConfig type has 4 fields" -> GROUNDED: reasoning.txt section 10 line 186. GAP: missing allowed_methods, transition_overrides, and require_scope_enumeration fields — spec update needed. Now 8 fields total.
+  "require_scope_enumeration field on AgentGrcConfig" -> GROUNDED: reasoning.txt section 10, technical-analysis-v3.txt Concern 3 Mechanism 1.
+  "Designer is a distinct AgentRole from Executor" -> GROUNDED: technical-analysis-v3.txt Concern 5, reasoning.txt section 7. Same model, different role_prompt, GRC config, output format.
+  "Orchestrator enforces budget externally via IPC message counting" -> GROUNDED: orchestrator.txt lines 440-444
+  "Per-agent config routing prevents InvalidTransition" -> VERIFIED: without transition_overrides, auditor's verify->verify hits phase 2A's InvalidTransition error (no Verify->Verify path in default allowed_next)
+  "Config validation at load time (fail-fast)" -> GROUNDED: standard engineering practice (fail-fast principle). Provable: budget=1 with 5 required_steps fails at runtime without validation.
+  "Anti-rubber-stamp defeats adversarial review if advisory-only" -> GROUNDED: reasoning.txt section 7 line 99 mandates >=1 finding. Without enforcement, prompt compliance is optional.
+  "Role-based agent config is standard pattern" -> VERIFIED: MetaGPT, CrewAI frameworks use role-specific agent configs (web search confirmed, 2025)
+  "<1ms config load overhead" -> UNGROUNDED: assumed reasonable for in-memory struct construction + 5 validation checks. Will verify empirically in step 2C.5.
+  "<10% per-step routing overhead" -> UNGROUNDED: assumed from HashMap lookup + Vec union. Will verify empirically in step 2C.5.
+
+
+SPEC GAPS IDENTIFIED (for reconciliation with other sessions)
+  1. reasoning.txt line 186: AgentGrcConfig type should add allowed_methods: Vec<VerificationMethod>,
+     transition_overrides: HashMap<GrcState, Vec<GrcState>>, and require_scope_enumeration: bool.
+     Currently has 4 fields, needs 8.
+     (reasoning.txt owned by session s-1003192 — coordinate update after that session completes.)
+  2. reasoning.txt section 11: testable invariant for anti-rubber-stamp enforcement not listed.
+     Should add: "[2C] Auditor converge without finding is rejected (InsufficientFindings)."
+  3. reasoning.txt GrcError enum (line 174): missing InsufficientFindings and ConfigValidation variants.
+  4. reasoning.txt section 10 (GroundingLevel enum): variant order must be { Uncertain, High, Verified }
+     (ascending quality = ascending discriminant) for derived PartialOrd to work correctly.
+     Current order { Verified, High, Uncertain } inverts the comparison. Phase 2A must fix
+     this before phase 2C can use PartialOrd for grounding level enforcement.
+  5. reasoning.txt section 7: grounding_level field semantic ambiguity. For context-compiler,
+     the restriction is on method type (FILE_CHECK/SOURCE_CHECK only), not grounding quality.
+     grounding_level=High would accept WEB_CHECK results that return Verified quality.
+     The allowed_methods field and grounding_level are complementary, not redundant — document
+     that allowed_methods restricts WHICH methods, grounding_level restricts MINIMUM QUALITY.

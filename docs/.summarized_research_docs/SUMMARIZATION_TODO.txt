@@ -1,0 +1,40 @@
+FILES TO SUMMARIZE (ordered by size, descending):
+
+1. Backtest Overfitting and Data Leakage.txt (43,994 bytes) - COMPLETED
+2. Claude Code Leak Technical Discoveries.txt (44,113 bytes) - COMPLETED
+3. LLM SOLID Principles with Claude.txt (44,003 bytes) - COMPLETED
+4. AI Model Comparative Analysis Request.txt (38,056 bytes) - COMPLETED
+5. SOTA Codebase Understanding for LLMs.txt (38,998 bytes) - COMPLETED
+6. Claude Source Code Leak Discoveries 1.txt (36,549 bytes) - COMPLETED
+7. Local Models for Adversarial Auditing.txt (36,616 bytes) - COMPLETED
+8. Local Models for Context Gathering.txt (35,102 bytes) - COMPLETED
+9. Rare Code Flaws in ML.txt (35,493 bytes) - COMPLETED
+10. Local AI Coding Model Analysis.txt (34,206 bytes) - COMPLETED
+11. Local Models for Prompt Engineering.txt (34,376 bytes) - COMPLETED
+12. SOTA Software Testing Research.txt (33,861 bytes) - COMPLETED
+13. Coding AI Model & Framework Analysis.txt (33,290 bytes) - COMPLETED
+14. LLM Adherence to SOLID Principles.txt (34,848 bytes) - COMPLETED
+15. LLM Hallucination Mitigation Deep Dive.txt (31,982 bytes) - COMPLETED
+16. Realistic Paper Trading Executor Research.txt (31,440 bytes) - COMPLETED
+17. SOTA RAG Architectures for Codebases.txt (31,794 bytes) - COMPLETED
+18. LLM Inference Optimization Deep Dive.txt (30,666 bytes) - COMPLETED
+19. workflowtocascade.txt (24,442 bytes) - COMPLETED
+20. SOTA Codebase Mapping LLM Integration.txt (28,854 bytes) - COMPLETED
+21. LLM Harness Systems Technical Deep Dive.txt (27,683 bytes) - COMPLETED
+22. Finding Smart Small Local LLMs.txt (25,807 bytes) - COMPLETED
+23. chat 3 no slop ideas.txt (34,316 bytes) - COMPLETED
+24. chat.txt (15,782 bytes) - COMPLETED
+25. chat 2 important pre project or phase break down.txt (4,864 bytes) - COMPLETED
+26. what is branch coverage.txt (9,129 bytes) - COMPLETED
+27. claude code source.txt (13,694 bytes)
+28. halugate.txt (3,239 bytes)
+29. the solution to hallun train.txt (2,613 bytes) - COMPLETED
+
+SMALL FILES (< 1KB) - SUMMARIZE QUICKLY:
+30. LLM-as-a-Judge and RAG Metrics.txt (823 bytes) - COMPLETED
+31. localllmonCC.txt (822 bytes) - COMPLETED
+32. agentstolocallllms.txt (170 bytes) - COMPLETED
+33. INTERCONNECTEDGRAPHIDEA.txt (145 bytes) - COMPLETED
+34. Turboanddolaongemma.txt (338 bytes) - COMPLETED
+35. workflowtocascade.txt (already listed above)
+36. other small files...

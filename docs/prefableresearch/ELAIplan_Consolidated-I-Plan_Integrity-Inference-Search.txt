@@ -1,0 +1,375 @@
+# THE CONSOLIDATED I-PLAN: INTEGRITY, INFERENCE-TIME SEARCH ORCHESTRATION, & POST-AUTOREGRESSIVE INTELLIGENCE
+
+**Generated:** 2026-06-09
+**Source Synthesis:** A definitive, maximum-depth consolidation of the *Integrity & Isolation Roadmap* (Plan 1) and the *Post-Autoregressive Intelligence Track* (Plan 2). Every granular detail has been retained, cross-referenced against ELAI’s master architectural history (B-Plan through H-Plan), and explicitly upgraded with SOTA 2025–2026 mechanisms (DeepSeek-R1 GRPO, DSPy compilation, Sigstore transparency logs, Copy-on-Write VFS, and Int4 KV-Caching).
+
+## 1. Executive Architectural Synthesis: Escaping the Vividness Trap via Verifiable Swarm Concurrency
+
+An exhaustive synthesis of ELAI's engineering evolution against the frontier of autoregressive "world models" (Deep Think, AlphaProof, OpenHands, Letta, Jido) exposes two colliding bottlenecks:
+
+1. **The Vividness Trap & The Monolithic LLM:** ELAI still treats the LLM as a monolithic, autoregressive state-owner. Standard linear generation forces the model into the **"Vividness Trap"** (Attention Sinks)—where the attention mechanism is hijacked by its own recent, flawed, or syntactically vivid outputs (e.g., a 5,000-line Python traceback). Forcing a model to "think harder" by appending apology loops to a polluted context tape mathematically guarantees Context Window Saturation and exponential error accumulation ($\alpha_t > 1$).
+2. **The Concurrency & Isolation Gap:** While ELAI possesses a robust execution engine (BSP supersteps, WAL state boards), it lacks structural safeguards against multi-agent workspace clashing, hardware cache-busting during dynamic tool routing, and "vibe-coding" during test generation.
+
+To achieve superhuman generalization, **deep reasoning must cease to be a property of the model alone; it must become a property of the orchestration infrastructure.** The I-plan elevates ELAI from a verifiably safe linear agent into a mathematically provable, fault-isolated, cache-invariant swarm. The frontier model is demoted to a *Stateless Combinatorial Hypothesis Generator*, while the **Rust ELAI orchestrator** assumes absolute global control over the state tree via Monte Carlo Thought Search (MCTS), cryptographic UPIP event isolation, context compaction, and Brier-calibrated PRM scoring.
+
+---
+
+## 2. I-Plan Master Doctrine & Rules of Engagement (ID-1..ID-9)
+
+Inheriting `W-1..W-10` (wiring done-gates), `GD-1..GD-5` (Compose-not-restate), and `HD-1..HD-5` (Measured-not-multiplied efficiency), we establish 9 absolute doctrines for High-Integrity Inference-Time Orchestration:
+
+* **ID-1 (Trajectory Discipline / The Stateless LLM):** The generator model must never hold the canonical state. It proposes structured `Hypothesis` JSON payloads. Failures and tracebacks are actively and silently pruned from the `SessionDag` before the next LLM call to cure the Vividness Trap.
+* **ID-2 (Strict Prefix Invariance & Cache Stability):** Absolutely no dynamic metadata (timestamps, UUIDs) or tool array mutations are permitted in the prompt prefix. Dynamic restrictions must be enforced via JSON payload attributes outside the prefix to lock the 90% hardware KV-cache discount.
+* **ID-3 (Absolute Workspace Isolation):** Parallel agents and diverging MCTS branches never share a physical working directory during computation; all state writes must merge deterministically.
+* **ID-4 (Absolute Execution Veto):** Neural evaluators (PRMs) are inherently sycophantic. A deterministic failure (e.g., `cargo check`, `F-1 VibeGate`) instantly overrides any PRM score, forcing an instant branch prune (`Score = 0.0`). Execution *always* trumps LLM logic.
+* **ID-5 (Zero-Context Shared Evaluators):** Evaluators must never see the generator's internal monologue or prior struggles. Communication must be via file-based Sprint Contracts.
+* **ID-6 (Calibrated Progress-Shaped Rewards):** Trajectories must be evaluated by delta-progress: $r_t = \Phi(h_t) - \Phi(h_{t-1})$. Local PRMs output mathematically Brier-calibrated $\hat{q}_t$.
+* **ID-7 (Middleware Compression):** MCTS is token-expensive. API payloads must be aggressively sub-token compressed locally (via LLMLingua-2/PABU) before cloud dispatch.
+* **ID-8 (Aletheia Voluntarism):** Explicit escape-hatches allow the model to acknowledge structurally infeasible paths and voluntarily abort, returning compute to the orchestrator.
+* **ID-9 (Compose-Not-Restate):** Every session MUST compose with B-H substrate. A session is not done until `wiring_contract_check.py --run-trigger PASS` confirms an off-agent SSB row is emitted under `ELAI_SEED`.
+
+---
+
+# ================================================================================
+
+# PART I: TRACK 12 — HIGH-INTEGRITY CONCURRENCY & FAULT ISOLATION
+
+# ================================================================================
+
+### I-1 — Jido-Style Pure Transitions & Directive Delegation
+
+* **Track 12** | lever FAULT-ISOLATION | grounding STRONG (Erlang OTP/Jido/Letta) | nature REFACTOR | effort M | WAVE 12
+* **Gap:** ELAI's `AdaptiveTool` executes side-effects synchronously. API limits or OOM-crashes corrupt agent state.
+* **Steal/build:** Erlang OTP / Jido Actor pattern. Decouple LLM reasoning from side-effect execution.
+* **Reasoning & Improvement:** Enforce the *Typestate Pattern* in Rust. The LLM emits an `Intent<State>` transition function $\Phi$ which is strictly *pure*, returning a list of explicit `Directive` structs (e.g., `Directive::WriteFile`). A separate Supervisor executes side effects safely. Combine with **Saga-pattern compensation** for multi-step rollback on crash to guarantee absolute topological determinism.
+* **COMPOSES-WITH:** Phase 3C (Agent System recovery), Phase 4A (IPC).
+* **Integration:** Refactor `task_runner.rs` and `AgentResponse`.
+* **observable_effect (W-1):** An injected OOM panic during a bash tool cleanly restarts the agent from the exact pre-tool state, firing Saga compensations to revert partial filesystem corruption (`+DirectiveDiscarded`).
+
+### I-2 — Copy-On-Write (CoW) Isolation for Parallel Supersteps (Concurrency Sandbox)
+
+* **Track 12** | lever CANT-WRECK / CONCURRENCY | grounding STRONG (Pregel-Style BSP) | nature BUILD+IMPROVE | effort M-L | WAVE 12 | ID-3
+* **Gap:** ELAI's Phase 3D implements BSP supersteps, but parallel workers modifying the same `scratch_dir` invite silent overwrites.
+* **Steal/build:** Pregel-style workspace isolation. The initial plan proposed Git Worktrees.
+* **Reasoning & Improvement:** Standard `git worktree add` exhausts OS inodes on massive repos and incurs extreme disk I/O overhead. Mount parallel agent workspaces using **Copy-on-Write (CoW)** filesystem layers (`overlayfs` on Linux, `btrfs` reflinks, or `clonefile` on APFS). Agents execute against a hermetically sealed local tree with microsecond, zero-I/O duplication overhead. The BSP aggregator explicitly merges the patches deterministically at the global synchronization barrier.
+* **COMPOSES-WITH:** Phase 3D (BSP Supersteps), 4B (Git tools), C-23 (Branch UI).
+* **Integration:** `crates/orchestrator/src/sandbox/cow_vfs.rs`.
+* **observable_effect:** A parallel superstep where two agents touch adjacent code blocks executes in completely isolated paths; the aggregator detects and resolves file conflicts deterministically (`+CowSandboxSpawned`, `+WorktreeMerged`).
+
+### I-3 — SQLite io_uring EXCLUSIVE Locking & Atomic Disk Saves
+
+* **Track 12** | lever PERFORMANCE | grounding STRONG | nature BUILD+IMPROVE | effort S | WAVE 12
+* **Gap:** High-throughput logging on `ssb.rs` faces OS filesystem call overhead during heavy concurrency MCTS expansions.
+* **Steal/build:** Execute `PRAGMA locking_mode=EXCLUSIVE;` and `PRAGMA busy_timeout=5000;`. Add `.tmp` atomic disk saves to prevent mid-write corruption for checkpoints.
+* **Reasoning & Improvement:** Incorporate Rust's `io_uring` asynchronous I/O backend for the SQLite connection to bypass POSIX blocking calls, hitting >10,000 inserts/sec. Upgrade to **WAL2 branch logic** and `PRAGMA mmap_size=30000000000;` (30GB). Memory-mapped I/O allows the single-writer to bypass the VFS layer for reads, drastically speeding up the read-back phase required by rapid MCTS rollouts. Offload WAL checkpointing to a dedicated async thread.
+* **COMPOSES-WITH:** Phase 3B (SSB WAL config), H-44 (Checkpointing durability).
+* **Integration:** `ssb.rs` SQLite connection pragmas. `checkpoint.rs` atomic writing.
+* **observable_effect:** Measured SSB insert throughput exceeds 10,000 rows/sec; interrupting a checkpoint write does not corrupt the state file.
+
+---
+
+# ================================================================================
+
+# PART II: TRACK 13 — NEURO-SYMBOLIC MCTS ORCHESTRATION & TRAJECTORY DISCIPLINE
+
+# ================================================================================
+
+### I-4 — Monte Carlo Thought Search (MCTS) Orchestrator over `SessionDag`
+
+* **Track 13** | lever SMARTER-ORCH | grounding STRONG (AlphaProof / DeepSeek-R1) | nature BUILD | effort XL | WAVE 13 | BLOCKING
+* **Gap:** Standard linear generation treats the LLM as a monolithic autoregressive state-owner.
+* **Steal/build:** Transform ELAI from a linear FSM to a non-linear Monte Carlo Tree Search (MCTS) engine via `mcts_orchestrator.rs` leveraging `SessionDag` and `BranchTree`. Implement PUCT (Predictor Upper Confidence Bound for Trees). The Generator proposes $K$ divergent `BabyStepSpec` candidates using C-26 temperature schedules to force hypothesis diversity.
+* **Reasoning & Improvement:** Add **Virtual Loss** to PUCT for asynchronous parallel expansions. This applies a temporary negative reward to active nodes, preventing identical branch exploration by parallel workers, mathematically precluding search collapse under high concurrency.
+* **COMPOSES-WITH:** `SessionDag` (H-35, H-49), `bsp_superstep` (Phase 3D).
+* **Integration:** Replace linear `execute_tasks_parallel` in `task_runner.rs` with `mcts_orchestrator::run_search`. Add `SsbActionType::MctsNodeExpanded` and `MctsBranchPruned`.
+* **observable_effect:** A complex task forks into 3 `SessionDag` branches. One fails compilation and is pruned (`MctsBranchPruned`). Orchestrator backtracks, explores sibling B, compiles successfully, and merges it back to trunk.
+
+### I-5 — Stateless Hypothesis Generation & Anti-Vividness Pristine Context Injector
+
+* **Track 13** | lever TRUST/STEERING | grounding STRONG | nature BUILD | effort M | WAVE 13 | ID-1
+* **Gap:** Feeding models their own 5,000-line tracebacks causes Attention Sink hijacking (Vividness Trap).
+* **Steal/build:** The LLM acts as a stateless mapper proposing structured `Hypothesis` payloads. The orchestrator acts as a firewall against attention sinks. When expanding a node, dynamically construct the context by walking the `parent_id` chain. **Hard-exclude all failed sibling branches, tracebacks, and previous hallucinations from the prompt.**
+* **Reasoning & Improvement:** Use **Contrastive Context Formulation**. Instead of merely dropping the traceback entirely, provide the LLM with a highly compressed structural diff: *"Attempt A failed on line 42 due to Type X. Generate Attempt B avoiding Type X."* This preserves the mathematical negative gradient without burning tokens on vivid noise.
+* **COMPOSES-WITH:** H-6 (Deterministic observation masking), H-50 (Regime-aware in-session context), E-35 (XGrammar).
+* **Integration:** `context_budget.rs` -> `assemble_prompt()`. Introduce `pristine_path_filter`.
+* **observable_effect:** The LLM generates a syntax error. On the retry branch, the API payload contains ZERO tokens of the 5,000-line traceback, perfectly retaining a 20-token constraint (`anti_vividness_rollback`).
+
+### I-6 — The Anchor Pane (Defeating Architectural Position Bias)
+
+* **Track 13** | lever STEERING | grounding STRONG | nature BUILD-on-shipped | effort S | WAVE 13
+* **Gap:** Autoregressive models inherently degrade in the middle of long contexts.
+* **Steal/build:** BUILD an immutable `PrivilegedAnchor` slot appended *last*, immediately before the `<assistant>` generation token. It holds the core `TaskSpec`, unresolved claims, and active constraints, bypassing all reduction ladders.
+* **Reasoning & Improvement:** Leverage **Recency Bias Grounding**. Dynamically inject an **Assertion Anchor** that requires the model to output a strict `<acknowledgement>` tag reflecting the active constraint *before* generating code. This forces attention-head activation specifically on the required invariants.
+* **COMPOSES-WITH:** Phase 3E/H-2 (ContextBudget slots).
+* **Integration:** `context_budget.rs`. Add `ContextSlot::AnchorPane` guaranteed as Slot 8.
+* **observable_effect:** A 30K-token task retains 100% invariant-adherence because the Anchor Pane forces the attention mechanism to ground on the constraints (`anchor_pane_injected`).
+
+### I-7 — Batch API Parallel Expansion & Speculative Local Execution
+
+* **Track 13** | lever CHEAPER/SPEED | grounding STRONG | nature ACTIVATION | effort L | WAVE 13
+* **Steal/build:** Offload non-interactive parallel MCTS branch expansions to the H-5 Anthropic Batch API, saving 50% cost. Branch outputs are strictly constrained to H-3 diff/FIM emissions to prevent output-token inflation.
+* **Reasoning & Improvement:** Add **Speculative Local Execution**. While waiting for the Batch API response (which can take minutes), the local 7B sidecar aggressively pre-evaluates low-temperature paths. If the local sidecar unexpectedly finds a deterministic solution that passes the compiler, the orchestrator instantly cancels the pending Batch API request to save time and cost.
+* **COMPOSES-WITH:** H-5 (Batch API), H-3 (Output-token stack diff/FIM).
+* **Integration:** Route MCTS queries through `anthropic.rs:678` batch client.
+* **observable_effect:** 5 parallel branches dispatched simultaneously; orchestrator polls completion locally, but a local 7B win instantly aborts the batch.
+
+### I-8 — The Aletheia Protocol: Voluntary Failure & Escape-Hatch Prevention
+
+* **Track 13** | lever TRUST/cant-lie | grounding STRONG | nature BUILD | effort M | WAVE 13 | ID-8
+* **Steal/build:** Deep Think systems survive by knowing when to quit. Inject an explicit `<abort_trajectory>` or `acknowledge_infeasible(reason)` tool into the E-35 XGrammar schema. If the model determines a path is structurally flawed, it calls this tool, is heavily rewarded by MCTS heuristics for saving compute, and the orchestrator immediately jumps context back to a known-good trunk node via H-49 rollback.
+* **Reasoning & Improvement:** Combine this with **Heuristic Dead-End Hashing**. If a model aborts, the structural AST hash of that doomed approach is globally cached. Any future MCTS branch attempting an isomorphic AST approach is deterministically pruned *before* an LLM API call.
+* **COMPOSES-WITH:** E-35 (XGrammar), H-49 (Rollback).
+* **Integration:** `crates/tools/src/aletheia.rs`. Add `AletheiaAbort` to `DispatchTool`.
+* **observable_effect:** Tasked with an impossible architectural constraint, the model invokes `acknowledge_infeasible`. The branch gracefully aborts (`TrajectoryAbortedVoluntarily`), saving massive compute loops.
+
+### I-9 — Error Amplification Coefficient Telemetry ($\alpha_t$) & Active Annealing
+
+* **Track 13** | lever PROVABLE/METRICS | grounding STRONG | nature BUILD | effort M | WAVE 13
+* **Steal/build:** Formalize error propagation via the recurrence: $e_{t+1} \le \alpha_t e_t + \beta_t + \gamma_t q_t$. Measure ELAI's trajectory sensitivity. Implement an `ErrorPropagationHarness` that purposefully corrupts step $t$ via `C-28` Mutation Testing and measures the recovery rate.
+* **Reasoning & Improvement:** Move beyond measuring to **Active Annealing**. If $\alpha_t > 1.0$ is detected mid-search, the orchestrator dynamically lowers the sampling temperature $\tau$ and enforces stricter XGrammar constraints to "cool" the trajectory and force it back to a deterministic, low-entropy state.
+* **Integration:** `crates/cli/src/benchmarks/trajectory_science.rs`. Add `ErrorPropagationHarness`.
+* **observable_effect:** `elai measure error-amplification` yields an `ErrorAmplificationMeasured` SSB row. An $\alpha_t < 1.0$ mathematically proves that ELAI's DAG repair correctly contracts errors rather than magnifying them.
+
+---
+
+# ================================================================================
+
+# PART III: TRACK 14 — CACHE INVARIANCE, CONTEXT LIFECYCLE & EPISTEMIC MIDDLEWARE
+
+# ================================================================================
+
+### I-10 — Strict Prefix-Invariant Tool Arrays & Cache-Hit Telemetry Guards
+
+* **Track 14** | lever CHEAPER | grounding STRONG (Prompt Caching) | nature REFACTOR | effort S | WAVE 14 | ID-2
+* **Gap:** H-4 moves the catalog behind a "Tool Search" tool, which alters the array prefix. Altering prompt-level tool definitions instantly invalidates hardware KV-caches on models like DeepSeek/Claude, losing the 90% caching discount.
+* **Steal/build:** Enforce Prefix-Invariant Structural Ordering. OVERRIDE H-4's array mutation: define the ENTIRE toolkit in the static prefix. Restrict active execution dynamically using the API's `tool_choice` or `allowed_tools` JSON attributes *outside* the prompt prefix. Move dynamic metadata (timestamps, session IDs) entirely to the final volatile user message.
+* **Reasoning & Improvement:** Implement **Cache-Hit Telemetry Guards**. If the orchestrator detects an unexplainable cache-miss rate > 10% on consecutive identical tasks, it hard-halts and dumps a blake3 diff of the prefix bytes to identify the exact string mutation leaking into the static block.
+* **COMPOSES-WITH:** H-1/H-2 (Prompt Caching). Replaces H-4's mutation behavior.
+* **Integration:** `crates/providers/src/prompt_builder.rs` + `anthropic_api.rs`.
+* **observable_effect:** Dynamic tool restrictions change per FSM state while the 70KB system prefix hashes identically turn-over-turn; TTFT drops by 80% and the measured cache hit-rate (H-9) reaches >90%.
+
+### I-11 — ACON / PABU Progress-Aware Belief Compaction
+
+* **Track 14** | lever CHEAPER/SMARTER-ORCH | grounding STRONG | nature ACTIVATION/BUILD | effort M | WAVE 14
+* **Steal/build:** H-6 and H-50 perform naive token masking, dropping semantics. PABU proves retaining an explicit, condensed belief state reduces average steps by 26.9%. BUILD an asynchronous background `CondenserAgent` running on the local 7B sidecar that compresses trailing log turns into a dense `BeliefState`.
+* **Reasoning & Improvement:** Connect the `BeliefState` directly to the DKG (Execution Knowledge Graph), formatting it as a strictly typed **Knowledge Graph JSON**. This enables semantic graph-querying of beliefs rather than forcing the LLM to linearly read the compaction, deduplicating entities and reducing hallucination risks.
+* **COMPOSES-WITH:** H-50 (Regime-aware context), H-31 (Bi-temporal memory).
+* **Integration:** `orchestrator/src/belief_state.rs`. Intercept `PostToolUse` via async condensation tick.
+* **observable_effect:** A 50-turn agentic task maintains a flat, queryable 1,500-token `BeliefState` instead of a trailing 20,000-token observation log (`+pabu_belief_state_updated`).
+
+### I-12 — ACE Playbook Curator & DSPy-Optimized Bulletpoint Analyzer
+
+* **Track 14** | lever STEERING | grounding STRONG (ACE / DSPy) | nature BUILD+IMPROVE | effort M | WAVE 14
+* **Gap:** Phase 4H (Self-Mod) appends rules linearly, leading to severe "context anxiety" and lost-in-the-middle degradation.
+* **Steal/build:** Agentic Context Engineering (ACE) pipeline. Build an offline `Curator Agent` with a deterministic `Bulletpoint Analyzer` that merges overlapping guidelines.
+* **Reasoning & Improvement:** Upgrade the Curator using **DSPy-style metric-driven compilation**. The Curator doesn't just merge rules statically; it runs deterministic mini-evaluations against the C-28 mutation suite to mathematically prove the merged rule improves MCTS Pass@1 rate before promoting it, empirically discarding rules that regress the framework.
+* **COMPOSES-WITH:** Phase 3F (Rules Engine), C-21 (Self-mod data-table growth).
+* **Integration:** `crates/orchestrator/src/rule_curator.rs`. Run as an async offline DSPy-compaction task.
+* **observable_effect:** 12 overlapping rules are DSPy-validated and merged into 4 without losing semantic density (`+PlaybookBudgetEnforced`).
+
+### I-13 — OWASP Agent Memory Guard & Dual Serialization
+
+* **Track 14** | lever SECURITY / EFFICIENCY | grounding STRONG (Letta / OpenHands) | nature BUILD+IMPROVE | effort M | WAVE 14
+* **Steal/build:** (1) OWASP `agent-memory-guard`: a deterministic, sub-100 microsecond scan on all writes to Recall/Archival memory to scrub malicious payloads. (2) OpenHands Dual Serialization: Implement `.to_ui_dict()` (verbose terminal logs) vs `.to_llm_content()` (condensed subset: "Directory: 500 files").
+* **Reasoning & Improvement:** Incorporate compiled **YARA Rules** directly into the Rust scanner instead of regex. Standardizing on YARA prevents advanced prompt-injection payloads (like invisible Unicode character attacks or multi-byte encodings) from ever hitting the LLM context. To prevent Dual Serialization data-starvation, implement a **TraceQuery tool** allowing the LLM to selectively "expand" the condensed LLM logs from disk by requesting exact line ranges if deeper analysis is needed.
+* **COMPOSES-WITH:** H-6 (Deterministic masking), H-31/H-32 (User Memory), E-37 (PromptArmor).
+* **Integration:** `crates/memory/src/agent_memory_guard.rs` and `crates/tools/src/tool_result.rs`.
+* **observable_effect:** Malicious memory edit blocked (`+MemoryPoisonBlocked`); tool outputs log fully in the dashboard but consume 80% fewer tokens in the context (`+DualSerializationApplied`).
+
+### I-14 — AST-Aware LLMLingua-2 API Prompt Compressor
+
+* **Track 14** | lever CHEAPER (50%) | grounding STRONG | nature BUILD+IMPROVE | effort S | WAVE 14 | ID-7
+* **Steal/build:** BUILD a token-classification compressor (LLMLingua-2 pattern) locally to aggressively strip linguistic redundancy from sprawling compiler logs right before network dispatch.
+* **Reasoning & Improvement:** Naive LLMLingua destroys AST validity in code outputs. Integrate an explicit **AST-Aware Entropy Preservation** layer via tree-sitter. Ensures structural syntax (`{`, `}`, function signatures) is *never* pruned, compressing only conversational text, docstrings, and redundant data arrays. Map compressed indices back to their absolute original indices, allowing cross-reference of AST ranges accurately.
+* **COMPOSES-WITH:** B-27 (Cloud Mode), B-37 (Multi-Runtime Adapter).
+* **Integration:** `providers/src/api_middleware.rs`. Hook before `AnthropicClient::send_message`.
+* **observable_effect:** Cloud API calls for a fixed 20K-token task drop to ~12K billed tokens with zero degradation in syntax or pass rate (`+api_payload_subtoken_compressed`).
+
+### I-15 — Semantic Caching of Contextual Summaries & Blake3 Fast-Paths
+
+* **Track 14** | lever CHEAPER/SPEED | grounding STRONG | nature EXTENSION | effort S | WAVE 14
+* **Steal/build:** Caching final Oracle answers is good, but caching *intermediate summaries* of code/documents saves 50-60% compute. BUILD an interceptor in `AragOrchestrator` that summarizes fetched DKG chunks, caches the summary, and serves it on future semantically similar queries.
+* **Reasoning & Improvement:** Implement a **Blake3 Fast-Path**. Before executing a vector-based semantic search for cache hits, compute a Blake3 hash of the exact query block. If an exact hash match exists, retrieve it in $O(1)$ time, completely bypassing the expensive ONNX vector math computation layer for exact repeat queries.
+* **COMPOSES-WITH:** C-30 (Oracle Cache), Phase 1E (A-RAG).
+* **Integration:** `knowledge/src/arag.rs` and `oracle_cache.rs`.
+* **observable_effect:** Repeated deep-research queries drop RAG input tokens by >50% (`semantic_context_cache_hit`).
+
+### I-16 — DuoAttention / ThinK KV-Cache Pruning & Int4 KVCache
+
+* **Track 14** | lever LOCAL-VRAM | grounding STRONG | nature ACTIVATION+IMPROVE | effort M | WAVE 14
+* **Steal/build:** Local 32K context exhausts VRAM, limiting MCTS branch width. ACTIVATE DuoAttention (splitting heads) and SnapKV/ThinK (query-driven channel pruning) on the sidecar.
+* **Reasoning & Improvement:** Implement **Attention-Sink Protection** during pruning (permanently pin the first 4 tokens to stabilize the pruned cache). Integrate **Int4 KVCache Quantization** (e.g. KIVI) and **Chunked Prefill** natively in vLLM. This guarantees massive, highly parallel MCTS branch expansions fit comfortably inside standard 24GB VRAM limits without OOM crashing.
+* **COMPOSES-WITH:** E-26 (SGLang adapter), E-28 (Attention Kernels).
+* **Integration:** `python/elai_inference/server.py`.
+* **observable_effect:** Local MCTS runs execute with 3x larger batch sizes. VRAM drop confirmed via `nvidia-smi` (`+kv_cache_pruning_active`).
+
+---
+
+# ================================================================================
+
+# PART IV: TRACK 15 — CRYPTOGRAPHIC LOOPS, ABSOLUTE GATES & COMBINATORIAL SCORING
+
+# ================================================================================
+
+### I-17 — Tri-Layer Evaluation Stack & Empirical Halting Bounds
+
+* **Track 15** | lever TRUST/PROVABLE | grounding STRONG | nature BUILD | effort M | WAVE 15 | ID-4
+* **Steal/build:** Neural judges suffer from bias and hacking. BUILD a 3-layer stack for MCTS evaluation:
+1. **Hard Validator Veto:** Absolute Veto (Score = $0.0$) from D-11 Checkers, C-28 Mutation Testing, F-1 VibeSec, F-9 Hallucinated Dependency. Execution *always* trumps LLM logic.
+2. **Soft Process Sidecar (PRM):** Scores *only* the feasible survivors using the D-2 `PpmClient` via unified equation ($q + \lambda p + \mu c - \nu u$).
+3. **Disagreement Escalation:** If Hard Validators pass but PRM returns high epistemic uncertainty, route to Adversary Role (D-13).
+
+
+* **Reasoning & Improvement:** Introduce an **Empirical Halting Bound**. If deterministic checks (Layer 1) are spinning in compilation loops or taking > 15 seconds, instantly abort and penalize the branch. Fast deterministic feedback is vastly superior to perfectly accurate slow feedback during massive MCTS tree traversal.
+* **COMPOSES-WITH:** D-2 (PPM Sidecar), D-11 (Checkers), D-13 (Adversary).
+* **Integration:** `crates/orchestrator/src/verifier_stack.rs` and `ExecutionOracle`.
+* **observable_effect:** A syntactically fluent snippet hallucinating an import triggers an absolute veto ($0.0$). Branch pruned before PRM invoked (`TriLayerScoreEvaluated`).
+
+### I-18 — Pipelock Action Receipts, 5-Layer UPIP Hash Chain & Sigstore
+
+* **Track 15** | lever AUDITABLE-REPRODUCIBLE | grounding STRONG (UPIP/Sigstore) | nature BUILD+IMPROVE | effort M | WAVE 15
+* **Gap:** G-2's RRA lacks real-time, sequential cryptographic chaining, allowing potential post-hoc log manipulation.
+* **Steal/build:** Universal Process Integrity Protocol (UPIP) + Pipelock. Enhance the SSB single-writer loop to include a `chain_prev_hash`. Compute `stack_hash` hierarchically: `L1 STATE`, `L2 DEPS`, `L3 PROCESS`, `L4 RESULT`, `L5 VERIFY`. Seal with Ed25519 (Overrides paper's SHA-256 with Blake3).
+* **Reasoning & Improvement:** Beyond local signing, push attestation hashes to an immutable **Sigstore / Rekor transparency log**. Provide globally verifiable, non-repudiable proof of execution formatted into an in-toto attestation JSON (SLSA v1.0). Use **Sparse Merkle Trees (SMT)** for inclusion proofs so external auditors can verify a specific `L4 RESULT` without cloning the entire MCTS graph.
+* **COMPOSES-WITH:** G-2 (RRA), G-8 (Signed in-toto), 3B (SSB WAL), C-23.
+* **Integration:** `crates/orchestrator/src/rra/upip.rs` and `ssb.rs`.
+* **observable_effect:** `elai run --emit-rra` emits a 5-layer UPIP bundle backed by Sigstore. Modifying `Cargo.lock` mid-run invalidates the `L2 DEPS` hash, resulting in an immediate `+UpipVerificationFailed` hard halt.
+
+### I-19 — Correctless Shell-Level TDD Enforcer Hook & Tree-sitter Mapping
+
+* **Track 15** | lever CANT-WRECK | grounding STRONG (Correctless ATDD) | nature EXTENSION+IMPROVE | effort S | WAVE 15
+* **Gap:** Agents "vibe code," writing shallow, tautological tests.
+* **Steal/build:** Extend `PreToolUse` shell hook to physically block TDD bypasses. Hard-blocks Generator from modifying a `src/` file before a `tests/` file exists/is modified.
+* **Reasoning & Improvement:** Require **Syntax-Only Pre-flight Validation**. Do not just demand a test file exists; silently run a `cargo check --tests` or `pytest --collect-only` dry-run. Use `tree-sitter` to parse the AST of modified `src/` functions and strictly require corresponding test blocks covering those *explicit symbols* in `tests/`. Verify execution coverage delta to permit pure internal structural refactors.
+* **COMPOSES-WITH:** F-1 (VibeGate PreToolUse interceptor), 4C (Hooks), E-13 (TDD).
+* **Integration:** `plugins/src/hooks/tdd_enforcer.rs`.
+* **observable_effect:** An agent submitting a file edit without a corresponding symbol in the AST of `tests/` is rejected before reaching disk (`+TddEnforcementBlocked`).
+
+### I-20 — Incremental Mutation Mapping (DAE) & MuTAP
+
+* **Track 15** | lever VERIFIED-BEFORE-SEEN | grounding STRONG (DAE / MuTAP) | nature EXTENSION | effort M | WAVE 15
+* **Gap:** C-28 re-evaluates the entire AST per check, paralyzing execution loops.
+* **Steal/build:** Maintain a serialized `mutation-manifest.json` tracking `(source_hash, tests_hash, rules)`. Only re-mutate functions whose code or test paths diverge. Use MuTAP: perform static AST analysis *before* implementation, extract potential mutants, and inject them into Generator's prompt to explicitly "kill" them.
+* **Reasoning & Improvement:** Use **Data-Flow Differential Mutation**. If a single function is modified, trace the AST Data-Flow Graph. Only mutate functions that structurally consume the output of the modified function, cutting CI mutation test suites down by 95% while retaining 100% mathematical coverage of the change surface.
+* **COMPOSES-WITH:** C-28 (Mutation Testing).
+* **Integration:** `crates/orchestrator/src/mutation_testing/incremental.rs`.
+* **observable_effect:** CI mutation testing times drop from minutes to seconds (`+MutmapIncrementalSkip`). Generator writes code achieving 80% mutation score on pass one.
+
+### I-21 — buddyMe Sandboxed Sprint Contracts & Ralph Loop Reinjection
+
+* **Track 15** | lever TRUST / ANTI-BIAS | grounding STRONG (buddyMe / Ralph Loops) | nature BUILD | effort M | WAVE 15 | ID-5
+* **Gap:** A single context window verifying its own code suffers confirmation bias (+0.12 bias).
+* **Steal/build:** Separate LLMs into `Generator` and `Evaluator` clients with ZERO shared context history. Generator must propose a structured YAML `Sprint Contract`. Isolated Evaluator explicitly approves. On agent exit, Evaluator verifies code in sandbox. If tests fail, the exit is rejected, trace reinjected (Ralph Loop), forced back to ReAct.
+* **Reasoning & Improvement:** Prevent infinite Ralph loops by introducing **Evaluator Persona Cooling**. Set the Evaluator to $\tau=0.0$ with a strict Hostile-Critic prompt to mathematically negate Generator sycophancy. Enforce a hard limit: after 3 Ralph Loops, the agent forcibly invokes the `Adversary` role (D-13) to author a concrete counter-example, shattering confirmation bias.
+* **COMPOSES-WITH:** H-37 (Plan-approval gate), H-38 (TaskStop gate), C-32 (Skeleton-first).
+* **Integration:** `crates/orchestrator/src/sprint_contract.rs` and `hook_dispatcher.rs`.
+* **observable_effect:** Evaluator automatically rejects vague goals; terminal hook blocks exit if test fails, reinjects trace, and forces new iteration (`+RalphLoopReinject`).
+
+### I-22 — Progress-Shaped Rewards ($\Delta \Phi$) & First-Error Truncation
+
+* **Track 15** | lever ANTI-GAMING | grounding STRONG | nature BUILD | effort M | WAVE 15 | ID-6
+* **Steal/build:** Absolute PRM scores naturally inflate. PRM outputs $\Phi(h_t) - \Phi(h_{t-1})$ (delta progress) and performs **First-Error Localization**. Truncate the `SessionDag` branch exactly at the step of failure, salvaging valid prefix compute.
+* **Reasoning & Improvement:** Utilize **Reward Shaping via Decay**. If an agent loops over similar AST states without increasing $\Phi$, aggressively decay the reward by a factor of $\gamma^t$ to break infinite reasoning spirals and force the MCTS to backtrack immediately.
+* **COMPOSES-WITH:** D-2 (PPM Client), H-49 (undo-tree HEAD).
+* **Integration:** `reasoning/src/prm_evaluator.rs` and `session_dag.rs`.
+* **observable_effect:** PRM flags step 8 of 10. Orchestrator emits `FirstErrorLocalized`, truncates DAG at Step 7, and resumes the search.
+
+### I-23 — Brier-Calibrated $\hat{q}_t$ & Uncertainty-Aware Asymmetric MCTS
+
+* **Track 15** | lever SMARTER-ORCH | grounding STRONG | nature EXTENSION | effort S | WAVE 15
+* **Steal/build:** MCTS over-optimizes if confidence is misspecified. The PRM must output a mathematically Brier-calibrated prefix-conditioned success probability ($\hat{q}_t$) and epistemic uncertainty ($u_t$). Implement Asymmetric Error Control in PUCT: high uncertainty forces automatic MCTS exploration forks.
+* **Reasoning & Improvement:** Integrate **Conformal Prediction** directly into the Brier calibration. Ensure that the predicted uncertainty bounds correspond mathematically to an exact empirical error rate, allowing ELAI to mathematically guarantee that $1 - \alpha$ confidence holds true across task distributions.
+* **COMPOSES-WITH:** D-16 (Conformal Refusal), I-17 (Calibrated PRM).
+* **Integration:** `orchestrator/src/mcts.rs` (update UCT formula).
+* **observable_effect:** Ambiguous reasoning step heavily penalizes false positives early, triggering automatic MCTS exploration fork (`uncertainty_fork_triggered`).
+
+### I-24 — Isomorphic Canary Tests (PRM Anti-Gaming)
+
+* **Track 15** | lever ANTI-GAMING | grounding STRONG | nature BUILD | effort S-M | WAVE 15
+* **Steal/build:** PRMs are easily exploited by stylistic fluency. Inject hidden **Isomorphic Canary Tests** (semantically identical, structurally perturbed tasks) via C-29 Metamorphic relations asynchronously during MCTS scoring.
+* **Reasoning & Improvement:** Use **AST-Preserving Obfuscation** to generate the canaries natively. Swap `for` loops for `while` loops, or rename internal variables, keeping the algorithmic complexity identical. If the PRM rating drops, it definitively proves the PRM is biased by coding style rather than logic and its weights are neutered.
+* **COMPOSES-WITH:** C-29 (Metamorphic testing), H-22 (Null-tests).
+* **Integration:** Extend `metamorphic_testing.rs`.
+* **observable_effect:** Divergent score under perturbation neutralizes branch; `PrmRewardHackDetected` logged, flagging calibration drift.
+
+---
+
+# ================================================================================
+
+# PART V: TRACK 16 — OPERATIONAL ROUTING, BUDGETS & TEST-TIME SCALING
+
+# ================================================================================
+
+### I-25 — Multi-Model Agentic Routing Gatekeeper
+
+* **Track 16** | lever CHEAPER/SPEED | grounding STRONG | nature EXTENSION | effort S | WAVE 16
+* **Steal/build:** Front-door `TaskDifficultyClassifier` evaluates prompts. System 1 (Low Complexity) tasks bypass MCTS entirely and route single-shot to local GRPO-tuned sidecar using E-32 (32K context). System 2 (High Logic) explicitly escalates to Cloud Opus MCTS loop.
+* **Reasoning & Improvement:** Utilize **Execution-Cost Profiling**. If historical execution of similar AST tasks resulted in massive token burns, pre-emptively route to the deep-think model instead of letting the local model fail and escalate, minimizing token-burn before success.
+* **COMPOSES-WITH:** H-7 (Calibrated Routing), C-46 (Uno-Orchestra), E-32.
+* **Integration:** `crates/orchestrator/src/routing.rs`.
+
+### I-26 — Dynamic Thinking Budgets & Deep Think Dashboard
+
+* **Track 16** | lever STEERING | grounding STRONG | nature BUILD | effort M | WAVE 16
+* **Steal/build:** Map Deep Think's `thinkingBudget` to ELAI's serial-depth-scaled reasoning budget. If MCTS depth reaches 85% of allocated compute without hitting success criteria, force a collapse: halt exploration, score frontier nodes, synthesize best current branch. Add `DeepThinkGraph.svelte` to visualize live MCTS expansion.
+* **Reasoning & Improvement:** Implement **Early-Stopping Heuristics**. If PRM scores plateau across 5 consecutive supersteps across all parallel branches, instantly trigger the budget collapse rather than waiting to hit the 85% ceiling, saving massive unneeded compute.
+* **COMPOSES-WITH:** H-42 (Reasoning budget), E-39 (Cost Hard Ceiling), H-10 (Canvas).
+
+### I-27 — Budgeted Convergence Curve Instrumentation
+
+* **Track 16** | lever PROVABLE/MEASUREMENT | grounding STRONG | nature BUILD | effort S | WAVE 16
+* **Steal/build:** Move ELAI's evaluation from single-point Pass@1 to full trajectory grading. Plot *Verified Outcome Rate* against *Total Test-Time Compute* (nodes expanded). The area under this curve proves mathematically that ELAI converts extra compute into better verified reasoning monotonically (Anytime A*).
+* **Reasoning & Improvement:** Introduce a **Pareto Frontier Dashboard**. Track pass rate vs. cost-per-task in USD. This enables operators to explicitly choose a point on the compute/accuracy curve that matches their operational budget constraints.
+* **Integration:** `crates/cli/src/benchmark.rs` and `BudgetedConvergence.svelte`.
+* **observable_effect:** `elai bench trajectory` outputs a JSON scorecard proving compute-to-success correlation (`+BudgetedConvergenceMeasured`).
+
+### I-28 — Workflow-Level DAG Credit Assignment (VeriTrail) & DPO Synthesis
+
+* **Track 16** | lever SELF-MOD | grounding STRONG | nature BUILD+IMPROVE | effort H | WAVE 16
+* **Steal/build:** Walk backwards from `FsmState::COMPLETE` to assign causal credit to individual DAG nodes (retrieval chunks, sub-plans) that contributed to the winning MCTS trajectory.
+* **Reasoning & Improvement:** Extract **Direct Preference Optimization (DPO)** pairs natively. The winning MCTS path is the "chosen" response; failed siblings are "rejected". Synthesize these preference pairs locally and feed them into the GRPO tuning flywheel (Track 17) to continuously train the local SLM on its own reasoning choices. If a semantic retrieval chunk was heavily penalized, adjust embedding vector weights to push it away from similar queries perpetually.
+* **COMPOSES-WITH:** Phase 4H (DGM Self-Mod), H-46 (Planning Decomposition).
+* **Integration:** `crates/orchestrator/src/dag_optimizer.rs`.
+* **observable_effect:** Routing policy automatically deprecates a chunking strategy that consistently leads to aborts (`+DagCreditAssigned`).
+
+### I-29 — Test-Time Diffusion Deep Researcher (TTD-DR)
+
+* **Track 16** | lever GENERATIVE | grounding STRONG | nature BUILD+IMPROVE | effort L | WAVE 16
+* **Steal/build:** Model long-form reporting as a continuous denoising diffusion process over a Markdown draft stored in the `SessionDag`, bypassing autoregressive linear degradation completely.
+* **Reasoning & Improvement:** Implement **Conflict-Free Replicated Data Types (CRDTs)** for the Markdown document (Automerge/Yjs pattern). This enables dozens of sub-agents to asynchronously patch the research document simultaneously without race conditions, merging text blocks deterministically. Introduce *Semantic Checkpoints*: at each denoising generation step, the draft must successfully compile/parse via C-32's MiniCritic.
+* **COMPOSES-WITH:** E-48 (Web Research), H-53 (Citation pre-binding).
+
+---
+
+# ================================================================================
+
+# PART VI: TRACK 17 — THE OPEN-WEIGHT TUNING FLYWHEEL (GRPO)
+
+# ================================================================================
+
+*Distilling massive MCTS search compute into native SLM weights using execution-grounded rewards. The Ultimate Moat.*
+
+### I-30 — SFT Dataset Exhaust via Reproducible-Run Artifacts (RRA)
+
+* **Track 17** | lever ALIGNMENT | grounding STRONG | nature BUILD | effort L | WAVE 17
+* **Steal/build:** Use the massive MCTS compute spent on frontier models to generate flawless data. Offline worker parses the `SSB` WAL from UPIP-sealed (I-18) RRA artifacts, extracting the winning path (Root $\rightarrow$ Success). Formats path syntactically with `<think>` tags into pristine ShareGPT/JSONL datasets locally.
+* **Reasoning & Improvement:** Incorporate **Negative Trajectory Masking (DPO Preparation)**. Along with the successful path, explicitly record the path that generated the *highest PRM score before a compiler failure*. This provides the perfect "fluent but wrong" negative pairs for training alignment models.
+* **COMPOSES-WITH:** G-2 (RRA), SessionDag (H-49), E-55 (SFT-on-rollouts).
+* **Integration:** `crates/cli/src/sft_compiler.rs`. Fires asynchronously on `PhaseComplete`.
+* **observable_effect:** `elai dataset export --format sft` dumps cryptographically-sealed, execution-grounded reasoning traces locally.
+
+### I-31 — Native DeepSeek-R1 Style GRPO Open-Weight Tuning Flywheel
+
+* **Track 17** | lever SELF-IMPROVEMENT | grounding STRONG (DeepSeek-R1 / OpenRLHF) | nature BUILD+IMPROVE | effort XL | WAVE 17 | BLOCKING
+* **Steal/build:** Group Relative Policy Optimization (GRPO) succeeds only with absolute, objective rewards. Run the SFT-tuned local model to generate MCTS rollouts on the D-6 Held-Out Task Store. ELAI natively provides absolute GRPO rewards based on hard execution gates.
+* **Reasoning & Improvement:** Incorporate **Format-Enforced RL** via ELAI's XGrammar constraints and AST analysis. Bypassing HTTP overhead, expose a strictly typed, memory-mapped **gRPC Reward Endpoint** to prevent the orchestrator from becoming the training bottleneck for the OpenRLHF loop.
+* *Reward +1.0*: Code survives C-28 Mutation Testing.
+* *Reward +1.5*: Output passes H-22 Metamorphic Null-Test.
+* *Dense AST Reward +0.2*: Mid-flight reward for successfully compiling an intermediate block.
+* *Penalty -1.0*: Triggers F-1 VibeGate or F-9 Hallucinated Dependency.
+* *Penalty -1.5*: Fails XGrammar constraint.
+
+
+* **COMPOSES-WITH:** E-55 (Agentic RL), D-6 (Held-out tasks), H-43 (Execution-Grounded Fitness).
+* **Integration:** `crates/training/grpo_harness.rs` bridges Ray/OpenRLHF to ELAI's `/rl_reward` endpoint.
+* **observable_effect:** Python GRPO loop hits ELAI's `/rl_reward` endpoint continuously overnight, updating sidecar weights against execution-grounded feedback. Combines with a KL-divergence penalty to prevent mode-collapse into short non-functional safe snippets. Massively raises the native Semantic Capability Floor to autonomously replace Cloud reliance entirely (`+GrpoRewardComputed`).

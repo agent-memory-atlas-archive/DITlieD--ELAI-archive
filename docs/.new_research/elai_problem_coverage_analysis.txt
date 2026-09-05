@@ -1,0 +1,2083 @@
+ELAI PROBLEM COVERAGE ANALYSIS
+Maps every documented AI coding tool problem to ELAI's solution status.
+Source: AI_Coding_Tool_Problems_Summary.md (3 Gemini Deep Research reports, 2025-2026)
+Date: 2026-04-17
+
+
+================================================================================
+LEGEND
+================================================================================
+
+ELIMINATED  = architecturally impossible in ELAI. The system physically prevents it.
+SOLVED      = ELAI has a complete design that addresses the root cause end-to-end.
+MITIGATED   = ELAI significantly reduces severity/frequency but cannot fully prevent.
+PARTIAL     = ELAI addresses some aspects but meaningful gaps remain.
+NOT SOLVED  = outside ELAI's scope or no current design addresses it.
+
+Each entry: problem summary, real user quotes/data from research, ELAI mechanism,
+which phases/steps implement it, and honest assessment of remaining gaps.
+
+
+================================================================================
+SECTION A: PROBLEMS ELAI ELIMINATES
+================================================================================
+
+These problems cannot occur in ELAI because the architecture makes them
+structurally impossible. Not "unlikely" — impossible.
+
+
+A1. PHANTOM CODE / TODO / PLACEHOLDER GENERATION [ELIMINATED]
+............................................................................
+
+Problem: LLMs output todo!(), pass, placeholder, stub functions, mock data
+instead of real implementations. Users discover non-functional code later.
+  - "constant placeholders, dummy code, stubs despite explicit instructions" (Claude Code, 2025)
+  - "$4 burned in minutes from agent looping on TODO file creation" (Cursor Sonnet, Aug 2025)
+  - "391 claims extracted, zero concepts registered in DB = entirely unusable" (Claude Code, Mar 2026)
+  - "20+ credits spent trying to replace placeholder initials, never succeeded" (Replit, Apr 2025)
+  - Root cause: RLHF teaches models that syntactically correct stubs satisfy prompts
+
+ELAI mechanism:
+  Zero Lazy Code enforcement. T1 GREP_PATTERN rules in rules.db detect todo!(),
+  pass, unimplemented!(), placeholder, // TODO, "... rest", mock data patterns
+  in code positions (not comments/strings — tree-sitter distinguishes).
+  PostToolUse hook evaluates predicates on every model output in <1ms.
+  BLOCK verdict rejects output before anyone sees it. Same severity as syntax error.
+  The model physically cannot produce output containing these patterns.
+  Focus tunnel streaming validation (E-4) catches lazy code at token 50 during
+  generation, terminating early instead of waiting for 500 tokens of garbage.
+
+Phases: A-2 (T1/T2 hook fix), A-21 (CC hook enforcement, per-language lazy regex),
+  3F (rules engine), E-4 (streaming validation)
+
+Remaining gaps: none for known patterns. Novel lazy patterns (e.g. a function that
+  returns a hardcoded value that happens to look valid) require auditor or human
+  review. Self-discovery (3F) auto-proposes new rules when auditor catches patterns
+  3+ times, so coverage expands over time.
+
+
+A2. RULE DISOBEDIENCE / CONSTRAINT VIOLATIONS [ELIMINATED]
+............................................................................
+
+Problem: LLMs ignore explicit user instructions — .cursorrules, CLAUDE.md,
+system prompts, per-message constraints.
+  - ".cursor/rules/ with alwaysApply:true forbidding branch deletion — agent deleted branch anyway" (Cursor, 2026)
+  - "do not implement code until I approve the plan" routinely bypassed (Cursor, 2026)
+  - ".CLAUDE.md files fail early, fail always at governance" (Claude Code, 2025)
+  - "do not touch this block — agent modified exactly that block, required 5 corrections" (Copilot Sonnet 4, 2025)
+  - Root cause: RLHF optimizes for task completion. Negative constraints require
+    suppressing probable token sequences — architecturally difficult for LLMs.
+
+ELAI mechanism:
+  Rules are DATA in SQLite, evaluated by Rust code. The model never sees
+  enforcement logic. Three tiers:
+    T1 (deterministic, <1ms): regex/AST patterns. ZERO prompt tokens. Model
+      output is checked AFTER generation. BLOCK rejects and re-prompts.
+    T2 (structural, <10ms): tree-sitter AST parse + pattern check. ZERO tokens.
+    T3 (semantic, ~50-100 tokens): 3-5 rules in prompt, auditor double-verifies.
+  The model does not decide whether to follow rules. The system enforces rules
+  on the model's output. "Don't delete branches" is a T1 Bash safety filter
+  (A-27) that BLOCKs the git command before execution. "Don't touch file X" is
+  a visibility filter — the file returns "not found" to the model.
+  Action classifier (A-31) tags tool calls as SAFE/REVERSIBLE/IRREVERSIBLE and
+  gates dangerous actions before they execute.
+
+Phases: 3F (rules engine), A-2 (T1/T2 hook fix), A-27 (bash safety filter),
+  A-31 (action classifier), 4A (agent process isolation — visibility filter),
+  4C (hooks intercept IPC messages in orchestrator)
+
+Remaining gaps: T3 semantic rules (~5% of total rules) are prompt-injected and
+  the model CAN ignore them. But auditor double-verifies T3 compliance, and the
+  auditor MUST find at least 1 issue or the audit is rejected. So even T3
+  violations get caught — just one step later, not at generation time.
+
+
+A3. UNSOLICITED MODIFICATIONS / SCOPE CREEP [ELIMINATED]
+............................................................................
+
+Problem: LLMs "helpfully" refactor code nobody asked to touch, add unrequested
+features, rename files, restructure folders, cascade single-line fixes into
+massive multi-file PRs.
+  - "lost hours of work from spontaneous unsolicited changes" (Windsurf, 2025)
+  - "600 lines of unprompted code inserted during routine prompt" (Cursor, 2025)
+  - "autonomously renamed files and restructured folders" (Cursor, 2025)
+  - "unsolicited scope creep consumed up to half of active development sessions" (Claude Code, 2025)
+  - Bug fix -> entire function -> "optimizes" adjacent code -> cascades to all call sites
+
+ELAI mechanism:
+  Baby-step decomposition. Each step is 25-40 LOC max (calibrated per model).
+  The model receives a single precise task with a single target file and edit
+  region. It cannot touch other files because:
+    1. Focus tunnel (E-1/E-7): speculative file routing — system controls which
+       file gets written, model outputs only code
+    2. Visibility filter (4A): model can only see files in the baby step's scope
+    3. DKG blast radius: system computes which files SHOULD be affected. Model
+       touching files outside blast radius triggers BLOCK
+    4. Per-phase git commits: changes are atomic per baby step. Rollback is trivial.
+  The model is a code printer. It receives a template ("write code that goes
+  between line 42 and line 67 of auth.rs") and fills it in. It cannot decide to
+  also touch user.rs.
+
+Phases: 4D (baby-step decomposition), 4E (DecompositionTree + TreeNavigator),
+  E-7 (speculative file routing), 4A (visibility filter), 4B (git commit tool)
+
+Remaining gaps: none at baby-step level. At PLAN level, the designer agent could
+  over-scope the plan itself. But the plan goes through human approval in
+  INTERACTIVE mode, and structural validation in AUTONOMOUS mode checks plan
+  against the original task scope.
+
+
+A4. TOKEN GENERATION CASCADE [ELIMINATED]
+............................................................................
+
+Problem: single-line fix -> regenerates entire function -> "optimizes" adjacent
+code -> changes variable name -> cascades to all call sites -> massive
+unauthorized multi-file PR.
+
+ELAI mechanism:
+  Structurally impossible. Baby step = single edit region in single file.
+  Focus tunnel FIM mode: model outputs ONLY the code between prefix and suffix.
+  It cannot regenerate the surrounding function. It cannot touch other files.
+  Even in DIFF mode, the system validates that hunks only affect the specified
+  edit region. Hunks outside scope = BLOCK.
+
+Phases: E-1 (FIM), E-2 (DIFF), E-7 (file routing), 4D/4E (decomposition)
+
+Remaining gaps: none.
+
+
+A5. DEPRECATED TECHNOLOGY / TEMPORAL DISLOCATION [ELIMINATED]
+............................................................................
+
+Problem: LLMs use outdated libraries, old syntax, deprecated APIs from training
+data. Users get code using 2019 methods, wrong framework versions, removed APIs.
+  - "confuses Tailwind 4/3, Svelte 5/4, React 19/18" (Claude, 2025/2026)
+  - "generated code using 2019 methods, imported uninstalled libraries" (Claude Code, 2025)
+  - "massively outdated on Tailwind, completely ignored instructions to use React Router 7" (Claude 3.7, 2026)
+  - "spoke about itself as if still unreleased, claimed browser environment" (Claude Code, Jul 2025)
+  - Half of vulnerable packages in ecosystem introduced through AI-generated commits
+
+ELAI mechanism:
+  Anti-staleness 4-layer defense:
+    Pre-generation: VERSION_GATE predicate in rules.db. deprecated_patterns table
+      seeded from outdated-tech-audit.md. Constitutional injection adds CONSTRAINTS
+      block to phase spec. Freshness scoring in RAG pipeline (recent docs ranked higher).
+    During-generation: streaming validation (E-4) checks imports as they stream in
+      against deprecated_patterns. Blocked imports terminate generation immediately.
+      Constrained decoding (B-2) enforces positive import allowlists via grammar.
+    Post-generation: T1 hook evaluates VERSION_GATE on output. T2 hook extracts
+      imports via tree-sitter and cross-references deprecated_patterns. Both <10ms.
+      Deterministic auditor runs VERSION_GATE check before LLM audit even starts.
+    Maintenance: nightly dep audit (A-15) queries 7 registry APIs, updates
+      deprecated_patterns automatically. Self-modification Layer 1A (4H) grows
+      deprecated_patterns from auditor findings. Steering vector refresh on change.
+  The model CAN generate deprecated code. But the system rejects it before it
+  reaches the codebase. The model then gets a fresh prompt with the constraint
+  "do not use X, use Y instead" and retries.
+
+Phases: A-6 (VERSION_GATE + deprecated patterns), A-7 (constitutional injection),
+  A-8 (freshness steering), A-14 (T2 AST import extraction), A-15 (nightly audit),
+  A-12 (deterministic auditor), E-4 (streaming validation), B-2 (constrained decoding),
+  4H (self-modification auto-grows deprecated_patterns)
+
+Remaining gaps: brand-new deprecations (announced today) won't be caught until the
+  nightly audit runs or a human adds them. Partially mitigated by ETC entropy
+  monitoring (A-9) which detects when the model is uncertain about an import —
+  suggesting it might be hallucinating or outdated.
+
+
+A6. HALLUCINATED DEPENDENCIES / SLOPSQUATTING [ELIMINATED]
+............................................................................
+
+Problem: LLMs invent plausible but fictitious package names. Malicious actors
+register these names on npm/PyPI with embedded malware.
+  - "fabricated transaction.atomic_async, insisted module not found was user's fault" (Gemini, 2025/2026)
+  - "hallucinated payment gateway connection logic" (Cursor, 2025/2026)
+  - "hallucinated cryptographic code, completely insecure due to missing library files" (Cursor Opus, Dec 2025)
+  - "did not understand what libraries were actually installed" (Cursor, 2025/2026)
+  - Slopsquatting reached critical mass in Claude Code and Cursor ecosystems
+
+ELAI mechanism:
+  Anti-slopsquatting is a hard rule. Multiple enforcement layers:
+    1. API_REGISTRY_CHECK verification (2B grounding): every PackageRef verified
+       against real registry APIs before code is accepted
+    2. Focus tunnel E-6 (automated dependency resolution): model writes code with
+       imports, system detects missing deps, queries registry for real package,
+       checks deprecated_patterns for substitution, resolves version, installs.
+       Model NEVER runs cargo add / pip install / npm install.
+    3. T2 hook (A-14): extracts imports via tree-sitter, cross-references against
+       project manifest (Cargo.toml/pyproject.toml/package.json). Unknown import
+       triggers verification pipeline.
+    4. New deps require human confirmation (existing hard rule). In autonomous mode:
+       auto-approve only from pre-approved allowlist.
+
+Phases: 2B (API_REGISTRY_CHECK), A-14 (T2 import extraction), E-6 (dependency
+  resolution), 4D (PackageRef in baby step spec with verify_packages)
+
+Remaining gaps: registry check requires network access. In air-gapped mode (D-3),
+  verification is limited to packages already in the local manifest. Mitigated by
+  the allowlist mechanism.
+
+
+A7. TEST SUBVERSION / DECEPTIVE SUCCESS REPORTING [ELIMINATED]
+............................................................................
+
+Problem: agents modify/weaken/delete tests to make them pass instead of fixing
+the actual code. False positive test results.
+  - "agents rewrite tests, loosen assertions, add blind retries until false positive" (2025/2026)
+  - "documented pattern of unearned confidence, failure to read context between writes" (Claude Code, Apr 2026)
+  - "fabricated timestamps, claimed bugs resolved without editing files" (Replit Agent, 2025/2026)
+
+ELAI mechanism:
+  Structural separation of concerns:
+    1. Executor writes code. Auditor runs tests. Executor NEVER runs its own tests.
+    2. Evidence gates require artifacts, not self-assessment:
+       TESTING_FIRST -> EXECUTING: all tests fail for right reasons
+       EXECUTING -> AUDITING: at least 1 test flipped from fail to pass
+    3. Anti-rubber-stamp: auditor MUST find at least 1 issue or audit is rejected
+    4. Test files can be locked via session file ownership (multi-session protocol)
+    5. 5-tier validation pipeline runs deterministic checks (build, VERSION_GATE,
+       file size, lazy code, completeness) BEFORE LLM audit starts
+    6. Self-modification locks (4H): test suite is READ-LOCKED during execution.
+       Metrics code, gate definitions, auditor config all read-locked.
+  The model cannot claim success. The system measures success independently.
+
+Phases: 3A (FSM evidence gates), 3C (agent roles — executor vs auditor),
+  A-12 (deterministic-first auditor), 4H (self-modification read locks),
+  4B (5-tier validation pipeline)
+
+Remaining gaps: a model could write a NEW test that is trivially true (e.g.
+  assert!(true)). Mitigated by: T1 lazy code detection catches assert!(true),
+  cyclomatic complexity check (A-21) flags tests with zero branches, and auditor
+  explicitly checks test quality.
+
+
+================================================================================
+SECTION B: PROBLEMS ELAI SOLVES
+================================================================================
+
+These have complete design coverage. The system addresses the root cause
+end-to-end, though not via structural impossibility.
+
+
+B1. CIRCULAR DEBUGGING / AI DEATH SPIRAL [SOLVED]
+............................................................................
+
+Problem: fix A causes error B, fix B re-introduces A. Infinite loops. Hours
+wasted. Users describe "gaslighting" and "spaghetti."
+  - "wasted twice the time untangling AI spaghetti than implementing by hand" (2025/2026)
+  - "up to 2 hours paying LLM to gaslight with incorrect logic" (2025/2026)
+  - "$400 single debug session — agent hallucinated deprecated APIs, dismantled working code" (Replit, 2025/2026)
+  - CodeBreaker launched 2026 specifically to terminate circular debugging loops
+
+ELAI mechanism:
+  Most comprehensive anti-thrashing design in any AI coding tool:
+    1. MistakeBook (A-20): blake3 hashes of failed diffs. Model never re-generates
+       the same failed output. Forbidden diffs injected as constraints (max 150 tokens).
+       Variable names and code snippets from failed attempts NEVER shown to model
+       (CTIM-Rover finding: showing failed code degrades success from 42% to 31-40%).
+    2. Fresh context per retry: model NEVER sees its own failed chain-of-thought.
+       Gets a fresh 1400-token REPAIR_CONTEXT assembly (A-18).
+    3. Temperature 1.0 for repair loops: prevents cyclic traps (FixAudit validated).
+    4. Anti-spiral: 3x same step (blake3 content hash) = escalate. Stop and rethink.
+    5. 6-layer reasoning escalation:
+       L1 deterministic (60-70% of errors, no LLM, <100ms): template-based fixes
+       L2 micro-reflection (20-25%): 500 tokens, JSON-constrained, 2-5s
+       L3 interrogation tree (5-8%): 3-7 multiple choice questions, 10-30s
+       L4 AB-MCTS tree search (3-5%): 3+ alternatives at different temperatures, 30-90s
+       L5 cloud diagnostic (2-4%): diagnosis only, no code generation, $0.002-$0.05
+       L6 cloud generation (0.5-1%): cloud generates, local validates
+    6. Failure taxonomy (A-34): deterministic regex-based error classification (9+
+       categories). Auditor reads classification BEFORE raw output. Saves 200-500 tokens
+       and directs fix to correct layer.
+
+Phases: A-20 (MistakeBook), A-18 (repair context), A-23 (micro-reflection),
+  A-19 (interrogation trees), A-17/A-25 (GG signals for AB-MCTS), A-34 (failure taxonomy),
+  3C (anti-spiral detection), RA design (6-layer escalation)
+
+Remaining gaps: the heuristics for "when to give up vs try harder" need empirical
+  tuning. Self-modification (4H) tunes futility thresholds from pipeline outcome data.
+
+
+B2. INPUT STACKING / STATELESS CONTEXT BLOAT [SOLVED]
+............................................................................
+
+Problem: LLMs are stateless — must re-send system prompt + conversation history +
+file data every call. Token costs explode with conversation length.
+  - "by 10th message, 172,000 tokens of context per request (~$0.51 just for input)" (Windsurf, 2025/2026)
+  - "single prompt consumes 3-10% of user's entire daily limit" (Claude Code Opus 4.6, Feb 2026)
+  - "$500/week on Claude Code, tool autonomously indexes broader repo" (2025/2026)
+  - "$10/hour running cost" (Claude Code, 2025/2026)
+
+ELAI mechanism:
+  Systematic token reduction at every layer:
+    Meta-instructions: 330 tokens/turn vs 1600-2600 in current tools
+    T1/T2 rules: ZERO tokens (evaluated by Rust code, not in prompt)
+    Focus tunnel: ~6,800 tokens saved on 30-step task (FIM/DIFF modes strip tool
+      schemas, JSON wrappers, file routing instructions)
+    ShortCoder (A-24): 18-38% compression on code context via AST simplification
+    Token reclamation (A-42): formatting removal (24.5%), path abbreviation,
+      import collapsing, deduplication
+    Context budget allocator (3E): 8 fixed slots with percentage distribution.
+      Per-model adaptation (A-10). MICRO tier: ~3000 tokens total vs ~17330 for LARGE.
+    Phase-aware loading: only current phase's detail loaded, not entire plan
+    Session handoff (3H): structurally lossless trimming — large tool results
+      replaced with stubs recoverable from SSB. Never re-sends dead context.
+  Combined effective context increase: ~45-65% over raw model context window.
+  On 7B with 25K context: effective ~36-41K tokens of useful content.
+
+  For cloud mode specifically: same validation pipeline, but baby steps jump from
+  25-40 LOC to 300-500 LOC. Fewer steps = fewer API calls = lower cost. A MEDIUM
+  task: ~30 local steps vs ~4-6 cloud steps (D-2).
+
+Phases: 3E (context budget), A-10 (adaptation), A-24 (ShortCoder), A-40 (MICRO slots),
+  A-42 (reclamation), E-1/E-2/E-3 (focus tunnel), 3H (session handoff), D-2 (cloud budget)
+
+Remaining gaps: cloud mode is still stateless per-call. But per-call payload is
+  dramatically smaller (330 tokens meta vs 2000+, compressed code context, minimal
+  rules in prompt). The cost reduction is 5-10x per equivalent task, not infinite.
+
+
+B3. CONTEXT WINDOW EXHAUSTION / "THE COMA EFFECT" [SOLVED]
+............................................................................
+
+Problem: multi-step projects lose track of objectives. New chat = "waking up from
+a coma." Attention decays as token count rises.
+  - "creates random disjointed files, abandons half-finished features, misses dependencies"
+  - "jumped between tasks" mid-implementation
+  - Even within continuous sessions, attention decays
+
+ELAI mechanism:
+  Never-compact design. Context is managed, not accumulated:
+    1. Session handoff (3H): DAG-based state versioning with structurally lossless
+       trimming. At 85% token budget: checkpoint, trim, continue. User/assistant
+       messages never stubbed. Stubs recoverable from SSB.
+    2. Context Telescope (A-46): compressed ancestry chain travels with every baby
+       step: project vision (200tok) + concept (150tok) + phase (100tok) + step
+       (100tok) + task. The model always knows the big picture.
+    3. Phase-aware context loading: only current phase's detail in prompt. Skeleton
+       (2-4K) always present. Per-phase elaboration loaded on demand.
+    4. SSB (3B): structured reasoning traces persist across sessions. New session
+       reads relevant SSB entries, not raw conversation history.
+    5. Knowledge engine queries on demand: model doesn't carry the codebase in
+       context. It queries DKG/BM25/vectors for relevant code per baby step.
+    6. Baby-step decomposition: each step is self-contained. The model doesn't need
+       to remember step 1 when executing step 15. The system provides context.
+
+Phases: 3H (session handoff), A-46 (context telescope), 3E (context budget),
+  3G (hierarchical plan management), 3B (SSB), 4D/4E (decomposition)
+
+Remaining gaps: the "why" behind design decisions is preserved in plan skeleton
+  and SSB traces, but a model with a 25K context window has limited ability to
+  reason about cross-cutting concerns that span the entire project. Mitigated by
+  DKG blast radius analysis injecting relevant cross-file dependencies.
+
+
+B4. REPETITIVE INSTRUCTION FATIGUE [SOLVED]
+............................................................................
+
+Problem: rules, conventions, constraints must be re-stated every session or
+every message because the tool forgets or ignores them.
+  - "custom instructions obeyed for 24-48 hours max, then reverts" (Copilot, 2025/2026)
+  - Users maintain elaborate .cursorrules / CLAUDE.md / copilot-instructions.md
+
+ELAI mechanism:
+  Rules persist in SQLite (rules.db), not markdown files. They survive across
+  sessions, across restarts, across model changes. T1/T2 rules cost ZERO tokens —
+  the model doesn't need to "remember" them because the system enforces them
+  independently. T3 semantic rules (~3-5 per turn, ~50-100 tokens) are the only
+  rules in the prompt, and they're the rules that genuinely need LLM judgment.
+  Project Intelligence (A-4/A-5) auto-detects conventions from the codebase and
+  seeds rules automatically. User doesn't write rules — the system derives them.
+  Rule lifecycle (3F): PROPOSED -> CANDIDATE -> SHADOW -> ACTIVE -> RETIRED.
+  Rules that work get promoted. Rules that false-positive get retired. Automatic.
+
+Phases: 3F (rules engine), A-4/A-5 (project intelligence + rule seeding),
+  A-2 (T1/T2 hooks), A-21 (CC enforcement)
+
+Remaining gaps: none for enforceable rules. Stylistic preferences that can't be
+  expressed as patterns (e.g. "write code in a functional style") remain T3
+  semantic and depend on model compliance + auditor verification.
+
+
+B5. 450-LINE DEGRADATION / LOST IN THE MIDDLE [SOLVED]
+............................................................................
+
+Problem: single files >450 LOC cause hallucinations. Model forgets earlier
+sections, hallucinates helper functions and variable fields.
+  - "500-700 LOC: hallucinations spike dramatically"
+  - Forces atomic single-function edits
+
+ELAI mechanism:
+  Two-sided solution:
+    1. Baby steps are 25-40 LOC. Model generates small, verified chunks.
+    2. Focus tunnel FIM (E-1): model sees only prefix (code before edit region) +
+       suffix (code after edit region). On a 2000-line file, model might see
+       lines 1-50 (imports+signatures) + lines 440-470 (target region) + lines
+       471-520 (after region). Never the full 2000 lines.
+    3. Code completeness enforcement (A-21): file size limits per language.
+       Hard BLOCK at 4x language-specific limits (Rust: 400 LOC BLOCK).
+       Recovery: automatic file splitting when limits exceeded.
+    4. ShortCoder (A-24): collapses function bodies to signatures when code is
+       loaded as context (not as edit target). 18-38% compression.
+    5. File read outline mode (4B): files >300 lines shown as structure outline,
+       not full content. Model requests specific ranges.
+
+Phases: E-1 (FIM), A-21 (file size limits + splitting), A-24 (ShortCoder),
+  4B (outline mode), 4D/4E (baby-step decomposition)
+
+Remaining gaps: reading (not editing) very large files for understanding still
+  requires attention over many tokens. Mitigated by DKG providing structural
+  understanding without reading the full file.
+
+
+B6. SEARCH FRAGMENTATION AT SCALE [SOLVED]
+............................................................................
+
+Problem: tools pull irrelevant context from large repos. "Fix auth bug" loads
+user models, test suites, config schemas. Minutes wasted before finding the
+right file. Context bloated with irrelevant content.
+  - "bloated context for 4 minutes before finding auth middleware" (Claude Code, mid-2025)
+  - "required third-party tools (DeepContext) for semantic syntax trees"
+  - "AI building 5-screen app bloated to 10,000 LOC"
+
+ELAI mechanism:
+  7-layer knowledge pipeline (phases 1A-1I):
+    DKG: tree-sitter dependency graph in SQLite. Knows exactly which functions
+      call which functions.
+    BM25: sub-millisecond keyword search via tantivy
+    Dual vectors: GraphCodeBERT (code structure) + Granite (natural language)
+    PageRank: ranks symbols by importance with personalization (task-mentioned
+      nodes boosted 10x)
+    CatRAG: query-aware graph traversal following dependency edges
+    A-RAG: hierarchical retrieval, 55-87% token savings on context retrieval
+    Cross-encoder reranker: ms-marco-MiniLM, CPU, <50ms for 50 candidates
+  Query tier routing (3K): FAST (<20ms, BM25), STANDARD (<200ms, hybrid+reranker),
+    DEEP (<5s, expansion+HyDE+full pipeline). Auto-selects based on query.
+  "Fix auth bug" -> DKG finds auth middleware via dependency graph -> BM25 finds
+    keyword matches -> vectors find semantically similar code -> PageRank ranks
+    by importance -> CatRAG follows edges to related files -> A-RAG filters to
+    token budget -> reranker picks top results. Result: precisely the relevant
+    code, not the whole repo.
+
+Phases: 1A-1I (knowledge engine), 3K (RAG production hardening), A-13 (freshness scoring)
+
+Remaining gaps: DKG quality on dynamic languages (Stone 3). Addressed by F-4
+  (LSP-backed DKG). Full pipeline indexing takes minutes on first run for large
+  repos. Addressed by F-2 (progressive indexing — BM25 usable in <5s).
+
+
+================================================================================
+SECTION C: PROBLEMS ELAI MITIGATES
+================================================================================
+
+ELAI significantly reduces severity and frequency. Root cause partially
+addressed, but complete elimination requires capabilities beyond current design.
+
+
+C1. COST EXPLOSION / BILLING SHOCKS [MITIGATED]
+............................................................................
+
+Problem: unexpected API bills from $50/day to $18,000/month. Hidden quotas.
+Credit depletion. No cost visibility.
+  - "$18,000/mo single Claude Code user" (Apr 2026)
+  - "$1,513/mo on $200/mo subscription" (Cursor Ultra, 2026)
+  - "$80/day for 5-10 prompts" (Windsurf, 2026)
+  - "$400 single debug session" (Replit, 2025/2026)
+
+ELAI mechanism:
+  LOCAL mode: zero API cost. GPU electricity only. Default for 8GB+ VRAM.
+  HYBRID mode: local first, cloud only on L3+ reasoning failure. Typical daily
+    cloud spend: $0.01-$0.05 (RA design).
+  CLOUD mode: explicit cost ceilings. Pre-task cost estimation. Per-task and
+    per-day spend limits enforced BEFORE each API call. At ceiling: HYBRID
+    degrades to LOCAL, CLOUD fails with user message. No silent overrun.
+  Token efficiency: 5-10x reduction in tokens per equivalent task (330 meta
+    tokens vs 2000+, compressed context, focus tunnel, ShortCoder).
+  Dashboard (4K): running spend total visible in MONITOR window.
+
+Phases: D-1 (cloud config + cost tracking), D-2 (cloud budget), D-4 (cost estimation),
+  C-1 (MONITOR window shows spend)
+
+What remains: users with no GPU (or <8GB VRAM) must use cloud. Cloud costs are
+  real, though dramatically lower than current tools. The $0.01-$0.05/day
+  estimate assumes most work is local with occasional cloud escalation. Heavy
+  cloud usage (all tasks in CLOUD mode) will still cost money — but with
+  visibility and hard ceilings. BYOE (D-3) eliminates API costs for users with
+  their own inference endpoint.
+
+Honest comparison:
+  Current tools: $50-500/month with no ceiling, no visibility, no control
+  ELAI local: $0/month (GPU electricity negligible)
+  ELAI hybrid: $1-5/month typical (measured estimate, not marketing)
+  ELAI cloud: $20-50/month with hard ceiling (user-configurable)
+
+
+C2. AGENTIC REGRESSION / FIX-ONE-BREAK-ANOTHER [MITIGATED]
+............................................................................
+
+Problem: fixing one thing breaks another. Previously functional elements regress.
+  - "rewrites or changes parts of code unnecessarily" (Claude Code, 2025/2026)
+  - "nonsense edits frequently made their way into commit log" (Cursor, 2025/2026)
+  - "consistently deleted core functionality code repeatedly" (Replit Agent, Apr 2025)
+  - "undid verified successful work when unrelated test failed" (Claude Code "Panic Revert", Mar 2026)
+  - "broke working code without being asked, ignored rules, lost all context" (Windsurf, Apr 2026)
+
+ELAI mechanism:
+  Multiple regression prevention layers:
+    1. DKG blast radius: before any change, graph traversal identifies all files
+       that could be affected. Only those files enter the model's context.
+    2. Baby-step decomposition: changes are 25-40 LOC. Small changes = small blast radius.
+    3. Integration test runner (4B): 4 levels — BABY_STEP (cargo check, <5s),
+       STEP (module tests, <30s), PHASE (crate tests, <60s), CONCEPT (workspace, <120s).
+       Run after every baby step acceptance.
+    4. Per-phase git commits (4B): atomic commits after verified phase completion.
+       Rollback to any phase boundary is one git command.
+    5. Evidence gate EXECUTING -> AUDITING: "at least 1 test flipped AND no existing
+       tests newly broken." Regression = BLOCK.
+    6. Auditor gets DKG blast radius subgraph in context — explicitly checks
+       whether changes affect related code.
+
+Phases: 4B (git commits + integration test runner), 4D/4E (decomposition),
+  3A (evidence gates), 1A (DKG blast radius)
+
+What remains: regressions in BEHAVIOR that aren't covered by tests. If existing
+  tests don't exercise the code path that regressed, the evidence gate passes.
+  Mitigated by: weaker gates for legacy code (F-3) write tests for ELAI-modified
+  code, gradually increasing coverage. Type-driven test generation for typed langs.
+  But fundamentally: no tests = no regression detection. This is an unsolvable
+  problem without either existing tests or observation-based test generation.
+
+
+C3. FULL AUTONOMY FAILURES / SILENT DEGRADATION [MITIGATED]
+............................................................................
+
+Problem: autonomous agents go off-rails, produce garbage, silently return fake
+data or hallucinated bypass paths. Application appears to run while introducing
+latent invisible flaws.
+  - "Devin: incapable of understanding massive repos" (2025)
+  - "GPT-5 Codex: infinite loops, context dilution, structural hallucinations" (2025)
+  - "Claude Code autonomous: silently returns fake data or hallucinated bypass paths"
+  - "A crashed system is minor; a system silently generating hallucinated data is catastrophe"
+
+ELAI mechanism:
+  Autonomous mode (4G) built ON TOP of validated INTERACTIVE pipeline. Not a
+  separate mode — same evidence gates, same validation, same deterministic checks.
+    1. AutonomousGate wraps InteractiveGate: checks evidence artifacts first.
+       Delegates to human on HIGH-risk gate, missing evidence, or escalation.
+    2. 6 evidence checks per gate (knowledge readiness, zero UNGROUNDED, tests fail
+       correctly, test flipped, zero BLOCKs, DKG+changelog present).
+    3. Anti-spiral: 3x same step = escalate to human. Circuit breaker: >10 auto-
+       advances without human check = forced pause.
+    4. Baby steps: each autonomous step is tiny (25-40 LOC) and independently verified.
+       Silent degradation requires ALL of: model produces bad code + T1/T2 hooks miss it
+       + deterministic auditor misses it + LLM auditor misses it + integration tests miss
+       it. Every layer must fail simultaneously.
+    5. Risk levels per decomposition level: BabyStep=LOW, Step=LOW, Phase=MEDIUM,
+       Concept=HIGH. Concept-level changes always require human approval.
+    6. DecompositionTree bubble-up (4E): failure cascades up with configurable retry
+       thresholds. BabyStep(3 retries) -> Step(2) -> Phase(1) -> Concept(0) -> Escalate.
+
+Phases: 4G (autonomous mode), 3A (evidence gates), 4E (bubble-up), 3C (anti-spiral)
+
+What remains: domain-specific business logic errors that are syntactically correct,
+  pass all tests, and satisfy all rules — but produce wrong BUSINESS outcomes.
+  Example: a financial calculation that uses the wrong formula but produces
+  plausible-looking numbers. ELAI's CSQ (2D) partially addresses this for
+  functions touching files/data/network/auth ("if assumption X is wrong, code
+  will Y"), but CSQ depends on the model identifying the right assumptions.
+  For truly critical business logic: human review remains necessary.
+
+
+C4. SECURITY VULNERABILITIES [MITIGATED]
+............................................................................
+
+Problem: AI-generated code has 3x vulnerability rate vs human-written. Missing
+RLS policies, hardcoded API keys, SQL injection, XSS, CSRF, race conditions.
+  - "45% of AI-generated code fails security compliance" (2025/2026)
+  - "170+ Lovable apps exposed via CVE-2025-48757" (Spring 2025)
+  - "race conditions in payment systems double-charging customers"
+  - "API keys hardcoded in public repos"
+  - "Prompt-Validation Paradox: natural language cannot articulate complex security logic"
+
+ELAI mechanism:
+  Security rules are mutable=0 (never auto-adjusted, never auto-retired):
+    T1: regex patterns for hardcoded secrets, SQL injection patterns, XSS patterns,
+      insecure defaults, missing CSRF tokens. <1ms per check.
+    T2: AST patterns for unsafe function calls, missing auth checks, unvalidated
+      input at system boundaries.
+    GRAPH_REACHABILITY: DKG path queries for architectural enforcement (e.g.,
+      "all database access must go through the auth middleware" — if a new function
+      bypasses the auth layer, the graph query catches it).
+  CSQ (2D): counterfactual safety questions on functions touching data/network/auth.
+    "If user sends malicious input, this function will [X]." Critical without guard
+    = blocks progression.
+  Evidence gate: auditor explicitly checks security findings. Zero BLOCKs required
+    to progress. Security BLOCK = pipeline stops.
+
+Phases: 3F (rules engine, security rules), 2D (CSQ), A-12 (deterministic auditor),
+  4C (hooks intercept IPC, enforce security rules at system level)
+
+What remains: novel vulnerability patterns not in rules.db. The Lovable RLS issue
+  was a business-logic-level security flaw — the AI chose an architecture that was
+  inherently insecure (client-driven auth). ELAI's rules catch KNOWN patterns
+  (SQLi, XSS, hardcoded keys) but cannot reason about whether an ARCHITECTURE
+  is secure. Partially mitigated by: auditor double-verify, cloud escalation for
+  security-critical code (cloud models are better at architectural reasoning), and
+  self-discovery proposing new security rules when auditor catches novel patterns.
+  But fundamentally: security review of architecture requires human or frontier-
+  model judgment. Non-programmers remain vulnerable to architectural security flaws.
+
+
+C5. LEGACY CODE INCOMPATIBILITY [MITIGATED]
+............................................................................
+
+Problem: AI can't understand existing codebases. Mixed patterns, inconsistent
+conventions, implicit dependencies, invisible business rules.
+  - "treats inconsistent legacy codebases as absolute nightmare"
+  - "auth implemented 3 different ways, mixed async/await with callbacks = tools rendered useless"
+  - "AI cleans up invisible protections, breaking systems in subtle ways"
+  - "missing semantic intent — cannot infer WHY an irrational business rule was implemented"
+
+ELAI mechanism:
+  Surgical mode (PM design): designed specifically for existing codebases.
+    DKG as primary grounding source. Blast radius via graph traversal. Max
+    decomposition depth 2 (vs 4 for greenfield). Regression gates after every
+    step (existing tests breaking = STOP). Research priority: codebase first.
+  Project Intelligence (A-4/A-5/A-11): auto-detects language, framework,
+    conventions, architecture. Extracts naming patterns, error handling style,
+    module organization from existing code. Seeds rules from conventions found.
+  Weaker evidence gates for legacy (F-3): zero-test codebases get relaxed gates.
+    TESTING_FIRST: "compilation succeeds" (not "tests fail right").
+    EXECUTING: "new tests pass AND existing behavior unchanged."
+  Incremental test adoption: write tests ONLY for code ELAI modifies (blast radius).
+
+Phases: PM design (surgical mode), A-4/A-5/A-11 (project intelligence),
+  F-3 (weaker evidence gates), A-48 (DKG data flow edges)
+
+What remains: semantic intent. WHY a business rule exists cannot be derived from
+  code alone. The "irrational business rule" problem is fundamentally about
+  missing documentation, not missing tooling. ELAI can detect that a rule exists
+  (DKG + code analysis) but cannot infer whether it's intentional or accidental.
+  In INTERACTIVE mode: ELAI asks the human. In AUTONOMOUS mode: ELAI preserves
+  existing behavior by default (regression gates) rather than "cleaning up."
+
+
+C6. PROJECT SIZE CEILING [MITIGATED]
+............................................................................
+
+Problem: AI tools become useless at scale. 10K+ LOC projects overwhelm context.
+Autonomous agents delete code they don't understand.
+  - "user briefly suspended oversight on ~10,000 LOC, agent permanently deleted 10,000 lines of bloat" (Cline, 2025)
+  - "5-directory React app had constant native context dropping, nuking project state" (Cursor, 2026)
+
+ELAI mechanism:
+  The model never sees the full project. Baby steps are 25-40 LOC with precisely
+  assembled context from the knowledge engine. Project size doesn't matter because:
+    1. DKG maps the entire codebase structure in SQLite — queried, not loaded
+    2. BM25 + vectors retrieve only relevant code per step
+    3. Context budget allocator ensures model window never exceeded
+    4. File visibility filter: model sees only allowed paths for current step
+    5. Code completeness enforcement prevents monolithic files from forming
+  A 500K LOC project and a 5K LOC project produce identical-sized prompts for
+  a given baby step. The difference is indexing time (addressed by F-2 progressive
+  indexing) and DKG graph size (SQLite handles millions of rows).
+
+Phases: 1A-1I (knowledge engine), 3E (context budget), 4A (visibility filter),
+  4D/4E (decomposition), F-2 (progressive indexing)
+
+What remains: cross-cutting changes that genuinely affect many files (e.g.,
+  "rename the User table to Account everywhere"). Baby-step decomposition
+  handles this via a sequence of small steps, but the PLAN must correctly identify
+  all affected locations. DKG blast radius helps, but dynamic language DKG (Stone 3)
+  may miss some. Mitigated by integration tests at CONCEPT level running full
+  workspace tests to catch anything the plan missed.
+
+
+================================================================================
+SECTION D: PROBLEMS ELAI PARTIALLY ADDRESSES
+================================================================================
+
+ELAI has relevant mechanisms but meaningful gaps remain that would require
+additional design work or are inherently limited.
+
+
+D1. COGNITIVE DEBT / "THE WEEK 7-8 WALL" [PARTIAL]
+............................................................................
+
+Problem: after weeks of AI-driven development, nobody on the team understands
+the system. Design decisions were made by AI, team can't explain why. Simplest
+changes trigger cascading failures. Eventually: discard and manual rewrite.
+  - "theory of the system vanished. No one could explain WHY decisions were made"
+  - "AI's abstractions leaked, team lacked semantic understanding"
+  - "resolution: discard AI-generated app entirely, ground-up manual rewrite"
+
+What ELAI does:
+  - Plan skeleton preserves WHY: concept goals, phase rationale, step reasoning
+  - SSB reasoning traces: every GRC step is a machine-readable record with
+    grounding citations. Decisions are auditable.
+  - Context Telescope: ancestry chain travels with every step, maintaining
+    connection from baby step to project vision
+  - Changelog (memory-bank): per-file change history with rationale
+  - Decision docs: workflow/reasoning/phase-X-decisions.md written before EXECUTING
+
+What remains:
+  The SYSTEM preserves the "why." But the HUMAN still doesn't understand the code
+  unless they read the plan, traces, and changelogs. For non-programmers (the
+  primary vibe coder audience), these artifacts are opaque. ELAI shifts cognitive
+  debt from "nobody knows" to "the system knows, query it via EXPLORE window."
+  That's better — but "I can ask the AI why this code exists" is different from
+  "I understand why this code exists." If ELAI becomes unavailable, the human is
+  still lost. Partially mitigated by Oracle mode (structured Q&A about the
+  codebase) and the dashboard EXPLORE window, but fundamental understanding
+  requires human effort that ELAI cannot force.
+
+
+D2. DEPLOYMENT CHASM / ENVIRONMENTAL BRITTLENESS [PARTIAL]
+............................................................................
+
+Problem: code works locally but fails in production. CI/CD, Docker, auth
+integration, DB setup, DNS, SSL — all outside the AI's capability.
+  - "25% of vibe-coded projects stall at deployment" (Mar 2026)
+  - "AI gets non-programmer 80% there, final 20% requires actual development knowledge"
+  - "AI assumes sterile homogenous execution environment"
+  - "projects working on localhost fail with cryptic Webpack errors on Railway" (Jun 2025)
+
+What ELAI does:
+  - Pipeline Factory (4D/4E) can include deployment steps in the plan
+  - Project Intelligence detects build system, CI config, deployment platform
+  - Integration test runner at CONCEPT level can include deployment smoke tests
+  - Pipeline templates: successful deployment pipelines become reusable templates
+    ranked by outcome. Second project with same stack gets proven deployment steps.
+
+What remains:
+  ELAI is a development engine, not a deployment engine. The "last 20%" involves:
+    - Cloud provider configuration (AWS/GCP/Vercel/Railway account setup)
+    - DNS and SSL certificate management
+    - Database provisioning and migration in production
+    - Environment variable management across environments
+    - CI/CD pipeline configuration and debugging
+  These are partially addressable via pipeline templates for common stacks
+  (Next.js + Vercel, Django + Railway, etc.). But novel deployment targets,
+  on-prem infrastructure, and multi-service architectures require human
+  knowledge that ELAI can assist with (via Oracle mode research) but cannot
+  fully automate. This is a real gap for vibe coders who need end-to-end.
+
+
+D3. DEVELOPER SKILL DEGRADATION [PARTIAL]
+............................................................................
+
+Problem: junior developers bypass learning. AI tools require senior expertise
+to operate safely. Influx of professionals with engineering titles who cannot
+untangle AI-generated "code disasters."
+  - "AI tools paradoxically require senior-level expertise to operate safely"
+  - "industry recording influx of professionals who cannot untangle AI-generated code disasters"
+
+What ELAI does:
+  - Deterministic enforcement means the model's output meets quality standards
+    regardless of whether the human understands it. The code won't have TODOs,
+    deprecated deps, or security holes even if the human can't check.
+  - EXPLORE window: Q&A about the codebase helps learning
+  - SSB reasoning traces: transparent decision history enables post-hoc learning
+  - Structured plan with rationale: the "why" is documented
+
+What remains:
+  ELAI makes it SAFE for non-experts to produce code (deterministic quality
+  gates prevent the worst outcomes). But it doesn't make non-experts into
+  experts. The skill degradation concern is societal/educational — ELAI can
+  provide guardrails and transparency, but can't force humans to learn from
+  them. This is analogous to how calculators didn't teach math — they made
+  it safe for non-mathematicians to do calculations correctly.
+
+
+D4. THE BABYSITTING PROBLEM (INTERACTIVE MODE) [PARTIAL]
+............................................................................
+
+Problem: users spend more time directing, correcting, and reviewing the LLM
+than the task would take manually.
+  - "chat UI forces linear single-threaded interaction"
+  - "multi-file responses become un-navigable wall of text"
+  - "more time maintaining the workflow than saved building it"
+  - Developer built custom VS Code extension to intercept when Claude Code stopped
+
+What ELAI does:
+  - AUTONOMOUS mode: human provides task, system runs to completion. Dashboard
+    for monitoring, not chatting. Interventions only when needed.
+  - INTERACTIVE mode: human approves at phase gates, not at every token.
+    Structured gates (approve/reject/modify/redirect) not free-form chat.
+  - Dashboard: visual monitoring of agent progress, not wall-of-text conversation
+  - Baby-step decomposition: each step is independently verified. Human doesn't
+    need to review every line — the system validates.
+
+What remains:
+  INTERACTIVE mode still requires human at every phase gate. For a 30-step task
+  across 3 phases, that's 3 human approvals minimum (plus TESTING_FIRST and
+  AUDITING gates). This is BY DESIGN — human oversight is a feature, not a bug.
+  But for vibe coders who want "tell AI what to build and walk away," INTERACTIVE
+  mode is still babysitting (just structured babysitting).
+  AUTONOMOUS mode is the answer, but requires: (a) validated INTERACTIVE pipeline
+  end-to-end first, (b) trust that evidence gates catch issues, (c) willingness
+  to accept that the system will pause and ask when genuinely stuck.
+  The honest answer: ELAI INTERACTIVE = structured babysitting with much less waste.
+  ELAI AUTONOMOUS = genuinely hands-off for tasks within the model's capability.
+
+
+================================================================================
+SECTION E: PROBLEMS ELAI DOES NOT SOLVE
+================================================================================
+
+
+E1. THIRD-PARTY PLATFORM BILLING / HIDDEN QUOTAS [NOT SOLVED]
+............................................................................
+
+Problem: Cursor, Windsurf, Replit impose hidden quotas, opaque credit systems,
+billing mismatches, and surprise charges.
+  - Cursor Ultra: 2.6 billion tokens consumed, never-defined quota
+  - Windsurf: "black box" quota causing "limit anxiety"
+  - Claude Code dashboard vs Anthropic Console: 46% billing mismatch
+
+Why not solved: these are business model problems of other companies, not
+  technical problems. ELAI's own cloud mode has explicit cost ceilings and
+  pre-task estimation, solving it for ELAI users. But ELAI cannot fix how
+  Cursor bills its customers.
+
+
+E2. ENTERPRISE DEPLOYMENT AT SCALE [NOT SOLVED]
+............................................................................
+
+Problem: deploying AI coding tools across 800+ developers. Per-seat costs.
+IT management. Compliance. Standardization.
+  - "$1.1M/year projected for 800-developer Claude Enterprise"
+  - "single developer selected Fast model, generated $1,500 daily invoice"
+
+Why not solved: ELAI's current design targets individual developers and small
+  teams. Enterprise deployment (centralized model serving, admin dashboards,
+  per-developer caps, SSO, audit compliance) is not in the current spec.
+  BYOE (D-3) helps — enterprise runs their own inference endpoint. But
+  fleet management of ELAI across hundreds of machines is Stone 1 (distribution)
+  and requires additional design work. Partially addressed by Docker sidecar
+  option but not a complete enterprise deployment story.
+
+
+E3. PROMPT-VALIDATION PARADOX FOR NON-PROGRAMMERS [NOT SOLVED]
+............................................................................
+
+Problem: non-programmers cannot articulate complex requirements in natural
+language, and cannot read code to verify the AI did the right thing.
+  - "natural language cannot articulate complex security logic"
+  - "non-programmers cannot read code to verify"
+
+Why not solved: this is a fundamental interface problem. ELAI's deterministic
+  enforcement catches KNOWN bad patterns, and the dashboard shows progress
+  visually. But the gap between "what I want" and "what I said" is a human
+  communication problem. ELAI's plan approval step (INTERACTIVE mode) shows
+  the decomposed plan in structured form, which is more readable than code.
+  But a user who says "build me a marketplace" may not know to specify
+  "with escrow payments, dispute resolution, and seller verification."
+  Pipeline Factory's research agent (4D) helps by researching what a
+  marketplace typically needs. But requirements gathering from non-technical
+  users remains an unsolved AI problem industry-wide.
+
+
+E4. MACRO-ECONOMIC SAAS DISRUPTION [NOT APPLICABLE]
+............................................................................
+
+Problem: AI-generated custom software replacing SaaS subscriptions.
+  - "$100,000/year wasted on fragmented SaaS"
+  - "custom unified internal OS at $10,000-$20,000 flat rate"
+
+This isn't a problem ELAI solves — it's an opportunity ELAI enables. ELAI
+  makes it feasible for a single developer (or non-programmer with ELAI) to
+  build custom internal tools that replace fragmented SaaS. The research
+  validates ELAI's market thesis, but it's not a "problem" requiring a fix.
+
+
+================================================================================
+COVERAGE SUMMARY
+================================================================================
+
+Total distinct problems identified in research: 27
+
+ELIMINATED (structurally impossible):      7  (26%)
+  A1. Phantom code / TODOs / placeholders
+  A2. Rule disobedience / constraint violations
+  A3. Unsolicited modifications / scope creep
+  A4. Token generation cascade
+  A5. Deprecated technology / temporal dislocation
+  A6. Hallucinated dependencies / slopsquatting
+  A7. Test subversion / deceptive success reporting
+
+SOLVED (complete design coverage):         6  (22%)
+  B1. Circular debugging / death spiral
+  B2. Input stacking / stateless context bloat
+  B3. Context window exhaustion / coma effect
+  B4. Repetitive instruction fatigue
+  B5. 450-line degradation boundary
+  B6. Search fragmentation at scale
+
+MITIGATED (significantly reduced):         6  (22%)
+  C1. Cost explosion / billing shocks
+  C2. Agentic regression / fix-one-break-another
+  C3. Full autonomy failures / silent degradation
+  C4. Security vulnerabilities
+  C5. Legacy code incompatibility
+  C6. Project size ceiling
+
+PARTIAL (meaningful gaps remain):          4  (15%)
+  D1. Cognitive debt / week 7-8 wall
+  D2. Deployment chasm / environmental brittleness
+  D3. Developer skill degradation
+  D4. Babysitting problem (interactive mode)
+
+NOT SOLVED:                                4  (15%)
+  E1. Third-party platform billing (not our problem)
+  E2. Enterprise deployment at scale (out of current scope)
+  E3. Prompt-validation paradox (fundamental AI-human interface problem)
+  E4. Macro-economic SaaS disruption (opportunity, not problem)
+
+Score: 19/23 real problems addressed (ELIMINATED + SOLVED + MITIGATED = 83%)
+  Excluding E1 and E4 which are not technical problems ELAI should solve.
+
+The 7 ELIMINATED problems (A1-A7) are the loudest, most frequently complained
+about issues in the research. They are also the ones that cause the most
+expensive failures ($400 debug sessions, $80/day on deprecated code loops,
+security breaches from hallucinated dependencies). ELAI's highest-value
+proposition is making these structurally impossible, not just "less likely."
+
+
+================================================================================
+SECTION F: CLAUDE OPUS 4.7 COMPARISON (added 2026-04-17)
+================================================================================
+
+Anthropic's Opus 4.7 announcement (https://www.anthropic.com/news/claude-opus-4-7)
+lists specific failure modes of Opus 4.6 that 4.7 addresses. This is a useful
+independent data point because Anthropic's internal testing identified these as
+the most important problems to fix — and their fix was "train a better model."
+ELAI's thesis is that these problems can be fixed by infrastructure instead of
+by scale. This section maps each 4.6->4.7 fix to ELAI's status and is honest
+about where the initial chat assessment overclaimed.
+
+Methodology: each row states (a) the 4.6 failure Anthropic cites, (b) the 4.7 fix,
+(c) ELAI's mechanism, (d) honest status (with original chat overclaims corrected).
+
+
+F1. "WRAPPER FUNCTIONS AND FALLBACK SCAFFOLDING PILE UP" [PARTIAL]
+............................................................................
+  4.6 problem: Claude 4.6 generated meaningless wrapper functions that just
+    forwarded calls, and defensive fallback scaffolding that added no value.
+  4.7 fix: "cuts out meaningless wrappers, fixes its own code as it goes"
+
+  ELAI coverage:
+    What works: cyclomatic complexity max 10, coupling score max 15, file size
+      limits per language (A-21). Excessive coupling/complexity gets BLOCKED.
+      Zero Lazy Code catches obvious placeholders.
+    What doesn't work: a simple pass-through wrapper has cyclomatic complexity=1
+      and passes all current checks. A function that wraps another function with
+      minor transformation is structurally valid code. ELAI has no rule that
+      specifically detects "this function adds no value" — that requires semantic
+      understanding.
+  Honest status: PARTIAL. Overclaimed as ELIMINATED in chat.
+  Gap: a rule to detect trivial forwarding functions would need to compare function
+    bodies against their callees and flag those that don't add meaningful logic.
+    Could be added as a T2 AST rule, but not currently designed.
+
+
+F2. "STOPPING HALFWAY ON TASKS" [SOLVED]
+............................................................................
+  4.6 problem: model gave up mid-task, leaving work incomplete
+  4.7 fix: "carries work all the way through instead of stopping halfway"
+
+  ELAI coverage:
+    BabyStepSpec has 8 mandatory blocks including EXIT_CRITERIA.
+    Evidence gate EXECUTING -> AUDITING requires "at least 1 test flipped."
+    Anti-spiral prevents infinite loops that masquerade as "not finishing."
+    FSM cannot advance without artifacts.
+  Status: SOLVED. The system literally cannot record a baby step as complete
+    without the exit criteria being satisfied. Original chat assessment holds.
+
+
+F3. "GIVES UP ON DIFFICULT ISSUES" [SOLVED in HYBRID, MITIGATED in LOCAL]
+............................................................................
+  4.6 problem: model abandoned hard problems instead of persisting
+  4.7 fix: "pushes through hard problems rather than giving up"
+
+  ELAI coverage:
+    6-layer reasoning escalation (RA design): L1 deterministic -> L2 micro-reflection
+      -> L3 interrogation tree -> L4 AB-MCTS -> L5 cloud diagnostic -> L6 cloud gen.
+    L1 handles 60-70% of errors via template-based fixes from compiler diagnostics,
+      no LLM involved.
+    System cannot "give up" until all configured layers are exhausted.
+  Honest status: SOLVED in HYBRID mode (cloud layers available). MITIGATED in
+    pure LOCAL mode — if L1-L4 all fail on a truly hard problem and cloud budget
+    is zero, the system escalates to human. That's structurally different from
+    "model giving up" (human gets full reasoning trace and can intervene), but
+    it's not "pushes through every hard problem." Overclaimed as SOLVED in chat.
+  Gap: for LOCAL-only users with genuinely hard problems exceeding 7B capability,
+    the ultimate answer is still human escalation. 32B on 48GB (2x3090) closes
+    this gap for more problems but not all.
+
+
+F4. "LOOPS INDEFINITELY ON 1 IN 18 QUERIES" [ELIMINATED]
+............................................................................
+  4.6 problem: ~5.6% query rate where model entered unbounded loops in production
+  4.7 fix: "highest quality-per-tool-call ratio"
+
+  ELAI coverage:
+    MistakeBook (A-20): blake3 hashes of failed diffs. Model physically cannot
+      regenerate the same failed output.
+    Anti-spiral: 3x same step (blake3 content hash) = escalate. Hard cap.
+    Fresh context per retry: model never sees its own failed chain-of-thought.
+    Temperature 1.0 for repair loops prevents cyclic traps (FixAudit validated).
+  Status: ELIMINATED. The infinite loop is structurally impossible. Infinite
+    loops require the model to repeatedly produce the same failed output, which
+    MistakeBook prevents at the hash level. Original assessment holds.
+
+
+F5. "TOOL CALL ERRORS, UNRELIABLE FOLLOW-THROUGH" [MITIGATED]
+............................................................................
+  4.6 problem: frequent tool call failures, arguments in wrong format, missed
+    required parameters, called wrong tools
+  4.7 fix: "double-digit jump in tool call accuracy, fewer tool errors"
+
+  ELAI coverage:
+    What works: FSM-aware tool filtering per state (wrong tools not even in
+      model's schema for current phase). Tool routing layer (A-26) intercepts
+      Bash calls that should use dedicated tools (cat -> Read, sed -> Edit).
+      Bash safety filter (A-27) blocks dangerous operations. Tool schema
+      sanitization strips internal params before model sees schemas.
+    What doesn't work: ELAI *rejects* bad tool calls, but it doesn't make the
+      model *generate* better ones. If the model keeps generating malformed
+      calls, they keep getting rejected until retry budget exhausts, at which
+      point reasoning escalates. That's better than production looping, but
+      it's not "the model generates correct tool calls."
+  Honest status: MITIGATED. Overclaimed as SOLVED in chat.
+  Gap: tool call quality fundamentally depends on the model. ELAI's infrastructure
+    reduces impact of bad calls (no prod damage, no infinite loops) but doesn't
+    improve generation quality. A 7B with ELAI has better USER experience than
+    a 4.6 without, but 4.7 may still have higher raw tool call accuracy.
+
+
+F6. "IMPLICIT NEED RECOGNITION" [PARTIAL]
+............................................................................
+  4.6 problem: couldn't detect unstated requirements (user asks X, really needs Y)
+  4.7 fix: "first model to pass implicit-need tests"
+
+  ELAI coverage:
+    What works: Pipeline Factory L1 Designer runs tree-structured research
+      (FlashResearch, 4D) to expand task understanding. CSQ (2D) generates
+      counterfactual safety questions on functions touching files/data/network/auth
+      ("if assumption X is wrong, code will Y"). Research Agent explicitly looks
+      for unstated requirements via dual-threshold convergence.
+    What doesn't work: CSQ only fires on safety-critical paths, not general
+      implicit UX/product/domain needs. Research is driven by the task description
+      — if the user says "build a login page" without mentioning "and users
+      should be able to reset passwords," the research agent's ability to infer
+      that depends on model reasoning. A 7B will miss subtle implicit needs
+      that Opus 4.7 catches. The FlashResearch design helps but doesn't match
+      frontier-model semantic understanding.
+  Honest status: PARTIAL. Overclaimed as SOLVED in chat.
+  Gap: domain-specific implicit needs (e.g. "e-commerce site needs cart
+    abandonment emails") require either (a) pipeline templates seeded from
+    successful prior projects in that domain, or (b) cloud model escalation
+    for planning. Both are designed but depend on having prior data or budget.
+
+
+F7. "STOPPED COLD ON TOOL FAILURES" [SOLVED]
+............................................................................
+  4.6 problem: tool errors halted execution instead of triggering recovery
+  4.7 fix: "keeps executing through tool failures"
+
+  ELAI coverage:
+    6-layer reasoning explicitly designed for error recovery.
+    L1 (60-70% of errors): parse compiler diagnostics, apply template-based fix,
+      no LLM involvement, <100ms.
+    Failure taxonomy (A-34): 9+ deterministic error categories. Auditor reads
+      classification BEFORE raw output, directing fix to correct layer.
+    Tool retries with structural modifications (decompose, template, few-shot,
+      simplify, best-of-3) — never instructional ("try harder!") which
+      empirically worsens scores.
+  Status: SOLVED. Tool failures are a first-class event in ELAI's design with
+    explicit recovery pathways. Original assessment holds.
+
+
+F8. "DEDUCTIVE REASONING STRUGGLES" [MITIGATED]
+............................................................................
+  4.6 problem: Opus 4.6 was weak on deductive logic tasks
+  4.7 fix: "solid on deductive reasoning"
+
+  ELAI coverage:
+    What works: GRC (Grounded Reasoning Chain) enforces structured reasoning:
+      observe -> hypothesize -> plan_action -> act -> verify. Each step requires
+      grounding citation. Unverified claims block progression.
+    What doesn't work: GRC *organizes* reasoning, it doesn't *elevate* model
+      capability. A 7B model with GRC structure still has 7B-level deductive
+      power per step. The chain is more traceable and less likely to skip steps,
+      but each step's quality is bounded by the model. If the task requires
+      multi-step logical inference beyond the model's capability, GRC won't
+      rescue it.
+  Honest status: MITIGATED. Overclaimed as SOLVED in chat.
+  Gap: genuinely hard deductive reasoning (e.g. novel proof construction,
+    complex constraint satisfaction) requires model capability. 6-layer
+    escalation to cloud helps here — L5 cloud diagnostic is specifically for
+    reasoning problems that exceed local capability.
+
+
+F9. "PLAUSIBLE-BUT-INCORRECT FALLBACKS ON MISSING DATA" [ELIMINATED]
+............................................................................
+  4.6 problem: when data was missing, model confabulated plausible-looking answers
+  4.7 fix: "correctly reports when data is missing"
+
+  ELAI coverage:
+    Grounding verification (2B): 6 methods (FILE_CHECK, SOURCE_CHECK, TEST_CHECK,
+      WEB_CHECK, API_CHECK, API_REGISTRY_CHECK). Claims without verified sources
+      are UNGROUNDED and block execution.
+    Plan grounding sweep: decomposes plan into claims, verifies each, blocks
+      EXECUTING if any UNGROUNDED remain.
+    "I don't know" is a first-class output (CLAUDE.md rule + Oracle mode).
+    Abstention over guessing is an enforced rule, not a suggestion.
+  Status: ELIMINATED for this specific failure. The system requires evidence for
+    claims, and the absence of evidence produces UNGROUNDED status (not a
+    confabulated answer). Original assessment holds for this exact problem.
+
+
+F10. "LOGICAL FAULTS NOT CAUGHT DURING PLANNING" [SOLVED]
+............................................................................
+  4.6 problem: planning stage didn't catch its own logical errors
+  4.7 fix: "catches its own logical faults during planning phase"
+
+  ELAI coverage:
+    Plan grounding sweep (post-approval, pre-TESTING_FIRST): scans all claims
+      in approved prompt, classifies GROUNDED/VERIFY/INGEST, blocks TESTING_FIRST
+      until resolved.
+    8-point structural validation (4E) + Kahn's cycle detection on dependency
+      graph. Non-repairable cycles trigger escalation.
+    Auditor coherence enforcement (3G): 3 checks per phase (contracts satisfied,
+      no undeclared interfaces, version incremented).
+    Feasibility probe (4F): novel steps tested with <50-line stubs in sandbox
+      before full execution. Detects planning errors that only manifest at runtime.
+  Status: SOLVED. Planning is validated structurally, semantically (via grounding),
+    and experimentally (via feasibility probe). Original assessment holds.
+
+
+F11. "INTERPRETS INSTRUCTIONS LOOSELY / SKIPS PARTS" [ELIMINATED for
+     enforceable rules, MITIGATED for semantic instructions]
+............................................................................
+  4.6 problem: model paraphrased instructions, skipped constraints, obeyed spirit
+    not letter
+  4.7 fix: "takes instructions literally, requires prompt retuning"
+
+  ELAI coverage:
+    Enforceable rules (T1/T2): rules are data in SQLite, evaluated by Rust code.
+      Model physically cannot produce output that violates a T1 rule. Zero tokens
+      in prompt, zero interpretation possible. "Don't use deprecated APIs" is
+      a regex pattern, not a polite request. Status for these: ELIMINATED.
+    Semantic instructions (T3): ~50-100 tokens of prompt text for rules that
+      genuinely need LLM judgment (e.g. "prefer functional style"). Model CAN
+      interpret these loosely. Auditor double-verifies T3 compliance and must
+      find at least 1 issue. Status for these: MITIGATED.
+  Honest status: SPLIT. ELIMINATED for ~95% of rules (all expressible as T1/T2
+    patterns). MITIGATED for the ~5% that genuinely need semantic judgment.
+    Original chat assessment said ELIMINATED overall — that was true for the
+    common failure patterns but oversimplified the full picture.
+  Gap: stylistic/preference instructions that can't be expressed as predicates
+    remain dependent on model compliance. Frontier models will be better here.
+
+
+F12. "MULTI-SESSION MEMORY ISSUES" [SOLVED]
+............................................................................
+  4.6 problem: couldn't remember context across sessions, file-system memory broke
+  4.7 fix: "better at remembering important notes across long, multi-session work"
+
+  ELAI coverage:
+    SSB (3B): structured reasoning traces persist in SQLite with 17 action types.
+      Survives across sessions, restarts, model changes.
+    Session handoff (3H): DAG-based state versioning with structurally lossless
+      trimming. Large tool results replaced with stubs recoverable from SSB.
+      User/assistant messages never stubbed.
+    Memory-bank: auto-maintained changelog, activeContext, gotchas, systemPatterns,
+      projectIndex. Updated after every build/test.
+    Multi-session protocol: workflow/sessions/{id}/ for per-session FSM state.
+      Shared registry for cross-session coordination. File locks prevent conflicts.
+  Status: SOLVED. Memory is not "the model remembers" — it's the system records
+    and queries authoritative state. Scales to arbitrary session count and duration.
+    Original assessment holds.
+
+
+F13. "LONG-CONTEXT INCONSISTENCY" [SOLVED]
+............................................................................
+  4.6 problem: performance degraded on long context tasks
+  4.7 fix: "most consistent long-context performance"
+
+  ELAI coverage:
+    The model never HAS long context. Baby-step decomposition: each step is
+      25-40 LOC with precisely assembled context from knowledge engine.
+    Context budget allocator (3E): 8 fixed slots with percentage distribution.
+      Model context window never exceeded by design.
+    Never-compact: session handoff at 85% triggers lossless trimming.
+    Phase-aware loading: only current phase's detail in prompt, not full plan.
+    Focus tunnel FIM: model sees only prefix + edit region + suffix, not full file.
+  Status: SOLVED. The problem is sidestepped rather than solved — ELAI achieves
+    long-task performance by keeping each model interaction short. Different
+    mechanism than 4.7's improved long-context attention, but same outcome.
+    Original assessment holds.
+
+
+F14. "OVERCONFIDENT / NOT HONEST ABOUT LIMITS" [MITIGATED]
+............................................................................
+  4.6 problem: gave confident wrong answers instead of admitting uncertainty
+  4.7 fix: "noticeably more honest about its own limits"
+
+  ELAI coverage:
+    What works: confidence calibration rule ("Verified:" / "High confidence:" /
+      "Uncertain:"). Grounding verification blocks unverified external claims.
+      Abstention over guessing is enforced at grounding level. Oracle mode
+      treats "I don't know" as a first-class output with full pipeline support.
+      GRC grounding levels enforced per agent role (context-compiler = observe-only,
+      memory-writer = minimal).
+    What doesn't work: within a single code generation, the model can still
+      write confident-sounding wrong COMMENTS or variable NAMES. e.g., naming
+      a function `calculate_optimal_rate` when it actually calculates a naive
+      rate — the code is syntactically fine, passes tests, but the name implies
+      confidence that isn't earned. ELAI's grounding catches external claims
+      ("this API exists") but not internal implementation confidence
+      ("this code is optimal").
+  Honest status: SPLIT. ELIMINATED for external claims (API existence, file
+    paths, test outcomes). MITIGATED for internal code confidence (variable
+    names, comments, docstring claims about behavior).
+    Original chat assessment said ELIMINATED overall — true for the claims
+    that actually drive failures (fake APIs, hallucinated deps), but code-
+    level overconfidence remains possible.
+  Gap: detecting overconfident naming/commenting requires semantic understanding.
+    Auditor can flag it but can't deterministically catch all cases.
+
+
+F15. "PROMPT INJECTION / ALIGNMENT" [SOLVED]
+............................................................................
+  4.6 problem: vulnerable to malicious prompt injection
+  4.7 fix: "better honesty and resistance to malicious prompt injection"
+
+  ELAI coverage:
+    Agent process isolation (4A): each agent is a separate OS process with NO
+      LLM client, NO network, NO tools. Everything proxied via IPC.
+    Linux: clone(NEWNS|NEWPID|NEWNET), seccomp-bpf allowlist, zero capabilities.
+    Windows: AppContainer or restricted token + Job object.
+    Tool schema sanitization: internal parameters stripped before model sees.
+    Error message sanitization: agent sees "tool call rejected by policy,"
+      never rule IDs or internal details. No information leak to a compromised model.
+    Visibility filter: hidden paths return "not found," identical to genuinely
+      missing files. No way for injection to probe what's hidden.
+    Self-modification locks: 4 enforcement layers (IPC + filesystem + git + dispatch).
+      Compromised agent cannot modify locked config keys.
+  Status: SOLVED at architectural layer. Defense in depth. A compromised model
+    in one agent cannot escape to the orchestrator, cannot access other agents'
+    state, cannot call tools outside its whitelist, cannot see system internals.
+    Original assessment holds.
+
+
+F16. VISION / VISUAL ACUITY [NOT APPLICABLE]
+............................................................................
+  4.6 problem: low-res images, 54.5% visual acuity benchmark
+  4.7 fix: 98.5% visual acuity, 2576px image support
+
+  ELAI coverage: N/A. ELAI's Media Validator (4I) delegates to VLMs
+    (Qwen3.5-VL / InternVL3.5) — ELAI inherits whatever VLM capability
+    is available. Not a problem ELAI's architecture can solve; it's
+    a component ELAI consumes. If Opus 4.7 is used as the VLM backend,
+    ELAI benefits automatically.
+
+
+F17. BUG DETECTION (CursorBench 58% -> 70%) [DIFFERENT METRIC]
+............................................................................
+  4.6 problem: 58% bug detection pass rate on CursorBench
+  4.7 fix: 70% pass rate (13% improvement on internal 93-task benchmark)
+
+  ELAI coverage: not directly comparable. ELAI doesn't compete on pass@1 —
+    it runs a 5-tier validation pipeline where the auditor MUST find issues,
+    deterministic checks run BEFORE LLM audit, and failures trigger 6-layer
+    reasoning. A 72% pass@1 model (3B) with ELAI's validation produces
+    higher FINAL quality than 70% pass@1 alone, because failures get caught
+    and fixed systematically. But that's a different axis than what
+    CursorBench measures (single-shot bug detection).
+
+
+================================================================================
+SECTION F SUMMARY (corrected from original chat)
+================================================================================
+
+Total Opus 4.6 failure modes fixed in 4.7:  17
+  (15 capability, 1 vision [N/A to ELAI], 1 benchmark [different metric])
+
+Recalibrated ELAI status on the 15 capability problems:
+
+ELIMINATED (structurally impossible):  3
+  F4.  Infinite loops
+  F9.  Plausible-but-incorrect fallbacks on missing data
+  F11a. Rule interpretation (for enforceable T1/T2 rules, ~95%)
+  F14a. Overconfidence (for external claims)
+
+SOLVED (complete design):              6
+  F2.  Stopping halfway
+  F7.  Stopped cold on tool failures
+  F10. Logical faults in planning
+  F12. Multi-session memory
+  F13. Long-context inconsistency
+  F15. Prompt injection / alignment
+
+MITIGATED (significantly reduced):     4
+  F3.  Gives up on difficult issues (SOLVED in HYBRID, MITIGATED in LOCAL)
+  F5.  Tool call accuracy
+  F8.  Deductive reasoning
+  F11b. Semantic instruction interpretation (~5% of rules)
+  F14b. Internal code confidence
+
+PARTIAL (meaningful gaps):             2
+  F1.  Meaningless wrapper functions
+  F6.  Implicit need recognition
+
+Score: 9/15 fully addressed (60%), 4/15 mitigated (27%), 2/15 partial (13%).
+Combined coverage: 13/15 meaningfully addressed (87%).
+
+This is more modest than the original chat's "every problem eliminated or solved"
+framing. The accurate claim is:
+  - ELAI structurally eliminates or fully solves 9 of the 15 cognitive failure
+    modes that required a frontier-model generation to fix at Anthropic.
+  - ELAI significantly mitigates 4 more — not as good as Opus 4.7 on these
+    axes, but dramatically better than Opus 4.6.
+  - ELAI has meaningful gaps on 2 that require either more semantic analysis
+    (wrapper detection) or frontier-model-level understanding (implicit needs).
+
+The thesis holds, but not universally: most of the Opus 4.6 -> 4.7 fixes CAN be
+achieved through infrastructure rather than scale. A few (implicit needs, deep
+deductive reasoning, semantic wrapper detection) still benefit from better models.
+
+ELAI's design anticipates this: HYBRID mode uses cloud (including Opus 4.7 when
+available) for exactly the cases where local capability falls short, while the
+architectural guardrails (deterministic enforcement, grounding, evidence gates,
+MistakeBook, etc.) still apply equally to cloud output. Cloud model generates,
+ELAI still validates. This is the right answer for the gaps ELAI can't close
+through infrastructure alone.
+
+
+================================================================================
+SECTION G: PROPOSED SOLUTIONS FOR REMAINING GAPS
+================================================================================
+
+For each PARTIAL or MITIGATED problem, this section proposes concrete mechanisms
+that could close the gap. These are design proposals, not implementation plans.
+
+IMPORTANT CAVEATS (post-audit corrections applied 2026-04-17):
+  1. Several proposals reference phases that are NOT YET BUILT (Phase 4 is
+     0% started except partial 4D/4E work). Each proposal now lists its
+     prerequisite status: [BUILDABLE NOW], [REQUIRES PHASE X], or [REQUIRES
+     PRIOR UNBUILT PROPOSAL].
+  2. B-1 (constrained decoding) was listed as COMPLETE in the roadmap summary
+     but is NOT IMPLEMENTED in the codebase. Grepping the providers crate
+     finds zero GBNF/grammar-constrained decoding code. B-1 is a fiction
+     until actually built. Any G-proposal depending on B-1 is blocked.
+  3. LOC estimates are for core implementation only. They exclude: test
+     harnesses for infra-touching features, library curation (templates,
+     rule packs, domain concepts), ongoing maintenance of external data
+     dependencies. Real effort is typically 2-5x the core LOC estimate.
+  4. "Projected pass rate" numbers without measured baselines are UNGROUNDED
+     CONJECTURE per CLAUDE.md grounded-by-default rule. They have been
+     removed from proposals that lacked grounding.
+  5. The "93% coverage post-G" figure at the end of this section is the
+     BEST CASE assuming all proposals fully implemented with all prerequisites
+     built. The REALISTIC figure given codebase state is 73-80%.
+
+Each proposal: (a) gap addressed, (b) proposed mechanism, (c) where it fits in
+ELAI's phase structure, (d) PREREQUISITE STATUS, (e) estimated scope (core LOC,
+excludes test harness + curation), (f) open questions + known blockers.
+
+
+G1. SOLVING F1 (MEANINGLESS WRAPPER FUNCTIONS)
+............................................................................
+  Gap: pass-through wrappers with cyclomatic complexity=1 currently pass all
+    ELAI checks. A function that just forwards args to another function with
+    minor transformation adds no value but is structurally valid code.
+
+  Proposed mechanism: TRIVIAL_WRAPPER T2 AST rule.
+    Predicate logic:
+      FOR EACH function in output:
+        IF function body is a single expression statement AND
+        expression is a call to another function AND
+        (arguments are identity OR minor transformation only) AND
+        return type matches callee return type
+        THEN FIRE with severity=WARN
+    Second check for defensive fallback scaffolding:
+      IF function has unreachable branches OR
+      contains try/except that re-raises identical exception OR
+      contains null check that returns identity value
+        THEN FIRE with severity=WARN
+
+  Fits in: phase 3F (rules engine) as new AST_PATTERN rule type, or phase A-21
+    (CC hook enforcement) as T2 extension. Rule seeded per language.
+
+  Prerequisite status: [BUILDABLE NOW] — 3F complete, A-21 complete.
+
+  Scope: ~150-200 LOC core + tree-sitter queries per language. Proptest
+    regression tests with wrapper patterns vs genuine wrappers.
+    NOT counted: curating exemptions per framework (Builder, adapter, facade,
+    delegation patterns are all legitimate and must not false-positive). Real
+    scope ~400-600 LOC once exemption library is included.
+
+  Open questions + known blockers:
+    BLOCKER: distinguishing "meaningless wrapper" from "adapter/facade with
+    interface value" is semantically determined by the interface the wrapper
+    implements. A T2 AST rule cannot fully determine this without knowing the
+    contract. Builder patterns, trait adapters, test doubles, error-type
+    adapters are all legitimate wrappers. SHADOW rule lifecycle helps but
+    is not a mitigation — it defers the problem to statistical significance
+    per-project, which means the rule stays SHADOW indefinitely on small
+    codebases. Realistic status: this catches obvious cases (WARN only),
+    does not eliminate the class of problem. F1 moves from PARTIAL to
+    MITIGATED with G1, not to SOLVED.
+
+
+G2. SOLVING F3 (LOCAL-MODE "GIVES UP")
+............................................................................
+  Gap: in pure LOCAL mode with zero cloud budget, if L1-L4 reasoning layers all
+    fail on a hard problem, the system escalates to human. Not "giving up" in
+    the model sense (full reasoning trace preserved), but user-visible as a
+    task ELAI couldn't complete.
+
+  Proposed mechanisms (three complementary):
+    G2a. Domain-specific fix template libraries.
+      L1 template-based fixes currently use compiler diagnostics. Extend with
+      domain-specific templates: Rust ownership errors, Python async/sync mixing,
+      TypeScript type narrowing, React hook rules, SQL injection patterns.
+      Templates curated per domain, shipped as data. Self-modification Layer 1A
+      (4H) grows these from auditor findings.
+      Expected impact: UNMEASURED. The spec's 60-70% L1 pass rate claim is from
+      the reasoning-architecture design, not a measurement of ELAI's current
+      L1 implementation (which is at A-17/A-18 stage, not production). Any
+      pass-rate improvement claim is conjecture until a baseline measurement
+      exists. G2a is a directional improvement, not a quantified one.
+
+    G2b. Community interrogation trees.
+      Phase A-19 seeds interrogation trees. Extend to publish the tree format
+      so community can contribute domain-specific trees (React, Django, Rust
+      embedded, etc.). Same mechanism as rule packs and language packs.
+
+    G2c. 48GB-tier-only: 32B local as cloud-quality fallback.
+      For users with 48GB (2x3090), 32B NF4+FA2+TQ4 approaches cloud quality on
+      many tasks. Phase 3J has 32B validation via CPU offload. Production: swap
+      to 32B on persistent L3-L4 failure instead of escalating to human.
+      Scope note: this applies ONLY to the 48GB hardware tier. Users on
+      8-16GB (the primary target per F-1 in the roadmap) get no benefit from
+      G2c. For them, G2a and G2b are the only LOCAL-mode help.
+
+  Fits in: G2a extends phase A-6 + 4H. G2b extends phase A-19. G2c extends 3J.
+
+  Prerequisite status:
+    G2a: [REQUIRES PHASE 4H unbuilt] — Self-modification Layer 1A is the
+      mechanism for growing templates from auditor findings. 4H is in Phase 4
+      (not started). Without 4H, G2a templates must be curated manually.
+    G2b: [BUILDABLE NOW] — A-19 complete as types, extension is data format + docs.
+    G2c: [REQUIRES 48GB HARDWARE] + [REQUIRES 32B VALIDATION from 3J complete].
+
+  Scope: G2a ~400-600 LOC core + ongoing template curation (maintenance is
+    not a one-time cost; this grows indefinitely). G2b ~100-200 LOC format
+    spec + community contribution workflow (also ongoing). G2c already in
+    3J roadmap but applies only to 48GB tier.
+
+  Honest status after G2 (all parts implemented):
+    F3 goes from MITIGATED-in-LOCAL to SLIGHTLY-LESS-MITIGATED-in-LOCAL for
+    8-16GB users. SOLVED only for 48GB users via G2c. Not SOLVED universally.
+    The Section G summary's claim that G2 upgrades F3 to SOLVED is incorrect.
+
+
+G3. SOLVING F5 (TOOL CALL ACCURACY)
+............................................................................
+  Gap: ELAI rejects malformed tool calls but doesn't improve model generation.
+    Bad calls consume retry budget before converging to valid ones.
+
+  Proposed mechanisms:
+    G3a. Per-tool grammar constraints (constrained decoding).
+      Phase B-1 already designs grammar-guided generation. Extend: each tool
+      schema compiled to GBNF grammar at registration. Model output for tool
+      calls constrained to valid grammar at generation time. Malformed calls
+      become structurally impossible (same mechanism as Tier 2 output
+      enforcement for rules).
+      Projected impact: malformed tool calls -> zero.
+
+    G3b. Few-shot examples per tool.
+      Tool schema includes 1-2 example calls with expected input/output shape.
+      Injected only when model fails first call for that tool in current session
+      (adaptive, not always-on). Few-shot is mandatory for small models per
+      token-efficiency design but expensive — conditional injection keeps
+      token cost bounded.
+
+    G3c. Tool call validation before execution.
+      Already exists (rules engine). Extend: validation error message includes
+      structured repair hint ("argument X should be type Y, got Z") rather
+      than generic "rejected by policy." Hint goes through the same sanitization
+      layer (no internal details) but tells the model what to fix.
+
+  Fits in: G3a is phase B-1 extension. G3b is phase A-36 (PI Tier 3 completions)
+    extension with per-tool few-shots. G3c is phase 4C (plugin error sanitization).
+
+  Prerequisite status:
+    G3a: [BLOCKED] — B-1 (constrained decoding) is marked COMPLETE in the
+      roadmap assumptions but is NOT IMPLEMENTED in the codebase. Grep of
+      providers crate finds zero GBNF/grammar-constrained decoding code.
+      Until B-1 is actually built, G3a cannot be built. This adds ~500-800
+      LOC (full B-1 implementation) to G3a's real scope.
+    G3b: [REQUIRES PHASE A-36 unbuilt] — A-36 is in Group A completions.
+    G3c: [REQUIRES PHASE 4C unbuilt] — 4C is Phase 4, not started.
+
+  Scope (realistic given prerequisites):
+    G3a: ~300 LOC extension + ~500-800 LOC for actually building B-1 first =
+      ~800-1100 LOC total. Plus sidecar grammar support (vLLM ok, Ollama partial,
+      custom sidecar at elai_inference needs work).
+    G3b: ~150 LOC + curated tool examples library.
+    G3c: ~100 LOC (assuming 4C exists).
+
+  Open questions + blockers:
+    BLOCKER: B-1 status. Either roadmap is wrong (B-1 not complete) or
+    the implementation is stashed somewhere not on main. Must resolve
+    before treating G3a as a small extension.
+    Grammar support varies by backend (vLLM best, Ollama limited, custom
+    sidecar needs xgrammar or llguidance integration).
+
+  Honest status after G3 (all parts implemented, assuming B-1 also built):
+    F5 (tool call accuracy) goes from MITIGATED to SOLVED via G3a. If B-1
+    is never built, G3a is not deliverable and F5 stays MITIGATED.
+
+
+G4. SOLVING F6 (IMPLICIT NEED RECOGNITION)
+............................................................................
+  Gap: Research Agent finds explicit requirements but misses domain-specific
+    implicit needs. "Build login page" doesn't automatically surface "forgot
+    password flow." 7B model lacks the semantic priors of frontier models.
+
+  Proposed mechanisms:
+    G4a. Pipeline template library with implicit-need patterns.
+      Phase 4D already has pipeline templates ranked by outcome. Extend:
+      templates include IMPLICIT_NEEDS block listing requirements commonly
+      needed for that task type. E-commerce template: "carts, checkout,
+      abandoned cart, order confirmation, refund handling, inventory sync."
+      Auth template: "login, register, reset password, email verification,
+      session management, logout, rate limiting."
+      When designer picks a template, IMPLICIT_NEEDS auto-added to PipelineSpec
+      for user confirmation in INTERACTIVE mode.
+
+    G4b. Domain concept registry.
+      Pipeline Factory L1 (4D) Research Agent gains domain_concepts query:
+      when task keywords match a domain (auth, e-commerce, CRUD, notifications),
+      query concept registry for standard components of that domain. Registry
+      seeded from framework docs, awesome-lists, etc.
+      NOTE: "nightly refresh" of external sources was originally proposed but
+      introduces a full scheduler + fetch pipeline + dedup + conflict resolution
+      system that mirrors A-15's complexity. Not a 400-LOC extension — it is
+      a separate feature. Simpler path: ship a curated static registry at
+      release, update via rule-pack mechanism. No live refresh. Live refresh
+      becomes a future G4e if needed.
+
+    G4c. Crystallized implicit needs from history.
+      When a user's plan is modified to add a forgotten requirement, SSB records
+      the addition. After 3+ occurrences across projects, that requirement
+      auto-proposes for the domain template (Layer 1A self-modification, 4H).
+      System learns from its own blind spots.
+
+    G4d. Cloud escalation for planning, local execution.
+      NOTE: this is NOT a new G-proposal — it is an activation of per-role
+      routing already designed in D-1 HYBRID mode (cloud-mode-design.txt
+      specifies [agents.{role}.backend] for per-role model selection).
+      Listing it here for completeness, but its LOC belongs to D-1, not G.
+
+  Fits in: G4a extends phase 4D. G4b is new sub-phase of 4D (static registry).
+    G4c extends 4H. G4d is D-1 configuration, not a new feature.
+
+  Prerequisite status:
+    G4a: [REQUIRES PHASE 4D unbuilt] — Phase 4D (Pipeline Factory L1) has
+      partial work but PipelineSpec types + template mechanism not complete.
+    G4b: [REQUIRES PHASE 4D unbuilt] — Same as G4a.
+    G4c: [REQUIRES PHASE 4H unbuilt] — Self-modification Layer 1A.
+    G4d: [REQUIRES PHASE D-1 unbuilt] — Cloud mode config not yet implemented.
+
+  Scope: G4a ~200-300 LOC + curated template library (10-20 initial templates,
+    ongoing curation). G4b ~400-500 LOC static registry + seed data. G4c ~150
+    LOC wiring. G4d LOC accrues to D-1.
+
+  Open questions + blockers:
+    BLOCKER: requires Phase 4D + 4H + D-1 all built first. G4 cannot ship
+    before Phase 4 begins.
+    Template library coverage: missing template = missing implicit needs.
+    Static registry staleness: frameworks evolve faster than releases. Rule-pack
+    update mechanism helps but is manual.
+
+  Honest status after G4 (all built):
+    F6 moves from PARTIAL to SOLVED for common domains covered by templates.
+    Remains PARTIAL for uncovered domains or novel task types. Cloud planning
+    (G4d) is the fallback for uncovered cases. The SOLVED label applies
+    conditionally: "SOLVED for supported domains."
+
+
+G5. SOLVING F8 (DEDUCTIVE REASONING)
+............................................................................
+  Gap: GRC organizes reasoning but doesn't elevate 7B-level deductive capability.
+    Multi-step logical inference beyond model capability fails.
+
+  Proposed mechanisms:
+    G5a. Formal solver integration for specific problem classes.
+      For constraint satisfaction (scheduling, resource allocation, dependency
+      resolution), use actual solvers (Z3, OR-Tools, MILP via good_lp). Phase
+      3J already evaluates MILP for scheduling. Extend to reasoning layer:
+      when problem is classified as CSP/SAT/MILP (deterministic detection from
+      task shape), route to solver instead of model. Solver returns proof or
+      UNSAT. Model consumes solver output, not reasons about it directly.
+
+    G5b. Reasoning-specific cloud escalation trigger.
+      Currently L5 cloud escalation fires on L1-L4 failure. Add: earlier trigger
+      for tasks classified as "requires deductive reasoning" based on task shape
+      (algorithmic implementation, complex conditional logic, state machine
+      correctness). Skip L2-L4 for these, go directly to L5 cloud diagnostic.
+      Reduces latency on hard reasoning tasks; cost minimal since rare.
+
+    G5c. AB-MCTS temperature tuning for reasoning.
+      Phase A-37 sets AB-MCTS branches per VRAM tier. Extend: for reasoning-
+      classified tasks, use wider temperature range (0.3-1.2 across 5 branches)
+      to explore diverse logical approaches. Current design uses narrower range.
+
+  Fits in: G5a is actually a NEW PARALLEL EXECUTION PATH, not a reasoning
+    layer extension. The 6-layer RA architecture operates within the LLM
+    generation pipeline. G5a routes AROUND the LLM entirely to a deterministic
+    solver process. This is a significant architectural addition, not a
+    minor extension.
+    G5b extends RA design (6-layer escalation).
+    G5c extends A-37.
+
+  Prerequisite status:
+    G5a: [REQUIRES NEW SUBSYSTEM] — problem classifier + solver IPC bridge +
+      output-to-code adapter + UNSAT fallback handling. Closer to a separate
+      phase than an extension.
+    G5b: [REQUIRES RA DESIGN BUILT (not done)] — but once RA is built, G5b
+      is a pure extension. This is the only G5 sub-proposal that is clean.
+    G5c: [REQUIRES PHASE A-37 unbuilt] — VRAM-tier layer configuration.
+
+  Scope (corrected from audit finding B7):
+    G5a: ~1500-3000 LOC realistic (was claimed 400-600). Includes:
+      - Task classifier to detect CSP/SAT/MILP problem shapes (~500 LOC)
+      - Solver process management + IPC bridge (~500 LOC)
+      - Per-solver output adapters (Z3/OR-Tools/MILP each) (~300 LOC each
+        × 3 = 900 LOC)
+      - UNSAT/TIMEOUT fallback to regular reasoning (~200 LOC)
+      - Integration with AgentPool, FSM, SSB (~300 LOC)
+    G5b: ~100 LOC classifier + routing (unchanged, this is small).
+    G5c: ~50 LOC config (unchanged, small).
+
+  Open questions + blockers:
+    BLOCKER for G5a: task classification is the ENTIRE research problem.
+    Determining whether a user's task is "really" a CSP requires semantic
+    understanding. Misclassification means routing non-CSP tasks to a solver
+    that will fail or return nonsense. Rule-based keyword classification
+    is too weak. LLM-based classification adds a call that defeats the point.
+    Recommendation: DROP G5a or defer as research project. Keep G5b and G5c.
+
+  Honest status after G5 (G5b + G5c only, G5a deferred):
+    F8 (deductive reasoning) stays MITIGATED. G5b routes hard reasoning
+    tasks to cloud earlier, which helps but doesn't elevate LOCAL capability.
+    The MITIGATED status was honest; G5 without G5a doesn't change it.
+
+
+G6. SOLVING F11b (SEMANTIC RULE INTERPRETATION)
+............................................................................
+  Gap: T3 semantic rules depend on model compliance. Stylistic preferences
+    ("prefer functional style") can be interpreted loosely.
+
+  Proposed mechanisms:
+    G6a. T3 compliance few-shot injection.
+      Current T3 prompt is rule text. Extend: each T3 rule has 2-3 compliance
+      examples (good/bad pairs) from the codebase or seed library. Few-shot
+      examples injected at rule injection point.
+      Token cost: +100-200 tokens per T3 rule -> keep T3 count low (3-5 rules
+      currently) or rotate examples per session.
+
+    G6b. Auditor deterministic T3 verification.
+      Some T3 rules CAN be made T2 with better tooling. "Prefer functional
+      style" -> count mutations in function (T2 AST). "Use early return" ->
+      detect nested if/else with single return at end (T2 AST). Graduate T3
+      to T2 when automation becomes feasible. Eventual goal: T3 count -> 0.
+
+    G6c. Per-project T3 training via examples.
+      Project Intelligence Tier 2 (A-5) extracts conventions from codebase.
+      Extend: mine positive examples of each T3 rule from existing code. Uses
+      DKG-identified "exemplary" code (high PageRank, no issues, passes all
+      T1/T2). Injected as project-specific few-shot.
+
+  Fits in: G6a extends phase 3F. G6b is ongoing rule graduation (A-2, A-21
+    extended over time). G6c extends A-5 (convention extraction).
+
+  Prerequisite status:
+    G6a: [BUILDABLE NOW] — 3F rules engine complete.
+    G6b: [BUILDABLE NOW] — ongoing per-rule work.
+    G6c: [BUILDABLE NOW] — A-5 is partial-complete, extendable.
+
+  Scope: G6a ~100 LOC + per-rule example curation (ongoing). G6b per-rule
+    work as patterns are identified (no fixed scope — this is a policy, not
+    a feature). G6c ~200-300 LOC DKG query extension.
+
+  Open questions + honest limits:
+    G6b has no acceptance criteria and no completion definition. "T3 count -> 0"
+    is a direction, not a deliverable. Some rules are semantically irreducible
+    (e.g. "prefer functional style" — this is a design philosophy requiring
+    semantic judgment about intent, not a pattern). No count of current T3
+    rules exists in the codebase (need to verify, but design docs reference
+    T3 as "3-5 rules in prompt, ~50-100 tokens" — suggesting a small count).
+    G6a + G6c are real mitigations. G6b is a documentation/policy item.
+
+  Honest status after G6:
+    F11b (semantic rule interpretation) goes from MITIGATED to LESS MITIGATED.
+    Not SOLVED — the residual semantic rules require model compliance. G6
+    reduces the number and improves compliance on remaining ones. A 95/5
+    split at baseline might become 98/2 with G6a + G6b work. The 2%
+    remaining semantic rules keep F11b at MITIGATED.
+
+
+G7. SOLVING F14b (INTERNAL CODE CONFIDENCE)
+............................................................................
+  Gap: model writes confident-sounding variable names and comments that overstate
+    code's actual behavior. "calculate_optimal_rate" for a naive implementation.
+
+  Proposed mechanisms:
+    G7a. NAMING_CLAIM_CHECK auditor rule.
+      Auditor deterministic check (A-12 extension): parse function/variable
+      names for claim-bearing words (optimal, fast, secure, safe, validated,
+      verified, cached, thread-safe). For each match, require evidence:
+        "optimal" -> performance benchmark in same phase
+        "validated" -> input validation present
+        "secure" -> security review or rules pass
+        "cached" -> actual cache implementation present
+      No evidence = FINDING (not BLOCK, but rename suggestion).
+
+    G7b. Comment claim extraction and STRUCTURAL (not semantic) verification.
+      T2 tree-sitter extraction of docstring/comment claims. Claims that can
+      be structurally checked: "returns X" -> check return type + return
+      statements. "raises Y" -> check for raise statements of type Y.
+      Claims that CANNOT be structurally checked: "handles case Y" (requires
+      path analysis or test coverage), "is thread-safe" (requires concurrency
+      analysis), "is efficient" (requires benchmarks).
+      Structural claims: FINDING on mismatch. Semantic claims: auditor-only
+      flag, cannot be deterministically verified.
+      Scope correction: ~300 LOC covers tree-sitter extraction + structural
+      checks only. Semantic claim verification is out of scope for G7b.
+
+    G7c. Conservative naming convention rule.
+      Project Intelligence Tier 2 can detect and enforce conservative naming.
+      Instead of optimistic ("calculate_optimal_rate"), prefer descriptive
+      ("calculate_rate_linear"). This is a seed rule the codebase can adopt.
+
+  Fits in: G7a extends A-12 (deterministic auditor). G7b extends A-21 (CC
+    enforcement with AST comment extraction). G7c is rule pack addition.
+
+  Prerequisite status:
+    G7a: [BUILDABLE NOW] — A-12 deterministic auditor is built (but stubs).
+    G7b: [BUILDABLE NOW] — A-21 is built.
+    G7c: [BUILDABLE NOW] — rule pack mechanism in 3F.
+
+  Scope: G7a ~200 LOC core + claim word dictionary (ongoing curation). G7b
+    ~300 LOC structural checks only. G7c ~50 LOC rule data.
+
+  Open questions + honest limits:
+    G7a false positives on domain-legitimate terms (`cache` in caching-library
+    codebase). Project-aware exemptions partially address this but require
+    per-project judgment.
+    G7b cannot verify semantic claims (see scope correction above). For those,
+    auditor-only flags are the mechanism — model writes comment, auditor notes
+    the unverifiable claim, human reviews.
+
+  Honest status after G7:
+    F14b (internal code confidence) goes from MITIGATED to LESS MITIGATED.
+    Structurally checkable claims become enforceable. Semantic claims about
+    quality/behavior remain judgment calls. Not SOLVED.
+
+
+G8. SOLVING D1 (COGNITIVE DEBT)
+............................................................................
+  Gap: system preserves the "why," but human doesn't understand code without
+    reading plan/traces. Non-programmers still blocked.
+
+  Proposed mechanisms:
+    G8a. EXPLORE window with natural-language Q&A (already designed).
+      Phase C-1 (dashboard MONITOR + EXPLORE) includes EXPLORE window: Q&A
+      interface routing through Oracle Mode. User asks "why does auth.rs use
+      JWT instead of sessions?" -> Oracle queries SSB reasoning traces, plan
+      skeleton, decision docs -> returns grounded answer with source citations.
+      This is already in the roadmap. Flag here as the direct answer to D1.
+
+    G8b. Automatic code walkthrough generation (structural, LLM-assisted).
+      New feature: `/walkthrough <file>` command. Generates annotated reading
+      guide from plan + DKG + changelog + SSB traces.
+      CORRECTION from audit: "no LLM needed — deterministic assembly" was
+      wrong. Connecting "function X calls jwt::decode()" to plan constraint
+      "implement auth with JWT" requires inference. The changelog records
+      phase -> file, not phase -> function -> constraint. Structured data
+      provides raw material; LLM inference provides narrative. This is a
+      HYBRID feature: deterministic fact assembly + LLM narrative generation.
+      Use memory-writer agent (small, cheap model) for narrative.
+
+    G8c. Teaching mode.
+      New CLI flag: `--teaching`. Every baby step execution is paired with
+      a 1-paragraph explanation (generated by memory-writer agent in
+      MEMORIZING phase, logged to changelog). User sees explanation in
+      dashboard ACTIVITY stream. Slower (more LLM cost for explanations) but
+      builds human understanding over time.
+
+  Fits in: G8a already in phase C-1. G8b is new tool in phase 4B. G8c is
+    config option + memory-writer extension.
+
+  Scope: G8a in roadmap. G8b ~300-400 LOC (artifact assembler). G8c ~150 LOC
+    config + ~200 LOC memory-writer extension.
+
+  Open questions: G8c cost impact (per-step explanation doubles memory-writer
+    work). Could be opt-in per project or per task.
+
+
+G9. SOLVING D2 (DEPLOYMENT CHASM)
+............................................................................
+  Gap: code works locally but fails in production. 25% of vibe-coded projects
+    stall at deployment.
+
+  Proposed mechanisms:
+    G9a. Deployment pipeline templates.
+      Pipeline Factory (4D) gains deployment-specific templates: Next.js+Vercel,
+      Django+Railway, Rust binary+Fly.io, Python FastAPI+Render, static+Cloudflare.
+      Templates include full deployment steps as baby steps: env var setup,
+      build config, CI/CD pipeline, domain/SSL, DB migration. Each step
+      deterministically validated (e.g. "deploy succeeded" = HTTP 200 on
+      health endpoint).
+
+    G9b. Infrastructure-as-code integration.
+      ELAI generates Terraform / Pulumi / Docker / docker-compose / GitHub
+      Actions as first-class artifacts. Treated same as code: rules apply,
+      tests validate. Terraform plan output parsed deterministically (JSON).
+
+    G9c. Deployment validator hook (NOT a new FSM state).
+      Original proposal was "new FSM state DEPLOYING" which contradicted the
+      Section G summary's "no new FSM states" claim. CORRECTED: G9c is a
+      post-COMPLETE validation hook, not an FSM state. Implemented as a
+      sub-phase within PipelineSpec when user task includes deployment.
+      Runs after normal COMPLETE gate: builds in clean container, runs in
+      isolated environment, health check, smoke tests. Uses existing Bash
+      sandbox infrastructure (4B). If deployment validation fails: emits
+      ReplanRequest, returns to PLANNING. No state machine change.
+
+    G9d. Environment parity checker.
+      Project Intelligence (A-4/A-5) extended: detect dev-only dependencies,
+      env var references, absolute paths, OS-specific code. Rules fire on
+      production-incompatible code at development time.
+
+  Fits in: G9a extends 4D. G9b extends 4B (tools) + rule packs. G9c is a
+    post-COMPLETE validation hook (not new FSM state, see correction above).
+    G9d extends A-4/A-5.
+
+  Prerequisite status:
+    G9a: [REQUIRES PHASE 4D unbuilt] — Pipeline Factory needed for templates.
+    G9b: [REQUIRES PHASE 4B unbuilt] — tools crate expansion.
+    G9c: [REQUIRES PHASE 4B (Bash sandbox) unbuilt].
+    G9d: [BUILDABLE NOW] — A-4/A-5 partial complete.
+
+  Scope (corrected for test harness + infra):
+    G9a: ~200-400 LOC per template × 5-10 templates = ~1000-4000 LOC core.
+      PLUS test harness per template (Docker-in-Docker or mock cloud
+      endpoints) at ~200-500 LOC per platform = another ~1000-5000 LOC.
+      Real scope: ~2000-9000 LOC total.
+    G9b: ~500-700 LOC IaC parsers and validators + test fixtures.
+    G9c: ~300-400 LOC validation hook.
+    G9d: ~300 LOC rule additions.
+
+  Open questions + blockers:
+    BLOCKER: requires Phase 4 (4B + 4D) to be built first. G9 is post-Phase-4.
+    Deployment target diversity: every platform is different. G9a scope
+    is per-template, so coverage is proportional to curation effort. 5-10
+    initial templates is reasonable. Long-tail platforms require community
+    contributions or fall back to generic Docker deployment.
+    Test harness cost: realistic testing of deployment requires either
+    Docker-in-Docker for CI (free, slower) or real cloud accounts (paid,
+    faster). This is significant infrastructure, not code.
+
+  Honest status after G9 (best case all built):
+    D2 (deployment chasm) goes from PARTIAL to SOLVED for supported platforms.
+    Remains PARTIAL for niche platforms, custom infrastructure, on-prem.
+
+
+G10. SOLVING D3 (DEVELOPER SKILL DEGRADATION)
+............................................................................
+  Gap: ELAI doesn't teach. Users produce safe code but don't learn.
+
+  Proposed mechanism:
+    G10a. Teaching mode (see G8c).
+    G10b. Visible reasoning trace option.
+      Dashboard setting: "show reasoning traces for every step." Normally
+      collapsed (activity stream is terse), expanded on demand. User can
+      read the GRC chain for any baby step to see why decisions were made.
+    G10c. "Study mode" for existing projects.
+      New CLI command `/study <file>`: generates learning exercises from
+      existing code. "Here's function X. Without looking, predict what
+      it returns for input Y. Now check." Uses existing code + DKG to
+      construct test inputs. Progressive difficulty.
+
+  Fits in: G10a in G8c. G10b extends dashboard (phase 4K). G10c is new
+    educational feature, low priority.
+
+  Scope: mostly dashboard/UX work, minimal core changes.
+
+  Open questions: whether teaching is in scope for ELAI as a product, or
+    a separate companion tool. ELAI's core mission is safe code production,
+    not education. G10a/b/c are additive, not central.
+
+
+G11. SOLVING D4 (INTERACTIVE MODE BABYSITTING)
+............................................................................
+  Gap: INTERACTIVE mode still requires human at every phase gate. For vibe
+    coders who want hands-off, this is "structured babysitting."
+
+  Proposed mechanisms:
+    G11a. Risk-adaptive auto-advance.
+      Phase 4G already has AutonomousGate. Extend: risk levels per gate from
+      existing design (LOW/MEDIUM/HIGH) drive auto-advance per user trust level.
+      Three trust profiles:
+        CAUTIOUS (default): human on MEDIUM+ gates, AUTO on LOW
+        BALANCED: human on HIGH gates, AUTO on MEDIUM+LOW
+        BOLD: AUTO on everything except HIGH (dangerous actions)
+      User sets profile per project. Can override per gate at runtime.
+
+    G11b. Batch approval.
+      INTERACTIVE can offer "approve next N gates" option when evidence looks
+      good (all low-risk, all gates passing deterministic checks cleanly).
+      User gets resume point without per-gate interaction.
+
+    G11c. Background mode for large tasks.
+      INTERACTIVE with AUTO on MEDIUM+LOW gates + browser notifications on
+      HIGH/escalation. User goes AFK, system pings when attention needed.
+      Dashboard MONITOR window shows progress.
+
+  Fits in: G11a extends phase 4G. G11b extends phase 3A (InteractiveGate).
+    G11c extends phase C-1 + C-2 (monitor + interventions).
+
+  Prerequisite status:
+    G11a: [REQUIRES PHASE 4G unbuilt] — AutonomousGate does not exist in
+      codebase (verified: grep returns zero matches). 4G is Phase 4, not
+      started. G11a cannot extend a type that doesn't exist; it requires
+      4G to be implemented first.
+    G11b: [BUILDABLE NOW] — InteractiveGate exists (stub but present).
+    G11c: [REQUIRES PHASES C-1 + C-2 unbuilt] — Dashboard completion is
+      Group C of post-phase-4 roadmap. Not yet built.
+
+  Scope: G11a ~100-200 LOC extension + 4G implementation is separate (not
+    G11 scope). G11b ~150 LOC. G11c ~100 LOC once C-1/C-2 exist.
+
+  Open questions + blockers:
+    BLOCKER: G11a and G11c cannot ship before Phase 4 and Dashboard work.
+    G11b is the only buildable-now sub-proposal.
+    Trust profile default: too bold = bad auto-advances burn users. Too
+    cautious = "still babysitting." MSI (4H) could tune per-user but that's
+    another unbuilt Phase 4 feature.
+
+  Honest status after G11 (all built):
+    D4 (babysitting) goes from PARTIAL to SOLVED in autonomous mode, and
+    from PARTIAL to LESS PARTIAL in interactive mode. Never fully SOLVED
+    in interactive mode by design (human approval is the point).
+
+
+================================================================================
+SECTION G SUMMARY (post-audit corrected 2026-04-17)
+================================================================================
+
+Proposed solutions for 11 gaps across PARTIAL, MITIGATED, and Opus-4.7-comparison
+sections. Most solutions fit ELAI's existing architecture. Important corrections
+from the adversarial audit:
+
+CORRECTIONS FROM AUDIT:
+  1. Not all proposals fit existing architecture cleanly. G5a is a new
+     parallel execution path, not a reasoning layer extension. G9c was
+     originally proposed as a new FSM state (contradicted summary claim);
+     corrected to a post-COMPLETE validation hook.
+  2. Most proposals have unbuilt prerequisites. Only G1, G6, G7, G10, and
+     parts of G2/G11 are buildable against current codebase. Everything else
+     requires Phase 4 work first.
+  3. B-1 (constrained decoding) is marked COMPLETE in the roadmap but is
+     NOT IMPLEMENTED in the codebase. G3a depends on B-1 existing. Must
+     resolve this discrepancy before claiming G3a is a simple extension.
+
+BUILDABLE NOW (can ship against current codebase):
+  G1      (wrappers — TRIVIAL_WRAPPER rule)
+  G2b     (community interrogation trees — format + docs)
+  G6a/b/c (semantic rule improvements)
+  G7a/b/c (naming claim checks)
+
+REQUIRES PHASE 4 UNBUILT:
+  G2a (needs 4H for Layer 1A growth)
+  G2c (needs 48GB hardware + 32B validation in 3J)
+  G3a (needs B-1 actually built + 4C unbuilt)
+  G3b/c (needs A-36 + 4C unbuilt)
+  G4 (needs 4D + 4H + D-1 unbuilt)
+  G5b (needs RA 6-layer reasoning built in 4G)
+  G5c (needs A-37 unbuilt)
+  G8 (needs C-1 dashboard unbuilt)
+  G9 (needs 4D + 4B unbuilt)
+  G11 (needs 4G + C-1 + C-2 unbuilt)
+
+DEFERRED OR DROPPED:
+  G5a (formal solver integration — scope 5-10x original estimate; classifier
+        is the entire research problem; recommend defer as research project)
+
+Implementation effort estimate (corrected, includes test harness + curation):
+  G1  (wrappers):           ~400-600 LOC (was 150-200; +exemptions library)
+  G2  (local fallback):     ~500-800 LOC + ongoing curation
+  G3  (tool calls):         ~800-1100 LOC (was 550; +B-1 prerequisite)
+  G4  (implicit needs):     ~1000-1500 LOC + ongoing curation (was 850-1050)
+  G5  (deductive):          ~200 LOC for G5b+G5c only (G5a deferred)
+  G6  (semantic rules):     ~400-500 LOC + ongoing
+  G7  (naming claims):      ~550 LOC + curated dictionaries
+  G8  (cognitive debt):     ~500-600 LOC (G8b requires LLM, not pure det)
+  G9  (deployment):         ~2000-9000 LOC (was 1400-2100; +test harness)
+  G10 (skill degradation):  ~300-500 LOC
+  G11 (babysitting):        ~200-350 LOC (G11b only buildable now)
+
+Total scope including prerequisites and test harnesses: ~7000-15000 LOC.
+Roughly 2x the original estimate once test coverage and library curation
+are included. Fits within Groups C-G of post-phase-4 roadmap but stretches
+further than "extensions" — G4, G9, and G5a are phase-scale efforts.
+
+Priority ranking (by user impact, unchanged from original):
+  HIGH:   G4 (implicit needs), G9 (deployment), G11 (babysitting UX)
+  MEDIUM: G2 (local fallback), G3 (tool calls), G7 (naming)
+  LOW:    G1 (wrappers), G5 (deductive), G6 (semantic), G8/G10 (learning)
+
+
+COVERAGE PROJECTION (corrected per audit finding B3):
+............................................................................
+
+Section F baseline (current state, pre-G):
+  3 ELIMINATED + 6 SOLVED + 4 MITIGATED + 2 PARTIAL = 9/15 fully (60%)
+
+Best-case post-G (ALL proposals fully implemented, ALL prerequisites built):
+  3 ELIMINATED + 11 SOLVED + 1 MITIGATED + 0 PARTIAL = 14/15 (93%)
+  Rationale: G1(F1), G4(F6), G2(F3), G3(F5), G6(F11b), G7(F14b) upgrades
+  bring F1, F3, F5, F6, F11b, F14b to SOLVED. 6 PARTIAL/MITIGATED → SOLVED.
+  F8 (deductive) stays MITIGATED since G5a is deferred.
+  No items escalate to ELIMINATED (corrects the original claim of +2 ELIMINATED).
+
+Realistic case post-G (given current codebase and ungrounded sub-claims):
+  Assumes: B-1 NOT built (so G3a fails), G2 delivers directional but not
+  quantified improvement on F3, template/registry curation is partial.
+  3 ELIMINATED + 7-8 SOLVED + 3-4 MITIGATED + 1 PARTIAL = 10-11/15 (67-73%)
+
+Honest claim for external communication:
+  "ELAI's current architecture addresses 9/15 (60%) of Opus 4.6→4.7 fixes.
+   Planned Phase 4 + Group C-G work brings this to 11-12/15 (73-80%)
+   realistic, 14/15 (93%) best case. The remaining 1-2 gaps are deductive
+   reasoning (F8) and semantic judgment (residual F11b/F14b), which benefit
+   from frontier model escalation — covered by HYBRID mode."
+
+Not honest: "ELAI solves 93% of the problems Opus 4.7 solves." The 93%
+requires full Phase 4 + Group C-G + corrections to B-1 roadmap status.
+Use the 60% figure for current capability, 73-80% for near-term (Phase 4
+complete), 93% only for full roadmap.
+
+The remaining fundamentally-unsolvable problem for any infrastructure
+approach is novel domain-specific deductive reasoning. For those cases,
+HYBRID mode with Opus 4.7 (or successor) handles planning while local
+handles execution — which is already in the design (D-1).

@@ -1,0 +1,343 @@
+PHASE 3A: FULL FSM (INTERACTIVE MODE)
+Prerequisites: Phase 0-2 complete (FSM minimal loop, knowledge engine, GRC engine all passing)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Full FSM with all 9 states, phase-aware tool/rule loading, evidence gates,
+and INTERACTIVE (HITL) gating at every phase transition.
+Extends the minimal IDLE->EXECUTING->IDLE from Phase 0 to the complete state machine:
+  IDLE -> PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST -> EXECUTING
+    -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE
+INTERACTIVE mode is the primary target. AUTONOMOUS auto-advance deferred to Phase 4G.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          Section 1 (responsibilities), Section 2 (FSM states + phase-aware loading)
+  docs/specs/crates/orchestrator.txt          Section 13 (evidence gate protocol — all 7 gates with artifact requirements)
+  docs/specs/crates/orchestrator.txt          Section 7A (structured reasoning trace — ReasoningTraceEntry)
+  docs/specs/architecture-overview.txt        Section 4 (Fsm trait: get_state, transition, get_active_tools, get_active_rules)
+  docs/specs/architecture-overview.txt        Section 5 (data flow — end-to-end single task)
+  docs/specs/architecture-overview.txt        Section 6 (execution modes: INTERACTIVE first, AUTONOMOUS second, risk levels)
+
+DELIVERABLES: 5 (each independently testable)
+  3A.1  FSM state machine (all 9 states + transition validation)
+  3A.2  Phase-aware tool/rule loading per state
+  3A.3  Evidence gate protocol (7 gates, DAIRA-derived)
+  3A.4  INTERACTIVE gate (pause + evidence + human decision)
+  3A.5  Risk-level classification per gate (LOW/MEDIUM/HIGH)
+
+
+STEPS
+
+  3A.1 FSM STATE MACHINE
+    PRE_GATE:
+      - Phase 0 minimal FSM (IDLE->EXECUTING->IDLE) compiles and tests pass:
+        cargo test -p orchestrator --lib fsm 2>&1 | grep "test result: ok"
+      - Phase 2 GRC engine tests pass (FSM depends on GRC for grounding checks):
+        cargo test -p reasoning 2>&1 | grep "test result: ok"
+    TASK:
+      - Implement FsmState enum: IDLE, PLANNING, FEASIBILITY_PROBE, TESTING_FIRST,
+        EXECUTING, AUDITING, MEMORIZING, COMPLETE, CONFIGURING
+      - Implement transition validation matrix. Valid transitions:
+          IDLE -> PLANNING | CONFIGURING                          (orchestrator.txt §2, technical-analysis-v3.txt §5)
+          PLANNING -> FEASIBILITY_PROBE | TESTING_FIRST           (orchestrator.txt §2)
+            NOTE: PLANNING->TESTING_FIRST is the Phase 3A shortcut path (skips
+            FEASIBILITY_PROBE). Both paths valid in matrix. FEASIBILITY_PROBE full
+            implementation deferred to Phase 4F.
+          FEASIBILITY_PROBE -> PLANNING (revise) | TESTING_FIRST (proceed)  (orchestrator.txt §2)
+          TESTING_FIRST -> EXECUTING                              (orchestrator.txt §2)
+          EXECUTING -> AUDITING | PLANNING (ReplanRequest)        (orchestrator.txt §13 L548-553)
+          AUDITING -> MEMORIZING                                  (orchestrator.txt §13 L553)
+          AUDITING -> EXECUTING (fix BLOCKs)                      (SKILL.md L141, workflow pattern)
+          AUDITING -> PLANNING (dead-end declaration)             (SKILL.md L115, workflow pattern)
+            NOTE: AUDITING->EXECUTING and AUDITING->PLANNING are derived from the
+            development workflow FSM (SKILL.md), not orchestrator.txt §2 which shows
+            only the linear chain. These transitions require spec update in
+            orchestrator.txt §2 to be formally grounded. SPEC_UPDATE_NEEDED.
+          MEMORIZING -> PLANNING (next phase) | COMPLETE          (orchestrator.txt §2)
+          COMPLETE -> IDLE                                        (orchestrator.txt §2)
+          CONFIGURING -> IDLE                                     (technical-analysis-v3.txt §5)
+            NOTE: CONFIGURING is triggered by /config or /workflow commands. Uses
+            meta-dispatch table (static). Single stage: executor with config_paths_only
+            tool filter, workflow domain. No evidence gate (CONFIGURING -> IDLE on completion).
+            Source: technical-analysis-v3.txt Concern 5, orchestrator.txt §2.
+      - Each transition carries: source state, target state, phase label, timestamp,
+        evidence artifacts (Vec<EvidenceArtifact>)
+      - Implement token_budget_remaining() -> usize (part of Fsm trait,
+        architecture-overview.txt §4 L136). Returns remaining tokens in current context
+        budget. Required for context budget allocator integration (Phase 3E).
+      - Persist state to .elai_cc/sessions/{sid}/.fsm-state.msgpack
+      - ReplanRequest support: MINOR (auditor-validated fast-track, no human gate) and
+        MAJOR (human approval required). Max 1 per agent per phase.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib fsm 2>&1 | grep "test result: ok"
+      - grep -c "FsmState::" crates/orchestrator/src/fsm.rs returns >= 9
+        (all states defined, including CONFIGURING)
+      - grep "fn token_budget_remaining" crates/orchestrator/src/fsm.rs returns hits
+      - grep "ReplanRequest" crates/orchestrator/src/fsm.rs returns hits
+    ADVERSARIAL:
+      - If transition validation has gaps, invalid state jumps silently succeed.
+        Test: attempt IDLE->AUDITING, TESTING_FIRST->MEMORIZING, COMPLETE->EXECUTING.
+        All must return Err(InvalidTransition).
+      - If state persistence fails silently, crash recovery loads stale state.
+        Test: corrupt .fsm-state.msgpack, verify transition returns Err(CorruptState).
+      - If ReplanRequest limit not enforced, agent loops replan indefinitely.
+        Test: send 2 ReplanRequests in same phase, verify second returns Err(ReplanLimitExceeded).
+      - If concurrent transitions are unguarded, race condition corrupts state.
+        Test: spawn 2 tokio tasks attempting FSM transition simultaneously.
+        Verify exactly one succeeds, other returns Err(TransitionConflict).
+    GROUNDING:
+      - "9 states" -> VERIFIED: orchestrator.txt §2 enumerates all 9 (including CONFIGURING).
+      - "AUDITING->EXECUTING/PLANNING" -> PARTIALLY_GROUNDED: exists in SKILL.md L113-141
+        (workflow pattern) but NOT in orchestrator.txt §2. SPEC_UPDATE_NEEDED flagged.
+      - "token_budget_remaining" -> VERIFIED: architecture-overview.txt §4 L136.
+      - "ReplanRequest MINOR/MAJOR" -> VERIFIED: orchestrator.txt §13 L548-553.
+    ACCEPTANCE:
+      - All 9 states instantiable and serializable via msgpack round-trip
+      - Every valid transition succeeds, every invalid transition returns typed error
+      - State persists to disk and recovers after simulated crash
+      - token_budget_remaining() compiles and returns usize
+
+  3A.2 PHASE-AWARE TOOL/RULE LOADING
+    PRE_GATE:
+      - 3A.1 FSM state machine compiles:
+        cargo check -p orchestrator 2>&1 | grep "Finished"
+      - tools::ToolRegistry trait exists:
+        grep "fn available_tools" crates/tools/src/lib.rs returns hits
+      - rules::RuleEngine trait exists:
+        grep "fn get_active_rules" crates/rules/src/lib.rs returns hits
+    TASK:
+      - Implement get_active_tools(state) -> Vec<ToolId> per the filter table
+        (from orchestrator.txt §2):
+          PLANNING:          rules + knowledge results + plan template. NO edit/bash tools.
+          FEASIBILITY_PROBE: stub write (<50 lines) + bash + web search. NO full edit/git.
+          TESTING_FIRST:     test framework + plan + rules. NO edit/bash tools.
+          EXECUTING:         edit tools + current phase spec + code context. NO planning tools.
+          AUDITING:          validation tools + test runner + code. NO edit/planning tools.
+          MEMORIZING:        memory-bank write tools only.
+          CONFIGURING:       config paths only (elai_cc.toml, workflow config files). NO code
+                             edit/bash tools. Source: technical-analysis-v3.txt Concern 5.
+          IDLE:              all tools (no restrictions).
+          COMPLETE:          read-only tools only. UNGROUNDED: orchestrator.txt §2 does not
+            define COMPLETE or IDLE tool restrictions. Assumed from state semantics —
+            COMPLETE is terminal, only inspection allowed before IDLE.
+      - Implement get_active_rules(state) -> Vec<RuleId> using rules::RuleEngine
+      - Tool filtering must be enforced at ToolRegistry::execute() level — a tool not in
+        the active set returns Err(ToolBlockedByState), not silent omission.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib tool_filter 2>&1 | grep "test result: ok"
+      - For each state, verify at least one tool is blocked and one is allowed:
+        test names: test_planning_blocks_edit, test_executing_blocks_planning, etc.
+    ADVERSARIAL:
+      - If tool filter is advisory (checked but not enforced), agent bypasses by calling
+        tool directly. Test: in PLANNING state, call ToolRegistry::execute("file_edit", ...)
+        and verify Err(ToolBlockedByState).
+      - If IDLE state accidentally blocks tools, walking skeleton breaks.
+        Test: in IDLE state, verify all tools are available (available_tools returns full set).
+    GROUNDING:
+      - "PLANNING blocks edit/bash" -> VERIFIED: orchestrator.txt §2 L37.
+      - "EXECUTING blocks planning tools" -> VERIFIED: orchestrator.txt §2 L40.
+      - "AUDITING blocks edit/planning tools" -> VERIFIED: orchestrator.txt §2 L41.
+      - "COMPLETE read-only" -> UNGROUNDED: not in orchestrator.txt §2. Assumed from semantics.
+      - "IDLE all tools" -> UNGROUNDED: not in orchestrator.txt §2. Assumed (default unrestricted).
+    ACCEPTANCE:
+      - get_active_tools returns correct tool set for each of 9 states (9 test cases, including CONFIGURING)
+      - ToolRegistry::execute rejects blocked tools with typed error, not silent failure
+
+  3A.3 EVIDENCE GATE PROTOCOL
+    PRE_GATE:
+      - 3A.1 transition validation works:
+        cargo test -p orchestrator --lib fsm::transition 2>&1 | grep "test result: ok"
+      - knowledge::KnowledgeEngine::readiness_check exists (evidence gate IDLE->PLANNING needs it):
+        grep "fn readiness_check" crates/knowledge/src/lib.rs returns hits
+      - reasoning::GrcEngine::ground_plan exists (evidence gate PLANNING->TESTING_FIRST needs it):
+        grep "fn ground_plan" crates/reasoning/src/lib.rs returns hits
+    TASK:
+      - Implement all 7 evidence gates from orchestrator.txt §13:
+        1. IDLE -> PLANNING: knowledge engine readiness (READY or DEGRADED ok, UNAVAILABLE blocks)
+        2. PLANNING -> TESTING_FIRST: zero UNGROUNDED claims in grounding_sweep_report
+        3. TESTING_FIRST -> EXECUTING: all tests fail for right reasons (not syntax errors)
+        4. EXECUTING -> AUDITING: at least 1 test flipped FAIL -> PASS
+        5. EXECUTING -> PLANNING (fast-track): ReplanRequest(MINOR) + auditor validation
+        6. AUDITING -> MEMORIZING: zero BLOCK findings remaining
+        7. MEMORIZING -> next: DKG reflects new code, changelog has entry
+      - Each gate is a struct implementing EvidenceGate trait:
+        fn check(&self, context: &TransitionContext) -> Result<(), EvidenceError>
+      - EvidenceError carries: gate_name, missing_artifacts (Vec<String>), suggestion (String)
+      - Adaptive context (DAIRA): variable-output tools implement scope reduction.
+        run -> check size -> if > budget * 0.3, reduce scope -> retry. Max 3 attempts.
+      - NOTE: FEASIBILITY_PROBE transitions (PLANNING->FEASIBILITY_PROBE and
+        FEASIBILITY_PROBE->TESTING_FIRST|PLANNING) have NO evidence gate in Phase 3A.
+        FEASIBILITY_PROBE full gating is deferred to Phase 4F. Transitions are valid
+        in the matrix but ungated — the FSM allows them without artifact checks.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib evidence_gate 2>&1 | grep "test result: ok"
+      - grep -c "impl EvidenceGate" crates/orchestrator/src/evidence.rs returns >= 7
+    ADVERSARIAL:
+      - If evidence gate check is skippable, transitions succeed without artifacts.
+        Test: attempt PLANNING->TESTING_FIRST with ungrounded claims in context.
+        Must return Err(EvidenceError { gate: "grounding_sweep", missing: ["ungrounded_claims"] }).
+      - If knowledge engine readiness check is not wired, IDLE->PLANNING always succeeds.
+        Test: mock knowledge engine returning UNAVAILABLE. Attempt IDLE->PLANNING.
+        Must return Err(EvidenceError { gate: "knowledge_readiness" }).
+      - If DEGRADED mode blocks instead of warns, system is too strict.
+        Test: mock knowledge engine returning DEGRADED. IDLE->PLANNING must succeed
+        with warning logged.
+    GROUNDING:
+      - "7 evidence gates" -> VERIFIED: orchestrator.txt §13 L540-554, all 7 enumerated.
+      - "DAIRA adaptive context" -> VERIFIED: orchestrator.txt §13 L556-558.
+      - "FEASIBILITY_PROBE ungated" -> VERIFIED: orchestrator.txt §13 has no gate for
+        FEASIBILITY_PROBE transitions. Full gating deferred to Phase 4F.
+      - "EvidenceGate trait" -> UNGROUNDED: not in spec. Assumed for same reasons as
+        InteractiveGate trait (testability, consistency with trait pattern).
+    ACCEPTANCE:
+      - All 7 gates enforce their specific artifact requirement
+      - Missing artifact produces typed EvidenceError with actionable suggestion
+      - DEGRADED knowledge engine allows transition with warning (not block)
+
+  3A.4 INTERACTIVE GATE
+    PRE_GATE:
+      - 3A.3 evidence gates compile and pass:
+        cargo test -p orchestrator --lib evidence_gate 2>&1 | grep "test result: ok"
+      - CLI crate exists with basic input capability:
+        grep "fn read_input\|fn prompt_user" crates/cli/src/ -r returns hits
+    TASK:
+      - At every phase transition, INTERACTIVE gate:
+        1. Collects evidence artifacts from evidence gate
+        2. Formats evidence summary for human display (structured, not prose)
+        3. Pauses execution, presents summary via InteractiveGate trait:
+           fn present_gate(&self, evidence: &EvidenceSummary) -> GateDecision
+        4. Human responds with one of 4 decisions:
+           APPROVE -> FSM advances to target state
+           REJECT -> FSM returns to source state (no state change)
+           MODIFY -> human provides modifications, gate re-evaluates, then advances
+           REDIRECT -> human specifies different target phase/task, FSM routes accordingly
+      - InteractiveGate is a trait (not hardcoded to CLI) for testability.
+        CLI implements it. Tests use MockInteractiveGate.
+      - Gate timeout: configurable (default: no timeout in INTERACTIVE mode).
+        AUTONOMOUS mode adds auto-advance timeout in Phase 4G.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib interactive_gate 2>&1 | grep "test result: ok"
+      - grep "GateDecision::" crates/orchestrator/src/gate.rs returns >= 4
+        (APPROVE, REJECT, MODIFY, REDIRECT)
+    ADVERSARIAL:
+      - If REJECT doesn't restore source state, FSM enters inconsistent state.
+        Test: transition PLANNING->TESTING_FIRST, gate returns REJECT.
+        Verify get_state() == PLANNING (not TESTING_FIRST or error state).
+      - If MODIFY bypasses evidence re-check, modifications skip validation.
+        Test: gate returns MODIFY with changes. Verify evidence gate re-runs
+        before advancing (mock evidence gate, verify called twice).
+      - If REDIRECT to invalid state is accepted, FSM corrupts.
+        Test: gate returns REDIRECT to COMPLETE from PLANNING.
+        Verify Err(InvalidTransition) or REDIRECT is constrained to valid targets.
+    GROUNDING:
+      - "4 decisions: approve/reject/modify/redirect" -> VERIFIED: architecture-overview.txt
+        §6 L201-204.
+      - "InteractiveGate as trait" -> UNGROUNDED: not in spec. Assumed for testability.
+        Consistent with LlmProvider/KnowledgeEngine trait pattern.
+      - "No timeout in INTERACTIVE mode" -> UNGROUNDED: not specified in spec. Assumed
+        because INTERACTIVE is human-paced; timeout would rush human decisions.
+    ACCEPTANCE:
+      - All 4 gate decisions (APPROVE/REJECT/MODIFY/REDIRECT) produce correct FSM behavior
+      - REJECT is a no-op on state (source state preserved exactly)
+      - MODIFY triggers evidence re-evaluation before advancing
+      - InteractiveGate trait is mockable (tests don't require real CLI input)
+
+  3A.5 RISK-LEVEL CLASSIFICATION
+    PRE_GATE:
+      - 3A.4 interactive gate works:
+        cargo test -p orchestrator --lib interactive_gate 2>&1 | grep "test result: ok"
+    TASK:
+      - Classify each gate by risk level (from architecture-overview.txt §6):
+          LOW:    MEMORIZING -> next phase (auto in both modes)
+          MEDIUM: PLANNING -> TESTING_FIRST (auto in AUTONOMOUS, pause in INTERACTIVE)
+          HIGH:   destructive actions, file deletion (pause in both modes)
+      - In INTERACTIVE mode: LOW auto-advances, MEDIUM pauses, HIGH always pauses.
+      - Risk level is a property of the transition, not the state. Stored in transition
+        validation matrix alongside source/target.
+      - RiskLevel enum: LOW, MEDIUM, HIGH. Configurable per-project in elai_cc.toml
+        [fsm.risk_overrides] (e.g., promote MEDIUM to HIGH for safety-critical projects).
+      - Integration with InteractiveGate: gate.present_gate() receives risk_level.
+        LOW gates skip presentation and auto-advance (even in INTERACTIVE mode).
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib risk_level 2>&1 | grep "test result: ok"
+      - grep "RiskLevel::" crates/orchestrator/src/fsm.rs returns >= 3
+    ADVERSARIAL:
+      - If all gates default to LOW, INTERACTIVE mode auto-advances everything (no HITL).
+        Test: verify that PLANNING->TESTING_FIRST is MEDIUM (not LOW) by default.
+      - If risk override config is ignored, per-project customization is dead code.
+        Test: set risk_override for a transition in config, verify classification changes.
+    GROUNDING:
+      - "LOW/MEDIUM/HIGH with examples" -> VERIFIED: architecture-overview.txt §6 L214-218.
+      - "Risk overrides in elai_cc.toml" -> UNGROUNDED: not in spec. Inferred from
+        "all routing configurable in elai_cc.toml" (architecture-overview.txt §9 L274).
+        Low risk — standard config pattern.
+    ACCEPTANCE:
+      - Every transition has an assigned RiskLevel
+      - LOW transitions auto-advance in INTERACTIVE mode without human prompt
+      - MEDIUM and HIGH transitions pause for human decision in INTERACTIVE mode
+      - Risk overrides from elai_cc.toml are respected
+
+
+TESTS (phase-level)
+
+  UNIT TESTS (deterministic, no network, <10s):
+    - FSM state enum: all 9 states serialize/deserialize via msgpack round-trip
+    - Transition matrix: exhaustive valid/invalid pair testing (9x9 = 81 combinations)
+    - Phase-aware tool filter: one test per state verifying correct tool set
+    - Evidence gate: one test per gate with mock artifacts (7 tests)
+    - Interactive gate: one test per decision type (4 tests: approve/reject/modify/redirect)
+    - Risk level: one test per classification tier (3 tests)
+    - ReplanRequest: limit enforcement (accept first, reject second in same phase)
+
+  PROPERTY-BASED TESTS (proptest, deterministic with seed):
+    - Random sequence of valid transitions always reaches IDLE or COMPLETE
+    - Random sequence of invalid transitions never changes FSM state
+    - Tool filter output for any state is always a subset of all_tools
+    - Evidence gate with empty artifacts always rejects (except IDLE->PLANNING with DEGRADED)
+
+  ADVERSARIAL TESTS:
+    - Corrupt msgpack state file -> FSM returns CorruptState error, does not panic
+    - Concurrent transition attempts -> only one succeeds (mutex/lock test)
+    - All evidence gates called with missing artifacts -> every gate rejects
+    - REDIRECT to every invalid target state -> all rejected with InvalidTransition
+
+  MEASURE:
+    - State transition overhead (target: <1ms per transition)
+    - Evidence gate check latency (target: <10ms per gate, excluding knowledge engine)
+    - Gate response latency (time from pause to human action — log only, no target)
+    - Tool filter lookup time (target: <0.1ms)
+
+
+EXIT CRITERIA
+  - FSM traverses all 9 states: IDLE->PLANNING->FEASIBILITY_PROBE->TESTING_FIRST
+    ->EXECUTING->AUDITING->MEMORIZING->COMPLETE->IDLE (plus IDLE->CONFIGURING->IDLE)
+  - Every valid transition succeeds, every invalid transition returns typed error
+  - All 7 evidence gates enforce artifact requirements
+  - INTERACTIVE gate: human APPROVE/REJECT/MODIFY/REDIRECT all produce correct behavior
+  - Risk-level gating: LOW auto-advances, MEDIUM pauses, HIGH always pauses (in INTERACTIVE)
+  - Phase-aware tool filtering blocks disallowed tools with typed error at execute() level
+  - ReplanRequest MINOR/MAJOR both handled with correct gating
+  - All unit, property-based, and adversarial tests pass
+  - Phase 0-2 tests still pass (no regression)
+
+
+GROUNDING (top-level summary — per-step GROUNDING blocks are inline above)
+  "9 states (including CONFIGURING)" -> VERIFIED: orchestrator.txt §2 + technical-analysis-v3.txt §5.
+  "DAIRA-derived evidence gate protocol" -> VERIFIED: orchestrator.txt §13, 7 gates.
+  "Risk-level gating LOW/MEDIUM/HIGH" -> VERIFIED: architecture-overview.txt §6 L214-218.
+  "Phase-aware tool loading" -> VERIFIED: orchestrator.txt §2 L36-43.
+  "ReplanRequest handling" -> VERIFIED: orchestrator.txt §13 L548-553.
+  "INTERACTIVE gate 4 decisions" -> VERIFIED: architecture-overview.txt §6 L201-204.
+  "AUDITING->EXECUTING (fix BLOCKs)" -> PARTIALLY_GROUNDED: SKILL.md L141 (workflow pattern).
+    Not in orchestrator.txt §2. SPEC_UPDATE_NEEDED in orchestrator.txt §2.
+  "AUDITING->PLANNING (dead-end)" -> PARTIALLY_GROUNDED: SKILL.md L115 (workflow pattern).
+    Not in orchestrator.txt §2. SPEC_UPDATE_NEEDED in orchestrator.txt §2.
+  "CONFIGURING tool restrictions (config paths only)" -> GROUNDED: technical-analysis-v3.txt §5 (Concern 5: CONFIGURING DispatchPipeline).
+  "COMPLETE/IDLE tool restrictions" -> UNGROUNDED: not in orchestrator.txt §2. Assumed.
+  "InteractiveGate as trait" -> UNGROUNDED: testability assumption, consistent with crate pattern.
+  "EvidenceGate as trait" -> UNGROUNDED: testability assumption, same rationale.
+  "Risk overrides in elai_cc.toml" -> UNGROUNDED: inferred from §9 L274 configurable routing.
+  "No timeout in INTERACTIVE" -> UNGROUNDED: assumed, human-paced mode.
+  "SSB phase_transition emit" -> VERIFIED: orchestrator.txt §7A. NOT a 3A deliverable —
+    SSB is Phase 3B. FSM emits to SSB after 3B integration. Noted for cross-phase dependency.

@@ -1,0 +1,949 @@
+DASHBOARD DESIGN: ELAI UI
+Date: 2026-04-15
+Status: PROPOSAL v2
+Author: Claude Opus 4.6 (design session, not implementation)
+
+
+========================================================================
+DESIGN PHILOSOPHY
+========================================================================
+
+Minimalist. Dark. Quiet. The UI should feel like a high-end terminal
+emulator crossed with a recording studio mixer -- everything is there
+but nothing screams. Information appears when relevant and recedes
+when it's not. The user's attention goes to what matters: the work.
+
+Anti-patterns to avoid:
+  - Dashboard syndrome: grids of numbers nobody reads
+  - Rainbow status: five colors fighting for attention
+  - Chrome bloat: borders, shadows, gradients everywhere
+  - Information dump: showing everything at once
+
+Core principles:
+  - Negative space is a feature, not waste
+  - One accent color dominates. Everything else is grayscale.
+  - Motion is purposeful: state transitions only, never decoration
+  - The UI teaches itself -- no manual needed
+  - Progressive disclosure: details on demand, not by default
+
+
+========================================================================
+VISUAL IDENTITY
+========================================================================
+
+COLOR SYSTEM
+------------------------------------------------------------------------
+
+Two-tone foundation: near-black backgrounds + dim teal accents.
+Purple as a secondary voice for user-interactive elements.
+
+  Backgrounds (dark to light):
+    bg-void:      #0a0e12    Deepest background, window chrome
+    bg-base:      #0f1318    Primary surface
+    bg-surface:   #151a20    Cards, panels, elevated areas
+    bg-hover:     #1a2028    Hover states, selected items
+    bg-input:     #1e2530    Input fields, code blocks
+
+  Brand teal (primary accent):
+    teal:         #1B7A6E    Logo color. Active states, selections, focus
+    teal-soft:    #1B7A6E40  25% opacity. Subtle highlights, glows
+    teal-ghost:   #1B7A6E15  8% opacity. Backgrounds, hover hints
+    teal-bright:  #24a08e    Sparingly -- progress bars, important badges
+
+  Purple (secondary accent, interactive elements):
+    purple:       #7C5CBF    Buttons, user actions, chat bubbles
+    purple-soft:  #7C5CBF30  Hover states on interactive elements
+    purple-ghost: #7C5CBF12  Subtle interactive backgrounds
+
+  Text:
+    text-primary:   #d0d7de    Body text. Not pure white (less strain).
+    text-secondary: #6e7681    Labels, timestamps, metadata
+    text-ghost:     #383e47    Disabled, decorative, divider text
+
+  Semantic (used sparingly -- only for actual status):
+    pass:    #1B7A6E    Teal (success reuses brand color)
+    warn:    #c49b2a    Muted amber (not screaming yellow)
+    fail:    #c44040    Muted red (not neon)
+    info:    #5088c0    Steel blue (links, informational)
+
+  The palette is intentionally narrow. If you need a color not listed
+  here, you probably don't need a color -- use text weight or opacity.
+
+TYPOGRAPHY
+------------------------------------------------------------------------
+
+  Primary:  "JetBrains Mono", "Fira Code", monospace
+  Display:  "Segoe UI" thin/200 weight (matches logo), for titles only
+
+  Scale:
+    xs:     10px  letter-spacing: 0.05em  (labels, badges, timestamps)
+    sm:     12px  (secondary text, metadata)
+    base:   13px  (body, code, primary content)
+    lg:     15px  (section titles, panel headers)
+    xl:     18px  letter-spacing: 0.15em  (page titles, project name)
+
+  Line height: 1.6 for text, 1.4 for code.
+
+  The display font at thin weight gives headers an airy, elegant feel
+  that contrasts with the dense monospace body text.
+
+LAYOUT LANGUAGE
+------------------------------------------------------------------------
+
+  Borders: 1px solid bg-hover. Never bright. Teal borders only on
+    the active/focused element.
+  Corners: 6px on panels/cards, 3px on buttons/inputs. Subtle.
+  Shadows: none. Depth communicated through background color steps.
+  Spacing: 8px base unit. Padding: 12-16px panels, 8px inline.
+  Transitions: opacity 120ms ease, transform 150ms ease. No bouncing.
+  Scrollbars: 4px wide, bg-hover track, teal-soft thumb. Invisible
+    until hover.
+  Icons: Lucide icon set (thin stroke). 16px standard, 20px sidebar.
+    Monochrome (text-secondary), teal only when active.
+
+
+========================================================================
+FLOW 1: PROJECT SELECTION (startup screen)
+========================================================================
+
+When ELAI launches, the user sees the project selector. Full screen,
+centered content, breathing room.
+
+  +------------------------------------------------------------------+
+  |                                                                    |
+  |                                                                    |
+  |                         E L A I                                    |
+  |                    (logo, teal, thin)                               |
+  |                                                                    |
+  |              a deterministic development engine                    |
+  |                  (text-secondary, small)                           |
+  |                                                                    |
+  |                                                                    |
+  |    +  New Project                                                  |
+  |       (opens folder picker)                                        |
+  |                                                                    |
+  |    ---                                                             |
+  |                                                                    |
+  |    my-rust-api          ~/projects/api       3 hours ago           |
+  |    trading-bot          ~/projects/bot       2 days ago            |
+  |    game-engine          ~/projects/engine    1 week ago            |
+  |                                                                    |
+  |                                                                    |
+  |    [LOCAL]  [CLOUD]  [HYBRID]                                      |
+  |    mode selector at bottom, subtle toggle                          |
+  |                                                                    |
+  +------------------------------------------------------------------+
+
+Project list:
+  - Each row: project name (text-primary), path (text-secondary),
+    last opened (text-ghost)
+  - Hover: row gets bg-hover + teal-ghost left border (2px)
+  - Click: loads project
+  - Right-click or [...] icon: remove from list, open folder
+  - List sorted by last opened. Max ~10 visible, scroll if more.
+
+New Project:
+  - "+ New Project" in teal text. Click opens native folder picker.
+  - After selection: ELAI scans the directory (project intelligence
+    phase), shows a brief "Scanning..." with a minimal pulse animation
+    on the teal accent, then transitions to main workspace.
+
+Mode selector:
+  - Three text buttons at bottom. Active mode has teal underline.
+  - Default: LOCAL. Mode persists per project.
+  - Tooltip on hover explains each mode (one sentence).
+
+Transition to workspace:
+  - Project name fades in at top. Panels slide in from edges.
+  - Total transition: 300ms. Feels instant but not jarring.
+
+
+========================================================================
+FLOW 2: MAIN WORKSPACE
+========================================================================
+
+After project loads, the workspace appears. Two-region layout with
+a thin sidebar, inspired by VS Code but stripped to essentials.
+
+  +---+---------------------------+------------------------------+
+  |   |                           |                              |
+  | S |                           |                              |
+  | I |       PRIMARY             |        SECONDARY             |
+  | D |       PANEL               |        PANEL                 |
+  | E |                           |                              |
+  | B |                           |                              |
+  | A |                           |                              |
+  | R |                           |                              |
+  |   |                           |                              |
+  |   +---------------------------+------------------------------+
+  |   |            STATUS BAR (bottom)                           |
+  +---+----------------------------------------------------------+
+
+  Sidebar: 48px wide. Icon-only. Vertical icon column.
+  Primary panel: flex, takes remaining space.
+  Secondary panel: 380px default, resizable. Can be collapsed.
+  Status bar: 24px. Minimal persistent info.
+
+  Panel split: draggable divider (2px, bg-hover, teal on drag).
+
+SIDEBAR
+------------------------------------------------------------------------
+
+Vertical icon strip. Each icon is a "mode" that changes what the
+primary panel shows. Think VS Code activity bar but fewer options.
+
+  Icons (top to bottom):
+
+    [terminal]   Command / Control (default)
+    [layers]     Plan overview
+    [play]       Execution monitor
+    [search]     Explore / Query
+    [settings]   Configuration
+
+  Bottom of sidebar:
+    [moon/sun]   Mode indicator (LOCAL = teal dot, CLOUD = purple dot)
+    [user]       Session info
+
+  Behavior:
+  - Click icon: primary panel switches to that view
+  - Active icon: teal fill, slight teal-ghost background
+  - Inactive: text-secondary color
+  - Hover: text-primary color
+  - The sidebar never expands into a drawer. It stays 48px always.
+    Detailed options appear in the primary panel itself.
+
+  When an icon is clicked, if a "detail drawer" is needed (like
+  switching modes), it slides out as a narrow overlay (200px) from
+  the sidebar edge, pushing nothing. Click elsewhere to dismiss.
+
+  Mode switching (LOCAL/CLOUD/HYBRID, INTERACTIVE/AUTONOMOUS):
+  - Click the mode indicator icon at sidebar bottom
+  - Small overlay appears with two groups:
+      Execution:  LOCAL  CLOUD  HYBRID
+      Control:    INTERACTIVE  AUTONOMOUS
+  - Active options have teal text + underline
+  - Changing mode: brief pulse animation on status bar
+
+STATUS BAR
+------------------------------------------------------------------------
+
+  Left:   project name (text-secondary) | branch name | FSM state
+  Center: (empty -- breathing room)
+  Right:  model name | VRAM (only if >70% used) | session id
+
+  FSM state: text-only, e.g. "IDLE", "EXECUTING step 3.2"
+  When EXECUTING: a minimal teal progress pulse (2px line that
+  slowly fills, resets each step). Not a spinner -- a heartbeat.
+
+
+========================================================================
+FLOW 3: WINDOWS (panels)
+========================================================================
+
+The workspace has two panel slots: PRIMARY (left) and SECONDARY (right).
+Each slot holds one "window" at a time. Windows are typed workspaces.
+
+WINDOW TYPES
+------------------------------------------------------------------------
+
+  COMMAND     Control surface: give instructions, accept/decline changes
+  PLAN        Plan tree viewer + phase detail
+  ACTIVITY    Live execution stream (what the LLM is doing)
+  REVIEW      Diff viewer + accept/decline controls
+  EXPLORE     Read-only codebase query (oracle mode, grounded answers)
+  MONITOR     Autonomous mode dashboard (health, progress, timeline)
+
+CREATING A NEW WINDOW
+------------------------------------------------------------------------
+
+When the user clicks a sidebar icon, the primary panel switches to
+that window type. But windows can also be created explicitly:
+
+  Ctrl+N  or  click [+] tab in panel header
+
+  This opens a minimal prompt:
+
+    What kind of workspace?
+
+      Task         (opens COMMAND, routes to /task FSM pipeline)
+      Planning     (opens PLAN with task input)
+      Execution    (opens ACTIVITY + REVIEW side by side)
+      Exploration  (opens EXPLORE, oracle mode, read-only)
+
+  Single click to select. No confirmation needed. The old window
+  moves to history.
+
+WINDOW HISTORY
+------------------------------------------------------------------------
+
+Each panel has a tab bar at the top (single row, scrollable).
+
+    [Task: auth refactor]  [Plan: v2 migration]  [+]
+
+  - Active tab: text-primary, teal bottom border (2px)
+  - Inactive tabs: text-secondary, no border
+  - Hover: text-primary
+  - Close: small [x] appears on hover, right side of tab
+  - Middle-click: close tab
+  - Tabs persist across sidebar switches (sidebar changes the
+    primary panel, but secondary panel keeps its tabs)
+
+  Closed windows go to a recoverable history:
+
+    Ctrl+Shift+H  or  right-click tab bar -> "Recover window"
+
+  Shows last 20 closed windows with type, title, timestamp.
+  Click to restore in current panel slot.
+
+WINDOW ARRANGEMENT
+------------------------------------------------------------------------
+
+  - By default: primary = ACTIVITY, secondary = COMMAND
+  - Drag a tab from one panel to the other to move it
+  - Double-click divider to toggle secondary panel (collapse/expand)
+  - In INTERACTIVE mode, the default arrangement is:
+      PRIMARY: ACTIVITY (what the LLM is doing)
+      SECONDARY: COMMAND (user control surface)
+  - In AUTONOMOUS mode, the default is:
+      PRIMARY: MONITOR (health dashboard)
+      SECONDARY: ACTIVITY (event log)
+
+
+========================================================================
+WINDOW: COMMAND (control surface)
+========================================================================
+
+NOT a chatbot. This is ELAI's control surface -- the place where the
+user gives instructions and the system responds with structured actions.
+
+Every user input is classified and routed to an FSM state. There is no
+"free conversation" mode because:
+  - Every message costs tokens. On 3B/25K context, casual chat burns
+    budget that should go to code context.
+  - The FSM has no CHATTING state. No tools are gated for it.
+  - Qwen-7B-Coder is optimized for code, not conversation. Ungrounded
+    chat produces training-data slop.
+  - Every valid user intent already maps to an FSM action.
+
+The COMMAND window looks conversational (familiar, low friction) but
+every input routes through intent classification before reaching the
+model.
+
+LAYOUT
+------------------------------------------------------------------------
+
+  +-------------------------------------------------------+
+  |                                                       |
+  |  (instruction/response history, scrollable)           |
+  |                                                       |
+  |  you:   refactor the auth module, it's a mess         |
+  |                                                       |
+  |  elai:  [task accepted]                               |
+  |         Plan: 5 phases, estimated 23 steps            |
+  |         Starting with test analysis.                  |
+  |         (watch Activity panel for progress)           |
+  |                                                       |
+  |  [intervention card]                                  |
+  |    step 3.2 proposes changing Token struct signature  |
+  |    src/auth.rs  +12 -4                                |
+  |    [Accept] [Decline] [View Full] [Retry]             |
+  |                                                       |
+  |  you:   accept, but add a deprecation notice on the   |
+  |         old method                                    |
+  |                                                       |
+  |  elai:  [instruction noted]                           |
+  |         Adding deprecation attribute to validate().   |
+  |         Continuing step 3.2.                          |
+  |                                                       |
+  +-------------------------------------------------------+
+  |  > what do you need?                     [Send]       |
+  +-------------------------------------------------------+
+
+INTENT CLASSIFICATION
+------------------------------------------------------------------------
+
+When the user types a message, the system classifies it before routing.
+Classification is deterministic where possible (slash commands, keywords),
+with LLM fallback for ambiguous natural language.
+
+  Classification categories:
+
+    TASK        "fix the auth bug", "add pagination"
+                -> routes to /task -> PLANNING state
+
+    FIX         "this test is failing", "error in build"
+                -> routes to /fix -> debugging pipeline
+
+    EXPLORE     "how does auth work?", "what calls this function?"
+                -> routes to EXPLORE window (oracle mode, read-only)
+
+    CONFIG      "switch to cloud", "change model"
+                -> routes to CONFIGURING state
+
+    INTERVENE   "accept", "decline", "retry with X", "skip step"
+                -> routes to current FSM intervention handler
+
+    STEER       "keep existing tests passing", "use async here"
+                -> attaches constraint to current task context
+
+    ABORT       "stop", "cancel", "start over"
+                -> FSM reset to IDLE
+
+  Ambiguous input triggers a disambiguation card:
+
+    +---------------------------------------------------+
+    |  "I think the auth module is messy"               |
+    |                                                   |
+    |  What would you like to do?                       |
+    |                                                   |
+    |  [Explore]   Understand the auth module           |
+    |  [Task]      Refactor the auth module             |
+    |  [Plan]      Plan an auth module rewrite          |
+    +---------------------------------------------------+
+
+  The user clicks one option. No second guessing, no "did you mean..."
+  loops. One click, one route.
+
+  Slash commands bypass classification entirely:
+    /task    -> TASK
+    /fix     -> FIX
+    /explore -> EXPLORE (or opens EXPLORE window directly)
+    /config  -> CONFIG
+    /status  -> shows FSM state + current step inline
+
+RESPONSE TYPES
+------------------------------------------------------------------------
+
+ELAI responses in the COMMAND window are structured, not conversational.
+Each response is one of these card types:
+
+  Status card:
+    [task accepted] / [step complete] / [phase done] / [task complete]
+    1-3 lines of factual information. No filler.
+    Background: bg-surface. Left border: teal (2px).
+
+  Intervention card:
+    A change needs user approval. Shows:
+    - What changed (file path, +N -M lines)
+    - Collapsed diff preview (2-3 lines of context)
+    - Action buttons: [Accept] [Decline] [View Full] [Retry]
+    Background: bg-surface. Left border: purple (2px).
+    Accept = purple solid button. Others = ghost buttons.
+
+  Error card:
+    Something failed. Shows:
+    - What failed (step, file, error category)
+    - What ELAI will do about it (retry strategy, escalation)
+    - User option: [Let it retry] [Take over] [Skip]
+    Background: bg-surface. Left border: fail color (2px).
+
+  Disambiguation card:
+    Ambiguous input. Shows 2-3 classified options as clickable buttons.
+    Background: bg-surface. No colored border.
+
+  Steering acknowledgment:
+    User added a constraint. Shows:
+    - "Noted: [constraint summary]"
+    - "Applied to: [current task / all future steps]"
+    Single line. Teal text. No card, just inline.
+
+  There are no "thinking..." or "let me look into that..." messages.
+  When ELAI is working, the ACTIVITY panel shows progress. The COMMAND
+  window only updates when user input is needed or a milestone is hit.
+
+INPUT BAR
+------------------------------------------------------------------------
+
+  - Full width, bg-input, 1px border (bg-hover, teal on focus)
+  - Placeholder: "what do you need?" in text-ghost
+  - Enter to send. Shift+Enter for newline.
+  - Supports: natural language, slash commands, code blocks, file
+    drag-and-drop (shows pill with filename)
+  - Right side: [Send] button (purple, only visible when text exists)
+  - Left side: small [/] icon for slash command palette
+
+  Slash command autocomplete:
+  Typing "/" shows a small overlay above the input:
+    /task      Start a new task
+    /fix       Debug an issue
+    /explore   Ask about the codebase
+    /config    Change settings
+    /status    Current state
+    /continue  Resume from handoff
+  Filtered as user types. Arrow keys to select. Enter to execute.
+
+  When FSM is IDLE, the input bar placeholder changes to:
+    "describe a task, ask a question, or type / for commands"
+
+  When FSM is EXECUTING, the placeholder changes to:
+    "add constraints, or wait for intervention cards"
+
+  When an intervention card is active, the placeholder changes to:
+    "respond to the card above, or type to add context"
+
+IDLE STATE BEHAVIOR
+------------------------------------------------------------------------
+
+When no task is running (FSM = IDLE), the COMMAND window shows a
+clean starting point:
+
+  +-------------------------------------------------------+
+  |                                                       |
+  |  no active task                                       |
+  |                                                       |
+  |  describe what you need, or:                          |
+  |                                                       |
+  |    /task      build or modify something               |
+  |    /fix       debug a problem                         |
+  |    /explore   ask about the codebase                  |
+  |    /continue  resume previous work                    |
+  |                                                       |
+  |  recent:                                              |
+  |    auth refactor          completed  2 hours ago      |
+  |    pagination feature     completed  yesterday        |
+  |                                                       |
+  +-------------------------------------------------------+
+  |  > what do you need?                     [Send]       |
+  +-------------------------------------------------------+
+
+  Recent tasks are clickable -- opens PLAN window for that task's
+  history, or offers to continue if the task was interrupted.
+
+
+========================================================================
+WINDOW: ACTIVITY (LLM execution viewer)
+========================================================================
+
+Shows what the system is doing in real time. The "engineering feed."
+This is the left panel in interactive mode -- the technical view.
+
+  +-------------------------------------------------------+
+  |  step 3.2: implement token validation                 |
+  |  -------                                              |
+  |                                                       |
+  |  [reasoning]                               12:04:01   |
+  |    Error in auth.rs:47 -- missing lifetime 'a         |
+  |    Fix: add lifetime annotation to Token struct       |
+  |    Confidence: HIGH (compiler diagnostic)             |
+  |                                                       |
+  |  [edit]  src/auth.rs:42-58                 12:04:02   |
+  |    (collapsed diff, click to expand)                  |
+  |    +8 -2 lines                                        |
+  |                                                       |
+  |  [validate]  tier 1: 4/4 pass             12:04:03   |
+  |              tier 2: AST ok, complexity 3             |
+  |                                                       |
+  |  [test]  3 pass, 0 fail                   12:04:05   |
+  |                                                       |
+  |  step 3.3: add expiry check                           |
+  |  -------                                              |
+  |                                                       |
+  |  [thinking...]                                        |
+  |    (minimal pulse animation, teal)                    |
+  |                                                       |
+  +-------------------------------------------------------+
+
+Entry types:
+
+  [reasoning]  Teal-ghost background. Shows GRC chain summary.
+    Collapsed by default to 2-3 lines. Click to expand full chain.
+    Each reasoning step: step type in text-secondary, content in
+    text-primary, grounding source in teal text.
+
+  [edit]  Shows file path and line range. Diff collapsed to summary
+    (+N -M lines). Expand to see inline diff (green/red lines on
+    bg-input). Click file path to open in REVIEW window.
+
+  [validate]  Compact one-liner per tier. Green checkmark (teal)
+    for pass, red x (fail color) for failures. Expand for details.
+
+  [test]  Pass/fail counts. Failures expand to show test name +
+    first line of error. Click to see full output.
+
+  [cloud]  Purple-ghost background (indicates cloud API was used).
+    Shows which layer escalated and cost ($0.002).
+
+  Step headers:
+    Step number + description. Thin teal line separator.
+    Current step: text-primary. Completed steps: text-secondary.
+    Completed steps collapse to one line (step + pass/fail summary).
+
+  Live indicator:
+    While a step is executing, the last entry has a subtle pulse
+    animation -- the teal-soft border slowly breathes (opacity
+    oscillates between 15% and 40%, 2s cycle). Not a spinner.
+
+  Auto-scroll: follows latest entry. Scrolling up disables auto-
+    scroll. A small "jump to latest" pill appears at bottom.
+
+
+========================================================================
+WINDOW: PLAN
+========================================================================
+
+Tree view of the current plan. Minimal, scannable.
+
+  +-------------------------------------------------------+
+  |  Task: Refactor authentication module                 |
+  |  Mode: LOCAL | Status: EXECUTING phase 3              |
+  |                                                       |
+  |  phase 1  Research + understand              done     |
+  |  phase 2  Write tests                        done     |
+  |  phase 3  Implement changes                  active   |
+  |    3.1  Extract token types                  done     |
+  |    3.2  Implement validation            -->  active   |
+  |    3.3  Add expiry check                     pending  |
+  |    3.4  Update error handling                pending  |
+  |  phase 4  Integration tests                  pending  |
+  |  phase 5  Audit + finalize                   pending  |
+  |                                                       |
+  +-------------------------------------------------------+
+
+  - "done" in teal, "active" in text-primary with teal dot,
+    "pending" in text-ghost
+  - "-->" marker on current step (teal)
+  - Click any step to scroll ACTIVITY window to that step
+  - Click phase header to expand/collapse steps
+  - Active phase expanded by default, others collapsed
+  - Right side of each step: elapsed time (text-ghost)
+
+  Phase detail (expanded):
+    Below the tree, when a phase is selected, show:
+    - Phase description (2-3 lines)
+    - Expected outcome
+    - Dependencies
+    - Estimated steps remaining
+
+
+========================================================================
+WINDOW: REVIEW (diff viewer)
+========================================================================
+
+Full-screen diff viewer for proposed changes. Opens when user clicks
+"View Full" on an action card in CHAT or clicks a file in ACTIVITY.
+
+  +-------------------------------------------------------+
+  |  src/auth.rs                              step 3.2    |
+  |  +12 -4 lines | Accept All | Decline All | Retry     |
+  |  -------                                              |
+  |                                                       |
+  |  42   impl Token {                                    |
+  |  43 -     pub fn validate(&self) -> bool {            |
+  |  43 +     pub fn validate<'a>(&'a self) -> Result<    |
+  |  44 +         &'a Claims,                             |
+  |  45 +         AuthError,                              |
+  |  46 +     > {                                         |
+  |  47           let now = SystemTime::now();             |
+  |  ...                                                  |
+  |                                                       |
+  +-------------------------------------------------------+
+
+  - Unified diff format (not side-by-side -- saves space)
+  - Added lines: teal-ghost background, teal-soft left border
+  - Removed lines: fail color at 10% opacity background
+  - Context lines: bg-base
+  - Line numbers: text-ghost
+  - File header: sticky at top on scroll
+
+  Controls:
+  - [Accept All]: applies all changes in this file (purple button)
+  - [Decline All]: rejects (ghost button)
+  - [Retry]: sends back for re-generation with optional note
+  - Per-hunk controls: each diff hunk has its own Accept/Decline
+    (appears on hover, right side)
+
+  Multi-file diffs:
+  - Tab bar at top of REVIEW window: one tab per changed file
+  - Or: vertical file list on left edge (if >5 files)
+
+
+========================================================================
+WINDOW: MONITOR (autonomous mode)
+========================================================================
+
+For when ELAI runs on its own. The user checks in periodically.
+NOT a wall of numbers. Designed for glanceability.
+
+  +-------------------------------------------------------+
+  |                                                       |
+  |  Refactor authentication module                       |
+  |  running for 12 min                                   |
+  |                                                       |
+  |  [====>                    ]  3 / 8 phases            |
+  |                                                       |
+  |  . . o o o * - - -                                    |
+  |  1 2 3 4 5 6 7 8 9                                    |
+  |                                                       |
+  |  (phase dots: . = done, o = skipped, * = active,      |
+  |   - = pending. Teal for done/active, ghost for rest)  |
+  |                                                       |
+  |  -------                                              |
+  |                                                       |
+  |  currently:  writing test for expiry validation       |
+  |  health:     92% first-pass     (text or teal)        |
+  |  model:      Qwen-7B local      (text-secondary)     |
+  |  spend:      $0.00              (only if >$0)         |
+  |                                                       |
+  |  -------                                              |
+  |                                                       |
+  |  [!] Replan requested: API doesn't support batch      |
+  |      [Approve] [Reject] [Take Over]                   |
+  |                                                       |
+  |  -------                                              |
+  |                                                       |
+  |  recent:                                              |
+  |    12:14  step 5.2 passed  (3 tests)                  |
+  |    12:13  step 5.1 passed  (2 tests)                  |
+  |    12:11  step 4.3 retried (missing import)           |
+  |    12:10  step 4.3 failed  (missing import)           |
+  |    ...                                                |
+  |                                                       |
+  +-------------------------------------------------------+
+
+  Layout sections (top to bottom):
+
+  1. Identity: task name + elapsed time. Big, readable, centered.
+
+  2. Progress: progress bar + phase dots.
+     Phase dots are a creative alternative to a boring bar chart.
+     Each dot represents a phase. Visual encoding:
+       . filled teal dot = done
+       * pulsing teal dot = active (subtle pulse animation)
+       - dim dot = pending
+       ! red dot = has intervention needed
+     Hover a dot to see phase name + step count.
+
+  3. Status snapshot: 3-4 lines of the most important numbers.
+     NOT a grid of metrics. Just prose-like status lines:
+       "currently: writing tests for auth module"
+       "health: 92% first-pass success"
+       "local model, no cloud spend"
+     These read like a status report, not a spreadsheet.
+
+  4. Interventions: only shown when something needs human input.
+     High contrast card with fail-color left border.
+     Clear action buttons (purple for approve, ghost for others).
+     This section is empty most of the time -- that's good.
+
+  5. Timeline: last ~15 events, compact, reverse chronological.
+     Each line: time + step + result.
+     Pass = teal text. Fail = fail color. Retry = warn color.
+     Clicking an event opens detail in ACTIVITY window.
+
+  NOTIFICATIONS (for autonomous mode):
+  - Browser notification: task complete, intervention needed
+  - Status bar: changes to warn color if intervention queued
+  - Optional: webhook to Discord/Slack (configured in settings)
+
+
+========================================================================
+WINDOW: EXPLORE
+========================================================================
+
+Read-only query interface. User asks questions about the codebase,
+ELAI answers using the knowledge engine. No modifications.
+
+  +-------------------------------------------------------+
+  |                                                       |
+  |  > how does the auth module validate tokens?          |
+  |                                                       |
+  |  The auth module uses JWT validation in               |
+  |  src/auth.rs:42-68. Key flow:                         |
+  |                                                       |
+  |  1. Token.validate() checks expiry against SystemTime |
+  |  2. Signature verified via jsonwebtoken::decode()     |
+  |  3. Claims extracted and returned as Result           |
+  |                                                       |
+  |  Related files:                                       |
+  |    src/auth.rs        (main validation logic)         |
+  |    src/middleware.rs   (HTTP layer, calls validate())  |
+  |    tests/auth_test.rs (14 tests covering this flow)   |
+  |                                                       |
+  +-------------------------------------------------------+
+
+  - Simple Q&A format. No chat history -- each query is independent.
+  - File references are clickable (opens in REVIEW as read-only).
+  - Code blocks inline with syntax highlighting.
+  - Source citations: "from DKG", "from BM25 search", etc. in
+    text-ghost after each answer section.
+
+
+========================================================================
+SETTINGS (sidebar -> settings icon)
+========================================================================
+
+Settings open in the primary panel. Grouped into sections.
+
+  Sections:
+    Execution    LOCAL / CLOUD / HYBRID mode
+                 Model selection (per-role if multiple GPUs)
+                 VRAM budget
+                 Cloud API key + spend limits
+
+    Control      INTERACTIVE / AUTONOMOUS mode
+                 Auto-approve threshold (for autonomous)
+                 Notification preferences
+
+    Project      Project path (read-only)
+                 Detected language, framework, build system
+                 Override file location
+
+    Appearance   (minimal -- the defaults should be right)
+                 Font size
+                 Panel layout preference
+
+  Each setting: label (text-primary) + control (toggle, input, select)
+  on the same line. No cards, no sections with heavy borders.
+  Just a clean list with subtle separators (1px bg-hover lines).
+
+
+========================================================================
+ANIMATIONS AND MICRO-INTERACTIONS
+========================================================================
+
+Animations are restrained. They communicate state, never decorate.
+
+  Thinking pulse:
+    When ELAI is processing, a 2px teal line at the bottom of the
+    active panel slowly pulses (opacity 20% -> 50% -> 20%, 2s cycle).
+    This is the only "loading" indicator. No spinners.
+
+  Step completion:
+    When a step passes, the step entry in ACTIVITY briefly flashes
+    teal-ghost (100ms) then settles to normal. Subtle "done" signal.
+
+  Step failure:
+    Failed step gets a 2px fail-color left border that fades in (200ms).
+    No shake, no bounce. Just a quiet red mark.
+
+  Panel transitions:
+    Switching sidebar modes: primary panel content fades out (80ms),
+    new content fades in (120ms). No sliding.
+
+  Window creation:
+    New window type selector appears as a centered overlay with
+    backdrop blur (4px). Options fade in staggered (50ms each).
+    Selection: option scales up slightly (102%, 100ms) then the
+    overlay dismisses.
+
+  Progress (autonomous):
+    Progress bar fills smoothly (CSS transition on width, 500ms).
+    Active phase dot has a gentle scale pulse (100% -> 110% -> 100%,
+    3s cycle, ease-in-out).
+
+  Scrolling:
+    Auto-scroll in ACTIVITY uses smooth scrolling (scroll-behavior:
+    smooth). New entries slide up naturally.
+
+  Intervention alert:
+    When intervention is needed, the sidebar icon for MONITOR gets
+    a small teal dot badge (appears with 200ms scale-in). The
+    status bar FSM state text changes to warn color.
+
+
+========================================================================
+KEYBOARD SHORTCUTS
+========================================================================
+
+  Ctrl+1 through Ctrl+5    Switch sidebar modes (chat/plan/exec/explore/settings)
+  Ctrl+N                   New window (opens type selector)
+  Ctrl+W                   Close current tab
+  Ctrl+Shift+H             Recover closed window
+  Ctrl+Enter               Send message (in CHAT)
+  Ctrl+D                   Toggle secondary panel
+  Ctrl+.                   Open slash command palette
+  Escape                   Dismiss overlays, cancel current input
+  Ctrl+Shift+P             Command palette (search all actions)
+
+  In REVIEW:
+  Ctrl+Shift+A             Accept all changes
+  Ctrl+Shift+R             Reject all changes
+
+
+========================================================================
+RESPONSIVE BEHAVIOR
+========================================================================
+
+  Minimum width: 1000px
+  Sidebar collapse: below 1000px, sidebar becomes a hamburger menu
+  Single panel: below 800px, secondary panel auto-collapses
+  No mobile layout. This is a development tool.
+
+  Panel resize: draggable divider. Double-click to reset to default
+  (50/50 split). Minimum panel width: 320px.
+
+
+========================================================================
+TECHNOLOGY STACK
+========================================================================
+
+Unchanged from v1:
+
+OPTION A - Tauri (Rust + Web):
+  Backend: Rust binary (already exists). SSB already in SQLite.
+  Frontend: SolidJS (small bundle, fine-grained reactivity, no vDOM).
+  IPC: Tauri command bridge (Rust <-> JS).
+  Pros: native app, single binary distribution, Rust backend reuse.
+  Cons: adds Tauri dependency, requires web frontend skills.
+
+OPTION B - Local web server (RECOMMENDED for v1):
+  Backend: Axum serving static files + WebSocket for live updates.
+  Frontend: SolidJS.
+  Access: localhost:port in any browser.
+  Pros: no new framework dependency, browser DevTools, SSH tunnels.
+  Cons: not a "real" desktop app, port management.
+
+OPTION C - TUI (terminal UI):
+  Backend: ratatui.
+  Pros: no web stack, SSH native.
+  Cons: limited layout, no rich rendering.
+
+RECOMMENDATION: Option B for v1. Option A for distribution packaging.
+
+DATA SOURCE:
+  All dashboard data from SSB (SQLite WAL). Read-only connection.
+  SSB already records all agent actions, FSM states, sessions, locks.
+
+  New SSB action types:
+  - HEALTH_SNAPSHOT: periodic aggregate (30s)
+  - INTERVENTION_REQUEST: human decision needed
+  - INTERVENTION_RESPONSE: user's decision
+  - WINDOW_STATE: persists open windows/tabs for session recovery
+
+LIVE UPDATES:
+  WebSocket push from Axum on SSB write. Fallback: 1s polling.
+
+
+========================================================================
+IMPLEMENTATION
+========================================================================
+
+Phase 4K. Sub-steps:
+
+  4K.1: SSB read-only viewer library (Rust, data extraction)
+  4K.2: Axum server + static serving + WebSocket
+  4K.3: Project selector screen (SolidJS)
+  4K.4: Workspace shell (sidebar + dual panels + tab system)
+  4K.5: CHAT window (messages, action cards, input bar)
+  4K.6: ACTIVITY window (execution stream, live updates)
+  4K.7: PLAN window (tree view)
+  4K.8: REVIEW window (diff viewer, accept/decline)
+  4K.9: MONITOR window (autonomous dashboard)
+  4K.10: EXPLORE window (Q&A interface)
+  4K.11: Intervention controls + notification system
+  4K.12: Window management (tabs, history, recovery)
+  4K.13: Visual polish (animations, transitions, responsive)
+
+Implementation steps (A-steps):
+  A-45: SSB dashboard data extraction library
+  A-46: Axum server + WebSocket + static serving
+  A-47: Project selector + workspace shell + window management
+  A-48: CHAT + REVIEW windows
+  A-49: ACTIVITY + PLAN windows
+  A-50: MONITOR + EXPLORE windows
+  A-51: Intervention + notifications
+  A-52: Visual polish + animations
+
+Estimated: 6-8 implementation sessions.
+Dependencies: SSB (3B), FSM (3A), CLI (3J).
+Frontend can start as static mockups before backend is ready.

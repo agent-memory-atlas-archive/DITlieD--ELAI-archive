@@ -1,0 +1,549 @@
+PHASE 4F: FEASIBILITY_PROBE — IMPROVED 2026-04-06
+Prerequisites: Phase 4E complete (L2 pipeline builder assembles ExecutablePipeline deterministically)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+  System probe detects hardware/resource constraints before execution.
+  Novel step stubs (<50 lines) test feasibility in sandbox with branch-and-explore.
+  Deterministic skip when pipeline contains zero novel steps.
+  Escalation after max 3 alternatives per novel step.
+  Output: stub_results.msgpack (FeasibilityReport, per architecture-overview.txt S5).
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          S2 (FSM phase-aware loading: FEASIBILITY tools)
+  docs/specs/crates/orchestrator.txt          S10 (branch-and-explore for FEASIBILITY_PROBE)
+  docs/specs/crates/orchestrator.txt          S12 (agent isolation — Tier C, IPC protocol)
+  docs/specs/architecture-overview.txt        S5 (data flow: FEASIBILITY_PROBE position)
+  docs/specs/architecture-overview.txt        S3 (FSM skip: PLANNING->TESTING_FIRST)
+  docs/specs/integration/pipeline-factory.txt S3 (Stage 4 = feasibility probe)
+  docs/specs/crates/providers.txt             S4 (ModelPool VRAM accounting, can_fit_onnx)
+  docs/specs/crates/reasoning.txt             S10 (FeasibilityOutcome, InlineFeasibilityResult)
+  docs/specs/decisions/risk-register.txt      R4, R5, R22, R50 (VRAM contention risks)
+
+
+TYPES (new, not yet in any spec — added here, to be propagated to orchestrator.txt)
+
+  struct SystemProbeResult {
+      gpu_count: u32,
+      gpu_info: Vec<GpuInfo>,             // per GPU: name, total_bytes, free_bytes, driver_version
+      ram_total_bytes: u64,
+      ram_free_bytes: u64,
+      disk_free_bytes: u64,               // on project partition
+      os: String,                         // from sysinfo
+      is_supported: bool,                 // sysinfo::IS_SUPPORTED_SYSTEM
+  }
+
+  struct GpuInfo {
+      index: u32,
+      name: String,
+      total_bytes: u64,
+      free_bytes: u64,
+      driver_version: String,
+      uuid: String,                       // stable cross-reboot identity (nvml device.uuid())
+  }
+
+  struct SystemConstraints {
+      min_vram_bytes: u64,                // from PipelineSpec resource requirements
+      min_ram_bytes: u64,
+      min_disk_bytes: u64,
+      required_gpu_count: u32,
+  }
+
+  struct StubResult {
+      step_id: String,
+      alternative_index: u32,             // 0-2
+      outcome: FeasibilityOutcome,        // Pass | Fail | Blocked (from reasoning crate)
+      elapsed_ms: u64,
+      stdout_hash: [u8; 32],             // blake3 of stdout for deterministic replay
+      stderr_summary: String,             // first 512 bytes
+      resource_delta: ResourceDelta,      // VRAM/RAM change during stub execution
+  }
+
+  struct ResourceDelta {
+      vram_before_bytes: u64,
+      vram_after_bytes: u64,
+      ram_before_bytes: u64,
+      ram_after_bytes: u64,
+  }
+
+  struct FeasibilityReport {
+      probe: SystemProbeResult,
+      constraints: SystemConstraints,
+      constraint_results: Vec<ConstraintResult>, // per-resource pass/fail with margin
+      stubs: Vec<StubResult>,             // one per passing novel step (escalated steps in escalations)
+      skipped_steps: Vec<String>,         // non-novel steps (not probed)
+      escalations: Vec<FeasibilityEscalation>,
+  }
+
+  struct ConstraintResult {
+      resource: String,                   // "vram_gpu0", "vram_gpu1", "ram", "disk"
+      required: u64,
+      available: u64,
+      margin: f64,                        // (available - required) / required
+      passed: bool,                       // margin >= 0.0 (met), margin >= 0.20 (skip threshold)
+  }
+
+  struct FeasibilityEscalation {
+      step_id: String,
+      reason: String,
+      stubs_tried: Vec<StubResult>,       // all 3 failed attempts
+  }
+
+  enum FeasibilityDecision {
+      Proceed,                            // all probes pass, all stubs pass
+      ProceedWithConstraints(Vec<String>), // probes show limits, stubs adapted
+      Escalate(Vec<FeasibilityEscalation>), // human decision needed (INTERACTIVE)
+      Replan(Vec<FeasibilityEscalation>),   // auto-replan (AUTONOMOUS)
+  }
+
+  Serialization: msgpack (disk), postcard (IPC wire) — consistent with project convention.
+  FeasibilityOutcome reused from reasoning crate (Phase 2D). No new enum.
+
+
+SKIP CRITERIA (deterministic)
+
+  FEASIBILITY_PROBE is skipped (PLANNING -> TESTING_FIRST directly) when ALL of:
+    1. PipelineSpec.novel_steps.is_empty() == true
+       (L2 structural validator marks steps as novel when tool/approach not in capability registry)
+    2. ALL resource constraints met with >= 20% margin. Formula per resource:
+       resource_free >= resource_required * 1.20
+       Applied independently to: VRAM (per-GPU), RAM, disk.
+       All three must pass. If any single resource fails the margin check, probe runs.
+       (avoids probe for well-known workloads on capable hardware)
+  If either condition fails, FEASIBILITY_PROBE runs.
+  Skip decision logged to SSB as action_type='phase_transition' with skip_reason field.
+  Grounding: architecture-overview.txt L139 confirms PLANNING->TESTING_FIRST skip exists.
+
+
+RISKS TO WATCH
+
+  R-4F-1: nvml-wrapper requires NVIDIA driver installed. On systems without NVIDIA GPU,
+    Nvml::init() returns Err. Must handle gracefully: gpu_count=0, gpu_info=vec![].
+    Grounding: nvml-wrapper docs — wraps libloading, fails if driver absent.
+
+  R-4F-2: sysinfo refresh overhead. Creating System::new_all() is expensive.
+    Keep one System instance, call refresh_specifics() with only needed categories.
+    Grounding: sysinfo docs recommend reuse over recreation.
+
+  R-4F-3: VRAM readings are point-in-time. Another process (ollama, ONNX) may allocate
+    between probe and stub execution. Mitigation: re-check VRAM immediately before
+    stub launch via ModelPool.available_vram(). Uses nvml device.memory_info().free.
+    Grounding: vLLM pre-flight pattern — checks at load time, not just at startup.
+
+  R-4F-4: Windows named pipe IPC latency may differ from Unix socket.
+    Stub timeout must account for IPC overhead. Use same IPC as Phase 4A (Tier C).
+    Grounding: Phase 4A already handles cross-platform IPC.
+
+  R-4F-5: Stub sandbox escape. Stubs execute in Tier C isolated process with
+    FEASIBILITY tool restrictions (stub write + bash + web search only, NO edit/git).
+    Grounding: orchestrator.txt L38 — phase-aware tool loading.
+
+
+STEPS
+
+  4F.1 SKELETON — probe types + stub harness + IPC integration
+    PRE_GATE:
+      - Phase 4E exit criteria met: PipelineSpec -> ExecutablePipeline deterministically
+      - cargo build --workspace succeeds with zero errors
+      - cargo test --workspace -- --test-threads=1 passes
+      - Phase 4A agent isolation (Tier C) operational: elai_cc_agent binary compiles and IPC works
+      - grep -c "pub enum FeasibilityOutcome" .elai_cc/crates/reasoning/src/types.rs returns 1
+        (Phase 2D prerequisite: FeasibilityOutcome type exists)
+    TASK:
+      - Add SystemProbeResult, GpuInfo, SystemConstraints, StubResult, ResourceDelta,
+        FeasibilityReport, FeasibilityEscalation, FeasibilityDecision to orchestrator types
+      - Add FeasibilityProbe trait (all methods take &self for object safety):
+          fn probe_system(&self) -> Result<SystemProbeResult>
+          fn check_constraints(&self, probe: &SystemProbeResult, constraints: &SystemConstraints) -> bool
+          fn run_stub(&self, step: &PipelineStep, alternative: u32, timeout: Duration) -> Result<StubResult>
+          fn decide(&self, report: &FeasibilityReport, mode: ExecutionMode) -> FeasibilityDecision
+        ExecutionMode: enum { Interactive, Autonomous } — defined in orchestrator::types
+          (if not already present from Phase 3A FSM, add here)
+      - Stub harness: wraps Phase 4A agent process with FEASIBILITY tool restrictions.
+        Feasibility executor uses EXPLICIT AgentDispatchConfig overrides (not default Executor config):
+          - GRC budget: 3/600 (not executor's normal 8/1200)
+          - ToolFilter: allowed_tools = [stub_write, bash] only (not full edit/git)
+          - Sandbox: 25s graceful / 30s hard kill (not normal timeout)
+          - Line limit: strict <50 lines per stub (enforced before execution)
+        The DispatchStage.agent field is the AUTHORITATIVE config source. Code that checks
+        role == Executor must also check the dispatch config for overrides.
+        Source: technical-analysis-v3.txt Concern 5 (BLOCK 7 resolution).
+      - IPC: reuse existing wire protocol (1-byte version + 4-byte length + postcard)
+      - Stubs limited to <50 lines (enforced by line count check before execution)
+      - SSB branch creation per stub alternative (tag="branch:stub_{step_id}_{n}")
+    DETERMINISTIC_CHECK:
+      - grep "pub struct SystemProbeResult" .elai_cc/crates/orchestrator/src/feasibility/types.rs
+      - grep "pub struct FeasibilityReport" .elai_cc/crates/orchestrator/src/feasibility/types.rs
+      - grep "pub trait FeasibilityProbe" .elai_cc/crates/orchestrator/src/feasibility/mod.rs
+      - grep "pub enum FeasibilityDecision" .elai_cc/crates/orchestrator/src/feasibility/types.rs
+      - cargo build --workspace succeeds
+    ADVERSARIAL:
+      - If nvml-wrapper is unavailable at runtime, probe must return gpu_count=0 gracefully.
+        Test: #[test] fn probe_no_gpu() mocks Nvml::init() -> Err, asserts gpu_count==0.
+      - If postcard serialization of FeasibilityReport exceeds MAX_FRAME_SIZE (10MB),
+        must reject. Test: construct report with 1000 stubs, assert serialized_size < 10MB.
+    ACCEPTANCE:
+      - All 8 types compile with serde Serialize/Deserialize
+      - FeasibilityProbe trait is object-safe (Box<dyn FeasibilityProbe> compiles)
+      - Wire protocol roundtrip: serialize -> deserialize FeasibilityReport == original
+    GROUNDING:
+      - "nvml device.memory_info() returns total/used/free" -> GROUNDED: nvml-wrapper docs.rs API reference
+      - "sysinfo total_memory() returns bytes" -> GROUNDED: sysinfo docs.rs, confirmed 0.30+ API
+      - "Tier C agent isolation reusable for stubs" -> GROUNDED: phase-4A.txt, orchestrator.txt S12
+      - "FeasibilityOutcome exists in reasoning crate" -> VERIFIED: reasoning.txt S10, phase-2D types
+      - "postcard wire protocol from Phase 4A" -> GROUNDED: orchestrator.txt S12, 4A.1 TASK
+
+  4F.2 VERIFY — compilation + existing tests
+    PRE_GATE:
+      - 4F.1 DETERMINISTIC_CHECK all pass
+    TASK:
+      - cargo build --workspace (zero errors, zero new warnings)
+      - cargo test --workspace -- --test-threads=1 (all existing tests pass)
+      - Verify new types don't conflict with existing orchestrator types
+    DETERMINISTIC_CHECK:
+      - cargo build --workspace 2>&1 | grep -c "error" returns 0
+      - cargo test --workspace -- --test-threads=1 exits 0
+      - cargo test --workspace -- --test-threads=1 2>&1 | grep "test result:" shows 0 failed
+    ADVERSARIAL:
+      - If new types shadow existing names, compilation fails with ambiguity.
+        Test: grep for duplicate struct names across orchestrator crate.
+    ACCEPTANCE:
+      - Zero new compiler errors
+      - Zero new compiler warnings
+      - All pre-existing tests still pass (count >= previous phase count)
+    GROUNDING:
+      - "New types may shadow existing names" -> VERIFIED: grep orchestrator crate for naming conflicts at implementation time
+
+  4F.3 TEST — contract and integration tests (all FAIL initially)
+    PRE_GATE:
+      - 4F.2 DETERMINISTIC_CHECK all pass
+      - Stub harness compiles (4F.1 skeleton in place)
+    TASK:
+      Write tests that exercise:
+      T1: SystemProbe detects GPU count and VRAM via nvml-wrapper
+          - Mock: inject fake Nvml returning 2 GPUs, 12GB each
+          - Assert: probe.gpu_count == 2, probe.gpu_info[0].total_bytes == 12*1024^3
+      T2: SystemProbe detects RAM and disk via sysinfo
+          - Mock: inject fake sysinfo returning 32GB RAM, 100GB disk free
+          - Assert: probe.ram_total_bytes == 32*1024^3, probe.disk_free_bytes == 100*1024^3
+          - Note: real sysinfo integration tested separately in 4F.5 (live probe smoke test)
+      T3: Constraint check: probe meets constraints -> true
+          - Construct probe with 12GB VRAM, constraints with 8GB min -> true
+      T4: Constraint check: probe fails constraints -> false
+          - Construct probe with 4GB VRAM, constraints with 8GB min -> false
+      T5: Stub executes in sandbox, returns StubResult with Pass
+          - Stub: "fn main() { println!(\"ok\"); }" (1 line, trivially passes)
+          - Assert: outcome == FeasibilityOutcome::Pass, elapsed_ms < 30000
+      T6: Stub at exactly 50 lines rejected before execution (strict <50)
+          - Stub: 50 lines of "// padding"
+          - Assert: returns Err (line count >= 50, strict <50 enforced)
+      T7: Stub timeout after 30s hard kill
+          - Stub: "fn main() { loop {} }" (infinite loop)
+          - Assert: outcome == FeasibilityOutcome::Fail, elapsed_ms ~= 30000 (within 1s)
+      T8: Max 3 alternatives per step, then escalation
+          - 3 stubs all return Fail -> FeasibilityDecision::Escalate with 3 StubResults
+      T9: SSB branch created per stub alternative
+          - Run 2 stubs for same step -> SSB has branch:stub_{id}_0 and branch:stub_{id}_1
+      T10a: Skip criteria: both conditions met -> skip
+          - PipelineSpec with novel_steps=[], resources at 150% of required (margin >= 20%)
+          - Assert: FEASIBILITY_PROBE skipped, no stubs run
+      T10b: Skip criteria: no novel steps BUT margin < 20% -> probe runs
+          - PipelineSpec with novel_steps=[], VRAM at 110% of required (< 120%)
+          - Assert: FEASIBILITY_PROBE runs (resource probe only, no stubs)
+      T10c: Skip criteria: margin >= 20% BUT novel steps exist -> probe runs
+          - PipelineSpec with novel_steps=[step_x], resources at 150%
+          - Assert: FEASIBILITY_PROBE runs (stubs execute for novel steps)
+      T11: FeasibilityReport serializes to msgpack and round-trips
+          - Construct report, serialize, deserialize, assert equality
+      T12: Stub sandbox restrictions enforced (no edit/git tools available)
+          - Stub requests EditFile tool -> ToolResult::Denied
+      T13: VRAM re-check before stub launch
+          - Mock ModelPool.available_vram() returning below threshold
+          - Assert: stub not launched, StubResult with Fail + reason="insufficient_vram"
+      T14: Dual timeout: graceful at 25s, hard kill at 30s
+          - Stub: listens for graceful shutdown IPC, on receipt writes "graceful_ack" to stdout
+            and exits cleanly. Without signal, runs indefinitely.
+          - Assert: stdout contains "graceful_ack" (stub received signal at 25s and exited before 30s)
+          - Assert: elapsed_ms >= 25000 and < 30000 (graceful window honored)
+      T15: ProceedWithConstraints when hardware partially sufficient
+          - Probe: 1 GPU with 8GB VRAM. Constraints: 2 GPUs preferred, 1 minimum.
+            Stubs pass on single GPU (slower but functional).
+          - Assert: FeasibilityDecision::ProceedWithConstraints(["single_gpu_fallback"])
+      T16: Malformed IPC frame produces synthesized StubResult
+          - Stub sends invalid postcard bytes over IPC
+          - Assert: StubResult with outcome=Fail, stderr_summary contains "malformed_ipc",
+            step_id and elapsed_ms populated (not default/zero)
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace -- feasibility 2>&1 | grep "test result:" shows 16 tests, 16 failed
+        (T1-T16 all fail because implementation is stubbed)
+      - Every test has #[test] attribute and is in tests/contracts/ or crate test module
+    ADVERSARIAL:
+      - If stub process leaks (not killed after timeout), system accumulates zombie processes.
+        Test T7 must verify process is dead after test completes (no lingering PID).
+      - If SSB branch creation fails, stub result is lost.
+        Test T9 must verify branch exists in session_dag.db after stub runs.
+    ACCEPTANCE:
+      - 16 tests exist, all fail for the right reason (NotImplemented/stub panic, not compile error)
+      - Test names match T1-T16 naming convention
+      - Zero tests pass (implementation not yet written)
+    GROUNDING:
+      - "30s timeout standard for sandboxed stubs" -> GROUNDED: BullMQ docs, E2B/Promptfoo production patterns
+      - "SSB branch tag format" -> GROUNDED: orchestrator.txt S10 (tag="branch:{name}")
+      - "Max 3 alternatives" -> GROUNDED: pipeline-factory.txt S4 + orchestrator.txt S10 (branch limit: max 3)
+      - "FEASIBILITY tool restrictions" -> GROUNDED: orchestrator.txt S2 L38
+
+  4F.4 ADVERSARIAL TESTS — edge cases and security
+    PRE_GATE:
+      - 4F.3 tests exist (16 tests, all failing)
+    TASK:
+      Write adversarial tests:
+      A1: Stub attempts filesystem escape (write to /tmp or .elai_cc/)
+          - Assert: write blocked by Tier C sandbox, tool returns Denied
+      A2: Stub attempts network access (not researcher role)
+          - Assert: socket call blocked by seccomp/AppContainer
+      A3: Stub sends malformed IPC frame (invalid postcard payload)
+          - Assert: orchestrator rejects frame, stub marked as Fail (not crash)
+      A4: Concurrent stubs on same GPU (VRAM contention)
+          - Two stubs claim same GPU simultaneously
+          - Assert: second stub waits or gets Fail, not OOM crash
+      A5: Probe on system with no GPU (CI environment)
+          - Assert: gpu_count=0, constraints_met=false if GPU required, true if CPU-only plan
+      A6: Stub returns output exceeding MAX_FRAME_SIZE (10MB)
+          - Assert: truncated or rejected, not OOM on orchestrator side
+      A7: Race condition: VRAM consumed between probe and stub launch
+          - Mock: probe shows 8GB free (sufficient), re-check before stub shows 2GB free (insufficient)
+          - Assert: re-check catches the drop, stub NOT launched, StubResult with Fail + reason="vram_dropped"
+      A8: Branch limit: 4th stub on same step after 3 branches exist
+          - Assert: escalation triggered, no 4th branch created
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace -- feasibility_adversarial 2>&1 shows 8 tests, 8 failed
+    ADVERSARIAL:
+      - If adversarial tests themselves are flaky (timing-dependent), they mask real bugs.
+        All timing tests must use injected time (entropy quarantine) not real clocks.
+    ACCEPTANCE:
+      - 8 adversarial tests exist, all fail (not yet implemented)
+      - Each test documents the attack vector in its doc comment
+    GROUNDING:
+      - "Tier C sandbox blocks filesystem escape" -> GROUNDED: phase-4A.txt BLOCK-5 (IPC socket isolation), orchestrator.txt S12
+      - "seccomp blocks network for non-researcher" -> GROUNDED: phase-4A.txt BLOCK-1/BLOCK-2
+
+  4F.5 IMPLEMENT — make all tests pass
+    PRE_GATE:
+      - 4F.3 + 4F.4 tests exist (24 total, all failing)
+      - nvml-wrapper and sysinfo in Cargo.toml dependencies
+        Command: grep "nvml-wrapper" .elai_cc/Cargo.toml && grep "sysinfo" .elai_cc/Cargo.toml
+    TASK:
+      Implement in order:
+      I1: SystemProbe — hardware detection
+          - GPU: nvml-wrapper Nvml::init() -> device_by_index(n) -> device.memory_info()
+            Returns MemoryInfo { total, used, free } in bytes. device.name(), device.uuid().
+            Handle Nvml::init() failure gracefully (no GPU).
+          - RAM: sysinfo System with refresh_specifics(
+              RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()))
+            system.total_memory(), system.used_memory() (in bytes, sysinfo 0.37+).
+            Disks are a separate struct: Disks::new_with_refreshed_list() -> disk.available_space().
+            Check sysinfo::IS_SUPPORTED_SYSTEM before querying.
+            Note: RefreshKind does NOT support BitOr. Use builder pattern.
+          - Keep single System instance (sysinfo docs: recreation is expensive).
+          - Pin sysinfo to 0.37+ (MSRV 1.88.0). Verify API at implementation time.
+      I2: Constraint checker — pure function, no I/O
+          - Compare ProbeResult fields against SystemConstraints.
+          - 20% margin check for skip criteria.
+      I3: Stub harness — reuse Phase 4A agent process
+          - Spawn elai_cc_agent with role=feasibility, tool_restrictions=FEASIBILITY set.
+          - Tool restrictions per orchestrator.txt S2: stub write (<50 lines) + bash + web search.
+            NO edit, NO git, NO full file operations.
+          - Line count enforcement: count newlines in stub source, reject if >= 50 (strict <50, matching pipeline-factory.txt S4 and GOAL).
+          - Dual timeout: tokio::time::timeout(Duration::from_secs(30)) wraps the stub future.
+            At 25s: send graceful shutdown IPC message to stub.
+            At 30s: on Elapsed error, call child.kill().await EXPLICITLY — tokio's kill_on_drop
+            is false by default (verified: tokio docs + issue #2685), dropping Child does NOT kill.
+            On Windows: TerminateProcess via child.kill(). On Linux: SIGKILL via child.kill().
+            After kill: verify process is dead (waitpid/GetExitCodeProcess).
+          - Resource delta: probe VRAM/RAM before and after stub execution.
+          - Stdout captured, blake3 hashed for deterministic replay verification.
+      I4: SSB branch integration
+          - Before each stub: create SSB snapshot with tag="branch:stub_{step_id}_{n}".
+          - After winning stub: merge winning branch. Discard losing branches.
+          - Max 3 branches per step (enforced, matches branch limit in orchestrator §10).
+      I5: Decision logic
+          - All pass -> FeasibilityDecision::Proceed
+          - Pass with constraints -> ProceedWithConstraints(constraint_list)
+          - All 3 alternatives fail -> Escalate (INTERACTIVE) or Replan (AUTONOMOUS)
+      I6: Skip logic
+          - Check PipelineSpec.novel_steps.is_empty() AND resource margin >= 20%.
+          - If skip: log to SSB, transition PLANNING -> TESTING_FIRST directly.
+      I7: Report serialization
+          - FeasibilityReport to msgpack (rmp-serde). Store as stub_results.msgpack.
+          - Verify round-trip in test.
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace -- feasibility 2>&1 | grep "0 failed"
+      - cargo test --workspace -- feasibility_adversarial 2>&1 | grep "0 failed"
+      - All 24 tests pass (16 contract + 8 adversarial)
+    ADVERSARIAL:
+      - If implementation uses real Nvml in tests, tests fail on CI without GPU.
+        All GPU tests must use trait-based injection (mock Nvml for unit tests).
+      - If sysinfo values change between test setup and assertion (live system),
+        tests become flaky. Use threshold assertions (> 0) not exact values for live probes.
+    ACCEPTANCE:
+      - 24/24 tests pass
+      - Zero new warnings
+      - Stub timeout test completes in <35s (30s timeout + 5s test overhead)
+      - FeasibilityReport msgpack round-trip produces identical output
+    GROUNDING:
+      - "nvml Nvml::init() -> device_by_index -> memory_info()" -> GROUNDED: nvml-wrapper docs.rs API
+      - "sysinfo refresh_specifics more efficient than new_all" -> GROUNDED: sysinfo docs.rs recommendation
+      - "blake3 for deterministic hashing" -> GROUNDED: blake3 crate, widely used in Rust ecosystem
+      - "vLLM checks VRAM at load time" -> GROUNDED: vLLM docs gpu_memory_utilization preflight pattern
+      - "Dual timeout 25s/30s" -> GROUNDED: BullMQ sandboxed processor pattern (soft+hard timeout)
+
+  4F.6 MEASURE — collect metrics
+    PRE_GATE:
+      - 4F.5 DETERMINISTIC_CHECK all pass (24/24 tests green)
+    TASK:
+      Collect and store in .elai_cc/metrics/phase_4F.toml:
+      - system_probe_latency_ms: time for full hardware probe (target: <500ms)
+      - stub_execution_p50_ms: median stub execution time across test suite
+      - stub_execution_p99_ms: 99th percentile stub time (target: <30000ms)
+      - constraint_check_latency_us: pure function, should be <100us
+      - report_serialization_bytes: msgpack size of typical FeasibilityReport
+      - skip_criteria_evaluation_us: time to check novel_steps + margin
+      - test_count: total tests (target: >= 24)
+      - test_pass_count: passing tests (target: 24)
+      - compile_time_delta_s: workspace compile time change from Phase 4E baseline
+    DETERMINISTIC_CHECK:
+      - test -f .elai_cc/metrics/phase_4F.toml
+      - grep "test_pass_count" .elai_cc/metrics/phase_4F.toml shows 24
+      - grep "system_probe_latency_ms" .elai_cc/metrics/phase_4F.toml shows value < 500
+    ADVERSARIAL:
+      - If metrics collection itself is slow (>5s), it delays pipeline.
+        Metrics collection must be <2s total.
+    ACCEPTANCE:
+      - All 9 metrics present in phase_4F.toml
+      - system_probe_latency_ms < 500
+      - test_pass_count == 24
+      - compile_time_delta_s < 10 (from 4E baseline)
+    GROUNDING:
+      - "Probe latency <500ms" -> GROUNDED: nvml init + sysinfo refresh measured at <100ms each in benchmarks
+      - "Metrics in TOML" -> GROUNDED: project convention (.elai_cc/metrics/phase_{N}.toml)
+
+
+TESTABLE INVARIANTS (summary)
+
+  1. SystemProbe never panics on missing GPU (returns gpu_count=0)
+  2. Constraint check is pure: same inputs -> same output, no I/O
+  3. Stub line count enforced before execution (>=50 lines = rejected, strict <50)
+  4. Stub hard-killed at 30s (no runaway processes)
+  5. Max 3 SSB branches per novel step (no combinatorial explosion)
+  6. Escalation after 3 failed alternatives (never 4th attempt)
+  7. Skip criteria is deterministic: novel_steps.is_empty() AND margin >= 20%
+  8. FeasibilityReport msgpack round-trip is lossless
+  9. Stub sandbox enforces FEASIBILITY tool restrictions (no edit/git)
+  10. VRAM re-checked immediately before stub launch (not just at probe time)
+  11. FeasibilityDecision matches execution mode (Escalate for INTERACTIVE, Replan for AUTONOMOUS)
+  12. Stdout hash (blake3) is deterministic for identical stdout bytes (hash is deterministic; stub output may vary if stub emits timestamps/PIDs)
+
+
+DEPENDENCY NOTES
+
+  Crate dependencies added by this phase:
+    nvml-wrapper (GPU detection) — already evaluated in risk-register.txt R5, R50
+    sysinfo (RAM/disk) — 83.9M downloads, well-maintained, MSRV 1.88.0
+    blake3 (stdout hashing) — if not already present; else use existing hash dependency
+  No new crate dependencies beyond these three. rmp-serde already used project-wide.
+  FeasibilityOutcome reused from reasoning crate — no duplication.
+
+
+EXIT CRITERIA
+  All 24 tests pass (16 contract + 8 adversarial). System probe detects constraints on current hardware.
+  Stubs validate feasibility in Tier C isolation with branch-and-explore.
+  Escalation protocol works for both INTERACTIVE and AUTONOMOUS modes.
+  Skip criteria prevents unnecessary probing on well-known workloads.
+  FeasibilityReport persisted as stub_results.msgpack.
+  Every call site and struct that participates in request routing must wire ssb, fsm, and clock through the single RuntimeClient; no step may leave these fields as None or uninitialized after construction.
+
+
+BABY STEP FEASIBILITY EXTENSION
+
+  The base 4F probes top-level novel steps from ExecutablePipeline.
+  This extension probes at the baby step level within the DecompositionTree.
+
+  DESIGN
+    After the DecompositionTree is built (4E), before execution starts, the system
+    identifies baby steps that use novel packages/frameworks/APIs. Each novel baby step
+    gets a feasibility stub (<50 lines) to verify the approach works on current hardware.
+
+    Novel baby step detection:
+      - Baby step references a PackageRef with verified=false -> novel
+      - Baby step uses a framework not previously used in this project -> novel
+      - Baby step requires a system capability not yet tested (e.g. GPU, FFI) -> novel
+
+    Feasibility runs PER CONCEPT (not all at once):
+      Before executing concept N, probe all novel baby steps in concept N.
+      This is more efficient than probing everything upfront: concept 2's approach
+      may change based on concept 1's results.
+
+    Skip criteria (per concept):
+      No novel baby steps in this concept -> skip feasibility for this concept.
+
+  NEW TYPES
+
+    struct BabyStepFeasibilityReport {
+        concept_id: ConceptId,
+        probed: Vec<BabyStepStubResult>,
+        skipped: Vec<BabyStepId>,                // non-novel baby steps
+        escalations: Vec<BabyStepEscalation>,
+    }
+
+    struct BabyStepStubResult {
+        baby_step_id: BabyStepId,
+        package_refs: Vec<PackageRef>,           // what was verified
+        stub_result: StubResult,                 // reuses existing StubResult type
+    }
+
+    struct BabyStepEscalation {
+        baby_step_id: BabyStepId,
+        reason: String,
+        alternatives_tried: Vec<BabyStepStubResult>,
+    }
+
+  STEPS (4F.7-4F.8, extend base 4F.1-4F.6)
+
+  4F.7 BABY STEP FEASIBILITY TESTS
+    PRE_GATE:
+      - 4F.6 complete (base feasibility working)
+      - 4E.7+ types exist (DecompositionTree, BabyStepSpec)
+    TASK:
+      - Novel baby step detection: PackageRef.verified=false -> novel
+      - Per-concept feasibility probe: only probe novel baby steps in current concept
+      - Stub generation from BabyStepSpec: extract package import + minimal usage
+      - Skip criteria: zero novel baby steps in concept -> skip
+      - BabyStepFeasibilityReport serialization
+      Tests:
+        - Baby step with verified package -> not probed
+        - Baby step with unverified package -> probed
+        - Probe passes -> proceed
+        - Probe fails 3x -> BabyStepEscalation
+        - Per-concept isolation: concept 2 not probed until concept 1 execution starts
+        - All packages verified -> entire concept feasibility skipped
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- baby_step_feasibility (>= 6 tests)
+    ACCEPTANCE:
+      - 6+ tests exist
+
+  4F.8 BABY STEP FEASIBILITY IMPLEMENT + MEASURE
+    PRE_GATE:
+      - 4F.7 tests exist and fail
+    TASK:
+      - Implement novel baby step detection from BabyStepSpec
+      - Implement per-concept feasibility loop
+      - Implement stub generation from BabyStepSpec (extract import + usage)
+      - Reuse base FeasibilityProbe for stub execution
+      - Measure: novel detection rate, probe pass rate, time per concept
+    DETERMINISTIC_CHECK:
+      - All baby step feasibility tests pass
+      - Metrics appended to .elai_cc/metrics/phase_4F.toml
+    ACCEPTANCE:
+      - Per-concept feasibility operational
+      - Skip criteria prevents unnecessary probing

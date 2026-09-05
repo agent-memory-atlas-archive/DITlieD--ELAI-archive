@@ -1,0 +1,421 @@
+FOCUS TUNNEL DESIGN: ZERO-OVERHEAD LLM EXECUTION PATH
+Date: 2026-04-15
+Status: PROPOSAL
+Author: Claude Opus 4.6 (design session, not implementation)
+
+
+========================================================================
+PROBLEM STATEMENT
+========================================================================
+
+In standard LLM tool-use, each generation round costs:
+  1. Model reads tool schemas (~200-500 tokens of schema overhead)
+  2. Model decides WHICH tool to call (reasoning overhead)
+  3. Model formats tool call as JSON (structural overhead)
+  4. System executes tool, returns result (~100-500 tokens)
+  5. Model reads result, reasons about it, decides next action
+  6. Repeat steps 1-5 for every action
+
+For a single file edit, this might cost 3-4 round trips and 2000+
+tokens of overhead that contribute nothing to the actual code.
+
+ELAI already eliminates most of this by design (the model never decides
+FSM transitions, never picks tools, never manages sessions). But there
+is still generation overhead: the model produces structured JSON output
+wrapping the code, and the system parses it.
+
+Focus tunnel pushes further: the model outputs ONLY code. The system
+handles everything else -- file routing, writes, validation, dependency
+installation, next-step selection. The model is a pure code printer.
+
+
+========================================================================
+DESIGN
+========================================================================
+
+THREE GENERATION MODES
+------------------------------------------------------------------------
+
+The orchestrator selects generation mode per step based on task type:
+
+  MODE 1 - FILL-IN-MIDDLE (FIM)
+  MODE 2 - DIFF PATCH
+  MODE 3 - STRUCTURED (current default, fallback)
+
+Selection logic (deterministic, no LLM involvement):
+
+  IF step.type == "edit_existing" AND step.target_file exists
+     AND step.edit_region is defined (line range from plan):
+    -> FIM mode
+
+  ELIF step.type == "edit_existing" AND step.changes > 1 region:
+    -> DIFF mode
+
+  ELIF step.type == "create_file":
+    -> STRUCTURED mode (need filename + content)
+
+  ELSE:
+    -> STRUCTURED mode (fallback)
+
+
+MODE 1: FILL-IN-MIDDLE (FIM)
+------------------------------------------------------------------------
+
+Concept: give the model the code BEFORE and AFTER the edit region.
+The model fills the gap. No tool schemas, no JSON wrapping, no
+file path specification. Pure code completion.
+
+Prompt structure:
+
+  <|fim_prefix|>{code before edit region}
+  <|fim_suffix|>{code after edit region}
+  <|fim_middle|>
+
+Model output: raw code that goes between prefix and suffix.
+
+System responsibilities:
+  1. Plan specifies: file, start_line, end_line
+  2. Orchestrator reads file, splits at edit region
+  3. Assembles FIM prompt with surrounding context
+  4. Model generates code tokens
+  5. Orchestrator inserts generated code at the edit region
+  6. PostToolUse hooks validate (rules, AST, linter)
+  7. If validation fails: deterministic feedback, retry FIM
+
+Context assembly for FIM:
+
+  The prefix and suffix are NOT just the raw file. They include
+  focused context:
+
+  PREFIX (token-budgeted):
+    // File: src/auth.rs
+    // Task: add token expiry validation
+    // Dependencies: jsonwebtoken::decode, chrono::Utc
+    {imports section of file}
+    {functions/structs that the edit region calls or references}
+    {code from line 1 to start_line}
+
+  SUFFIX:
+    {code from end_line to EOF, or next 50 lines if file is large}
+
+  This gives the model structural context without tool-use overhead.
+
+Token savings vs structured mode:
+  Structured: ~200 tok schema + ~100 tok JSON wrapper + ~50 tok
+    file path = ~350 tokens overhead per step.
+  FIM: 0 tokens overhead. The entire output is useful code.
+  On a 30-step task: ~10,500 tokens saved = ~42% of a 25K budget.
+
+Model support:
+  Qwen2.5-Coder: native FIM support via <|fim_prefix|> tokens.
+  Most code models support FIM (StarCoder, DeepSeek-Coder, CodeLlama).
+  Cloud models (Claude, GPT): do not support FIM natively. Use
+  structured mode for cloud. This is fine -- cloud has 200K context,
+  the overhead is negligible.
+
+Limitations:
+  - Only works for single-region edits in existing files
+  - Model must support FIM tokens (checked at model registration)
+  - Edit region must be defined in plan (requires plan-level precision)
+  - Max output length must be estimated (prefix + suffix + max_gen
+    must fit in context window)
+
+
+MODE 2: DIFF PATCH
+------------------------------------------------------------------------
+
+Concept: model outputs a unified diff. System applies it with the
+existing 3-tier edit matching (exact -> whitespace-normalized ->
+ellipsis-elision from tools crate).
+
+Prompt structure:
+
+  You are editing {file_path}.
+  Current content (lines {start}-{end}):
+  ```
+  {relevant file section}
+  ```
+
+  Task: {step description from plan}
+
+  Output a unified diff. No explanation, no markdown fencing.
+
+  --- a/{file_path}
+  +++ b/{file_path}
+
+Model output: unified diff format directly.
+
+System responsibilities:
+  1. Parse diff output (standard unified diff parser)
+  2. Apply hunks using tools crate edit matching
+  3. Validate via PostToolUse hooks
+  4. On parse failure: fall back to STRUCTURED mode
+
+Token savings vs structured:
+  Diff format is ~30-50% smaller than full file output when changes
+  are small relative to file size. For a 200-line file where 10 lines
+  change: structured outputs 200 lines, diff outputs ~30 lines.
+
+Multi-region support:
+  Unlike FIM, diff can express multiple edit regions in one output.
+  Useful for "rename variable across file" or "add error handling
+  to 3 functions."
+
+Limitations:
+  - Model must produce valid unified diff (some small models struggle)
+  - Context lines in diff must match actual file (stale context =
+    patch failure, handled by edit matching fallback tiers)
+  - Not useful for new files (no "current content" to diff against)
+
+
+MODE 3: STRUCTURED (existing)
+------------------------------------------------------------------------
+
+Current behavior. Model outputs JSON with file path + content + action
+type. Used for:
+  - New file creation (no existing content to FIM/diff against)
+  - Complex multi-file operations
+  - Cloud mode (overhead is negligible at 200K context)
+  - Fallback when FIM/diff parsing fails
+
+
+STREAMING VALIDATION
+------------------------------------------------------------------------
+
+Key insight: validation can start BEFORE generation completes.
+
+As the model streams tokens:
+
+  Token-level checks (during generation):
+    - Constrained decoding already prevents invalid syntax in grammar
+      mode (Tier 2 structured output)
+    - Import validation: as import/use statements stream in, check
+      against VERSION_GATE rules and deprecated_patterns. If model
+      starts writing "use blake2::", the constrained decoder can block
+      the token sequence.
+    - Lazy code detection: if model outputs "todo!()", "pass",
+      "// TODO", "unimplemented!()" -- detect immediately, stop
+      generation, re-prompt with stronger instruction.
+
+  Chunk-level checks (every ~50 tokens):
+    - Running AST parse attempt (tree-sitter is fast enough for this)
+    - If AST shows structural impossibility (unclosed brace count
+      growing without bound), early-terminate and retry.
+    - Token budget tracking: if generation exceeds expected length
+      by 2x, likely degenerate -- stop and retry.
+
+  Post-generation checks (unchanged):
+    - Full Tier 1/2 rule evaluation
+    - Linter pass
+    - Compilation check (if incremental compilation enabled)
+
+Early termination saves time: catching a bad generation at token 50
+instead of token 500 saves ~90% of generation time for that attempt.
+
+
+PIPELINE PARALLELISM
+------------------------------------------------------------------------
+
+The BSP superstep architecture already supports this conceptually.
+Focus tunnel makes it practical:
+
+  Time -->
+  Step N:    [generate] [validate] [commit]
+  Step N+1:             [assemble context] [generate] [validate]
+  Step N+2:                                [assemble]  ...
+
+  While step N is being validated (rules, AST, linter), the
+  orchestrator can already:
+  1. Read the plan for step N+1
+  2. Query the knowledge engine for step N+1's context
+  3. Assemble the FIM/diff prompt for step N+1
+
+  If step N's validation passes, step N+1 generation starts
+  immediately with pre-assembled context.
+
+  If step N fails validation, the pre-assembled context for N+1 is
+  discarded (it may depend on N's output). Cost: wasted context
+  assembly (~10-50ms). Benefit: saves 100-500ms per step when
+  validation passes (which is ~88% of the time based on retry rates).
+
+  Constraint: pipeline depth = 1 (only pre-assemble ONE step ahead).
+  Deeper pipelining increases wasted work on failure without
+  proportional benefit.
+
+  This is NOT speculative execution of the LLM. The model only runs
+  for the current step. Only context assembly is pipelined.
+
+
+SPECULATIVE FILE ROUTING
+------------------------------------------------------------------------
+
+In focus tunnel, the system already knows which file to write because
+the plan specifies targets per step:
+
+  Plan step: {
+    target_file: "src/auth.rs",
+    edit_region: { start: 45, end: 67 },
+    action: "edit_existing",
+    description: "add token expiry check"
+  }
+
+The model never needs to specify a file path. The orchestrator:
+  1. Reads target_file from plan
+  2. Sets up FIM/diff context for that file
+  3. Writes model output to that file
+  4. Validates
+
+If the model's output implies a DIFFERENT file is needed (e.g., it
+references a type that should be in a new module), the orchestrator:
+  1. Detects the mismatch via AST analysis (unresolved import)
+  2. Creates a micro-step: "create src/types.rs with type X"
+  3. Runs that micro-step in STRUCTURED mode (new file)
+  4. Retries the original step with updated context
+
+This is a form of the executor's existing ReplanRequest (MINOR level),
+just automated for trivial cases.
+
+
+DEPENDENCY MANAGEMENT
+------------------------------------------------------------------------
+
+When the model writes code that imports a new dependency:
+
+  Detection (deterministic, no LLM):
+    Rust:   parse Cargo.toml, compare against import statements in
+            new code. Missing crate = dependency needed.
+    Python: parse pyproject.toml/requirements.txt, compare against
+            import statements. Missing package = dependency needed.
+    TS/JS:  parse package.json, compare against import/require.
+
+  Resolution (deterministic pipeline):
+    1. Identify missing dependency name from import statement
+    2. Check anti-staleness deprecated_patterns: is this dep outdated?
+    3. If outdated: substitute with recommended replacement
+    4. Version resolution: query registry (crates.io/pypi/npm) for
+       latest compatible version
+    5. Conflict check: does new dep conflict with existing deps?
+       (Cargo handles this for Rust; pip-compile for Python)
+    6. If conflict: report to model as deterministic error, model
+       adjusts approach
+    7. If clear: add to manifest file, run install
+
+  The model never runs `cargo add` or `pip install`. It just writes
+  code with imports. The system figures out and installs what's needed.
+
+  Approval gate: new dependencies require user confirmation (per
+  existing CLAUDE.md rule). In autonomous mode, auto-approve if:
+  - Dependency is in a pre-approved allowlist (elai_cc.toml)
+  - Dependency is already a transitive dep (just making it direct)
+  - Otherwise: queue for human intervention
+
+
+TOKEN BUDGET IMPACT
+------------------------------------------------------------------------
+
+Focus tunnel's savings compound:
+
+  Per-step savings:
+    FIM mode:      ~350 tokens (no schema, no JSON wrapper)
+    Streaming val: ~50-200 tokens (early termination on bad gens)
+    Speculative:   0 tokens (time savings, not token savings)
+
+  Per-task savings (30-step MEDIUM task on 25K budget):
+    FIM steps (est. 60% of steps): 18 * 350 = 6,300 tokens
+    Streaming early-term (est. 12% of steps): 4 * 125 = 500 tokens
+    Total: ~6,800 tokens = 27% of 25K budget freed for code context
+
+  Combined with token-efficiency-design savings:
+    ShortCoder: 18-38% reduction on code context
+    Focus tunnel: 27% reduction on overhead
+    Total effective budget increase: ~45-65% more useful context
+
+  This is the difference between "3B model struggles at 25 LOC steps"
+  and "3B model handles 40 LOC steps comfortably."
+
+
+========================================================================
+INTERACTION WITH OTHER DESIGNS
+========================================================================
+
+Cloud mode (cloud-mode-design.txt):
+  Cloud models use STRUCTURED mode (no FIM support, overhead is
+  negligible at 200K context). Focus tunnel primarily benefits LOCAL
+  mode where every token matters.
+
+Token efficiency (token-efficiency-design.txt):
+  Complementary. ShortCoder compresses code context. Focus tunnel
+  eliminates structural overhead. Both free tokens for actual code.
+
+Reasoning architecture (reasoning-architecture-design.txt):
+  Focus tunnel changes HOW code is generated but not HOW errors are
+  diagnosed. Reasoning layers 1-4 work identically regardless of
+  generation mode. MistakeBook constraints still injected into
+  FIM prefix (as comments in the code context).
+
+Pipeline factory (pipeline-modes-design.txt):
+  Pipeline designer can specify preferred generation mode per step.
+  But the orchestrator makes the final selection based on model
+  capabilities and step type.
+
+Code completeness (code-completeness-enforcement-design.txt):
+  Streaming validation catches lazy code (todo!, pass) during
+  generation, not just after. Faster feedback loop.
+
+
+========================================================================
+IMPLEMENTATION
+========================================================================
+
+No new phase. Integrates into existing phases:
+
+  3J (providers/sidecar): FIM token support in sidecar, generation
+    mode selection in provider trait.
+  4B (tools): Diff parser, streaming validation hooks, pipeline
+    parallelism in context assembly.
+  4D (pipeline factory): Generation mode hints in PipelineSpec steps.
+  4E (pipeline builder): Mode selection logic in ExecutablePipeline.
+
+Implementation steps (new A-steps):
+  A-51: FIM prompt assembly + model capability detection
+  A-52: Diff output parser + integration with edit matching
+  A-53: Generation mode selection logic (deterministic)
+  A-54: Streaming validation framework (token + chunk level)
+  A-55: Pipeline parallelism for context pre-assembly
+  A-56: Automated dependency detection and resolution
+  A-57: Speculative file routing + micro-step creation
+
+Dependencies: sidecar working (3J), tools crate edit matching (4B).
+Estimated: 4-5 implementation sessions.
+
+
+========================================================================
+RISK ASSESSMENT
+========================================================================
+
+Risk 1: FIM quality on small models.
+  3B models may produce worse code in FIM mode than structured mode
+  because FIM is a different task than instruction-following.
+  Mitigation: benchmark harness (A-1) extended with FIM-vs-structured
+  comparison. If FIM pass rate is >10% lower, disable FIM for that
+  model tier. Decision is data-driven, not assumed.
+
+Risk 2: Diff parsing failures.
+  Small models may produce malformed diffs (wrong line numbers,
+  missing context lines, mixed tabs/spaces).
+  Mitigation: 3-tier edit matching already handles fuzzy application.
+  If all 3 tiers fail, fall back to STRUCTURED mode. Track fallback
+  rate in metrics.
+
+Risk 3: Streaming validation false positives.
+  Catching "todo" in a comment about TodoList feature.
+  Mitigation: AST-aware detection. Only flag todo!/pass/unimplemented
+  in code positions (function bodies), not in comments or strings.
+  Tree-sitter parse on partial output handles this.
+
+Risk 4: Pipeline parallelism wasted work.
+  If validation failure rate is high, pre-assembled contexts are
+  constantly discarded.
+  Mitigation: adaptive pipeline depth. Start with depth=1. If
+  validation pass rate drops below 80%, disable pre-assembly until
+  rate recovers. Metric tracked automatically.

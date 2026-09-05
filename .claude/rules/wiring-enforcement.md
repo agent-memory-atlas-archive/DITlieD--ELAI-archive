@@ -1,0 +1,65 @@
+Wiring enforcement (HARD RULE, fail-closed by default)
+
+Loaded by: any task that ships a feature, writes a done-gate / wiring check, edits a WIRING_CONTRACT, plans a phase/step/baby-step, audits a feature for "done", or touches a feature flag (ELAI_*_ENABLE, cargo feature, any default-OFF gate). Portable: this file is project-agnostic and is the canonical wiring doctrine for every workflow harness (ELAI, apps, liteGAME, REGRET).
+
+Why this exists
+
+A "compiles + unit tests pass" gate is structurally blind to wire-dark code: a unit test that calls a function directly is indistinguishable from a missing production caller. An agent that writes the implementation, the unit test, AND the wiring-contract block has satisfied its own gate from inside the boundary the gate was meant to police. Measured internally at ~40-45% wire-dark rate across ~187 shipped plans. This is a definition-of-done failure, not an execution failure. Grounding: docs/strategy/WIRING-ENFORCEMENT-RESEARCH-2026-06-02.md (Chen et al. arXiv:2602.07900 agent tests are observational; Berkeley RDI Apr-2026 in-boundary artifacts gamed ~100%; SWE-Bench+ arXiv:2410.06992 3x proxy inflation; Lilian Weng causal-Goodhart; Go deadcode RTA -test root-set). Companion design docs: WIRING-FIX-CLAUDE-CODE-WORKFLOW.md (this harness), WIRING-FIX-ELAI.md (ELAI runtime).
+
+The shape of a gate that is not blind
+  - it drives the system from a REAL entrypoint (CLI subcommand, IPC handler, FSM transition, HTTP route, hook), never a test shim that calls the new function directly
+  - it measures an artifact the AGENT DID NOT WRITE (a runtime event row, an LLVM coverage hit count from the compiled binary, an in-process span), never the agent's own stdout or its own unit test
+  - missing evidence is a hard FAIL, never SKIP / UNVERIFIED / WARN
+  - the gate itself is frozen in the repo and read-only to the executing run
+
+THE TEN FAIL-CLOSED RULES (R1-R10, blocking)
+
+R1  MISSING EVIDENCE IS A HARD FAIL. Every required gate field is required. A contract that omits trigger, observable_effect, produces, consumes, or reachable_from is FAIL, not SKIP and not UNVERIFIED. A gate pointed at a contract set that finds ZERO contracts exits nonzero (ArchUnit failOnEmptyShould). Absence of proof is proof of absence for gate purposes.
+
+R2  THE GATE MUST NOT DEPEND ON A RESOURCE THAT CAN BE SILENTLY ABSENT. If the gate reads an event db, a log, or a coverage artifact and it is not found, the verdict is FAIL, not UNVERIFIED — "not found" means the feature never ran and produced it. A dead evidence path must scream, not shrug; the gate self-tests its evidence path at startup.
+
+R3  NO OPT-IN FLAGS ON THE GATE ITSELF. No --run-trigger, --skip-contract, or any opt-in that lets static-only checks emit PASS. The runtime leg runs unconditionally; the only opt-out (--static-only / debug) can never emit PASS for a contract that declares runtime evidence.
+
+R4  MEASURE THE REAL OBJECTIVE, NOT A PROXY. The objective is "a real entrypoint ran and left a trace the agent did not author." A unit-test call to the new function has zero causal connection to production wiring. The load-bearing proof is the off-agent artifact (the runtime event row / LLVM hit count / span), not stdout.
+
+R5  SOUND REFERENCE, NOT LEAF-NAME GREP. A symbol name appearing in text is not a call. Prefer an SCIP reference, an LLVM hit count, or an emitted span. Where only a name-grep is available, label it unsound and treat it as necessary-but-not-sufficient; the runtime leg is the authoritative backstop.
+
+R6  PRODUCER-WITHOUT-CONSUMER IS A BUILD BREAK. A new pub function whose only callers are test code in the same commit FAILS the gate, propagated to the verdict — not a warning, not a review item.
+
+R7  TEST-FILE CALLERS DO NOT SATISFY PRODUCTION REACHABILITY. Go-deadcode RTA insight: test mains are a separate root set. A caller in tests/, contracts/tests/, or under #[cfg(test)] does not satisfy "has a production caller". The gate explicitly excludes test-file callers from the reachability proof.
+
+R8  THE GATE IS FROZEN AND READ-ONLY TO THE EXECUTING RUN. The wiring checker, the smoke harness, the entrypoints map, the smoke manifest, and the wire-dark allowlist are authored ONCE, out-of-band, never regenerated per-plan by the run being evaluated. Enforce with .claude/tools/gate_freeze_check.py (git diff over the frozen fileset in .claude/gate-manifest.txt); a run that modified its own gate is BLOCK and requires a separate, human-reviewed change. This is the single highest-leverage, cheapest change — a run that can rewrite its evaluator always writes itself to PASS.
+
+R9  NO DEFAULT-OFF GRAVEYARD. A new default-OFF flag (ELAI_*_ENABLE, cargo feature) FAILS the gate unless it has a row in wire-dark-allowlist.toml carrying type (kill_switch | experiment), owner, expiry_date, promotion_plan_id, and a smoke test that exercises the ON path. Default-off is not a terminal state; a flag with no promotion path is wire-dark by design.
+
+R10  UNIT-GREEN IS NOT INTEGRATED-GREEN (the integration-seam gate). A per-unit / per-phase done-gate is necessary-not-sufficient: each unit is tested in isolation, against its LOCAL proxy, on the EASY path (the lenient peer/provider, a single-turn input, a run too short to fire secondary paths like compaction / fallback / resume). So a defect at a SEAM BETWEEN units passes every unit's own gate and ships. A multi-unit build therefore REQUIRES a cross-seam INTEGRATION smoke: an INDEPENDENT agent driving the REAL entrypoint end-to-end with a HARD input (the STRICT peer/provider, a multi-turn / multi-tool history, a run long enough to trigger the secondary paths), run after every 2-3 units AND before final DONE -- never only at the very end. Toy single-turn happy-path smokes do not satisfy R10. Missing integration evidence is a FAIL (R1). When parallel units touch a shared resource (a catalog, a schema, a config), the contract between them (a denylist, a prune set, a field whitelist) is a THREADED REQUIRED INPUT to every unit that touches it, never an implicit assumption one unit makes and another silently undoes. Origin: Liberty 2026-06-16 -- 7 cross-seam defects (agents ran with no system prompt; compaction crashed on the group-alias; a strict provider 422'd on a leaked internal field; auto-sync silently undid a prune) EACH passed its own unit gate and were caught ONLY at the integration smoke + the hand-run reachability audit (because there was no Python wire-checker; there now is, see Layer 1).
+
+PREVENTION AT PLANNING TIME (the walking-skeleton PRE_GATE, mandatory)
+
+Detection is the backstop; prevention is cheaper. Every unit of work (baby step / step / B-N / phase) is a vertical slice: it ships the producer AND its in-plan consumer AND its smoke trigger in the SAME unit. "Add fn X" is rejected at decomposition time; the only acceptable form is "add fn X AND call it from real entrypoint Y AND assert the off-agent artifact Z lands." A plan unit whose deliverable is a producer without its consumer-and-smoke in the same unit is REFUSED at planning time, not discovered at audit. This binds into the planning-workflow PRE_GATE injection step and (where present) the b-plan-runner AUDITING sub-state.
+
+ROLE BOUNDARIES
+
+The wiring gate is the AUDITOR's job. The main LLM never declares wiring PASS and never runs the gate itself (consistent with "main model never runs tests"). The smoke-test harness and any trace-assertion test are AUDITOR-authored repo artifacts, never written by the same agent producing the feature — an agent that writes its own smoke test can route it around the real path. This is the harness analog of freeze-the-gate.
+
+THE LAYERED GATE AT A GLANCE (what the auditor runs; cheapest first, a fail blocks later layers)
+  Layer 1 compile-time (every commit, static): dead_code lint with pub(crate) discipline; enum exhaustiveness (no #[non_exhaustive] on internal dispatch enums); knip --production for TS/Svelte; for Python the producer-without-consumer leg is .claude/tools/python_wire_check.py (AST, the runnable sibling of production_caller_check.py -- module-level public defs, R6/R7 semantics, WIRE-DARK[..] escape) + vulture for general dead code; dep hygiene. Floor, not ceiling.
+  Layer 2 cross-language wiring contract (every commit, static): producer/consumer symmetry FAIL-feeding-the-verdict; Tauri generate_handler! <-> TS invoke() symmetry is RUNNABLE at .claude/tools/tauri_ipc_symmetry_check.py (an invoke("X") whose X is in no generate_handler! list = dead IPC = BLOCK; a registered command no call site names = WARN; wrapper-agnostic via the literal-presence suppression -- caught 5 real dead IPCs on dashboard-v2's first run); sidecar route <-> Rust client symmetry; action_type golden lock; empty entrypoint set = FAIL.
+  Layer 2b frontend mount reachability (every commit, static): .claude/tools/svelte_mount_reachability.py BFS-walks the module graph (imports + barrel re-exports + dynamic imports over .svelte+.ts) from the app root (App.svelte/main.ts); a .svelte component on no path from a root = wire-dark UI (ORPHAN = imported nowhere = BLOCK; UNREACHABLE = pulled in only off the root tree = WARN; gated default-.svelte-import models "imported but never written as <Tag>" = the never-mounted bug). knip sees "has an importer"; this sees "reachable from the root mount tree" -- the stronger property.
+  Layer 3 entrypoint coverage (gated before EXECUTING->AUDITING, runtime binary): build instrumented, drive the real binary with production-default env, any NEW function with count==0 = BLOCK unless #[cfg(test)] or a registered WIRE-DARK[B-N] stub; smoke-manifest entry required per new feature.
+  Layer 4 runtime trace assertion (every PR, in-process, un-gameable): drive the REAL entrypoint, assert the off-agent event/span row landed in the window; db-not-found / zero-rows = FAIL; in tracing-test #[traced_test] an explicit logs_contain assert is mandatory (the macro does not auto-fail); SimpleSpanProcessor only, BatchSpanProcessor banned in test setup (flush timing causes silent fail-open). FRONTEND edition: .claude/tools/visual/ui-wire-smoke.mjs (bun + CDP + bun:sqlite, zero deps) drives a REAL browser click on a running dashboard and asserts a NEW Rust-owned SSB row lands (baseline-delta) -- the sound backstop for "a control's handler is actually wired", which the static Layer-2/2b legs and the pixel-only visual-ui-loop cannot prove; db-not-found / Chrome-unreachable / dev-server-unreachable = exit 2 fail-closed, never a green pass. Manifest is auditor-authored per feature (R8), like smoke-manifest.toml.
+
+RESIDUAL RISK (do not oversell)
+  - No sound static reachability for Rust with std + tokio + dyn Trait (no Go-style deadcode). Static legs (Layer 1/2) are approximations: false positives on trait-object / IPC-string / event-bus dispatch (SCIP has no call-graph edges), false negatives on dynamic paths. The runtime leg (Layer 3/4) is the only sound backstop — treat it as load-bearing, not optional. Mitigate dispatch false-positives with an explicit entrypoints map that enumerates trait-dispatch sites.
+  - The smoke harness only proves what it exercises; an under-specified manifest under-covers. The auditor owns the manifest; measure coverage of the manifest itself.
+  - Wire-dark has no external benchmark (arXiv:2601.15195 found no taxonomy category in 33,596 agent PRs). Instrument your own rate (wire-dark plans / total) so this redesign is judged on measured deltas, not faith.
+  - The frontend static legs (Layer 2/2b) are unsound the same way the Rust legs are: tauri_ipc_symmetry_check cannot resolve a non-literal invoke(cmd) (advisory DYNAMIC note), and svelte_mount_reachability lands a runtime-built <svelte:component this={map[key]}> mount in UNREACHABLE (WARN) not REACHABLE when its module is not statically imported on a live path. They are necessary-not-sufficient; ui-wire-smoke.mjs (Layer 4) is the only sound proof a frontend control is actually wired, and even it only proves what its manifest exercises -- the auditor owns the frontend manifest's coverage exactly as it owns smoke-manifest.toml. "Perfect" frontend wiring enforcement is not claimed; these raise the floor from static-only to having the same runtime-proof backbone the backend has.
+
+Self-check before declaring any feature DONE
+  1. Did a REAL entrypoint run it (not a unit test calling the function)?
+  2. Did it leave an artifact I did NOT author (event row / coverage hit / span)?
+  3. Is missing evidence treated as FAIL everywhere in the gate?
+  4. Is the gate frozen — did this run avoid editing its own evaluator?
+  5. If it shipped behind a default-OFF flag, is that flag registered in wire-dark-allowlist.toml with a promotion plan?
+  6. (multi-unit build) Did an INDEPENDENT integration smoke drive the REAL entrypoint on a HARD input (strict peer, multi-turn, long-enough-to-fire-secondary-paths) -- not just per-unit happy-path greens (R10)?
+  If any answer is no, it is not done. It is wire-dark.

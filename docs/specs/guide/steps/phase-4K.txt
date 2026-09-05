@@ -1,0 +1,427 @@
+PHASE 4K: DASHBOARD (Tauri MVP — desktop app with embedded webview)
+Prerequisites: Phase 3A (FSM), Phase 3B (SSB), Phase 3J (CLI wired)
+  Phase 4A-4J recommended but not strictly required (dashboard reads SSB,
+  which exists from 3B. Phase 4 features populate SSB with richer data.)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Build a native desktop UI for ELAI using Tauri v2. One interaction pattern
+for MVP: interactive mode (user drives, ELAI executes with approval gates).
+The UI is NOT a chatbot — it is a structured control surface where every
+input routes through FSM classification.
+
+Tech stack: Tauri v2 (tauri = "2.10", tauri-build = "2.5") desktop app.
+  Rust backend: SsbViewer queries called directly via #[tauri::command].
+  Frontend: Svelte in Tauri webview (small, reactive, good Tauri fit).
+  No HTTP server. No REST API. No WebSocket. No CORS. No port management.
+  Data flow: frontend polls SsbViewer via Tauri invoke() every 500ms.
+  Distribution: single .exe via cargo tauri build (bundles WebView2 on Windows).
+
+GROUNDING:
+  tauri crate verified on crates.io: v2.10.3 (2026-04-16).
+  tauri-build: v2.5.6. tauri-cli: v2.10.1.
+  Tauri v2 uses #[tauri::command] for Rust-to-JS IPC (no HTTP layer).
+  Svelte is a first-class Tauri frontend (create-tauri-app supports it).
+  Source: https://crates.io/crates/tauri, https://v2.tauri.app/
+
+Visual identity: teal primary (#1B7A6E) on dark charcoal (#0f1318).
+Monospace typography (JetBrains Mono). Information density over whitespace.
+Full spec in dashboard-design.txt VISUAL IDENTITY section.
+These apply identically to Tauri webview (it renders HTML/CSS/JS).
+
+READ BEFORE IMPLEMENTING
+  docs/specs/guide/dashboard-design.txt       VISUAL IDENTITY section only (colors, typography, layout language)
+  docs/specs/crates/orchestrator.txt          Section 3 (SSB schema, 17 action types)
+  docs/specs/crates/orchestrator.txt          Section 2 (FSM states, transitions)
+  docs/specs/crates/orchestrator.txt          Section 13 (InteractiveGate, evidence gates)
+
+RISKS TO WATCH
+  Risk 1: SSB schema drift. Dashboard queries SSB directly. If SSB action_types
+    or payload schemas change in a later phase, dashboard breaks silently.
+    Mitigation: typed query functions in SSB viewer library (4K.1) with compile-time
+    checked deserialization. Schema change = compile error, not runtime failure.
+  Risk 2: WebView2 runtime on Windows. Tauri v2 requires WebView2 (Edge-based),
+    pre-installed on Windows 10 1803+ and all Windows 11. Older Windows or
+    locked-down enterprise machines may not have it.
+    Mitigation: Tauri bundler includes WebView2 bootstrapper in .exe installer.
+    Document requirement in README. Test on clean Windows 11 VM.
+  Risk 3: Bundle size. Tauri .exe includes Rust binary + WebView2 bootstrapper.
+    Typical Tauri v2 app: 3-8MB installer on Windows. Acceptable for MVP.
+    Mitigation: strip debug symbols in release. Frontend budget: <100KB JS.
+  Risk 4: Tauri CLI build dependency. cargo tauri build requires @tauri-apps/cli
+    (npm) or cargo-tauri (cargo install). Dev setup has two package managers.
+    Mitigation: document setup in 3 lines. CI can use cargo-tauri directly.
+  Risk 5: 500ms polling instead of push. During heavy execution (100+ SSB
+    writes/sec), UI updates at 2 Hz max. Acceptable for MVP — user sees
+    activity feed update every half second, which feels live enough.
+    Upgrade path: Tauri v2 supports event emission from Rust to frontend
+    via app.emit("event", payload). Add SSB write hook later for true push.
+
+
+STEPS
+
+  4K.1 SSB READ-ONLY VIEWER LIBRARY (Rust, data extraction)
+    PRE_GATE:
+      - Phase 3B SSB exists: cargo test -p orchestrator --lib -- ssb (exit 0)
+      - SSB database has data: grep -r "SsbAction" .elai_cc/crates/orchestrator/src/ returns matches
+      - cargo build --workspace succeeds
+    TASK:
+      - SsbViewer struct: opens read-only WAL connection to SSB SQLite database.
+        Separate connection pool from orchestrator's write connection.
+        Read-only enforced at SQLite level (SQLITE_OPEN_READONLY).
+      - Typed query functions (all return Result<T, SsbViewerError>):
+          latest_fsm_state() -> FsmState
+          active_session() -> Option<SessionInfo>
+          phase_progress() -> Vec<PhaseStatus>  (phase_id, status, step_count, completed_count)
+          recent_actions(limit: usize) -> Vec<SsbActionSummary>  (timestamp, action_type, agent_id, summary)
+          agent_actions(agent_id: AgentId) -> Vec<SsbActionSummary>
+          pending_interventions() -> Vec<InterventionRequest>  (from INTERVENTION_REQUEST)
+          file_changes(session_id: SessionId) -> Vec<FileChange>  (path, action, diff_summary)
+          reasoning_chain(step_id: StepId) -> Vec<ThinkStepSummary>  (step_type, content, grounding)
+      - New SSB action types (add to existing 17, MVP subset only):
+          INTERVENTION_REQUEST: { step_id: StepId, intervention_type: InterventionType,
+            description: String, diff_summary: Option<DiffSummary>, options: Vec<InterventionOption> }.
+            InterventionType enum { ApproveChange, ReplanApproval, ErrorRecovery }.
+            InterventionOption enum { Accept, Decline, Retry(String), Skip }.
+          INTERVENTION_RESPONSE: { request_id: SsbSeq, chosen: InterventionOption,
+            user_note: Option<String> }.
+      - Deferred to post-MVP: HEALTH_SNAPSHOT (needs MONITOR window), WINDOW_STATE
+        (needs session recovery), health_snapshot() query, window_state() query,
+        cost_summary() query. These belong to post-MVP dashboard completion (Group C).
+      - SsbActionSummary: lightweight projection (no full payload deserialization
+        unless client requests detail). Summary is first 100 chars of payload.
+      - Pagination: all list queries support offset + limit.
+      - Performance target: any single query < 10ms on 100K SSB rows.
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator (exit 0, new types compile)
+      - grep -r "SsbViewer" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "INTERVENTION_REQUEST" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "INTERVENTION_RESPONSE" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+    ADVERSARIAL:
+      - If SsbViewer opens a read-write connection, it could corrupt orchestrator's
+        WAL state. Test: attempt INSERT via SsbViewer connection -> SQLite error.
+      - If SsbActionSummary deserializes full payload for every row in recent_actions(),
+        large histories will be slow. Test: 10K rows query < 50ms.
+    ACCEPTANCE:
+      - SsbViewer opens read-only connection, all 8 query functions return typed data.
+      - 2 new SSB action types compile with typed payload structs.
+      - Round-trip test: write INTERVENTION_REQUEST via orchestrator, read via SsbViewer.
+
+
+  4K.2 TAURI APP SCAFFOLD + TAURI COMMANDS
+    PRE_GATE:
+      - 4K.1 complete (SsbViewer library exists)
+      - cargo check -p orchestrator (exit 0)
+      - cargo install tauri-cli (or @tauri-apps/cli via npm) available
+    TASK:
+      - New crate: .elai_cc/crates/dashboard/ (Tauri app binary crate).
+        Cargo.toml deps: tauri = "2.10", tauri-build = "2.5" (build-dep),
+        serde = "1", serde_json = "1", plus path dep on orchestrator (for SsbViewer).
+      - Tauri project structure:
+          .elai_cc/crates/dashboard/
+            Cargo.toml
+            tauri.conf.json        (app name "ELAI", window config, bundle config)
+            build.rs               (tauri_build::build())
+            src/main.rs            (tauri::Builder, register commands, create window)
+            src/commands.rs        (#[tauri::command] functions wrapping SsbViewer)
+            src-frontend/          (Svelte app, built by Vite, output to dist/)
+              package.json         (svelte, @sveltejs/vite-plugin-svelte, vite)
+              vite.config.ts
+              src/App.svelte       (root component, router placeholder)
+              src/main.ts          (mount point)
+              src/app.css          (visual identity: colors, typography from dashboard-design.txt)
+      - tauri.conf.json:
+          identifier: "dev.elai.dashboard"
+          app.windows[0]: { title: "ELAI", width: 1200, height: 800, minWidth: 900, minHeight: 600 }
+          build.frontendDist: "../src-frontend/dist"
+          build.devUrl: "http://localhost:1420"  (Vite dev server for hot reload during development)
+          bundle.active: true (for cargo tauri build)
+      - #[tauri::command] functions (6 commands, thin wrappers around SsbViewer):
+          get_fsm_state() -> Result<FsmState, String>
+          get_phase_progress() -> Result<Vec<PhaseStatus>, String>
+          get_recent_actions(limit: u32, offset: u32) -> Result<Vec<SsbActionSummary>, String>
+          get_pending_interventions() -> Result<Vec<InterventionRequest>, String>
+          get_file_changes(session_id: String) -> Result<Vec<FileChange>, String>
+          submit_intervention_response(request_id: u64, chosen: String, note: Option<String>) -> Result<(), String>
+        Each command: instantiate SsbViewer (or share via tauri::State<SsbViewer>),
+        call query function, serialize result to JSON via serde. Errors mapped to String.
+      - SsbViewer as managed state:
+          tauri::Builder::default()
+            .manage(SsbViewer::open(ssb_path)?)
+            .invoke_handler(tauri::generate_handler![
+              get_fsm_state, get_phase_progress, get_recent_actions,
+              get_pending_interventions, get_file_changes, submit_intervention_response
+            ])
+            .run(tauri::generate_context!())?;
+      - CLI integration: elai --dashboard starts the Tauri app.
+        If already running (check lock file or process), focus existing window.
+      - Frontend app.css: apply dashboard-design.txt VISUAL IDENTITY:
+          Backgrounds: bg-void (#0a0e12), bg-base (#0f1318), bg-surface (#151a20),
+            bg-hover (#1a2028), bg-input (#1e2530).
+          Teal: #1B7A6E, teal-soft (#1B7A6E40), teal-ghost (#1B7A6E15).
+          Purple: #7C5CBF, purple-soft (#7C5CBF30).
+          Text: primary (#d0d7de), secondary (#6e7681), ghost (#383e47).
+          Semantic: pass (#1B7A6E), warn (#c49b2a), fail (#c44040), info (#5088c0).
+          Font: "JetBrains Mono", "Fira Code", monospace.
+          Scale: xs 10px, sm 12px, base 13px, lg 15px, xl 18px.
+      - LOC estimate: ~100 Rust (main.rs + commands.rs) + ~50 config/build +
+        ~100 Svelte scaffold = ~250 LOC total.
+    DETERMINISTIC_CHECK:
+      - cargo check -p dashboard (exit 0, Tauri compiles)
+      - grep -r "tauri::command" .elai_cc/crates/dashboard/src/ | wc -l  >= 6
+      - grep -r "SsbViewer" .elai_cc/crates/dashboard/src/ | wc -l  >= 1
+      - cd .elai_cc/crates/dashboard/src-frontend && npm run build exits 0
+      - ls .elai_cc/crates/dashboard/src-frontend/dist/index.html exists
+    ADVERSARIAL:
+      - If SsbViewer initialization fails (SSB file missing or locked), Tauri app
+        crashes on launch. Test: if SsbViewer::open fails, show error dialog
+        via tauri::api::dialog::message and exit gracefully.
+      - If Tauri command panics, it crashes the app. Test: all commands return
+        Result, never unwrap. Panics caught by Tauri's command handler as errors.
+      - If frontend dist/ is not built before cargo tauri build, binary ships
+        with empty webview. Test: build.rs or tauri.conf.json beforeBuildCommand
+        runs npm run build.
+    ACCEPTANCE:
+      - cargo tauri dev launches app window with Svelte frontend.
+      - All 6 Tauri commands callable from frontend via invoke().
+      - Visual identity (dark theme, teal accents) visible in app.
+      - elai --dashboard launches the Tauri window (not a browser tab).
+
+
+  4K.3 PROJECT SELECTOR + TASK INPUT (single screen)
+    PRE_GATE:
+      - 4K.2 complete (Tauri app launches, commands work)
+      - invoke("get_fsm_state") returns valid JSON from frontend
+    TASK:
+      - Single entry screen combining project selection and task input.
+        Two states: no project selected -> project selector.
+        Project selected -> task input with project context.
+      - Project selector (top half of screen):
+          ELAI logo (teal, thin Segoe UI weight). Centered.
+          Subtitle: "a deterministic development engine" (text-secondary).
+          Two creation paths:
+            "+ New Project" button (teal text, primary action):
+              Opens inline form: project name input + parent folder picker
+              (Tauri dialog for parent directory). ELAI creates {parent}/{name}/
+              via std::fs::create_dir_all. Adds to projects list. Transitions
+              directly to template picker + task input. User never leaves the app.
+            "Open Existing" button (text-secondary, secondary action):
+              Opens Tauri folder dialog for existing project folder.
+          Recent project list: rows with name (text-primary), path (text-secondary),
+          last opened (text-ghost). Hover: bg-hover + teal-ghost left border.
+          Max 10 visible, scroll. Sorted by last opened.
+          Project list from elai_cc.toml [projects] or ~/.elai_cc/projects.json.
+      - Tauri commands for project management:
+          list_projects() -> Result<Vec<ProjectEntry>, String>
+          select_project(path: String) -> Result<ProjectInfo, String>
+          create_project(name: String, parent: String) -> Result<ProjectInfo, String>
+        ProjectEntry: { name, path, last_opened, framework_hint }.
+        select_project: validates path exists, returns basic project info.
+        create_project: validates name (no special chars beyond - and _),
+          calls create_dir_all({parent}/{name}), adds to projects.json,
+          returns ProjectInfo with is_empty = true. On error (permission denied,
+          disk full): return descriptive error string, frontend shows inline message.
+      - Template selection for greenfield: when project folder is empty
+        (new or existing), show template picker (Svelte, React, Astro, Vanilla)
+        from .elai_cc/templates/web/manifest.toml. create_project always
+        triggers this since it creates an empty folder.
+        New command: list_templates() -> Result<Vec<TemplateEntry>, String>
+      - Task input (shown after project selected):
+          Project name + path displayed at top (text-primary + text-secondary).
+          Large text input area. bg-input, teal border on focus.
+          Placeholder: "describe what you want to build..."
+          [Start] button (purple solid). Enter to submit (Shift+Enter for newline).
+          On submit: sends task to orchestrator via new Tauri command:
+            submit_task(task: String) -> Result<(), String>
+          submit_task writes to SSB / triggers orchestrator.
+      - Color system: bg-void (#0a0e12) window, bg-base (#0f1318) content area.
+        All colors from dashboard-design.txt VISUAL IDENTITY.
+      - LOC estimate: ~220 Svelte + ~60 Rust (4 commands) = ~280 LOC.
+    DETERMINISTIC_CHECK:
+      - App launches, project selector screen visible (manual check)
+      - "+ New Project" shows name + parent form, creates folder (manual check)
+      - "Open Existing" opens native folder dialog (manual check)
+      - Selecting project transitions to task input screen (manual check)
+      - Typing task and clicking Start calls submit_task command (manual check)
+      - grep -r "list_projects" .elai_cc/crates/dashboard/src/ | wc -l  >= 1
+      - grep -r "create_project" .elai_cc/crates/dashboard/src/ | wc -l  >= 1
+      - grep -r "submit_task" .elai_cc/crates/dashboard/src/ | wc -l  >= 1
+    ADVERSARIAL:
+      - If project path contains special characters (spaces, unicode), folder picker
+        or path display may break. Test: project at "D:\My Projects\日本語" renders correctly.
+      - If projects.json is corrupted, selector crashes. Test: invalid JSON -> empty list
+        with "No recent projects" message.
+      - If create_project target parent doesn't exist or is read-only, mkdir fails.
+        Test: create_project returns error string, frontend shows inline error
+        message below the form. No crash, no dialog — just red text.
+      - If project name contains path separators or invalid filesystem chars
+        (/, \, :, *, ?, ", <, >, |), create_dir_all may create nested dirs or fail.
+        Test: validate name server-side, reject names with non-alphanumeric chars
+        except - and _. Return descriptive error.
+      - If user submits empty task, orchestrator receives garbage. Test: disable Start
+        button when input is empty. Minimum 5 characters.
+    ACCEPTANCE:
+      - Project selector renders with correct dark theme and typography.
+      - "+ New Project" creates folder, adds to list, goes to template picker.
+      - "Open Existing" opens native OS folder dialog.
+      - Template picker shows for empty folders (new or existing).
+      - Task input accepts text and routes to orchestrator via Tauri command.
+
+
+  4K.4 MAIN WORKSPACE: PLAN TREE + ACTIVITY FEED
+    PRE_GATE:
+      - 4K.3 complete (project selected, task submitted)
+      - get_phase_progress and get_recent_actions commands return data
+    TASK:
+      - Workspace layout (replaces project selector after task submitted):
+          Two-panel layout: plan tree (left, 320px default) + activity feed (right, flex).
+          Panel divider: draggable (2px, bg-hover, teal on drag). Double-click resets 50/50.
+          Min panel width 280px.
+          Status bar at bottom (24px): project name | FSM state | session info.
+          FSM state text. When EXECUTING: teal text.
+      - Plan tree (left panel):
+          Tree view of current plan. Minimal, scannable.
+          Phase rows: "phase N  description  status". Collapsible.
+          Step rows (indented): "N.M  description  status". With --> marker on active.
+          Baby step rows (double indented): "N.M.K  description  status".
+          Status text: "done" (teal), "active" (text-primary + teal dot), "pending" (text-ghost).
+          Active phase expanded by default. Others collapsed.
+          Click phase header -> expand/collapse steps.
+          Right side of each step: elapsed time (text-ghost).
+      - Activity feed (right panel):
+          Real-time execution stream from SSB.
+          Entry types (each a Svelte component):
+            [reasoning]: teal-ghost background. Summary, collapsed to 2-3 lines.
+            [edit]: file path + line range. +N -M summary.
+            [validate]: compact one-liner. Teal checkmark pass, fail-color x.
+            [test]: pass/fail counts.
+            [preview]: clickable localhost URL when dev server passes health check.
+              Rendered as teal link text: "Preview: http://localhost:5173"
+              On click: open in default browser (Tauri shell::open).
+          Step headers: step number + description. Teal line separator.
+          Current step: text-primary. Completed: text-secondary.
+          Auto-scroll: follows latest entry. Scroll up disables auto-scroll.
+            "Jump to latest" pill at bottom when scrolled up.
+      - Polling: frontend calls get_phase_progress() and get_recent_actions()
+        every 500ms via setInterval + invoke(). Svelte reactive stores update
+        UI automatically on new data. No WebSocket needed.
+      - Data mapping: SSB actions with action_type in {reasoning_trace, file_write,
+        tool_result, test_outcome, phase_complete, preview_available} map to
+        activity feed entries. Phase/step structure from plan skeleton SSB entries.
+      - LOC estimate: ~350 Svelte (plan tree ~150 + activity feed ~200) + ~20 Rust
+        (no new commands needed, uses existing ones) = ~370 LOC.
+    DETERMINISTIC_CHECK:
+      - Workspace renders with two panels after task start (manual check)
+      - Plan tree shows phases and steps from SSB data (manual check)
+      - Activity feed shows entries from SSB, auto-scrolls (manual check)
+      - Panel divider is draggable (manual check)
+      - Status bar shows FSM state (manual check)
+      - Preview link renders as clickable teal text (manual check)
+    ADVERSARIAL:
+      - If activity feed gets 10K+ entries, DOM becomes slow. Test: limit rendered
+        entries to last 500. Older entries available via scroll-up lazy load.
+        Full virtualization deferred to post-MVP (Group C visual polish).
+      - If polling at 500ms and SsbViewer query takes >500ms (very large SSB),
+        requests pile up. Test: skip poll if previous is still in-flight (simple
+        boolean guard in setInterval callback).
+      - If plan tree has 100 phases, left panel is unusable. Test: collapse all
+        by default except active phase. Search/filter deferred to post-MVP.
+    ACCEPTANCE:
+      - Two-panel workspace renders with plan tree and activity feed.
+      - Plan tree shows phases/steps with correct status indicators.
+      - Activity feed streams entries with correct entry type formatting.
+      - Preview link appears when preview_available SSB action exists.
+      - Polling updates UI within 1s of new SSB data.
+
+
+  4K.5 DIFF VIEWER + ACCEPT/DECLINE + PREVIEW LINK
+    PRE_GATE:
+      - 4K.4 complete (workspace renders, activity feed shows entries)
+      - INTERVENTION_REQUEST SSB entries can be read via get_pending_interventions()
+    TASK:
+      - Diff viewer: shown when intervention card requires code review.
+        Triggered by: INTERVENTION_REQUEST with intervention_type = ApproveChange.
+        Replaces activity feed panel temporarily (or opens as modal overlay).
+      - Unified diff format:
+          Added lines: teal-ghost background, teal-soft left border.
+          Removed lines: fail color at 10% opacity background.
+          Context lines: bg-base. Line numbers: text-ghost.
+          File header: sticky at top on scroll.
+      - Controls:
+          [Accept]: applies all changes (purple solid button).
+          [Decline]: rejects (ghost button, text-secondary border).
+          [Retry]: re-generation with optional note (text input appears on click).
+          Per-hunk: each diff hunk has mini Accept/Decline on hover (right side).
+      - Multi-file diffs: vertical file list on left edge if >1 file.
+        Click file name to scroll to that file's diff.
+      - Accept/Decline action: calls submit_intervention_response Tauri command.
+        Sends INTERVENTION_RESPONSE to SSB. Diff viewer closes, returns to
+        activity feed. Activity feed shows "[accepted] file.rs +24 -8" or
+        "[declined] file.rs".
+      - Preview link integration:
+          When SSB contains preview_available action (from WEB.3 dev server validation),
+          activity feed shows clickable link: "Preview: http://localhost:{port}"
+          On click: tauri::api::shell::open (opens URL in default system browser).
+          Link styled: teal text, underline on hover, external-link icon (optional).
+          Preview link updates when new preview_available action appears
+          (live slot promoted in WEB.3 build slot system).
+      - New Tauri command:
+          get_action_detail(action_id: u64) -> Result<SsbAction, String>
+        Returns full SSB action with payload (for diff content).
+        SsbViewer already has this data; command is thin wrapper.
+      - LOC estimate: ~250 Svelte (diff viewer ~180 + controls ~70) + ~20 Rust
+        (1 new command) = ~270 LOC.
+    DETERMINISTIC_CHECK:
+      - Diff viewer renders when intervention pending (manual check)
+      - Accept button calls submit_intervention_response (manual check)
+      - Per-hunk controls visible on hover (manual check)
+      - Preview link opens browser via shell::open (manual check)
+      - grep -r "get_action_detail" .elai_cc/crates/dashboard/src/ | wc -l  >= 1
+    ADVERSARIAL:
+      - If diff payload contains very long lines (minified JS), horizontal scroll
+        breaks layout. Test: truncate lines at 200 chars with "..." and expand
+        option on click.
+      - If user Accepts partial hunks (some accept, some decline), resulting file
+        may not compile. Mitigation: after partial accept, orchestrator runs
+        validation. If fail, new intervention card with error context.
+      - If multiple interventions are pending simultaneously, user sees only one.
+        Test: show intervention count badge. Navigation: [Previous] [Next] buttons
+        when count > 1.
+    ACCEPTANCE:
+      - Diff viewer renders unified diffs with correct colors.
+      - Accept/Decline/Retry all functional, write INTERVENTION_RESPONSE to SSB.
+      - Per-hunk granular control works for multi-hunk diffs.
+      - Multi-file navigation works for multi-file diffs.
+      - Preview link clickable in activity feed, opens system browser.
+      - Diff viewer closes after response, returns to workspace.
+
+
+PHASE COMPLETION CRITERIA
+  - All 5 sub-steps pass their ACCEPTANCE criteria.
+  - elai --dashboard opens a native desktop window (Tauri, not browser).
+  - User can: select project folder, pick scaffold template, type task description.
+  - User can: watch plan tree populate, see activity feed stream baby steps.
+  - User can: review proposed diffs, accept/decline per hunk.
+  - User can: click preview link to open website in browser.
+  - Performance: <10ms SSB queries, <1s app launch, 500ms poll cycle.
+  - No external dependencies at runtime (single .exe, WebView2 pre-installed).
+  - Visual identity: teal on dark charcoal, JetBrains Mono, correct palette.
+
+
+DEFERRED TO POST-MVP (move to Group C in post-phase4-implementation-order.txt)
+  - MONITOR window (autonomous mode dashboard, HEALTH_SNAPSHOT, phase dots)
+  - EXPLORE window (oracle mode Q&A interface)
+  - Intervention controls + notification system (browser notifications, webhooks,
+    Discord/Slack integration, sound, Notification API)
+  - Window management (tabs, history, session recovery via WINDOW_STATE SSB type)
+  - Visual polish (animations: thinking pulse, step flash, progress dots,
+    panel transitions, scrollbar styling, Lucide icons, responsive breakpoints)
+  - Sidebar with mode icons (MVP uses two-panel layout directly, no sidebar)
+  - Slash command autocomplete palette
+  - Disambiguation cards for ambiguous input
+  - Keyboard shortcuts (Ctrl+1-5 modes, Ctrl+N new window, etc.)
+  - Autonomous mode UI
+  - CORS, WebSocket push, server-sent events (Tauri invoke() is sufficient for MVP)
+  - WINDOW_STATE and HEALTH_SNAPSHOT SSB action types
+  - cost_summary() and window_state() SsbViewer queries

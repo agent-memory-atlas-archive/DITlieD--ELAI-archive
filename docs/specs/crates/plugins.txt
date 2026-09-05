@@ -1,0 +1,95 @@
+CRATE: plugins/
+Purpose: hook system, skill system, MCP bridge.
+Source: design_document.txt PART 3 (plugins/ entries), PART 19 (tiered static analysis).
+Depends on: core/, rules/ (for hook enforcement)
+
+
+1. RESPONSIBILITIES
+
+  - Hook system: PreToolUse, PostToolUse, Stop, PreCompact hooks
+  - Skill system: prompt-transform, planning-workflow, rag-tools
+  - MCP bridge: connect to external MCP servers
+  - Tiered static analysis hook: real-time validation on SSB writes
+
+
+2. HOOK SYSTEM
+
+  Hooks run in the orchestrator process, not in agent processes.
+  Under Tier C (Phase 4A+), hooks intercept IPC messages:
+    PreToolUse fires on ToolRequest/BashRequest/WriteFileRequest received from agent,
+      BEFORE forwarding to tool executor.
+    PostToolUse fires after tool execution, BEFORE ToolResult sent back to agent via IPC.
+    Stop fires on session termination request.
+    PreCompact fires before context truncation checkpoint.
+  Hook verdicts (ALLOW/BLOCK/WARN) never leak to agents. BLOCK -> generic IPC error
+    ("Tool call rejected by policy"). No rule ID, tier, or pattern info exposed.
+
+  PreToolUse: check action against active rules -> ALLOW/BLOCK/WARN.
+    Path/tool gating per FSM state + agent substate.
+    Cross-session file lock enforcement (canonical path comparison).
+  PostToolUse: ruff syntax check, template preservation, change recording.
+  Stop: blocks mid-workflow termination (must reach IDLE).
+  PreCompact: auto SESSION_HANDOFF before context truncation.
+
+  Findings pathway: BLOCK/WARN from any hook -> SSB 'finding' entry.
+    Orchestrator normalizes finding to pattern hash (blake2s).
+    Feeds violation_patterns in rules.db for self-discovery (rules.txt section 6).
+    Circular trust boundary: orchestrator normalizes, not auditor.
+
+
+3. TIERED STATIC ANALYSIS HOOK — design PART 19
+
+  Triggered by SSB single-writer task on every write.
+
+  T1 — RULES (deterministic, <1ms):
+    Fires on EVERY SSB write. Predicate DSL evaluator from rules/ crate.
+    Execution layer for rules::Tier 1 enforcement (rules.txt sections 3-4).
+    Evaluates AST_PATTERN, GREP_PATTERN, METRIC_GATE, COMPOSITE predicates
+    from rules.db for active rules matching current phase + domain.
+    Output: ALLOW | WARN | BLOCK.
+
+  T2 — AST (deterministic, <10ms for files <5000 lines):
+    Fires on action_type='file_write' only.
+    tree-sitter parse + pattern matching.
+    Checks: syntax validity, imports, dead code, lazy code (pass bodies, TODO).
+    Circuit breaker: files >5000 lines degrade to T1-only.
+
+  T3 — PATTERN MATCH (deterministic, <5ms):
+    Fires only when (WARN exists) AND (no BLOCK exists from any tier).
+    If T1=BLOCK and T2=WARN, T3 does NOT fire (action already blocked).
+    Pattern-match library of known-ambiguous patterns. NO LLM.
+    Examples: function >200 lines -> WARN:complexity, catch Exception: pass -> BLOCK:swallow.
+
+  BLOCK from any tier -> SSB 'finding' entry -> agent notified on next read.
+  No LLM in the validation hot path.
+
+
+4. MCP BRIDGE
+
+  From claw-code: mcp_tool_bridge.rs (912 LOC), mcp_lifecycle_hardened.rs (839 LOC).
+  Connects to external MCP servers for tool access.
+  Error recovery from mcp_lifecycle_hardened.
+
+
+5. CLAW-CODE MODULE MAPPING
+
+  mcp_tool_bridge.rs (912 LOC)          -> MCP bridge
+  mcp_lifecycle_hardened.rs (839 LOC)   -> error recovery
+  plugin_lifecycle.rs (532 LOC)         -> plugin lifecycle management
+  Hooks infrastructure from plugins/ crate -> KEEP and extend
+
+
+6. TESTABLE INVARIANTS
+
+  - Every SSB write triggers T1 within 1ms
+  - T2 only fires on 'file_write' actions
+  - T2 circuit breaker: files >5000 lines degrade to T1-only
+  - T3 only fires when T1/T2 return WARN
+  - T3 completes in <5ms (pattern-match, no LLM)
+  - BLOCK recorded in SSB as 'finding'
+  - No LLM in validation hot path
+  - Stop hook prevents non-IDLE termination
+  - PreCompact triggers SESSION_HANDOFF before context truncation
+  - Hook BLOCK -> agent receives generic error (no internal details leaked)
+  - Hook findings feed violation_patterns via orchestrator normalization
+  - Cross-session file locks enforced via canonical path comparison

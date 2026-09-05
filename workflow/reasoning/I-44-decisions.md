@@ -1,0 +1,25 @@
+I-44 zero-retention-after-verification export mode — decisions
+
+what: ship a per-run ExportRetentionMode {Full(default) | ZeroAfterVerify}; in ZeroAfterVerify, after the sealed verdict (G-2 RRA + G-8 attestation) commits, purge the active session's raw managed-transcript files, retaining only redacted hash-checkable evidence; emit a RetentionPurged SSB receipt (3 arms); wire into the elai run post-attestation seal seam behind a --zero-retention flag + ELAI_ZERO_RETENTION_ENABLE master kill-switch.
+
+key decisions
+
+D1 — enum name: ExportRetentionMode, NOT the plan's literal RetentionPolicy. A pub struct RetentionPolicy already exists at redaction.rs:562 (a G-9 TTL-tier type, same crate). Shipping a second pub RetentionPolicy would be a same-crate name collision + a maintainability trap (a reader cannot tell which one a call site means). New module crates/orchestrator/src/retention.rs + pub mod retention in lib.rs. Fork resolved by controller (Option B).
+
+D2 — two-leg purge driver. Leg 1 (net-new, the I-44 core): immediate verdict-driven purge of the ACTIVE session's own managed-transcript files (.jsonl/.json) under its staging dir; each candidate canonicalized and validated strictly under the session dir before unlink (is_within_scope); an out-of-scope path is REFUSED (kept), never deleted. Leg 2 (closes the dark purge_expired): a best-effort TTL sweep over OTHER expired sessions via redaction::purge_expired (its own ELAI_RETENTION_PURGE_ENABLE gate; it skips the active session by design). purge_expired is TTL-driven and skips the active session, so it CANNOT serve the post-verdict-immediate trigger — the verdict leg is net-new; purge_expired is composed (not re-implemented) and gains its first production caller via leg 2.
+
+D3 — fail-safe gating (destructive feature, defence in depth). Default ExportRetentionMode::Full = retain everything, ZERO filesystem mutation. The purge fires ONLY when BOTH (a) --zero-retention is passed (resolved to ZeroAfterVerify) AND (b) the default-OFF ELAI_ZERO_RETENTION_ENABLE master kill-switch is truthy. A CLI flag alone does NOT delete; the env master-switch is an independent second gate on an irreversible op. Allowlist row added (type=kill_switch, owner=maintainer, expiry 2026-09-01, promotion_plan_id=I-44-promotion, smoke=i44 production arm). NOT --locked (controller re-locks gate-manifest, R8).
+
+D4 — closes two pre-existing wire-darks. redaction::redact_payload (redaction.rs:308, zero production callers before I-44) is now CALLED on each retained-summary payload before the retained-set blake3 is sealed (the G-9 precondition: mask retained secrets first). redaction::purge_expired (redaction.rs:644, zero production callers before I-44) is now CALLED as leg 2. I-44 is the first production consumer of both.
+
+D5 — ssb.db is NEVER touched. Retention is file-granularity over managed-transcript files only (is_managed_transcript matches .jsonl/.json; ssb.db has no such extension). No row UPDATE/DELETE on the append-only WAL (the G-9 constraint).
+
+D6 — entropy quarantine. purge_after_verify takes an injected now_ms (u128); the lib path never calls SystemTime::now. The CLI entrypoint passes elai_core::clock::OsClock.now_ms() at the seal seam boundary.
+
+D7 — SSB variant (Tier-B derived). ONE action_type RetentionPurged, Pattern-2 single-variant 3-arm RetentionPurgedKind {RawInputsPurged / EvidenceRetained / PurgeVerified}. 6 lockstep sites (enum arm + as_sql_str + from_str x3 + SsbPayload arm + action_type() arm + SQL CHECK x3 + ONE SSB_ACTION_TYPES entry) + exhaustive_match_guard arm in action_type_lock.rs. Counters DERIVED (no hand-bump): SSB_ACTION_TYPES.len() 566 -> 567, SCHEMA_VERSION = -309 + len = 257 -> 258. Golden regen by mechanism (the #[ignore] regen_golden_file helper). NOTE: live tail at HEAD was I-37 RequirementVerified (SCHEMA 257), one variant past the context-package's stated 566/256 — re-grepped live at edit time.
+
+production hook: crates/cli/src/run_subcommand.rs::run_async, immediately AFTER the G-8 emit_attestation block (the verdict + evidence are committed and survive), before the G-10 model-drift block. --zero-retention threaded args.rs Run{} -> parse_run_subcommand_args -> CliAction::Run -> main.rs destructure -> RunArgs -> the seal-block call. The I-40 trust-layer wrapper export seam is UNBUILT at HEAD; the run-seal seam is the SOLE production hook (the plan's second reachable_from is dropped, not wired).
+
+expected test outcome: i44_zero_retention_contract green (production purge emits RetentionPurged + deletes raw inputs; Full retains; kill-switch-off retains; out-of-scope refused; schema lock 258/567). action_type_lock 2/2 with golden 567. e45 cross-language drift green.
+
+unknowns / deferred: the dashboard RraViewer RetentionPurged row render is OUT of scope (Stage-5 frontend). replay --verify byte-identity (GD-2) across Full vs ZeroAfterVerify is asserted structurally (evidence digest survives, raw bytes gone) but a full elai replay --verify drive is a Stage-5 / live-run follow-up.

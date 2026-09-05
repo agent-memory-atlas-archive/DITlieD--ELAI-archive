@@ -1,0 +1,107 @@
+RUST ATOMICS AND LOCKS - TECHNICAL SUMMARY
+
+1. CONCURRENCY BASICS
+- Threads: `std::thread::spawn` requires `'static`. `std::thread::scope` allows borrowing local variables.
+- Thread ID: `std::thread::current().id()`.
+- Shared Ownership: `static`, `Box::leak`, `Rc<T>` (not thread-safe), `Arc<T>` (thread-safe).
+- Traits: 
+  - `Send`: Safe to transfer ownership across threads.
+  - `Sync`: Safe to share across threads (`&T` is `Send`).
+  - Auto-traits, opt-out via `std::marker::PhantomData<*const ()>` or `Cell`/`UnsafeCell`.
+- Interior Mutability: 
+  - `UnsafeCell<T>`: Root of all interior mutability. Provides `*mut T` via `get()`. No `Sync`.
+  - Single-thread: `Cell<T>` (copy/replace), `RefCell<T>` (runtime borrow checking).
+  - Multi-thread: `Mutex<T>`, `RwLock<T>`, `Atomic*`.
+- Waiting: `thread::park()` / `Thread::unpark()`. Subject to spurious wake-ups.
+
+2. ATOMICS
+- Types: `AtomicBool`, `AtomicUsize`, `AtomicPtr`, etc. No generic `Atomic<T>`. Non-`Copy`.
+- Operations: 
+  - `load`, `store`, `swap`.
+  - `fetch_add`, `fetch_sub`, `fetch_and`, `fetch_or`, `fetch_max`, etc. Overflow silently wraps.
+  - `compare_exchange(current, new, success_order, failure_order)`: Fails if actual != expected.
+  - `compare_exchange_weak`: Allowed to fail spuriously (false negatives). Preferred in loops for performance (LL/SC hardware mapping).
+  - `fetch_update`: Convenience method wrapping `compare_exchange_weak` loop.
+
+3. MEMORY ORDERING
+- Rust uses the C++ memory model. Dictates instruction reordering and visibility.
+- `Ordering::Relaxed`: No cross-thread synchronization. Guarantees total modification order per individual atomic variable.
+- `Ordering::Release` & `Ordering::Acquire`:
+  - Release applies to stores, Acquire to loads.
+  - Forming a "happens-before" relationship: Acquire load observing a Release store guarantees all memory operations preceding the Release store are visible after the Acquire load.
+- `Ordering::AcqRel`: For read-modify-write operations (both Acquire and Release).
+- `Ordering::SeqCst`: Sequentially consistent. Includes AcqRel guarantees plus a globally consistent total order of all `SeqCst` operations.
+- Fences (`std::sync::atomic::fence`): 
+  - Separates ordering from operations. E.g., Relaxed store + Release fence == Release store.
+  - Useful for conditional synchronization or batching multiple atomics.
+  - `compiler_fence`: Prevents compiler reordering, does not emit CPU barrier instructions (useful for signal handlers/interrupts).
+
+4. SPIN LOCKS
+- Implementation: `AtomicBool` + `UnsafeCell<T>`.
+- Lock: `while state.swap(true, Acquire) { std::hint::spin_loop(); }`.
+- Unlock: `state.store(false, Release);`.
+- Safe API: Return `Guard` implementing `Deref`/`DerefMut` yielding `&mut T`. Unlock via `Drop` on Guard.
+
+5. CHANNELS (ONE-SHOT)
+- State tracking: `AtomicBool` or `AtomicU8` representing EMPTY, WRITING, READY, READING.
+- Storage: `UnsafeCell<MaybeUninit<T>>`.
+- Safety: `MaybeUninit` requires unsafe `assume_init_read()` / `assume_init_drop()`.
+- Thread blocking: Sender stores data, sets READY flag (Release), calls `receiver_thread.unpark()`. Receiver checks flag (Acquire), calls `thread::park()` if false.
+- Type-state safety: Split into `Sender` and `Receiver` structs to statically enforce one-time usage via by-value `self` consumption. Borrowing `Channel` avoids `Arc` allocations.
+
+6. ARC (ATOMIC REFERENCE COUNTING)
+- Core structure: `NonNull<ArcData<T>>`. `ArcData` contains `T` and `AtomicUsize` ref_count.
+- Clone: `ref_count.fetch_add(1, Relaxed)`. If count > `MAX/2`, `std::process::abort()` to prevent overflow.
+- Drop: `if ref_count.fetch_sub(1, Release) == 1 { fence(Acquire); deallocate(); }`. (Release ensures drops don't reorder past decrement; Acquire fence ensures dealloc doesn't reorder before preceding drops).
+- Weak Pointers: Requires 2 counters: `data_ref_count` (strong) and `alloc_ref_count` (strong + weak).
+- Upgrade Weak->Strong: `compare_exchange_weak` loop. Fails if `data_ref_count` == 0.
+- Optimization: Count all strong pointers as a single weak pointer to avoid 2 atomic instructions on every `Arc::clone`/`drop`. Requires complex locking via `usize::MAX` in `upgrade`/`downgrade` to handle edge cases safely.
+
+7. HARDWARE & PROCESSORS
+- x86-64 (Strongly Ordered):
+  - Acquire/Release are "free" (standard `mov` instructions).
+  - `SeqCst` store compiles to `xchg` (implied lock).
+  - Fetch-modify uses `lock` prefix (e.g., `lock add`, `lock xadd`, `lock cmpxchg`).
+- ARM64 (Weakly Ordered):
+  - Relaxed uses normal `ldr`/`str`.
+  - Acquire/Release use specialized `ldar`/`stlr` instructions.
+  - RMW uses Load-Linked/Store-Conditional (LL/SC) loops (`ldxr`/`stxr` + `cbnz`). Spurious failures happen here.
+  - ARMv8.1+ uses LSE atomics (`ldadd`, `cas`, `casal`).
+- Caching:
+  - Cache lines (typically 64 bytes). False sharing occurs when unrelated atomics share a line. Prevent via `#[repr(align(64))]`.
+  - MESI protocol: Stores require exclusive cache line access. Highly contended atomics cause cache line bouncing (heavy performance penalty). Failed `compare_exchange` acquires exclusive access, whereas a failed `load` check does not.
+
+8. OS PRIMITIVES (BLOCKING)
+- POSIX: `pthread_mutex_t`, `pthread_cond_t`, `pthread_rwlock_t`. Not cleanly movable (issues with Rust `Box` / pinning).
+- Linux: `futex` syscall.
+  - `FUTEX_WAIT`: Blocks if `*ptr == expected`.
+  - `FUTEX_WAKE`: Wakes N threads.
+  - Others: `WAIT_BITSET`, `REQUEUE`, `WAKE_OP`, `PI` (Priority Inheritance).
+- macOS: `os_unfair_lock` (32-bit fast lock). Stable futex equivalent requires using libc++ C++20 `std::atomic::wait`.
+- Windows: 
+  - Heavyweight: `Mutex`, `Event` (kernel objects, HANDLE).
+  - Lightweight: `CRITICAL_SECTION`, `SRWLOCK`, `CONDITION_VARIABLE` (pointer-sized, movable if unborrowed).
+  - Futex equivalent: `WaitOnAddress`, `WakeByAddressSingle`, `WakeByAddressAll`.
+
+9. CUSTOM LOCKS (VIA FUTEX / `atomic-wait` crate)
+- Mutex:
+  - States: 0 (Unlocked), 1 (Locked, no waiters), 2 (Locked, with waiters).
+  - Lock: `compare_exchange(0, 1)`. If fail -> loop `swap(2)` and `wait(&state, 2)`.
+  - Unlock: `if state.swap(0, Release) == 2 { wake_one() }`.
+  - Optimization: Spin (e.g., 100 iterations of `spin_loop()`) before escalating to wait syscall.
+- Condvar:
+  - Atomic counter.
+  - Wait: `val = counter.load(Relaxed)`, `mutex.unlock()`, `wait(&counter, val)`, `mutex.lock()`.
+  - Notify: `counter.fetch_add(1, Relaxed)`, `wake_one() / wake_all()`.
+  - Optimization: Track `num_waiters` to elide `wake_*` syscalls if 0. (Warning: mitigating spurious wakeups & thundering herds requires careful tracking/requeueing logic).
+- RwLock:
+  - State: Single `AtomicU32`. Even = Readers active (state / 2). Odd = Write-locked (or writer waiting).
+  - Writer: `compare_exchange(0, u32::MAX)`. Blocks new readers by setting odd bit, then waits on secondary `writer_wake_counter`.
+  - Reader: `compare_exchange` loop. Fails/waits if state is odd.
+
+10. ADVANCED PATTERNS
+- Semaphore: Atomic counter + wait (decrement/block) + signal (increment/wake).
+- RCU (Read-Copy-Update): Atomic pointer to struct. Readers read concurrently. Writer copies data, mutates copy, `compare_exchange` pointer. Writer must wait for existing readers to finish before deallocating old pointer.
+- Lock-Free Linked Lists: RCU applied to node pointers. Requires advanced memory reclamation (Hazard Pointers, Epochs).
+- Queue/Parking-Lot Locks: Store queue state in a global HashMap keyed by the lock's memory address to reduce lock size to 1-8 bits. (e.g., `parking_lot` crate).
+- Seqlock: Atomic sequence counter. Even = readable. Odd = writing in progress. Readers read counter, read data non-atomically, read counter again. If counters match and are even, data is valid.

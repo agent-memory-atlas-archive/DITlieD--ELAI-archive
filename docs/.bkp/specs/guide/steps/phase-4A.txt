@@ -1,0 +1,427 @@
+PHASE 4A: AGENT PROCESS ISOLATION (Tier C)
+Prerequisites: Phase 3 complete (all INTERACTIVE pipeline gate checks passing)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Agents run as isolated OS processes. No agent sees enforcement logic, other agents,
+or harness internals. Orchestrator communicates via IPC (unix socket / named pipe).
+This is foundational — all subsequent Phase 4 sub-phases run through this boundary.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          Section 12 (agent isolation model — Tier C detail)
+  docs/specs/crates/tools.txt                 Section 8 (visibility filter) + Section 9 (bash sandbox)
+  docs/specs/crates/reasoning.txt             Section 4 (GRC verify methods — GroundingRequest IPC)
+  docs/specs/decisions/audit-results-phase4.txt  All 9 BLOCKs + 9 WARNs (full audit findings)
+  docs/specs/architecture-overview.txt        Section 9 (agent roles)
+
+RISKS TO WATCH
+  Audit BLOCK-1: seccomp must have two profiles — IPC_BASELINE (all roles) + NETWORK_EXTRA
+    (researcher only). socket(AF_UNIX) in baseline, socket(AF_INET) only in researcher.
+    BPF argument check on socket domain, not blanket socket allow/deny.
+  Audit BLOCK-2: researcher needs veth+iptables, NOT CAP_NET_RAW. Zero capabilities
+    retained for any role. prctl(PR_SET_NO_NEW_PRIVS) before exec().
+  Audit BLOCK-3: agent binary has NO LLM client. LLM calls proxied via IPC
+    (InferRequest -> orchestrator -> providers -> InferResponse).
+  Audit BLOCK-4: GRC budget enforcement is orchestrator-side, not agent-side.
+    Orchestrator counts ThinkStep messages externally. Agent budget is advisory only.
+  Audit BLOCK-5: IPC sockets in 0700 directory (/tmp/elai_cc_{session}/), not bare /tmp.
+    SO_PEERCRED verification on accept(). Socket unlinked on agent death.
+  Audit BLOCK-6: auditor self-discovery findings require human approval gate.
+    source=AUDITOR -> PROPOSED status, never auto-CANDIDATE. Independent second
+    auditor validates proposed predicate logic.
+  Audit BLOCK-7: Windows isolation explicitly weaker than Linux. AppContainer preferred.
+    Fallback (restricted token + ACL deny) is documented-weaker, not equivalent.
+    Linux is the production security target.
+  Audit BLOCK-8: self-mod locks must be BOTH IPC-level (canonical realpath comparison)
+    AND filesystem-level (read-only mount). BashRequest + GitCommit also filtered.
+  Audit BLOCK-9: adversarial IPC test battery required (covered in TEST sections below).
+
+
+STEPS
+
+  4A.1 SKELETON — agent binary and IPC types
+    PRE_GATE:
+      - Phase 3 INTERACTIVE pipeline gate passes (all checks in implementation-guide.txt)
+      - cargo build --workspace succeeds with zero errors
+      - cargo test --workspace -- --test-threads=1 passes (existing contract tests)
+    TASK:
+      - AgentProcess struct wrapping std::process::Command
+      - IPC channel: unix domain socket (Linux) / named pipe (Windows)
+      - Wire protocol: 1-byte version + 4-byte length prefix + postcard payload
+      - MAX_FRAME_SIZE: 10MB hard cap. Per-type limits:
+          AgentHeartbeat < 1KB, ThinkStep < 64KB, ToolResult < 10MB,
+          AgentResponse < context_limit
+      - Message types (complete enum, must match orchestrator.txt S12):
+          AgentRequest, AgentResponse, InferRequest, InferResponse,
+          ToolRequest, ToolResult, BashRequest, BashResult,
+          GroundingRequest, GroundingResult, ThinkStep, CheckpointSync,
+          AgentHeartbeat, AgentKill, ReplanRequest
+      - AgentBinary: separate Rust binary (elai_cc_agent) compiled from agent/ crate
+          Contains: GRC reasoning loop, IPC client, structured output parser
+          Does NOT contain: LLM client, reqwest, network code, tool implementations,
+            FSM, SSB, rules engine, knowledge engine
+      - ProcessConfig per role: allowed_paths, seccomp_profile, resource_limits
+      - ToolFilter type: { allowed_tools: Vec<ToolId> } — WHITELIST enforced at IPC layer.
+        When agent sends ToolRequest via IPC: orchestrator checks tool_id against
+        dispatch entry's ToolFilter.allowed_tools. Not in whitelist -> reject with
+        generic error ("tool call rejected by policy"). Agent cannot bypass the IPC filter.
+        This is defense-in-depth on top of PreToolUse hook system.
+        Source: technical-analysis-v3.txt Concern 5 (WARN 5 resolution).
+      - AgentDispatchConfig: { role, model_preference, tool_filter, rule_domains, grc_config,
+        sandbox_config }. This is the AUTHORITATIVE config source for agent process spawning.
+        Code that checks role == Executor must also check the dispatch config for tool_filter
+        and grc_config overrides. Source: technical-analysis-v3.txt Concern 5.
+      - phase_complete SSB record: at phase boundaries in the model swap protocol,
+        orchestrator writes SSB action_type='phase_complete' with { phase_id, agent_id,
+        fsm_state, evidence_artifacts, commit_hashes, test_outcomes }. This is the ATOMIC
+        DURABILITY MARKER — model unload proceeds only after fsync confirms record flushed
+        to WAL. Source: technical-analysis-v3.txt Concern 2.
+      - agent_id: UUID v4, assigned at spawn time by orchestrator
+      - Connection sequence (listen-before-spawn):
+          1. Orchestrator creates 0700 directory: /tmp/elai_cc_{session}/
+          2. Orchestrator creates socket, begins listen()
+          3. Orchestrator spawns agent process with socket path as argument
+          4. Agent connects. Orchestrator verifies SO_PEERCRED matches child PID (Linux)
+             Named pipe SecurityIdentification level (Windows)
+          5. Version handshake: agent sends protocol version byte. Mismatch -> kill.
+    DETERMINISTIC_CHECK:
+      - cargo build --workspace produces two binaries: elai_cc, elai_cc_agent
+      - cargo tree -p elai_cc_agent | grep -c reqwest == 0 (no network dep)
+      - cargo tree -p elai_cc_agent | grep -c "providers" == 0 (no LLM dep)
+      - message type enum has exactly 15 variants (compile-time const_assert! or
+        count of #[derive] enum variants in ipc_types.rs)
+      - postcard round-trip test: serialize each message type -> deserialize -> assert eq
+    ADVERSARIAL:
+      - If agent binary accidentally links reqwest (transitive dep), it could bypass
+        IPC for LLM calls. Test: cargo tree -p elai_cc_agent must not contain reqwest.
+      - If MAX_FRAME_SIZE is not enforced in the frame reader, memory exhaustion is
+        possible. Test: send 11MB frame -> rejected before allocation.
+    ACCEPTANCE:
+      - Two binaries compile. Agent binary has zero network dependencies.
+      - All 15 message types round-trip through postcard without error.
+      - Connection sequence test passes (listen -> spawn -> connect -> SO_PEERCRED -> version).
+
+  4A.2 VERIFY — compilation and existing tests
+    PRE_GATE:
+      - 4A.1 SKELETON complete (two binaries compile)
+    TASK:
+      - cargo build --workspace with both binaries
+      - cargo test --workspace (existing contract + unit tests still pass)
+    DETERMINISTIC_CHECK:
+      - cargo build --workspace exit code 0
+      - cargo test --workspace exit code 0
+      - cargo clippy --workspace -- -D warnings exit code 0
+    ADVERSARIAL:
+      - If new workspace member breaks existing test isolation (shared temp dirs),
+        existing tests could fail nondeterministically. Test: run cargo test 3 times,
+        all pass.
+    ACCEPTANCE:
+      - Zero compilation errors. Zero test regressions. Zero clippy warnings.
+
+  4A.3 TEST — functional isolation
+    PRE_GATE:
+      - 4A.2 VERIFY passes (clean compilation + no regressions)
+    TASK:
+      Tests target: agent CANNOT see what it shouldn't, CAN use IPC.
+      All tests are TDD (written now, fail, implemented in 4A.5).
+
+      TEST (functional isolation):
+        - Spawn agent -> send AgentRequest -> receive AgentResponse -> kill
+        - Agent cannot read .elai_cc/ (path not mounted, ENOENT)
+        - Agent in PID namespace (host-side verification: read /proc/{child_pid}/status,
+          check NSpid field shows 1. Do NOT rely on agent self-reporting getpid)
+        - Agent cannot access network (socket(AF_INET) returns EPERM via seccomp BPF)
+        - Agent CAN use IPC socket (socket(AF_UNIX) allowed in IPC_BASELINE)
+        - Researcher agent CAN access allowlisted HTTPS endpoints via veth
+        - Orchestrator kills agent after heartbeat timeout (15s no response -> SIGKILL)
+        - Agent crash (exit 1) does not crash orchestrator
+        - Agent cannot write outside its scratch directory (mount namespace enforced)
+        - Two concurrent agents cannot see each other's scratch dirs
+        - Two concurrent agents cannot create AF_UNIX sockets to each other
+          (session socket dir not mounted into agent namespace; per-agent /tmp isolated)
+        - Auditor can read executor output (orchestrator copies to auditor's view)
+        - Executor cannot read auditor findings (not in executor's mount)
+        - Agent environment sanitized: only LANG, TERM, PATH (restricted), TMPDIR
+          NOT present: HOME, USER, API keys, ELAI_CC_* variables
+        - SO_PEERCRED verification: connection from wrong PID rejected
+        - Agent cannot read /proc (masked or unmounted) — no host process info leak
+        - Agent cannot read /sys (not mounted)
+        - Agent hitting RLIMIT_FSIZE (100MB write) -> write fails, agent not killed
+        - Agent hitting RLIMIT_AS (512MB alloc) -> OOM in agent, orchestrator unaffected
+
+      TEST (LLM proxy):
+        - Agent emits InferRequest -> orchestrator calls LlmProvider -> InferResponse
+        - Agent binary has no reqwest dependency (cargo tree check)
+        - Agent cannot reach localhost:11434 from its network namespace
+        - InferRequest with prompt exceeding context_limit -> rejected with error
+
+      TEST (GRC budget — orchestrator-enforced):
+        - Orchestrator counts ThinkStep messages per topic externally
+        - After max_calls, orchestrator injects convergence signal via IPC
+        - Agent budget count is advisory only — orchestrator's count is authoritative
+        - Budget applies per-topic independently (topic A exhausted, topic B still open)
+        - Enforcement transition: agent local count != 0 but orchestrator count == 0
+          at phase start -> orchestrator count is authoritative, agent must obey
+          convergence signal regardless of its local state
+
+      TEST (GroundingRequest proxy):
+        - Agent emits GroundingRequest{FILE_CHECK, claim} -> orchestrator resolves
+        - Agent emits GroundingRequest{WEB_CHECK, claim} -> orchestrator resolves
+          (agent has no network, orchestrator performs web search)
+        - Agent emits GroundingRequest{SOURCE_CHECK, claim, file_path} -> resolved
+        - GroundingRequest with disallowed method for role -> rejected
+          Role-method matrix (from reasoning.txt S9):
+            executor/auditor: FILE_CHECK, SOURCE_CHECK, WEB_CHECK, TEST_CHECK
+            context-compiler/prompt-engineer/memory-writer: FILE_CHECK, SOURCE_CHECK only
+            TEST_CHECK from context-compiler -> rejected
+        - GroundingRequest counts toward per-topic budget
+        - GroundingRequest for topic with no active ThinkStep budget entry -> rejected
+          (prevents orphaned-topic budget bypass)
+
+    DETERMINISTIC_CHECK:
+      - All isolation tests compile (cargo test --no-run)
+      - Test names follow convention: test_4a_isolation_*, test_4a_llm_proxy_*,
+        test_4a_grc_budget_*, test_4a_grounding_*
+      - Each test has exactly one assert (single responsibility)
+    ADVERSARIAL:
+      - If seccomp profile has a gap (missing syscall), isolation tests may pass in CI
+        but fail on different kernel versions. Test: verify seccomp profile against
+        strace of agent binary startup.
+    ACCEPTANCE:
+      - All functional isolation tests exist and compile. They FAIL (TDD — no impl yet).
+
+  4A.4 TEST — adversarial IPC
+    PRE_GATE:
+      - 4A.3 tests compile
+    TASK:
+      Tests target: IPC boundary resists malicious or buggy agent behavior.
+
+      TEST (adversarial IPC):
+        - Oversized frame (>10MB) -> rejected, no allocation (MAX_FRAME_SIZE enforced)
+        - Frame with length=u32::MAX -> rejected before allocation (pre-alloc size check)
+        - Malformed postcard payload -> IPC error, no crash (graceful deserialization)
+        - Unsolicited AgentResponse (no prior AgentRequest) -> rejected
+        - ToolResult for unrequested ToolId -> rejected
+        - 10,000 ThinkStep burst -> budget enforced, excess dropped
+        - Second process connecting to same socket -> rejected (SO_PEERCRED mismatch)
+        - Socket survives agent SIGKILL: orchestrator closes fd, unlinks, respawns
+        - Mismatched agent_id in message header -> rejected
+        - Protocol version mismatch at handshake -> agent killed
+        - Partial frame (connection drops mid-write) -> no hang, timeout + cleanup
+
+      TEST (ReplanRequest):
+        - MINOR replan with evidence -> auditor fast-track review
+        - MAJOR replan -> requires human approval (INTERACTIVE gate)
+        - 2 replans in same phase -> second rejected (max 1 per agent per phase)
+        - ReplanRequest without evidence field -> rejected
+        - ReplanRequest evidence exceeding 500 tokens -> truncated or rejected
+
+      TEST (self-modification locks):
+        - Self-mod agent WriteFile to locked path -> rejected (generic error msg)
+        - Path traversal (../metrics.rs) -> rejected (canonical realpath comparison)
+        - BashRequest writing locked file -> blocked (read-only mount, not IPC filter)
+        - GitCommit touching locked file -> rejected (diff path filter in orchestrator)
+        - Symlink to locked file -> rejected (realpath resolves through symlinks)
+
+      TEST (auditor self-discovery trust boundary):
+        - Auditor finding -> auto-propose rule -> status is PROPOSED (not CANDIDATE)
+        - PROPOSED rule from auditor requires human approval before CANDIDATE
+        - Second auditor instance validates predicate logic independently
+        - Inflated violation_patterns (same hash repeated) -> detected, capped
+
+      TEST (crash recovery):
+        - Orchestrator crash mid-IPC -> restart reads SSB -> consistent state
+        - Agent crash mid-output -> orchestrator detects via heartbeat -> respawn
+        - SSB write confirmed before ToolResult sent (synchronous write invariant)
+        - Partial frame in socket buffer after SIGKILL -> discarded on fd close
+
+      TEST (Windows-specific, run only on cfg(windows)):
+        - AppContainer agent cannot read .elai_cc/ (AppContainer capability check)
+        - Job object limits enforced (memory, process count, timeout)
+        - Named pipe impersonation level = SecurityIdentification
+        - Fallback mode: restricted token + ACL deny (documented-weaker, test still runs)
+
+    DETERMINISTIC_CHECK:
+      - All adversarial tests compile (cargo test --no-run)
+      - Test names: test_4a_adv_ipc_*, test_4a_replan_*, test_4a_selfmod_*,
+        test_4a_discovery_*, test_4a_crash_*, test_4a_windows_*
+      - Each adversarial test has a comment: "// Covers audit BLOCK-N / WARN-N"
+    ADVERSARIAL:
+      - If IPC frame reader uses unchecked length prefix to allocate, a crafted frame
+        can OOM the orchestrator. Test: send length=u32::MAX, verify no allocation.
+      - If SO_PEERCRED check is skipped on non-Linux, socket hijack is possible.
+        Test: on non-Linux, verify alternative auth (named pipe impersonation).
+    ACCEPTANCE:
+      - All adversarial tests exist and compile. They FAIL (TDD).
+      - Every audit BLOCK (1-9) and WARN (1-9) has at least one corresponding test.
+
+  4A.5 IMPLEMENT — agent binary + orchestrator IPC gateway
+    PRE_GATE:
+      - All tests from 4A.3 and 4A.4 compile and FAIL (TDD red phase)
+      - Decision doc exists: workflow/reasoning/phase-4A-decisions.md
+    TASK:
+      Agent binary (elai_cc_agent):
+        Minimal binary. No network, no tools, no LLM client.
+        Receives AgentRequest via IPC. Runs GRC reasoning loop.
+        Emits InferRequest, ToolRequest, BashRequest, GroundingRequest.
+        Receives InferResponse, ToolResult, BashResult, GroundingResult.
+        Heartbeat every 5s. Graceful shutdown on AgentKill (1s flush window).
+
+      Orchestrator IPC gateway:
+        0700 socket directory per session. Per-agent socket (UUID path).
+        SO_PEERCRED on accept(). Version handshake on connect.
+        MAX_FRAME_SIZE=10MB enforced in frame reader (check length prefix BEFORE alloc).
+        Heartbeat 5s interval / 15s timeout.
+        Routes: InferRequest -> providers, ToolRequest -> tools+rules+visibility_filter,
+          BashRequest -> sandbox, GroundingRequest -> knowledge+web.
+        GRC budget enforced externally (count ThinkStep per topic per agent).
+        SSB write synchronous with ToolResult dispatch (write BEFORE sending result).
+        Crash safety: close fd on SIGKILL, unlink socket, discard partial frames.
+
+      Linux process isolation:
+        clone(CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET).
+        prctl(PR_SET_NO_NEW_PRIVS) BEFORE exec(). Zero capabilities retained.
+        seccomp-bpf: IPC_BASELINE for all roles. NETWORK_EXTRA added for researcher.
+          socket domain checked via BPF argument inspection (AF_UNIX allowed in baseline,
+          AF_INET/AF_INET6 allowed only in NETWORK_EXTRA + SOCK_STREAM only).
+        Bind-mount: project source (RO) + scratch (RW). .elai_cc/ not mounted.
+        /proc: masked (hidepid=2) or not mounted. /sys: not mounted.
+        Socket directory (/tmp/elai_cc_{session}/) NOT mounted into agent namespace.
+          Agent receives socket fd or path as argument; scratch dir is per-agent, isolated.
+        Self-mod agent: locked paths mounted RO additionally.
+        PID namespace: agent is PID 1.
+        rlimits: RLIMIT_NPROC=1, RLIMIT_FSIZE=100MB, RLIMIT_AS=512MB (configurable).
+        Environment sanitized: only LANG, TERM, PATH (restricted), TMPDIR.
+
+      Windows process isolation:
+        AppContainer (preferred): CreateAppContainerProfile per agent.
+          Filesystem: only granted paths. Network: none (researcher: add capability).
+        Fallback: restricted token + Job object + ACL deny. Documented weaker.
+        Job object: ACTIVE_PROCESS=1, PROCESS_MEMORY=512MB, JOB_TIME=configurable.
+        Named pipe: SecurityIdentification impersonation level.
+
+      Auditor self-discovery trust boundary:
+        Findings arrive via IPC. source=AUDITOR -> PROPOSED, never auto-CANDIDATE.
+        Second auditor instance validates proposed predicate logic.
+        mutable=0 rules protected from all automated modification.
+
+      Self-modification locks:
+        IPC-level: canonical realpath comparison for WriteFile/EditFile paths.
+        Filesystem-level: locked dirs mounted RO in agent namespace.
+        Git-level: orchestrator filters GitCommit, rejects diffs touching locked paths.
+
+      DEFERRED TO 4B (audit WARN-3):
+        ShortCoder post-processing MUST run in orchestrator process after AgentResponse,
+        BEFORE writing to auditor view filesystem. Not inside agent binary.
+        Phase 4B PRE_GATE must verify this invariant is implemented.
+
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace passes (all TDD tests green)
+      - cargo tree -p elai_cc_agent | grep -c reqwest == 0
+      - cargo tree -p elai_cc_agent | grep -c "providers" == 0
+      - strace -f elai_cc_agent 2>&1 | grep -c "socket(AF_INET" == 0 (Linux only)
+      - All adversarial IPC tests pass
+      - All self-mod lock tests pass
+    ADVERSARIAL:
+      - If seccomp BPF argument check has off-by-one in socket domain comparison,
+        AF_INET could slip through. Test: explicit socket(AF_INET, SOCK_STREAM, 0) call
+        from agent process -> must return EPERM.
+      - If SSB write is async with ToolResult dispatch, crash can lose state.
+        Test: kill orchestrator after ToolResult send, verify SSB has the record.
+    ACCEPTANCE:
+      - All tests from 4A.3 + 4A.4 pass (green).
+      - Agent binary has zero network dependencies.
+      - Isolation escape test: agent instructed to find .elai_cc/ must fail.
+
+  4A.6 MEASURE — performance baselines
+    PRE_GATE:
+      - 4A.5 IMPLEMENT complete (all tests pass)
+    TASK:
+      Collect baselines for IPC overhead and resource usage.
+    DETERMINISTIC_CHECK:
+      - Metrics written to .elai_cc/metrics/phase_4A.toml
+      - Each metric has: value, unit, timestamp, measurement method
+    MEASUREMENTS:
+      - IPC round-trip latency (target: <1ms p99 for <64KB)
+        UNGROUNDED: no prior benchmark. Reasonable for unix domain sockets.
+      - Agent spawn time (target: <100ms)
+        UNGROUNDED: depends on namespace setup. orchestrator.txt estimates ~50ms.
+      - Memory per agent (target: <30MB baseline)
+        UNGROUNDED: orchestrator.txt estimates ~20MB. Verify empirically.
+      - Overhead vs in-process (budget: <5%)
+        UNGROUNDED: IPC cost negligible vs LLM inference latency. Verify empirically.
+      - Isolation escape test: agent instructed to find .elai_cc/ must fail
+    ADVERSARIAL:
+      - If p99 IPC latency exceeds 1ms, it could compound across multi-step GRC chains
+        (10 steps * 1ms = 10ms overhead per reasoning cycle). Acceptable but worth tracking.
+        Test: measure 10-step GRC chain end-to-end latency.
+    ACCEPTANCE:
+      - All 5 metrics recorded in phase_4A.toml.
+      - IPC latency < 1ms p99 for < 64KB messages.
+      - Agent spawn time < 100ms.
+      - Memory per agent < 30MB.
+      - Overhead vs in-process < 5%.
+      - Isolation escape test fails (agent cannot find .elai_cc/).
+
+
+SEPARATION COSTS (from orchestrator.txt, for realistic planning)
+  IPC latency: ~0.1ms per message (acceptable, agent turns are seconds).
+  Process spawn: ~50ms (Rust binary fork + namespace setup).
+  Memory overhead: ~20MB per agent process (Rust binary + runtime).
+  Complexity: message serialization, process lifecycle, crash detection.
+  Dynamic fan-out risk: 10 parallel agents = 200MB+ overhead (INFO-3 in audit).
+
+
+GROUNDING
+  "IPC round-trip <1ms p99 for <64KB"
+    -> UNGROUNDED: reasonable target, no prior benchmark. Unix domain sockets typically <100us.
+  "Agent spawn time <100ms"
+    -> UNGROUNDED: orchestrator.txt estimates ~50ms. Verify in 4A.6.
+  "Memory per agent <30MB"
+    -> UNGROUNDED: orchestrator.txt estimates ~20MB. Verify in 4A.6.
+  "Overhead vs in-process <5%"
+    -> UNGROUNDED: IPC negligible vs LLM inference. Verify in 4A.6.
+  "seccomp-bpf with BPF argument check on socket domain"
+    -> GROUNDED: audit-results-phase4.txt BLOCK-1, orchestrator.txt L499-511.
+  "postcard wire format"
+    -> GROUNDED: postcard crate exists on crates.io, already in project deps.
+  "SO_PEERCRED for peer PID verification"
+    -> GROUNDED: Linux socket(7) man page, orchestrator.txt L438-439.
+  "0700 socket directory"
+    -> GROUNDED: orchestrator.txt L435, audit BLOCK-5 fix.
+  "AppContainer on Windows"
+    -> VERIFIED: Windows API CreateAppContainerProfile exists. Implementation complexity
+       is significant but API is documented. orchestrator.txt L530-538.
+  "Zero capabilities retained for any role"
+    -> GROUNDED: orchestrator.txt L495-497. Researcher uses veth+iptables, not capabilities.
+  "veth + iptables for researcher network"
+    -> GROUNDED: orchestrator.txt L497, audit BLOCK-2 fix.
+  "LLM calls proxied via IPC"
+    -> GROUNDED: orchestrator.txt L423-425, audit BLOCK-3 fix.
+  "Orchestrator-enforced GRC budget"
+    -> GROUNDED: orchestrator.txt L478-491, audit BLOCK-4 fix.
+  "SSB write synchronous with ToolResult dispatch"
+    -> GROUNDED: orchestrator.txt L468-469, audit WARN-6 fix.
+  "GroundingRequest IPC message for agent verify"
+    -> GROUNDED: reasoning.txt L137-152, orchestrator.txt L452-453.
+  "ReplanRequest with max 1 per agent per phase"
+    -> GROUNDED: orchestrator.txt L458-464.
+  "Self-mod: canonical realpath + RO mount + git diff filter"
+    -> GROUNDED: orchestrator.txt L559-565, audit BLOCK-8 fix.
+  "Auditor self-discovery: PROPOSED status + second auditor"
+    -> GROUNDED: orchestrator.txt L567-573, audit BLOCK-6 fix.
+
+
+EXIT CRITERIA
+  All agents isolated as OS processes. IPC works end-to-end.
+  All adversarial tests pass (every audit BLOCK/WARN has a test).
+  Overhead < 5% vs in-process. Metrics recorded.
+  Linux: full namespace + seccomp + rlimits + /proc masking. Windows: AppContainer (or documented-weaker fallback).
+  No agent has network access except researcher (via veth, not capabilities).
+  No agent has LLM client (all inference via IPC proxy).
+  GRC budget enforced by orchestrator, not agent.
+  Self-mod locks: IPC + filesystem + git.
+  Auditor findings gated: PROPOSED, never auto-CANDIDATE.
+  DEFERRED: ShortCoder must run in orchestrator (audit WARN-3). Verified in Phase 4B PRE_GATE.
+  Every call site and struct that participates in request routing must wire ssb, fsm, and clock through the single RuntimeClient; no step may leave these fields as None or uninitialized after construction.

@@ -1,0 +1,45 @@
+LLM Hallucination Mitigation Deep Dive
+
+Paradigm Shift: Engine-level manipulation replacing external retrieval for hallucination mitigation in high-stakes deployments (2025-2026).
+
+Core Methodologies:
+
+Truthfulness Steering Vectors (TSV):
+- Latent space geometry manipulation via single trainable vector
+- 0.00005% parameter overhead (4K params for 8B model)
+- Optimal Transport pseudo-labeling with class imbalance handling
+- Batch size optimization: 128-256 for enhanced separation
+- Cross-domain generalization with minimal exemplars (32 examples)
+
+Dynamic Multimodal Activation Steering (DMAS):
+- Semantic cluster-based truthfulness vectors (4 optimal clusters)
+- Dual intervention: truthfulness + visual perception vectors
+- Top-K head injection with hyperparameters (α, β, K)
+- Results: +94.66 MME points, -20.2% CHAIR hallucinations
+- Training-free with key-value database retrieval
+
+Computational Economics:
+- MCD: 2.5-3x VRAM, high latency (tri-model contrastive)
+- RCD: Medium VRAM, low latency (LoRA adapters)
+- DeCo: Zero VRAM, 1.2x latency (early-exit routing)
+- TSV: Near-zero VRAM, negligible latency (vector addition)
+- DMAS: Low VRAM, low latency (vector DB + head injection)
+
+Production Integration:
+- vLLM HaluGate (Dec 2025): Real-time token-level detection
+- C++/CUDA implementation bypassing Python runtime
+- Two-stage pipeline: Sentinel classification + NLI verification
+- Speculative decoding (EAGLE3/P-EAGLE) for latency masking
+- Shared KV-cache minimizes memory bandwidth bottlenecks
+
+Critical Thresholds:
+- TSV parameter ratio: 0.00005% of base model
+- DMAS optimal clusters: 4 semantic groups
+- HaluGate latency: <5ms per token overhead
+- Speculative decoding acceptance: >85% verification rate
+
+Economic Viability:
+- Steering methods optimal for consumer serving
+- Contrastive methods for offline verification
+- Early-exit mechanisms balance accuracy/throughput
+- Hardware-optimized frameworks enable production deployment

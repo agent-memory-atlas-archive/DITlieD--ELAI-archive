@@ -1,0 +1,428 @@
+PHASE 2D: CSQ AND INLINE FEASIBILITY
+Prerequisites: Phase 2C complete (per-agent GRC configs route correctly, all 2C tests pass)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Counterfactual Safety Questions (CSQ) on functions touching files/data/network/auth.
+Inline feasibility checks catch ungrounded claims during EXECUTING (max 2 GRC calls).
+After this phase, the reasoning engine is complete (phases 2A-2D).
+
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/reasoning.txt             Section 6 (CSQ: format, triggers, guard requirement)
+  docs/specs/crates/reasoning.txt             Section 8 (inline feasibility: detection, max 2 calls, BLOCK signal)
+  docs/specs/crates/reasoning.txt             Section 7 (per-agent CSQ config: which roles require CSQ)
+  docs/specs/crates/reasoning.txt             Section 10 (KEY TYPES: items marked [2D])
+  docs/specs/crates/reasoning.txt             Section 11 (TESTABLE INVARIANTS: items marked [2D])
+  docs/specs/crates/orchestrator.txt          Section 8 (FSM transitions: EXECUTING->PLANNING replan signals)
+  docs/specs/architecture-overview.txt        Section 4 (FSM flow: EXECUTING includes GRC inline feasibility)
+
+
+DESIGN DECISIONS (grounded)
+
+  D1. CSQ trigger detection via function signature analysis.
+      CSQ must fire on functions touching files/network/money/auth (reasoning.txt s6).
+      Detection method: pattern match on function parameters and return types.
+      Functions receiving Path/File/TcpStream/Money/AuthToken or calling std::fs/std::net
+      APIs are classified as CSQ-required. Phase 1A DKG provides call-graph data, but
+      CSQ detection must work WITHOUT DKG (reasoning crate depends on core+providers+tools,
+      not knowledge). Standalone pattern: accept a list of "sensitive function signatures"
+      from the caller (orchestrator passes DKG results at runtime).
+      Grounding: reasoning.txt s6 mandates "minimum 1 CSQ per function touching:
+      files, network, money, auth." Detection via call-graph analysis is standard
+      static analysis practice (ast-grep uses tree-sitter for structural matching,
+      github.com/ast-grep/ast-grep).
+      Dependency note: reasoning/ depends on core/, providers/, tools/ (crate map in
+      implementation-guide.txt). It does NOT depend on knowledge/. DKG queries are
+      injected by orchestrator at call time, not imported directly.
+
+  D2. CSQ severity classification determines guard enforcement.
+      Not all CSQ consequences are equal. "Code writes wrong comment" vs "code deletes
+      user data" require different responses. Classification:
+        CRITICAL (guard MANDATORY): data_loss, security_breach, financial_error, auth_bypass
+        WARNING (guard RECOMMENDED): incorrect_output, performance_degradation, stale_cache
+      CRITICAL consequences with no guard added = CSQ failure (blocks AUDITING).
+      WARNING consequences with no guard = CSQ warning (logged, does not block).
+      Grounding: reasoning.txt s6: "Dangerous consequence (data loss, security, financial)
+      -> MUST add guard." This maps directly to CRITICAL. VeriGuard (OpenReview 2025)
+      co-generates verification with code; CSQ is the lightweight version of this
+      principle applied at the reasoning level.
+
+  D3. Inline feasibility uses GRC budget counter, not separate mechanism.
+      Inline feasibility (reasoning.txt s8) fires when GRC verify detects a NEW claim
+      not in PipelineSpec, Research Report, or DKG. The max-2-call limit is enforced
+      by a dedicated counter in InlineFeasibilityState, separate from the per-topic GRC
+      budget. Rationale: inline checks are cross-topic (a claim in topic A might need
+      verification via topic B's context), so per-topic budget is wrong scope.
+      Methods: web_search, grep, api_registry_check (reasoning.txt s8).
+      Grounding: reasoning.txt s8 specifies "Quick check (max 2 GRC calls)."
+      AgentSpec (arxiv:2503.18666) validates runtime enforcement with bounded checks;
+      our approach is simpler (fixed counter vs probabilistic reachability).
+      Receiver note: check_inline_feasibility takes &mut self (mutates counter).
+      Prior GrcEngine methods (think, set_budget) already use &mut self, so this is
+      consistent. verify_claim/ground_plan (2B) use &self since they are read-only.
+      Callers already hold &mut GrcEngine for think(); no new API burden.
+
+  D4. Inline feasibility failure signals replan via ReplanRequest.
+      On PASS: claim is grounded, proceed with EXECUTING.
+      On FAIL: executor must use plan's original approach (no deviation).
+      On BLOCKED (fundamentally different approach detected): executor emits
+      ReplanRequest(MAJOR) which triggers EXECUTING->PLANNING transition requiring
+      human approval (orchestrator.txt s8: "EXECUTING -> PLANNING (major replan):
+      requires human approval in both AUTONOMOUS and INTERACTIVE modes").
+      Grounding: reasoning.txt s8: "Fundamentally different approach requires
+      EXECUTING -> BLOCK -> PLANNING." orchestrator.txt confirms MAJOR replan path.
+
+  D5. CSQ and inline feasibility types extend reasoning/src/types.rs.
+      New types (not yet in reasoning.txt s10, will be added):
+        CsqCheck { assumption: String, consequence: String,
+                    severity: CsqSeverity, guard_added: bool }
+        CsqSeverity enum { Critical, Warning }
+        CsqResult { function_id: String, checks: Vec<CsqCheck> }
+          fn passed(&self) -> bool — true iff all CRITICAL checks have guard_added == true.
+          No stored passed field; computed method ensures consistency when checks are mutated.
+        FeasibilityMethod enum { SourceMatch }
+          Typed enum following the established VerificationMethod pattern (reasoning.txt s10).
+          Extensible: future phases add WebSearch, Grep, ApiRegistryCheck variants.
+        InlineFeasibilityResult { claim: String, method: FeasibilityMethod,
+                                   outcome: FeasibilityOutcome }
+        FeasibilityOutcome enum { Pass, Fail, Blocked }
+          Pass: claim verified, Fail: use original plan, Blocked: emit ReplanRequest(MAJOR).
+        InlineFeasibilityState { checks_used: u32, max_checks: u32 }
+          max_checks = 2 (hardcoded from spec). is_exhausted() = checks_used >= max_checks.
+          reset() sets checks_used = 0 (orchestrator calls between phases).
+          When exhausted, no more inline checks possible; treat new claims as Fail.
+      Grounding: type fields derived directly from reasoning.txt s6/s8. CsqSeverity
+      maps to the "dangerous consequence" distinction in s6.
+
+
+STEPS
+
+  2D.1 SKELETON: CSQ and inline feasibility types + stubs
+    PRE_GATE:
+      - Phase 2C tests pass (per-agent GRC configs work)
+        Command: cd .elai_cc && cargo test -p reasoning -- --nocapture 2>&1 | grep -E "test result:" | grep -q "0 failed"
+      - AgentGrcConfig type exists with csq_required field (from phase 2C)
+        Command: grep -q "csq_required" .elai_cc/crates/reasoning/src/types.rs && echo PASS
+      - No CsqCheck type exists yet (greenfield for 2D types)
+        Command: grep -c "CsqCheck" .elai_cc/crates/reasoning/src/types.rs | grep -q "^0$" && echo PASS
+    TASK:
+      - Add types to reasoning/src/types.rs:
+          CsqSeverity enum { Critical, Warning }
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+          CsqCheck { assumption: String, consequence: String,
+                     severity: CsqSeverity, guard_added: bool }
+            #[derive(Debug, Clone)]
+          CsqResult { function_id: String, checks: Vec<CsqCheck> }
+            #[derive(Debug, Clone)]
+            fn passed(&self) -> bool { self.checks.iter().all(|c| c.severity != Critical || c.guard_added) }
+            No stored passed field — computed method ensures consistency.
+          InlineFeasibilityState { checks_used: u32, max_checks: u32 }
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            Default: max_checks = 2
+            fn is_exhausted(&self) -> bool { self.checks_used >= self.max_checks }
+            fn record_check(&mut self) { self.checks_used = self.checks_used.saturating_add(1); }
+            fn reset(&mut self) { self.checks_used = 0; }  // called by orchestrator between phases
+          FeasibilityOutcome enum { Pass, Fail, Blocked }
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+          FeasibilityMethod enum { SourceMatch }
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            Follows VerificationMethod pattern (reasoning.txt s10 lines 190, 194).
+            Future variants: WebSearch, Grep, ApiRegistryCheck (added in phase 4F).
+          InlineFeasibilityResult { claim: String, method: FeasibilityMethod,
+                                    outcome: FeasibilityOutcome }
+            #[derive(Debug, Clone)]
+      - Add methods to GrcEngine trait in reasoning/src/engine.rs:
+          Phase 2D methods (implemented this phase):
+            fn generate_csq(&self, function_id: &str, sensitive_ops: &[String])
+              -> Result<CsqResult, GrcError>
+            fn check_inline_feasibility(&mut self, claim: &str, sources: &[String])
+              -> Result<InlineFeasibilityResult, GrcError>
+          Stubs in BasicGrcEngine using todo!() until step 2D.4.
+      - Add InlineFeasibilityState field to BasicGrcEngine struct.
+      - Re-export new types from reasoning/src/lib.rs
+    DETERMINISTIC_CHECK:
+      - cargo check on workspace succeeds with 0 errors
+        Command: cd .elai_cc && cargo check 2>&1 | grep -c "error\[" | grep -q "^0$"
+      - All new types exist:
+        Command: grep -c "pub enum CsqSeverity" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub struct CsqCheck" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub struct CsqResult" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub struct InlineFeasibilityState" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub enum FeasibilityOutcome" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub enum FeasibilityMethod" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+        Command: grep -c "pub struct InlineFeasibilityResult" .elai_cc/crates/reasoning/src/types.rs | grep -q "1"
+      - GrcEngine trait has new methods:
+        Command: grep -c "fn generate_csq" .elai_cc/crates/reasoning/src/engine.rs | grep -q "1"
+        Command: grep -c "fn check_inline_feasibility" .elai_cc/crates/reasoning/src/engine.rs | grep -q "1"
+    ADVERSARIAL:
+      - If CsqCheck.guard_added defaults to true, all CSQ checks auto-pass without
+        actual guards. Test: CsqCheck must require explicit guard_added=true from caller.
+        Verify no Default impl sets guard_added=true.
+      - If InlineFeasibilityState.max_checks is configurable, callers could set it to
+        u32::MAX, defeating the bound. Test: max_checks is hardcoded to 2 in Default
+        impl, not settable via public constructor.
+    ACCEPTANCE:
+      - cargo check succeeds with reasoning/ in workspace: exit code 0
+      - 7 new types exist in types.rs (CsqSeverity, CsqCheck, CsqResult,
+        InlineFeasibilityState, FeasibilityMethod, FeasibilityOutcome, InlineFeasibilityResult)
+      - 2 new methods in GrcEngine trait (generate_csq, check_inline_feasibility)
+
+  2D.2 VERIFY: compilation check
+    PRE_GATE:
+      - Step 2D.1 complete (new types and stubs exist)
+        Command: grep -q "CsqCheck" .elai_cc/crates/reasoning/src/types.rs && echo PASS
+    TASK:
+      - Run cargo check on full workspace. Fix any compile errors.
+      - Verify reasoning/ has no NEW deps beyond what reasoning.txt declares (core, providers, tools, thiserror, serde).
+    DETERMINISTIC_CHECK:
+      - cargo check returns 0 errors
+        Command: cd .elai_cc && cargo check 2>&1 | grep "error\[" | wc -l | grep -q "^0$"
+      - No new dependencies beyond declared set:
+        Command: grep "^\[dependencies" .elai_cc/crates/reasoning/Cargo.toml -A 30 | grep -v "core" | grep -v "providers" | grep -v "tools" | grep -v "^\[" | grep -v "^$" | grep -v "thiserror" | grep -v "serde" | grep -v "#" | wc -l
+        (should be 0 — only core, providers, tools, thiserror, serde allowed per reasoning.txt line 4)
+    ADVERSARIAL:
+      - If stubs return Ok(default_value) instead of todo!(), tests might pass falsely
+        in step 2D.3 TDD. Test: grep for todo!() in generate_csq and check_inline_feasibility.
+    ACCEPTANCE:
+      - cargo check exit code 0
+      - reasoning/ dependency set: only core, providers, tools, thiserror, serde (no new deps from 2D)
+
+  2D.3 TEST: write failing tests (TDD)
+    PRE_GATE:
+      - Step 2D.2 passes (workspace compiles clean)
+      - generate_csq and check_inline_feasibility methods exist in GrcEngine trait
+        Command: grep -q "fn generate_csq" .elai_cc/crates/reasoning/src/engine.rs
+        Command: grep -q "fn check_inline_feasibility" .elai_cc/crates/reasoning/src/engine.rs
+    TASK:
+      Write tests in reasoning/tests/csq_tests.rs (all must FAIL against stubs):
+
+      T1. csq_generates_check_for_file_function:
+          Call generate_csq("write_config", &["std::fs::write"]).
+          Assert result.checks.len() >= 1.
+          Assert at least one check has severity == CsqSeverity::Critical.
+          Invariant: reasoning.txt s6 "minimum 1 CSQ per function touching files."
+
+      T2. csq_critical_without_guard_fails:
+          Create CsqResult with one Critical check where guard_added == false.
+          Assert result.passed() == false.
+          Invariant: reasoning.txt s6 "dangerous consequence -> MUST add guard."
+
+      T3. csq_critical_with_guard_passes:
+          Create CsqResult with one Critical check where guard_added == true.
+          Assert result.passed() == true.
+
+      T4. csq_warning_without_guard_still_passes:
+          Create CsqResult with one Warning check where guard_added == false.
+          Assert result.passed == true (warnings don't block).
+
+      T5. csq_no_sensitive_ops_returns_empty:
+          Call generate_csq("helper_fn", &[]).
+          Assert result.checks.is_empty() (no sensitive ops = no CSQ needed).
+          Assert result.passed() == true.
+
+      T6. inline_feasibility_pass_on_known_claim:
+          Call check_inline_feasibility(
+            "use tantivy BM25 index for full-text search",
+            &["PipelineSpec: use tantivy BM25 index for full-text search"]).
+          Assert outcome == FeasibilityOutcome::Pass.
+          Note: realistic multi-word claim avoids trivial substring false positive.
+
+      T7. inline_feasibility_fail_on_unknown_claim:
+          Call check_inline_feasibility("unknown claim", &[]) with no matching sources.
+          Assert outcome == FeasibilityOutcome::Fail.
+
+      T8. inline_feasibility_max_two_calls:
+          First assert engine.inline_feasibility_state.checks_used == 0 (initial state).
+          Call check_inline_feasibility() twice (both succeed or fail).
+          Assert engine.inline_feasibility_state.checks_used == 2.
+          Call a third time. Assert returns Err(GrcError::BudgetExhausted).
+          Invariant: reasoning.txt s8 "max 2 GRC calls."
+          Invariant: reasoning.txt s11 "[2D] Inline feasibility max 2 calls (bounded)."
+
+      T9. inline_feasibility_blocked_signals_replan:
+          Call check_inline_feasibility("CONTRADICTS_PLAN: use completely different algorithm", &["use original algorithm"]).
+          The CONTRADICTS_PLAN: prefix is the phase 2D trigger for Blocked detection (I2).
+          Assert outcome == FeasibilityOutcome::Blocked.
+          Invariant: reasoning.txt s8 "Fundamentally different approach requires
+          EXECUTING -> BLOCK -> PLANNING."
+          Note: the Blocked outcome signals the need for ReplanRequest(MAJOR), but the
+          actual ReplanRequest emission is orchestrator's responsibility (phase 3A+).
+          This test verifies the reasoning engine returns the correct outcome only.
+
+      T10. inline_feasibility_state_reset:
+           After exhausting inline checks (2 used), call reset on
+           InlineFeasibilityState. Assert checks_used == 0 and is_exhausted() == false.
+           Ensures state is clean between phases/topics.
+
+    DETERMINISTIC_CHECK:
+      - All 10 tests exist and FAIL (TDD: tests written before implementation)
+        Command: cd .elai_cc && cargo test -p reasoning --test csq_tests --no-run 2>&1 | grep -q "error"
+        (compile errors expected since stubs use todo!())
+      - Test count matches:
+        Command: grep -c "#\[test\]" .elai_cc/crates/reasoning/tests/csq_tests.rs
+        (should be >= 10)
+    ADVERSARIAL:
+      - If tests use hardcoded strings that happen to match stub defaults, they pass
+        falsely. Test: stubs must use todo!() or unimplemented!(), never placeholder Ok.
+      - If T8 (max 2 calls) uses a shared mutable counter without proper scoping,
+        test isolation breaks. Test: each test creates its own BasicGrcEngine instance.
+    ACCEPTANCE:
+      - >= 10 test functions exist in reasoning/tests/csq_tests.rs
+      - All tests fail to compile or fail at runtime (TDD contract)
+      - Zero timing-dependent tests (grep for sleep/Duration/Instant returns 0)
+
+  2D.4 IMPLEMENT: CSQ generation and inline feasibility logic
+    PRE_GATE:
+      - Step 2D.3 complete (tests written, all currently fail)
+      - No other session owns reasoning/ files
+        (checked by mcp_session_claim at EXECUTING entry)
+    TASK:
+      Implement in BasicGrcEngine (reasoning/src/engine.rs):
+
+      I1. CSQ generation (generate_csq):
+          Input: function_id (name of function being analyzed),
+                 sensitive_ops (list of sensitive API calls found by caller).
+          Logic:
+            - If sensitive_ops is empty, return CsqResult { function_id, checks: vec![] }.
+              (passed() will return true since no Critical checks exist.)
+            - For each sensitive_op, generate a CsqCheck:
+              - Classify severity: ops matching file/network/money/auth patterns -> Critical,
+                others -> Warning.
+              - Pattern matching for classification (case-insensitive: lowercase both
+                sensitive_op and pattern before comparison):
+                CRITICAL patterns: "fs::", "file", "write", "delete", "remove", "net::",
+                  "tcpstream", "money", "payment", "auth", "token", "credential", "password"
+                WARNING patterns: everything else in sensitive_ops.
+              - assumption: "The call to {sensitive_op} in {function_id} behaves as expected"
+              - consequence: severity-dependent template:
+                Critical: "data loss/security breach/financial error possible if {sensitive_op} fails"
+                Warning: "incorrect output possible if {sensitive_op} fails"
+              - guard_added: false (caller must set to true after adding guard code)
+            - Return CsqResult { function_id, checks }. The passed() method computes
+              correctness dynamically: checks.iter().all(|c| c.severity != Critical || c.guard_added)
+
+      I2. Inline feasibility check (check_inline_feasibility):
+          Input: claim (the new claim detected during EXECUTING),
+                 sources (list of known sources: PipelineSpec entries, DKG entries, etc.).
+          Logic:
+            - Check InlineFeasibilityState.is_exhausted(). If yes, return
+              Err(GrcError::BudgetExhausted) with topic="inline_feasibility".
+            - Check if claim appears in any source (substring match or exact match).
+              If found: outcome = Pass.
+            - If not found in sources: outcome = Fail (use plan's original approach).
+            - Blocked detection: if claim contains negation of a plan assumption
+              (heuristic: claim and a source share >50% tokens but have contradicting
+              verb/predicate), outcome = Blocked.
+              Note: this heuristic is intentionally simple for phase 2D. Phase 4F
+              (FEASIBILITY_PROBE) adds full semantic analysis. For now, Blocked is
+              only returned when explicitly signaled by the caller via a claim prefixed
+              with "CONTRADICTS_PLAN:".
+            - Record check: self.inline_feasibility_state.record_check().
+            - Return InlineFeasibilityResult { claim, method: FeasibilityMethod::SourceMatch, outcome }.
+
+      I3. CsqResult.passed() method:
+          Implement fn passed(&self) -> bool on CsqResult struct (not a stored field).
+          fn passed(&self) -> bool { self.checks.iter().all(|c| c.severity != Critical || c.guard_added) }
+          This ensures passed is always consistent with current check state.
+          The struct has no stored passed field — it is always computed.
+
+    DETERMINISTIC_CHECK:
+      - All 10 tests from step 2D.3 pass
+        Command: cd .elai_cc && cargo test -p reasoning --test csq_tests -- --nocapture 2>&1 | grep -E "test result:" | grep -q "0 failed"
+      - No todo!() or unimplemented!() in CSQ/inline methods
+        Command: grep -A 20 "fn generate_csq" .elai_cc/crates/reasoning/src/engine.rs | grep -c "todo!\|unimplemented!" | grep -q "^0$"
+        Command: grep -A 20 "fn check_inline_feasibility" .elai_cc/crates/reasoning/src/engine.rs | grep -c "todo!\|unimplemented!" | grep -q "^0$"
+      - No unwrap() in CSQ/inline implementation
+        Command: grep -A 20 "fn generate_csq" .elai_cc/crates/reasoning/src/engine.rs | grep -c "\.unwrap()" | grep -q "^0$"
+      - All prior phase 2A-2C tests still pass (regression check)
+        Command: cd .elai_cc && cargo test -p reasoning -- --nocapture 2>&1 | grep -E "test result:" | grep -q "0 failed"
+    ADVERSARIAL:
+      - If CRITICAL pattern list is case-sensitive, "FS::" or "Net::" bypasses CSQ.
+        Test: unit test with mixed-case sensitive_ops (e.g., "std::FS::write") — must
+        still classify as Critical. Implementation: compare lowercase.
+      - If inline feasibility substring match is too loose, "the" in claim matches
+        "the" in every source, producing false Pass. Test: match must be on meaningful
+        claim content (>3 words or exact match), not single common words.
+      - If Blocked detection false-positives on similar but non-contradicting claims,
+        executor gets stuck in replan loops. Test: "uses std::fs::write" vs
+        "uses std::fs::read" should NOT trigger Blocked (different ops, not contradicting).
+      - If InlineFeasibilityState is shared across topics, exhausting checks in one
+        phase blocks all subsequent phases. Test: state resets between phases
+        (reset method exists and is called by orchestrator).
+    ACCEPTANCE:
+      - cargo test -p reasoning: 0 failures, all 2A-2D tests pass
+      - cargo check --workspace: 0 errors
+      - grep for todo!/unimplemented!/unwrap() in CSQ+inline methods: 0 matches
+      - At least 10 tests pass in csq_tests.rs
+
+  2D.5 MEASURE: CSQ and inline feasibility metrics
+    PRE_GATE:
+      - Step 2D.4 complete (all tests pass)
+    TASK:
+      - Measure CSQ generation overhead per function (target: <1ms for pattern matching)
+      - Measure inline feasibility check overhead (target: <2ms for source matching)
+      - Measure false positive rate on inline checks with synthetic claims:
+          Prepare 20 claims: 10 present in sources, 10 absent.
+          Assert: 0 false positives (present claims = Pass), 0 false negatives
+          (absent claims = Fail). Pattern matching is deterministic so rate should be 0%.
+      - Record: test count delta from phase 2C, LOC delta, compile time delta
+      - Write metrics to .elai_cc/metrics/phase_2D.toml
+      - Update architecture-overview.txt section 4 GrcEngine trait listing to include
+        generate_csq and check_inline_feasibility (prevents spec drift)
+    DETERMINISTIC_CHECK:
+      - Metrics file exists and contains required fields
+        Command: test -f .elai_cc/metrics/phase_2D.toml && grep -q "csq_overhead_us" .elai_cc/metrics/phase_2D.toml
+        Command: grep -q "inline_check_overhead_us" .elai_cc/metrics/phase_2D.toml
+        Command: grep -q "false_positive_rate" .elai_cc/metrics/phase_2D.toml
+      - CSQ overhead < 1ms (1000 microseconds)
+        Command: grep "csq_overhead_us" .elai_cc/metrics/phase_2D.toml
+        (value must be < 1000)
+      - False positive rate = 0
+        Command: grep "false_positive_rate" .elai_cc/metrics/phase_2D.toml | grep -q "0.0"
+    ADVERSARIAL:
+      - If measurement uses wall-clock time in CI, results are non-deterministic.
+        Test: use std::hint::black_box + std::time::Instant for local benchmarks only.
+        Report median of 1000 iterations. Do NOT add criterion without user approval.
+        Note: Instant for benchmarks is acceptable under entropy quarantine (measurement
+        metadata, not deterministic output).
+      - If false_positive_rate test uses trivial claims ("a", "b"), it does not test
+        real-world scenarios. Test: use realistic claim strings (>5 words each).
+    ACCEPTANCE:
+      - .elai_cc/metrics/phase_2D.toml exists with all required fields
+      - csq_overhead_us < 1000
+      - inline_check_overhead_us < 2000
+      - false_positive_rate == 0.0
+      - cargo test -p reasoning: 0 failures
+
+
+EXIT CRITERIA
+  CSQ fires on every function with sensitive operations (file/network/money/auth).
+  CSQ with Critical severity and no guard = failure (blocks progression).
+  CSQ with Warning severity and no guard = warning only (does not block).
+  Inline feasibility checks are bounded at max 2 per EXECUTING phase.
+  Inline feasibility Pass = proceed, Fail = use original plan, Blocked = replan.
+  All 2D tests pass. All prior 2A-2C tests still pass (regression).
+  Zero todo!/unimplemented!/unwrap() in CSQ and inline feasibility code.
+
+PHASE 2 OVERALL: reasoning engine complete (2A state machine + 2B grounding
+  verification + 2C per-agent config + 2D CSQ + inline feasibility).
+
+
+GROUNDING SUMMARY
+  "CSQ: if [X] wrong, code will [Y]" -> GROUNDED: reasoning.txt section 6
+  "Min 1 CSQ per file/network/money/auth function" -> GROUNDED: reasoning.txt section 6
+  "Dangerous consequence = MUST add guard" -> GROUNDED: reasoning.txt section 6
+  "Inline feasibility max 2 GRC calls" -> GROUNDED: reasoning.txt section 8
+  "NEW claim not in PipelineSpec/Research Report/DKG triggers check" -> GROUNDED: reasoning.txt section 8
+  "PASS->proceed, FAIL->original approach" -> GROUNDED: reasoning.txt section 8
+  "Fundamentally different approach -> EXECUTING->BLOCK->PLANNING" -> GROUNDED: reasoning.txt section 8, orchestrator.txt section 8 (MAJOR replan path)
+  "Per-agent CSQ config: executor=mandatory, auditor=mandatory, compiler=none" -> GROUNDED: reasoning.txt section 7
+  "CSQ severity classification (CRITICAL vs WARNING)" -> VERIFIED: derived from reasoning.txt s6 "dangerous consequence" distinction. VeriGuard (OpenReview 2025) validates co-generation of verification with code.
+  "Detection via function signature pattern matching" -> VERIFIED: ast-grep (github.com/ast-grep/ast-grep) demonstrates tree-sitter structural matching for code classification. Our approach is simpler (string patterns on caller-provided sensitive_ops list).
+  "Runtime enforcement with bounded checks" -> VERIFIED: AgentSpec (arxiv:2503.18666) implements DSL-based runtime enforcement for LLM agents with bounded safety checks. Our inline feasibility is a fixed-counter simplification.
+  "InlineFeasibilityState separate from per-topic GRC budget" -> GROUNDED: reasoning.txt s8 describes inline checks as cross-topic ("during EXECUTING"), not scoped to a single GRC topic. Separate counter prevents cross-topic budget interference.
+  "FeasibilityMethod enum instead of String for method field" -> GROUNDED: reasoning.txt s10 lines 190, 194 explicitly require "method is VerificationMethod enum (not String)" for all analogous fields. FeasibilityMethod follows same typed pattern.
+  "<1ms CSQ overhead, <2ms inline check overhead" -> UNGROUNDED: assumed reasonable for in-memory string pattern matching. Will be verified empirically in step 2D.5.
+  "Blocked detection via CONTRADICTS_PLAN: prefix" -> UNGROUNDED: simplified heuristic for phase 2D. Full semantic contradiction detection deferred to phase 4F (FEASIBILITY_PROBE). Prefix convention is a pragmatic placeholder.

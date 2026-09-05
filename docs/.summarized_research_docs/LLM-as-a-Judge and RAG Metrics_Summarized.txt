@@ -1,0 +1,41 @@
+LLM-as-a-Judge and RAG Metrics
+
+SOTA Evaluation Frameworks:
+
+Reference-Free Evaluation Systems:
+- Replace rigid exact-match grading with LLM judges
+- Claude 3.7/4.6 Opus: 91.3-95.4% on GPQA Diamond
+- Gemini 3.1 Pro: 94.3% scientific reasoning accuracy
+- GPT-5.2/5.4: 92.0-92.4% accuracy
+- OpenAI o3-mini: 97.3% MATH 500 at 214 tokens/sec
+
+DeepEval DAG Metrics:
+- Directed Acyclic Graph for atomic decision breakdown
+- Reduces "judge hallucinations" through mathematical verification
+- Ensures reproducible assessment pipelines
+- Complex multi-step reasoning evaluation
+
+RAGAS Mathematical Framework:
+RAG Triad Components:
+- Faithfulness: (Context-supported claims) / (Total claims)
+- Answer Relevancy: Cosine similarity to synthetic questions
+- Context Precision: Validation of gold tokens in top-K retrieved chunks
+- Bias Mitigation: Answer position rotation and multi-agent consensus
+
+Advanced Testing Integration:
+- Combines traditional metrics with LLM judgment
+- Property-based testing for mathematical verification
+- Multi-agent evaluation to reduce self-preference bias
+- Automated bias detection through answer position analysis
+
+Implementation Requirements:
+- Frontier model access for judging capabilities
+- Vector embedding support for semantic similarity
+- Robust evaluation pipelines with caching layers
+- Real-time monitoring and alerting systems
+
+Performance Thresholds:
+- Judge accuracy: >90% for reliable evaluation
+- Bias reduction: >85% through consensus mechanisms
+- Evaluation latency: <500ms for practical deployment
+- Cost efficiency: Optimized token usage per evaluation

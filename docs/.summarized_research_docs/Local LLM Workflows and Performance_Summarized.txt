@@ -1,0 +1,71 @@
+Local LLM Workflows and Performance
+
+2026 Paradigm Shift:
+- Cloud-bound APIs → Edge-deployed, local-first AI
+- Drivers: Data privacy (GDPR, HIPAA), zero-latency execution, data sovereignty
+- Open-weight models vs traditional open-source distinction
+- Convergence: capable models + efficient inference + powerful hardware
+
+Inference Optimization Techniques:
+
+EAGLE-3 Speculative Decoding:
+- Draft model integration with OpenVINO
+- 1.8-2.3x throughput improvement
+- Critical TTFT (Time to First Token) reduction
+- Eliminates perception of lag in interactive applications
+
+Temporal Incremental Draft Engine (TIDE):
+- Solves stale draft problem in speculative decoding
+- Real-time adaptation using target model hidden states
+- 1.15x throughput improvement over static decoding
+- 1.67x reduction in initial training requirements
+- Converts idle GPU cycles into continuous optimization
+
+Context Window Engineering:
+- 1M-10M token claims vs practical limitations
+- Context pollution and lost-in-the-middle phenomena
+- Token density optimization over brute-force expansion
+- Semantic compression for multi-step autonomous workflows
+
+Production Runtime Architecture:
+
+Three-Phase Execution Loop:
+1. Context Assembly: Base instructions + skills prompt + workspace files
+2. Agent Execution: Local Python kernel, bash commands, browser automation
+3. Integration: Direct platform connections (Telegram, WhatsApp, Slack)
+
+Flat Skill-Based Systems:
+- Moving away from LangChain abstraction
+- Isolated capability modules for debugging simplicity
+- Direct tool invocation without complex frameworks
+- Error tracing and maintenance optimization
+
+Memory Management Strategy:
+- Working context: Active prompt memory
+- Session transcripts: JSONL storage
+- Persistent knowledge: Markdown knowledge base
+- Three-layer approach prevents context overflow
+
+Security Considerations:
+- "Giving LLM hands" introduces RCE vulnerabilities
+- Enterprise-grade sandboxing required (Docker, VPS)
+- Supply chain threats from malicious skill marketplace
+- Prompt injection attack mitigation
+
+Performance Metrics:
+- Throughput: 1.8-2.3x with EAGLE-3
+- Latency: <100ms TTFT with speculative decoding
+- Memory efficiency: 40-60% reduction via context optimization
+- Security isolation: Complete sandbox separation
+
+Hardware Requirements:
+- Consumer GPUs: 8-16GB VRAM for 7B models
+- Enterprise GPUs: 24-48GB VRAM for 30B+ models
+- System RAM: 32GB+ for context management
+- Storage: SSD for fast model loading
+
+Deployment Strategies:
+- OpenVINO for Intel optimization
+- Custom CUDA kernels for NVIDIA acceleration
+- Multi-GPU scaling for large model inference
+- Edge deployment for privacy-sensitive applications

@@ -1,3 +1,10 @@
+PUBLIC ARCHIVE NOTE
+The 20 syco_sharma fixtures and generate_fixtures.py are omitted pending
+source/rights clarification. Only the 80 locally synthetic fixtures remain.
+The composition counts and regeneration instructions below are historical;
+they do not describe a complete reproducible corpus in this public snapshot.
+See the root THIRD_PARTY_NOTICES.md.
+
 D-23 — Sycophancy Detection Benchmark Fixtures
 
 Schema (per file, JSON)

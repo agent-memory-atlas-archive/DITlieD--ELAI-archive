@@ -1,0 +1,317 @@
+PHASE 3K: RAG PRODUCTION HARDENING
+Prerequisites: Phase 1E complete (CatRAG + A-RAG pipeline), Phase 1G complete (cross-encoder reranker)
+              Phase 3J complete (inference sidecar needed for HyDE generation, step 3K.3 only)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Upgrade the internal ELAI knowledge pipeline (crates/knowledge/) from prototype retrieval
+to production-quality retrieval. The pipeline has strong foundations (DKG, BM25, dual-vector,
+PageRank, CatRAG, A-RAG, cross-encoder) but lacks adaptive chunking, query expansion,
+hypothetical document embeddings, and quality-tier routing. These gaps reduce retrieval
+precision for code-context queries and waste tokens on irrelevant results.
+
+Better retrieval = less context needed = smaller prompts = local LLMs can handle the work.
+
+
+CURRENT STATE (built in Phases 1A-1I)
+  Crate: .elai_cc/crates/knowledge/
+  DKG (1A): tree-sitter AST -> SQLite graph (symbols + edges, Rust/Python/TS/Go)
+  BM25 (1B): tantivy full-text index, 50-line window fallback for non-AST files
+  Vectors (1C): dual ONNX embeddings (GraphCodeBERT 768d + Granite 384d), SQLite cache
+  PageRank (1D): symbol importance ranking, token-budget-fitted repo maps
+  CatRAG (1E): query-aware graph traversal overlay
+  A-RAG (1E): hierarchical retrieval assembly (BM25 + vector + PageRank + CatRAG)
+  Reranker (1G): ms-marco-MiniLM-L12-v2 cross-encoder, CPU-only, <50ms
+  SPLADE (1H): evaluated, KEEP/DROP decision made
+  Resilience (1I): circuit breakers, SearchMode cascade (HYBRID->SPARSE_ONLY->BM25_ONLY),
+    query validation, startup readiness, tracing
+
+  What's missing:
+    - BM25 indexing uses 50-line fixed windows, not AST-aware chunks
+    - Single query per search (no expansion or rephrasing)
+    - No hypothetical document embeddings (query-document mismatch unaddressed)
+    - No quality-tier routing (every query runs full pipeline regardless of complexity)
+    - No retrieval quality metrics (recall, MRR) -- only token savings measured
+
+
+RISKS
+  R1: HyDE requires a local LLM call per query -- adds latency (~1-3s per query).
+      Mitigation: only use HyDE for complex queries (tier routing gates this).
+  R2: AST-based chunking for BM25 depends on tree-sitter grammars already in DKG (1A).
+      Mitigation: reuse existing LanguageGrammar trait from DKG, same grammars.
+  R3: Query expansion can increase retrieval noise if expansions are poor.
+      Mitigation: template-based expansion (not LLM), limit to 2-3 variants.
+
+
+STEPS
+
+  3K.1 ADAPTIVE CHUNKING
+    PRE_GATE:
+      - Phase 1B complete (tantivy BM25 index exists)
+      - Phase 1A complete (DKG tree-sitter grammars available)
+    TASK:
+      - Replace 50-line fixed window chunking in BM25 indexing with AST-aware splitting.
+      - Reuse LanguageGrammar trait from DKG (Phase 1A) for parse tree access.
+      - Code files: split at function/impl/struct/enum/mod boundaries (Rust),
+        def/class boundaries (Python), function/class (TS/Go).
+        Each AST node becomes one BM25 chunk with metadata.
+      - Non-code files: split at heading boundaries (markdown) or blank-line paragraphs.
+      - Fallback: files that fail AST parse keep 50-line windows (existing behavior).
+      - Chunk size targets: 200-800 tokens per chunk (current: fixed 50 lines).
+      - Overlap: 50-token overlap between adjacent chunks for continuity.
+      - Metadata per chunk: file_path, start_line, end_line, chunk_type
+        (function/impl/struct/class/module/paragraph/heading).
+      - Tantivy schema extension: add chunk_type and line range fields.
+      - Re-index on startup if chunk format version changes (migration).
+    DETERMINISTIC_CHECK:
+      - Chunk boundaries align with AST nodes (grep for fn/impl/def/class in chunk starts)
+      - No chunk exceeds 1000 tokens
+      - Overlap exists between adjacent chunks from same file
+      - Files that fail AST parse fall back to 50-line windows (not crash)
+    ACCEPTANCE:
+      - Code chunks align with function/class boundaries for .rs and .py files
+      - Existing indexes re-built without data loss
+      - BM25 query results include chunk_type metadata
+    TOUCHES: knowledge/src/bm25.rs (chunking logic), knowledge/src/dkg.rs (grammar reuse)
+
+  3K.2 QUERY EXPANSION
+    PRE_GATE:
+      - Step 3K.1 passed (adaptive chunking working)
+    TASK:
+      - Multi-query retrieval: rephrase each query 2-3 ways before searching.
+      - Template-based expansion (no LLM needed):
+        Original: "how does the FSM handle transitions?"
+        Expansion 1: "FSM transition state machine" (keyword extraction)
+        Expansion 2: "FsmState transition_to function" (code symbol guess)
+      - Expansion strategies:
+        a. Keyword extraction: strip question words, keep nouns/verbs
+        b. Code symbol expansion: CamelCase/snake_case variants of concepts
+        c. Synonym expansion: "error" -> also search "failure", "exception"
+      - Run BM25 + vector search per expansion, merge results, deduplicate
+        by chunk ID, then pass merged set to cross-encoder reranker.
+      - Skip expansion for short queries (<5 words) -- direct search sufficient.
+    DETERMINISTIC_CHECK:
+      - Expansion produces 2-3 variants for queries >5 words
+      - Merged results are deduplicated (no duplicate chunk IDs in reranker input)
+      - Short queries (<5 words) skip expansion
+    ACCEPTANCE:
+      - Recall@5 improved on test queries compared to single-query baseline
+      - No latency regression >100ms for simple queries
+    TOUCHES: knowledge/src/pipeline.rs (query preprocessing before search stages)
+
+  3K.3 HyDE (HYPOTHETICAL DOCUMENT EMBEDDINGS)
+    PRE_GATE:
+      - Step 3K.2 passed (query expansion working)
+      - Inference sidecar available (Phase 3J, for hypothesis generation)
+    TASK:
+      - Implement HyDE (arxiv 2212.10496):
+        1. User query: "how does ELAI handle anti-spiral detection?"
+        2. Generate hypothetical answer using sidecar LLM:
+           "Anti-spiral detection works by tracking repeated failures
+            using a content hash. If the same step fails 3 times..."
+        3. Embed the hypothetical answer using existing vector models (1C)
+        4. Search with the hypothetical embedding (better query-document match)
+        5. Rerank results against the ORIGINAL query (not the hypothesis)
+      - Sidecar call: use existing SidecarClient from providers/ crate.
+        POST /v1/completions with max_tokens=128, temperature=0.7.
+        Prompt: "Write a short technical paragraph answering: {query}"
+      - Cache hypothetical embeddings for 5 minutes (same query = same hypothesis).
+      - Graceful degradation: if sidecar unavailable, skip HyDE, use direct search.
+        Never block retrieval because the LLM is unavailable.
+        Integrates with Phase 1I resilience (circuit breaker pattern).
+    DETERMINISTIC_CHECK:
+      - HyDE generates a hypothetical document for complex queries
+      - Simple queries skip HyDE (latency unchanged)
+      - Sidecar failure degrades to direct search (no panic, no block)
+    ADVERSARIAL:
+      - Wrong hypothesis -> irrelevant vector results. Mitigation: rerank against
+        ORIGINAL query. Cross-encoder (1G) catches irrelevant results.
+      - Sidecar latency spike -> query timeout. Mitigation: 3s timeout on sidecar
+        call, degrade to direct search on timeout.
+    ACCEPTANCE:
+      - MRR improved on complex test queries vs non-HyDE baseline
+      - Simple queries show zero latency regression
+      - Sidecar unavailability handled gracefully
+    TOUCHES: knowledge/src/pipeline.rs (HyDE stage), providers/src/sidecar_client.rs (reuse)
+
+  3K.4 QUERY TIER ROUTING
+    PRE_GATE:
+      - Steps 3K.1-3K.3 passed
+    TASK:
+      - Route queries through different pipeline tiers based on complexity:
+        FAST:
+          BM25 only, no vector search, no reranker, no HyDE, no expansion.
+          Target latency: <20ms. For agent context passing, simple lookups.
+        STANDARD:
+          BM25 + vector hybrid (existing RRF), cross-encoder reranker. No HyDE.
+          Target latency: <200ms. Default for code search queries.
+        DEEP:
+          Full pipeline: query expansion + HyDE + hybrid search + reranker.
+          Target latency: <5s. For research, debugging, architecture questions.
+      - Caller specifies tier, or auto-detect from query characteristics:
+        <5 words -> FAST
+        5-15 words, code-related keywords -> STANDARD
+        >15 words, question form, debugging/architecture keywords -> DEEP
+      - Add QueryTier enum to pipeline.rs. QueryPipeline::search() takes
+        optional tier parameter. Default: AUTO (backwards compatible).
+      - Distinct from Phase 1I SearchMode cascade: that is degradation on failure,
+        this is intentional quality-tier selection on healthy pipeline.
+    DETERMINISTIC_CHECK:
+      - FAST tier skips reranker and vector search
+      - DEEP tier includes HyDE
+      - AUTO routing classifies short factual queries as FAST/STANDARD
+    ACCEPTANCE:
+      - Three tiers measurably different in latency
+      - Retrieval quality per tier matches expectations (DEEP >= STANDARD >= FAST)
+      - Backwards compatible: existing QueryPipeline callers work unchanged
+    TOUCHES: knowledge/src/pipeline.rs (tier routing), knowledge/src/lib.rs (QueryTier type)
+
+  3K.5 RETRIEVAL QUALITY BENCHMARK
+    PRE_GATE:
+      - All steps 3K.1-3K.4 complete
+    TASK:
+      - Build evaluation set: 30 queries with known-correct answer chunks
+        drawn from the ELAI codebase (10 simple, 10 code-specific, 10 complex).
+      - Measure before (current pipeline) and after (3K improvements):
+        Recall@5: fraction of queries where correct chunk is in top 5
+        Recall@10: fraction in top 10
+        MRR (Mean Reciprocal Rank): 1/rank of first correct result
+        Latency: p50, p95 per tier (FAST/STANDARD/DEEP)
+      - Record results in .elai_cc/metrics/phase_3K_rag.toml
+      - Regression gate: if any metric regresses >5% vs baseline, fix before shipping.
+    DETERMINISTIC_CHECK:
+      - Benchmark file exists with all 30 query results
+      - No metric regression >5% without documented explanation
+    ACCEPTANCE:
+      - Recall@5 >= baseline
+      - MRR improved on complex queries
+      - Latency per tier within budget (FAST <20ms, STANDARD <200ms, DEEP <5s)
+    TOUCHES: .elai_cc/metrics/phase_3K_rag.toml (new), knowledge/src/ (benchmark harness)
+
+
+PAPER-GROUNDED IMPROVEMENTS (from 2026-04 paper ingestion)
+
+  Papers ingested: A-RAG (arxiv 2602.03442), CatRAG (arxiv 2602.01965),
+  Deep Research Survey (2508.12752), Deep Search Agents (2508.05668).
+  Interface maps: workflow/papers/arag-interface.md, catrag-interface.md.
+  These steps improve existing code retrieval quality using techniques from
+  the ingested papers. Independent of Phase 4D web research.
+
+
+  3K.6 A-RAG KEYWORD SCORING + PROGRESSIVE DISCLOSURE
+    PRE_GATE:
+      - 3K.5 complete (benchmark baseline exists for regression comparison)
+    TASK:
+      - Fix A-RAG keyword_search (currently returns empty — stub):
+          Implement A-RAG paper scoring formula:
+            Score_kw(chunk, keywords) = SUM(count(k, text) * len(k))
+          Where count = case-insensitive frequency, len = character length.
+          Longer keywords weighted higher (more specific).
+          Source: arag-interface.md L72-77.
+      - Fix A-RAG semantic_search (currently returns empty — stub):
+          Use existing dual-vector embeddings (Phase 1C: GraphCodeBERT + Granite).
+          Implement 3x oversampling: retrieve top_k*3 results, group by parent
+          chunk, each chunk's score = MAX similarity among its matched results.
+          Source: arag-interface.md L109-113.
+      - Implement progressive disclosure:
+          Search tools return SNIPPETS (matched lines/sentences), not full chunks.
+          ContextTracker already prevents re-reading (implemented in arag.rs L69-75).
+          Add: snippet extraction in keyword_search and semantic_search results.
+          ChunkRead returns full text only when explicitly requested.
+          Source: arag-interface.md L273-280.
+      - Token savings measurement: compare total tokens returned per query
+          before (full chunks always) vs after (snippets + selective read).
+    DETERMINISTIC_CHECK:
+      - cargo test -p knowledge --lib -- arag (all pass, exit 0)
+      - A-RAG keyword_search returns non-empty results (stub eliminated)
+      - A-RAG semantic_search returns non-empty results (stub eliminated)
+      - Snippet mode: search results contain snippet field, not full chunk text
+    ADVERSARIAL:
+      - If keyword scoring does not normalize by chunk length, long files dominate.
+        Test: short 10-line function with 3 keyword hits outscores 500-line file
+        with 3 hits.
+      - If 3x oversampling is applied with top_k=20, we retrieve 60 candidates
+        which may be slow. Test: assert retrieval time < 100ms for 60 candidates
+        on typical project index.
+    ACCEPTANCE:
+      - Keyword and semantic search return real results (not empty stubs)
+      - Progressive disclosure reduces tokens per query by >= 50%
+      - Recall@5 on 3K.5 benchmark >= baseline (no regression)
+      - Existing contract tests in tests/contracts/arag_contract.rs still pass
+    GROUNDING:
+      - "Score_kw formula" -> GROUNDED: arag-interface.md L72
+      - "3x oversampling" -> GROUNDED: arag-interface.md L109
+      - "progressive disclosure 90% savings" -> GROUNDED: arag-interface.md L256-273
+    TOUCHES: knowledge/src/arag.rs, knowledge/src/pipeline.rs
+
+
+  3K.7 CATRAG SYMBOLIC ANCHORING + KEY-FACT ENHANCEMENT
+    PRE_GATE:
+      - 3K.6 complete (A-RAG keyword/semantic working — CatRAG depends on them)
+    TASK:
+      - Implement Symbolic Anchoring (CatRAG Innovation 1):
+          Extract named entities from query (rule-based, not LLM):
+            Split query on whitespace, identify CamelCase and UPPER_SNAKE tokens
+            as candidate entities. Match against DKG entity nodes.
+          For each matched entity, add weak PPR reset weight:
+            reset_weight(e) = epsilon * |passages_containing(e)|^(-1)
+          epsilon = 0.2 (from CatRagConfig, already present in catrag.rs L91).
+          Source: catrag-interface.md section 5 (L72-89).
+      - Implement Key-Fact Passage Enhancement (CatRAG Innovation 3):
+          Pure algorithmic, no LLM cost.
+          For each context edge from entity u to passage p:
+            w_hat = w * (1 + beta * I(u,p in verified_triples))
+          beta = 2.5 (from CatRagConfig, already present in catrag.rs L93).
+          Verified triples = DKG edges with high confidence scores.
+          Source: catrag-interface.md section 7 (L196-218).
+      - NOTE: CatRAG Innovation 2 (Dynamic Edge Weighting, LLM-scored) is DEFERRED.
+          Requires LLM call per query for neighbor scoring. Too expensive for local
+          models during code retrieval. Evaluate only after 4D web research pipeline
+          provides a natural LLM-in-loop context.
+    DETERMINISTIC_CHECK:
+      - cargo test -p knowledge --lib -- catrag (all pass, exit 0)
+      - grep -r "symbolic_anchor" .elai_cc/crates/knowledge/src/catrag.rs | wc -l >= 1
+      - grep -r "key_fact_enhance" .elai_cc/crates/knowledge/src/catrag.rs | wc -l >= 1
+    ADVERSARIAL:
+      - If entity extraction is too aggressive (every word is an entity), reset
+        distribution becomes uniform, PPR loses personalization.
+        Test: query "how does the system work" should extract 0 entities
+        (no CamelCase, no identifiers), not treat every word as entity.
+      - If beta is too high, verified passages dominate all results.
+        Test: with beta=2.5, non-verified passages still appear in top-5
+        when they have high PPR base score.
+    ACCEPTANCE:
+      - Symbolic anchoring adds weak seeds for identifier-containing queries
+      - Key-Fact enhancement boosts verified DKG edges
+      - Recall@5 on 3K.5 benchmark >= 3K.6 result (improvement or no regression)
+      - Existing CatRAG contract tests still pass
+    GROUNDING:
+      - "epsilon=0.2, beta=2.5" -> GROUNDED: catrag-interface.md L301-304
+      - "Symbolic Anchoring algorithm" -> GROUNDED: catrag-interface.md L72-89
+      - "Key-Fact Enhancement algorithm" -> GROUNDED: catrag-interface.md L196-218
+      - "Innovation 2 deferred" -> justified: LLM cost per query too high for code search
+    TOUCHES: knowledge/src/catrag.rs
+
+
+  3K.8 POST-IMPROVEMENT BENCHMARK
+    PRE_GATE:
+      - 3K.6 and 3K.7 complete
+    TASK:
+      - Re-run 3K.5 benchmark suite (same 30 queries) with all improvements active.
+      - Compare against 3K.5 baseline:
+          Recall@5 delta
+          Recall@10 delta
+          MRR delta
+          Tokens-per-query delta (progressive disclosure effect)
+          Latency per tier (FAST/STANDARD/DEEP)
+      - Record in .elai_cc/metrics/phase_3K_rag_improved.toml
+      - If any metric regresses >5%, investigate and fix before marking complete.
+    DETERMINISTIC_CHECK:
+      - Improved metrics file exists alongside baseline
+      - No metric regression >5%
+    ACCEPTANCE:
+      - Tokens-per-query reduced by >= 30% (progressive disclosure)
+      - Recall@5 improved or unchanged
+      - Latency within tier budgets (FAST <20ms, STANDARD <200ms, DEEP <5s)
+    TOUCHES: .elai_cc/metrics/phase_3K_rag_improved.toml (new)

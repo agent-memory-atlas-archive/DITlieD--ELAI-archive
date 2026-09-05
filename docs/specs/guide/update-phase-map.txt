@@ -1,0 +1,434 @@
+UPDATE PHASE MAP: WHICH PHASE/STEP FILES EACH UPDATE DESIGN MODIFIES
+Date: 2026-04-13
+Status: REFERENCE (read-only index for LLM sessions)
+
+Purpose: for each update design file, lists every existing phase/step file
+that needs modification and what changes. Use this to know which step files
+to update before implementation.
+
+HOW TO USE: each section below has a FULL SPEC line with the file path.
+Before implementing ANY change listed in that section, READ the full spec
+file for complete context (types, formulas, audit resolutions, constraints).
+The summaries here are just pointers — the design files are the source of truth.
+
+Design file paths (all under docs/specs/guide/):
+  [PI] project-intelligence-design.txt
+  [AS] anti-staleness-enforcement.txt
+  [TE] token-efficiency-design.txt
+  [PM] pipeline-modes-design.txt
+  [CC] code-completeness-enforcement-design.txt
+  [RA] reasoning-architecture-design.txt
+
+
+========================================================================
+1. PROJECT INTELLIGENCE (project-intelligence-design.txt)
+   New phase: 3L (8 steps: 3L.1 through 3L.8)
+========================================================================
+
+  FULL SPEC: docs/specs/guide/project-intelligence-design.txt
+  READ before implementing any change below. Key sections:
+    Sections 1-2: Tier 1 structural discovery (build system, language, framework, test, CI)
+    Section 3: Tier 2 convention extraction (naming, errors, modules, tests, deps)
+    Section 4: Tier 3 LLM-assisted (project vision, domain, architecture)
+    Section 5: Build command registry
+    Section 6: Project-specific rule seeding
+    Section 8: Context telescope integration
+    Section 10: Phase placement, dependencies, step list, test budget
+
+  EXISTING PHASE FILES TO UPDATE:
+
+  steps/phase-1A.txt
+    Add: extract_conventions() public method to DkgEngine
+    Add: ConventionStats, NamingConventions, Convention types
+    Add: 4 SQL queries for naming pattern detection
+    Add: regex compilation for case classification
+    Scope: ~250-350 LOC extension. New public API surface.
+    Note: existing Box<dyn Error> return types are a known violation
+    Separate work item (1A-MULTILANG): add Python/TS/Go/Java/C# grammars
+
+  steps/phase-3E.txt (Context Budget Allocator)
+    Modify: Slot 3 (PhaseSpec) assembly to include ProjectProfile data
+    Add: project vision + build commands from project-profile.toml
+    Scope: ~50 LOC. TOML deserialization, no new crate dependency.
+
+  steps/phase-3F.txt (Rules Engine)
+    Add: ProjectRuleSeeder — generates seed rules from ProjectProfile conventions
+    Add: ~10-15 additional auto-seeded rules from detected conventions
+    Scope: ~150-200 LOC. New seed source, existing lifecycle handles promotion.
+
+  steps/phase-3J.txt (3J.WIRE.E2E specifically)
+    Add: on first /task, trigger project detection + DKG indexing + profiling
+    Add: IndexingService that wires DkgEngine::new + build_graph + BM25 + vectors
+    This is the wiring gap identified in pipeline-modes-design.txt section 1B.
+
+  NEW STEP FILE TO CREATE:
+    steps/phase-3L.txt (Project Intelligence)
+    8 steps: skeleton, verify, tests, Tier 1, Tier 2, Tier 3, telescope integration, measure
+
+
+========================================================================
+2. ANTI-STALENESS ENFORCEMENT (anti-staleness-enforcement.txt)
+   No new phase. Sub-steps added to existing phases.
+========================================================================
+
+  FULL SPEC: docs/specs/guide/anti-staleness-enforcement.txt
+  READ before implementing any change below. Key sections:
+    Section 1.1: Freshness scoring in RAG (formula, freshness_meta.db schema)
+    Section 1.2: VERSION_GATE predicate + deprecated_patterns table (full schema)
+    Section 1.3: Constitutional spec injection (PhaseSpec content)
+    Section 2.1: ETC entropy monitoring (ETCLogitsProcessor, calibration)
+    Section 2.2: Freshness steering vector (contrast pairs, compute script)
+    Section 2.3: Constrained decoding for imports (JSON Schema allowlist)
+    Section 3.1-3.3: T1/T2 hooks + deterministic auditor
+    Section 4.1-4.3: Nightly audit, freshness recalc, vector refresh
+    IMPLEMENTATION PRIORITY section: Priority 0 prerequisites before anything else
+    AUDIT RESOLUTION LOG: all 7 BLOCKs and 8 WARNs with resolution details
+
+  EXISTING PHASE FILES TO UPDATE:
+
+  steps/phase-1E.txt (CatRAG + A-RAG pipeline)
+    Add: FreshnessConfig to RRF scoring formula
+    Add: freshness_meta.db sidecar SQLite (file_freshness table)
+    Add: recency_decay * access_boost multiplier in pipeline.rs rerank
+    New file: knowledge/src/freshness.rs
+
+  steps/phase-3C.txt (Agent System)
+    Add: [agents.auditor] deterministic_first = true config
+    Add: deterministic checks run BEFORE LLM audit (build, VERSION_GATE, imports, lazy code)
+
+  steps/phase-3E.txt (Context Budget Allocator)
+    Add: constitutional constraint injection into PhaseSpec content at assembly time
+    Add: auto-generated CONSTRAINTS block from deprecated_patterns WHERE severity=BLOCK
+    Scope: 5-15 tokens per constraint, max 200 tokens total, part of PhaseSpec budget.
+
+  steps/phase-3F.txt (Rules Engine)
+    Add: VERSION_GATE predicate type (new variant in PredicateType enum)
+    Add: deprecated_patterns table in rules.db
+    Add: DeprecatedPattern type, VersionGatePredicate type
+    Add: ViolationRecord gains replacement_name: Option<String>
+    Add: self-discovery extension for VERSION_GATE auto-proposal
+
+  steps/phase-3J.txt (sidecar + providers)
+    Add: ETCLogitsProcessor (HuggingFace LogitsProcessor subclass)
+    Prerequisite: C-04 (replace manual token loop with model.generate) MUST be done first
+    Add: ETC calibration script (metrics/calibrate_etc_threshold.py)
+    Add: SearchTriggerPayload in providers/src/sidecar_client.rs
+    Note: ETC disabled by default until calibrated (threshold = infinity)
+
+  steps/phase-3J.txt (3J.5 steering vectors)
+    Add: modern_api_preference steering vector computation
+    Add: equal-length template contrast pairs from deprecated_patterns
+    Add: batch mode for compute_steering_vector.py (currently single pair)
+    Add: auto-recomputation trigger when deprecated_patterns changes
+
+  steps/phase-3J.txt (3J.10 tiered hooks)
+    PRIORITY 0: Fix T1Hook to actually load rules from rules.db (currently loads nothing)
+    PRIORITY 0: Fix T2Hook to actually parse AST (currently returns Allow unconditionally)
+    Add: VERSION_GATE case in T1 predicate evaluator
+    Add: T2 AST import extraction (tree-sitter, language-parameterized)
+
+  steps/phase-4C.txt (Plugins — future, not yet built)
+    Add: PostToolUse hooks for deterministic auditor checks
+
+  steps/phase-4H.txt (Self-modification — future, not yet built)
+    Add: nightly dep audit trigger
+    Add: steering vector refresh automation
+
+
+========================================================================
+3. TOKEN EFFICIENCY (token-efficiency-design.txt)
+   New sub-phase: 3J.BASELINE. Rest permeates existing phases.
+========================================================================
+
+  FULL SPEC: docs/specs/guide/token-efficiency-design.txt
+  READ before implementing any change below. Key sections:
+    BENCHMARK HARNESS section: full architecture, 7 measurements, fixtures format,
+      bench_config.toml schema, report format, build instructions
+    Section 1: Three ceilings (VRAM, context window, attention quality)
+    Section 2: Effective context budget per model tier (MICRO/SMALL/MEDIUM/LARGE)
+    Section 3: Task granularity calibration (baby step sizing per tier)
+    Section 4: Prompt strategy for small models (4 principles)
+    Section 5: Retry economics
+    Section 12: Integration with existing phases (change list per phase)
+    Section 13: New Rust types (ModelCapabilityProfile, SlotWeights, etc.)
+
+  EXISTING PHASE FILES TO UPDATE:
+
+  steps/phase-3E.txt (Context Budget Allocator)
+    Add: ModelCapabilityProfile input type
+    Add: slot weights adapt per model tier (not fixed percentages)
+    Add: attention ceiling enforcement (fill to quality limit, not VRAM limit)
+    Add: ShortCoder integration for context compression
+
+  steps/phase-3J.txt (vLLM + Providers)
+    Add: ConstrainedDecodingConfig propagation to provider
+    Add: grammar-guided generation support (EBNF)
+    Add: JSON schema constrained mode
+    Add: model capability detection at startup
+
+  steps/phase-4D.txt (Pipeline Factory L1 — future)
+    Add: decomposition depth adapts to ModelCapabilityProfile
+    Add: baby step sizing enforced per model tier table
+    Add: template generation for common patterns (fill-in-the-blank)
+    Add: few-shot example selection from DKG
+
+  steps/phase-4E.txt (Pipeline Factory L2 — future)
+    Add: phase sizing uses model tier for complexity estimation
+    Add: SurgicalPlan shallower decomposition for MICRO tier
+    Add: DecompositionTree validates baby step size against model tier
+
+  steps/phase-4G.txt (Autonomous Mode — future)
+    Add: retry strategy (temperature schedule, futility detection, best-of-N)
+    Add: futility detection triggers BubbleUp earlier
+    Add: progressive escalation chain
+
+  NEW STEP FILE TO CREATE:
+    steps/phase-3J-BASELINE.txt
+    Benchmark harness: 7 measurements, ModelCapabilityProfile generation
+    Run BEFORE any production use on a new model. Standalone binary.
+
+
+========================================================================
+4. PIPELINE MODES (pipeline-modes-design.txt)
+   Sub-phases of 4D. New types, new decomposer, new FSM state.
+========================================================================
+
+  FULL SPEC: docs/specs/guide/pipeline-modes-design.txt
+  READ before implementing any change below. Key sections:
+    MODE 1 sections 1-6: Surgical Mode (project detection, FSM path, surgical
+      decomposition, blast radius, complexity classification, types)
+    MODE 1 section 1B: Project indexing gap (DKG not wired into pipeline)
+    MODE 2 sections 1-6: Oracle Mode (trigger/routing, FSM, research pipeline,
+      source tier classification, fact extraction, synthesis, types)
+    INTEGRATION section: CLI/FSM/pipeline factory/knowledge engine changes
+    PHASE PLACEMENT section: where modes fit (sub-phases of 4D)
+    CONTEXT FLOW section: surgical mode layered retrieval walkthrough
+
+  EXISTING PHASE FILES TO UPDATE:
+
+  steps/phase-3A.txt (Full FSM)
+    Add: RESEARCHING state (or sub-state of PLANNING)
+    Add: RESEARCHING allows WebSearch + KnowledgeEngine, blocks file edit/bash/git
+
+  steps/phase-4D.txt (Pipeline Factory L1 — future)
+    Add: SurgicalDecomposer alongside ConceptDecomposer
+    Add: project detection logic (filesystem signals)
+    Add: blast radius analysis via DKG graph traversal
+    Add: complexity classification (TRIVIAL/SMALL/MEDIUM/LARGE)
+    Add: regression gate injection (auto, deterministic)
+    Add: /research command + Oracle mode research pipeline
+    Add: source tier classification (4-tier domain lookup table)
+    Add: /task --surgical and --new flags
+
+  steps/phase-4E.txt (Pipeline Factory L2 — future)
+    Add: SurgicalPlan maps to shallow DecompositionTree (depth <= 2)
+    Add: TreeNavigator handles both ConceptDecomposition and SurgicalPlan
+
+  NEW STEP FILES TO CREATE:
+    steps/phase-4D-SURGICAL.txt (Surgical Mode — sub-phase of 4D)
+    steps/phase-4D-ORACLE.txt (Oracle Mode — sub-phase of 4D)
+
+
+========================================================================
+5. CODE COMPLETENESS (code-completeness-enforcement-design.txt)
+   No new phase. Integrates into 4D/4E as they're built.
+========================================================================
+
+  FULL SPEC: docs/specs/guide/code-completeness-enforcement-design.txt
+  READ before implementing any change below. Key sections:
+    PRINCIPLE section: responsibility-based file discipline (two-tier enforcement,
+      language-specific line limits table, cyclomatic complexity, coupling)
+    Layer 1 (sections 1.1-1.3): FILE_PLAN block, LOC budget, ModuleTree template
+    Layer 2 (sections 2.1-2.3): skeleton-first generation, fill protocol with
+      mini-critic, bridge file templates, entry point templates (all per-language)
+    Layer 3 (sections 3.1-3.3): T1 lazy code detection (per-language regex),
+      T1 file size enforcement, T2 AST completeness check (block-level)
+    Layer 4 (section 4): deterministic auditor checks
+    Layer 5 (section 5): recovery mechanisms (BubbleUp, file splitter)
+    INTEGRATION section: compatibility with other 4 update designs
+    IMPLEMENTATION PRIORITY section: Priority 0-4 ordering
+    AUDIT RESOLUTION LOG: 8 BLOCKs, 8 WARNs with fixes
+    RESEARCH GROUNDING section: empirical data sources for all design decisions
+
+  EXISTING PHASE FILES TO UPDATE:
+
+  steps/phase-3J.txt (3J.10 tiered hooks — verify status first)
+    Verify: T1/T2 hook stubs may already be fixed after 3J.WIRE.RULES
+    Add: T1 lazy code detection patterns (language-parameterized regex)
+    Add: T1 file size enforcement (language-specific limits)
+    Add: T2 AST completeness check (empty bodies, function count, imports)
+    Add: GREP_PATTERN extended with language + file_context fields
+
+  steps/phase-3C.txt (Agent System)
+    Add: deterministic auditor checks (lazy code scan, build check) before LLM audit
+    Same integration point as anti-staleness deterministic-first auditor
+
+  steps/phase-3F.txt (Rules Engine)
+    Add: file_discipline config section in elai_cc.toml
+    Add: GREP_PATTERN language/file_context extension
+    No new predicate types needed (uses existing GREP_PATTERN + METRIC_GATE)
+
+  steps/phase-4D.txt (Pipeline Factory L1 — future)
+    Add: FILE_PLAN block as 9th block in BabyStepSpec (replaces target_file)
+    Add: ModuleTree type definition (language-parameterized)
+    Add: tier-gated file count limits per baby step
+
+  steps/phase-4E.txt (Pipeline Factory L2 — future)
+    Add: skeleton-first generation with fill protocol
+    Add: bridge file template generation (orchestrator, not LLM)
+    Add: FileLineTracker in TreeNavigator (cumulative file line tracking)
+    Add: deterministic file splitter (recovery for file size BLOCKs)
+    Add: lazy-code-specific BubbleUp strategy
+
+  steps/phase-4C.txt (Plugins — future)
+    Add: PostToolUse ShortCoder + completeness verification hooks
+
+
+========================================================================
+6. REASONING ARCHITECTURE (reasoning-architecture-design.txt)
+   No new phase. Integrates into 4B/4D/4E/4G. Extensions to 3E/3F/3J.
+========================================================================
+
+  FULL SPEC: docs/specs/guide/reasoning-architecture-design.txt
+  READ before implementing any change below. Key sections:
+    LAYER 1: Deterministic Error Reasoning (FailureTaxonomy expansion, DKG
+      localization, fix template generation, DiagnosticResult types)
+    LAYER 2: Micro-Reflection (500-token context, JSON-constrained output,
+      MicroReflectionRequest/Response types)
+    LAYER 3: Interrogation Tree (language-parameterized Q&A, QuestionNode,
+      InterrogationTree types, rules.db storage)
+    LAYER 4: AB-MCTS Tree Search (branching at failure, GG intrinsic scoring,
+      TreeSearchState, BranchCandidate, BranchScore types)
+    LAYER 5-6: Cloud Diagnostic/Generation (tiered escalation, CloudTier,
+      CloudSpendTracker, budget economics)
+    MISTAKE BOOK: structured constraint store in SSB, MistakeEntry type
+    COMPRESSED CONTEXT REPLAY: fresh 1400-token assembly per retry
+    GG INTRINSIC VERIFICATION: token confidence + generation novelty signals
+    GENERATION PARAMETERS: per-profile temperature/top-p settings
+    VRAM-TIER CONFIGURATIONS: layer availability per hardware tier
+    INTEGRATION section: per-phase change list
+
+  EXISTING PHASE FILES TO UPDATE:
+
+  steps/phase-3E.txt (Context Budget Allocator)
+    Add: REPAIR_CONTEXT SlotWeights profile for reasoning pipeline retries
+    Add: Different slot allocation for retry context vs first-attempt context
+    Scope: new SlotWeights variant, profile selection logic. ~100 LOC.
+
+  steps/phase-3F.txt (Rules Engine)
+    Add: InterrogationTree data storage in rules.db (language-parameterized)
+    Add: Self-discovery extension for new FailureTaxonomy categories
+    Add: When auditor finds recurring error pattern 3+ times, auto-propose
+      new FailureTaxonomy category + fix template (Layer 1 expansion)
+    Scope: new table schema, new seed data format. ~150-200 LOC.
+
+  steps/phase-3J.txt (Sidecar + Providers)
+    Add: mean_logprob and entropy_mean fields in sidecar response JSON
+    Add: GG intrinsic signals computed during generation at zero extra cost
+    Scope: sidecar response extension. ~30 LOC (Python + Rust client).
+
+  steps/phase-4B.txt (Tools — future, not yet built)
+    Add: FailureTaxonomy expansion with structured RootCause output per category
+    Add: SVRepair-style CFG analysis as optional deep localization step
+    Add: DiagnosticResult, RootCause, RootCauseKind types
+    Add: 3 new FailureTaxonomy categories: LAZY_CODE, EMPTY_BODY, FILE_SIZE_EXCEEDED
+    Scope: ~300-400 LOC.
+
+  steps/phase-4D.txt (Pipeline Factory L1 — future)
+    Add: Designer marks COMPLEXITY_HIGH baby steps (>3 files, core types, public API)
+    Add: High-complexity steps get larger AB-MCTS budget (10 vs 5 branches)
+    Add: Automatic few-shot injection for high-complexity steps
+    Add: Lower escalation threshold (2 retries vs 3 before Layer 5)
+    Scope: ~100-150 LOC.
+
+  steps/phase-4E.txt (Pipeline Factory L2 — future)
+    Add: BubbleUpAction::DiagnoseAndRetry (invoke reasoning pipeline before Redecompose)
+    Add: BubbleUp integrates with reasoning layers:
+      baby step fails after Layer 4 -> BubbleUp to Step (redecompose)
+      baby step fails after Layer 6 -> BubbleUp to Phase (replan)
+      phase fails -> BubbleUp to Concept (research alternative)
+    Scope: new BubbleUpAction variant, integration logic. ~200 LOC.
+
+  steps/phase-4G.txt (Autonomous Mode — future)
+    Add: AutoAdvanceEvaluator checks reasoning pipeline exhaustion
+    Add: Layers 1-4 exhausted -> auto-escalate to Layer 5 (if cloud enabled)
+    Add: Layers 1-6 exhausted -> escalate to human (INTERACTIVE gate)
+    Add: CloudSpendTracker in escalation policy:
+      budget >50%: auto-escalate freely
+      budget 20-50%: escalate only CRITICAL baby steps
+      budget <20%: WARN, prefer offline fallback
+    Scope: new escalation logic, spend tracking. ~200-300 LOC.
+
+  NO NEW STEP FILES NEEDED:
+    The reasoning pipeline is NOT a separate phase. It integrates into
+    the existing error recovery path across 4B/4D/4E/4G. The MistakeBook
+    is an SSB table, not a new crate. The compressed context replay is a
+    new profile in the existing context budget allocator.
+
+
+========================================================================
+7. PROMPT-TO-ARCHITECTURE CONVERSION (no design file — derived from
+   Claude Code system prompt analysis, see docs/claude-code-system-prompts-full.md)
+   No new phase. Steps A-26 through A-31 extend existing Phase 3J tools
+   and orchestrator crates.
+========================================================================
+
+  SOURCE: docs/claude-code-system-prompts-full.md (original Claude Code prompts)
+  RATIONALE: ~12,600 tokens of system prompt instructions converted to
+  architectural enforcement. Rules become physical gates, not suggestions.
+  Critical for local models (3B-7B) that cannot spare prompt tokens for
+  behavioral instructions AND have poor instruction-following on long prompts.
+
+  EXISTING PHASE FILES TO UPDATE:
+
+  steps/phase-3J.txt (tools crate — tool dispatch, Bash handler, validation)
+    Add: tool routing layer (A-26) — Bash command interception + redirect
+    Add: bash safety filter (A-27) — dangerous pattern blocklist in validation pipeline
+    Add: git_commit tool (A-28) — new tool registration, internal workflow
+    Add: action classifier (A-31) — PreToolUse risk classification + DAIRA extension
+
+  steps/phase-3C.txt (Agent System)
+    Add: agent prompt template (A-29) — structured template wrapping in orchestrator
+
+  NO NEW STEP FILES NEEDED:
+    All changes modify existing crates (tools/, orchestrator/).
+    No new crate or phase required.
+
+
+========================================================================
+CROSS-CUTTING CHANGES (same file modified by multiple updates)
+========================================================================
+
+  steps/phase-3E.txt — modified by: project-intelligence, anti-staleness, token-efficiency, reasoning-architecture
+  steps/phase-3F.txt — modified by: project-intelligence, anti-staleness, code-completeness, reasoning-architecture
+  steps/phase-3J.txt — modified by: anti-staleness, token-efficiency, reasoning-architecture, prompt-to-architecture (routing, safety, git tool, action classifier)
+  steps/phase-3J.10  — modified by: anti-staleness, code-completeness (same hook system)
+  steps/phase-3C.txt — modified by: anti-staleness, code-completeness, prompt-to-architecture (agent template)
+  steps/phase-4B.txt — modified by: reasoning-architecture (FailureTaxonomy expansion)
+  steps/phase-4D.txt — modified by: pipeline-modes, token-efficiency, code-completeness, reasoning-architecture
+  steps/phase-4E.txt — modified by: pipeline-modes, token-efficiency, code-completeness, reasoning-architecture
+  steps/phase-4G.txt — modified by: token-efficiency, reasoning-architecture
+
+
+========================================================================
+PHASE FILES THAT DO NOT NEED UPDATES
+========================================================================
+
+  steps/pre-phase-0.txt — complete, no changes needed
+  steps/phase-0.txt     — complete, no changes needed
+  steps/phase-1B.txt    — complete, no changes needed
+  steps/phase-1C.txt    — complete, no changes needed
+  steps/phase-1D.txt    — complete, no changes needed
+  steps/phase-1F.txt    — complete, no changes needed
+  steps/phase-1G.txt    — complete, no changes needed
+  steps/phase-1H.txt    — complete, no changes needed
+  steps/phase-1I.txt    — complete, no changes needed
+  steps/phase-2A.txt    — complete, no changes needed
+  steps/phase-2B.txt    — complete, no changes needed
+  steps/phase-2C.txt    — complete, no changes needed
+  steps/phase-2D.txt    — complete, no changes needed
+  steps/phase-3B.txt    — complete, no changes needed
+  steps/phase-3D.txt    — complete, no changes needed
+  steps/phase-3G.txt    — complete, no changes needed
+  steps/phase-3H.txt    — complete, no changes needed
+  steps/phase-3I.txt    — complete, no changes needed

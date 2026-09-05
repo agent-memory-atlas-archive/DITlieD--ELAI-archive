@@ -1,0 +1,253 @@
+CLOUD MODE DESIGN: FIRST-CLASS API/CLOUD EXECUTION PATH
+Date: 2026-04-15
+Status: PROPOSAL
+Author: Claude Opus 4.6 (design session, not implementation)
+
+
+========================================================================
+PROBLEM STATEMENT
+========================================================================
+
+ELAI's core value proposition is local, private, zero-cost execution.
+But the spec's own estimates acknowledge a MEDIUM task takes ~6 hours
+locally vs 5-15 minutes on cloud. Most developers will not wait 6 hours
+when they can pay $0.50 for a 30-second answer.
+
+Current cloud access is buried in reasoning Layer 5-6 as a last-resort
+fallback. This makes cloud usage feel like a failure mode, not a feature.
+
+Cloud mode elevates API-backed execution to a first-class citizen. The
+user chooses when to trade money for speed. The deterministic harness
+(rules, AST checks, tests, evidence gates) still runs locally. Cloud
+mode is NOT "use Claude instead of ELAI" -- it is "use Claude INSIDE
+ELAI's validation pipeline."
+
+
+========================================================================
+DESIGN
+========================================================================
+
+MODE SELECTION
+------------------------------------------------------------------------
+
+Three execution modes, selected per-task:
+
+  LOCAL       Default. Full local pipeline. All 6 reasoning layers.
+              Cost: $0. Speed: slow. Privacy: full.
+
+  CLOUD       Cloud model generates code. Local harness validates.
+              Reasoning layers 1-4 skipped (cloud model is capable
+              enough). Layer 1 deterministic checks still run as
+              PostToolUse hooks. Cost: API spend. Speed: fast. Privacy:
+              code sent to provider.
+
+  HYBRID      Local model attempts first. On reasoning layer 3+ failure,
+              auto-escalates to cloud for that specific step only.
+              Cost: minimal API spend. Speed: moderate. Privacy: only
+              failed steps leave the machine.
+
+Selection interface:
+
+  CLI:        /task --mode cloud "add rate limiting to auth endpoint"
+              /task --mode hybrid "refactor database layer"
+              /task "fix typo in readme"              (default = LOCAL)
+
+  Config:     [execution]
+              default_mode = "local"      # "local" | "cloud" | "hybrid"
+
+  Per-task:   Pipeline designer can recommend mode based on complexity
+              classification. TRIVIAL/SMALL -> local. MEDIUM -> hybrid.
+              LARGE -> cloud. User confirms.
+
+
+PROVIDER ROUTING
+------------------------------------------------------------------------
+
+Cloud mode reuses the existing providers crate. No new abstractions.
+
+  [cloud]
+  provider = "anthropic"            # "anthropic" | "openai"
+  model = "claude-sonnet-4-6"       # default cloud model
+  escalation_model = "claude-opus-4-6"  # for MAJOR replan or hard failures
+  api_key_env = "ANTHROPIC_API_KEY"
+  max_spend_per_task_usd = 2.00     # hard ceiling, task fails if hit
+  max_spend_per_day_usd = 10.00     # daily ceiling across all tasks
+  warn_at_percent = 80              # warn user at 80% of ceiling
+
+Provider selection logic:
+  1. Read [cloud] config
+  2. Verify API key exists (fail fast with clear message if missing)
+  3. Probe model availability (single tokenize call, <100ms)
+  4. If probe fails, fall back to [cloud.fallback] if configured
+  5. If no fallback, degrade to LOCAL with user notification
+
+Cost tracking:
+  Per-task and per-day spend recorded in SSB (new action type:
+  CLOUD_SPEND). Orchestrator checks ceiling BEFORE each cloud call.
+  At ceiling: HYBRID degrades to LOCAL. CLOUD fails the step and
+  asks user to raise limit or switch to LOCAL.
+
+  Cost estimation before task start: orchestrator estimates token
+  count from plan skeleton (phase count * avg tokens per phase *
+  model pricing). Displayed to user: "Estimated cost: $0.12-$0.35.
+  Proceed? [y/n]"
+
+
+CONTEXT BUDGET CHANGES
+------------------------------------------------------------------------
+
+Cloud models have 200K context vs 8-25K local. This changes everything:
+
+  LOCAL (8K-25K):                   CLOUD (200K):
+  Baby step = 25-40 LOC             Baby step = 200-500 LOC
+  Max decomposition depth = 4       Max decomposition depth = 2
+  Phase split threshold = 3K tok    Phase split threshold = 50K tok
+  Context telescope = mandatory     Context telescope = optional
+  Few-shot examples = mandatory     Few-shot examples = optional
+  Template fill = preferred         Free generation = acceptable
+
+Context budget allocator gets a new profile:
+
+  [context_budget.cloud]
+  system_prompt = 500               # more room for nuance
+  rules = 200                       # still only tier 3
+  phase_spec = 2000                 # full phase, not compressed
+  repo_map = 4000                   # larger map
+  code_context = 150000             # the big win
+  ssb_entries = 2000
+  grc_history = 1000
+  output_reserve = 8000
+
+Baby step sizing per mode (in orchestrator config):
+
+  [baby_step]
+  local_3b_loc = 25
+  local_7b_loc = 40
+  local_32b_loc = 100
+  cloud_sonnet_loc = 300
+  cloud_opus_loc = 500
+
+This means a MEDIUM task (currently ~30 local baby steps) becomes
+~4-6 cloud baby steps. Combined with faster generation, this is
+where the 10-50x speedup comes from.
+
+
+REASONING LAYER COLLAPSE
+------------------------------------------------------------------------
+
+In CLOUD mode, the 6-layer reasoning architecture simplifies:
+
+  Layer 1 - Deterministic: STILL RUNS. PostToolUse hooks, AST checks,
+    linter, rules engine. These are the harness value -- they catch
+    mistakes even from frontier models. <1ms cost.
+
+  Layer 2 - Micro-reflection: SKIPPED. Cloud model self-corrects.
+
+  Layer 3 - Interrogation tree: SKIPPED.
+
+  Layer 4 - AB-MCTS: SKIPPED.
+
+  Layer 5 - Cloud diagnostic: SKIPPED (already on cloud).
+
+  Layer 6 - Cloud generation: THIS IS THE DEFAULT. Not a fallback.
+
+On failure after Layer 1 catches an issue:
+  1. Inject Layer 1 findings into next prompt (deterministic feedback)
+  2. Cloud model retries with structured error context
+  3. Max 3 retries per step (same as local)
+  4. If 3 retries fail: escalate to escalation_model
+  5. If escalation_model fails: flag for human intervention
+
+In HYBRID mode:
+  Layers 1-4 run locally as normal.
+  On Layer 3+ failure: single cloud call for that step.
+  Cloud result still validated by Layer 1 (deterministic checks).
+
+
+VALIDATION PIPELINE (unchanged)
+------------------------------------------------------------------------
+
+This is critical: the validation pipeline is IDENTICAL across all modes.
+
+  - Tier 1 deterministic rules: always run
+  - Tier 2 AST/structural checks: always run
+  - Unit tests: always run (by auditor)
+  - Integration tests: always run (by auditor)
+  - Evidence gates: always enforced
+
+Cloud mode does NOT relax validation. A cloud model that outputs
+.unwrap() still gets blocked. A cloud model that outputs a TODO still
+gets rejected. The harness is the product.
+
+
+FSM CHANGES
+------------------------------------------------------------------------
+
+No new FSM states. Mode is metadata on the session, not a state.
+
+  Session config gains: execution_mode: "local" | "cloud" | "hybrid"
+
+  FSM transitions unchanged. Evidence gates unchanged. The only
+  difference is which model generates the code and how much context
+  it receives.
+
+  HYBRID mode adds one internal signal: ESCALATE_TO_CLOUD. This is
+  an action in SSB (not an FSM state). The orchestrator sees it,
+  switches provider for the current step, and continues.
+
+
+PRIVACY CONTROLS
+------------------------------------------------------------------------
+
+Cloud mode sends code to external APIs. Users need control:
+
+  [cloud.privacy]
+  allow_source_upload = true        # send project source as context
+  allow_test_upload = true          # send test files
+  redact_env_vars = true            # strip .env contents from context
+  redact_patterns = [               # regex patterns to redact
+    "(?i)api[_-]?key\\s*=\\s*\\S+",
+    "(?i)password\\s*=\\s*\\S+",
+    "(?i)secret\\s*=\\s*\\S+"
+  ]
+  blocked_paths = [                 # never send these files
+    ".env",
+    "*.pem",
+    "*.key",
+    "credentials.*"
+  ]
+
+Redaction runs BEFORE context assembly. Blocked paths excluded from
+knowledge engine queries in cloud mode. Redacted content replaced
+with [REDACTED:type] placeholder so model understands something
+was there.
+
+Audit trail: every cloud API call logged in SSB with:
+  - Timestamp
+  - Provider/model
+  - Token count (input/output)
+  - Cost
+  - Files included in context (paths only, not content)
+  - Redaction count
+
+
+========================================================================
+IMPLEMENTATION
+========================================================================
+
+No new phase. Integrates into existing phases:
+
+  3J (providers): Add cloud mode routing, cost tracking, spend limits.
+  3E (context budget): Add cloud context profile.
+  4D (pipeline factory): Designer recommends mode per complexity.
+  4G (autonomous): Cloud spend tracking for autonomous sessions.
+
+Implementation steps (new A-steps):
+  A-40: Cloud mode config schema + provider routing + cost tracking
+  A-41: Cloud context budget profile + baby step sizing
+  A-42: Privacy redaction pipeline
+  A-43: HYBRID escalation signal in SSB + orchestrator handling
+  A-44: Cost estimation display before task start
+
+Dependencies: 3J wired (providers working), 3E context budget.
+Estimated: 3-4 implementation sessions.

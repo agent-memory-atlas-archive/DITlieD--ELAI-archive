@@ -1,0 +1,1288 @@
+CODE COMPLETENESS AND FILE DISCIPLINE ENFORCEMENT DESIGN
+Date: 2026-04-13 (revised after adversarial audit + research grounding)
+Status: PROPOSAL (research-grounded) — needs user review
+Author: Claude Opus 4.6 (design session)
+Depends on: Phase 3F (rules engine), Phase 3J.10 (tiered hooks), Phase 4C (plugins),
+  Phase 4E (DecompositionTree + baby steps), Phase 4B (tools + validation)
+Audit: 8 BLOCKs, 8 WARNs, 4 INFOs addressed (see AUDIT RESOLUTION)
+Research: LLM-Code-Generation-Summary.txt (3 queries, grounded 2025-2026 empirical data)
+  Key sources: Aider, SWE-Agent, OpenHands, Plantain, MoTCoder, CRANE, CodeFast,
+  ImplicitMemBench, Blueprint2Code, LongCodeBench, SWE-bench
+
+
+========================================================================
+PROBLEM STATEMENT
+========================================================================
+
+Two related failure modes that LLMs exhibit during code generation:
+
+PROBLEM 1: LAZY GENERATION
+  LLMs — especially smaller ones under load — write incomplete code.
+  Symptoms: todo!(), pass, placeholder returns, "// ... rest of implementation",
+  mock data in production, empty function bodies, stub implementations,
+  magic numbers, "// TODO: implement this later".
+  Root cause: the model minimizes output tokens when the task is complex.
+  Complex logic = high entropy in the output distribution = model takes the
+  easy path (placeholder) instead of the hard path (real implementation).
+  Frequency: increases with task complexity and model size (inverse).
+  A 3B model on a hard step WILL try to cut corners. Guaranteed.
+
+PROBLEM 2: MONOLITH DRIFT
+  LLMs dump everything into a single file because it's easier to generate
+  contiguous code than to reason about multi-file structure.
+  Symptoms: 500+ line files, god modules, main.rs/app.py that does everything,
+  helper functions inlined instead of extracted, copy-paste instead of reuse.
+  Root cause: generating code across files requires the model to maintain
+  coherence about imports, types, and function signatures across context
+  boundaries. Easier to just keep writing in one file.
+  Impact: monolith files are HARDER to fix because they exceed the model's
+  attention ceiling. A 3B model cannot attend to 500 lines effectively.
+  This creates a death spiral: model writes monolith -> model can't fix
+  monolith -> model adds more code to monolith -> eventually unfixable.
+
+BOTH problems share a solution pattern: the SYSTEM enforces structure
+that the MODEL cannot be trusted to maintain on its own.
+
+This design is LANGUAGE-AGNOSTIC. ELAI works on any project in any language.
+All enforcement patterns, file size limits, and templates are parameterized
+by the project's detected language (from project-intelligence-design.txt).
+Rust examples appear because ELAI itself is Rust, but every mechanism
+applies equally to Python, Go, TypeScript, Java, C#, and others.
+
+
+========================================================================
+PRINCIPLE: RESPONSIBILITY-BASED FILE DISCIPLINE (research-grounded)
+========================================================================
+
+Research basis (LLM-Code-Generation-Summary.txt section 3f):
+  "Optimal file size = one responsibility, not arbitrary line count."
+  "AI agents thrive on well-structured multi-file projects, consistently
+  fail on monolithic codebases."
+  "Feature fragmentation: editing a logging flag in a massive file cascades
+  into unrelated reflection-based lookup changes."
+
+The PRIMARY enforcement metric is RESPONSIBILITY, not line count.
+Line count is a SECONDARY heuristic (WARN level, not BLOCK level).
+
+TWO-TIER ENFORCEMENT:
+
+  TIER 1 — RESPONSIBILITY METRICS (BLOCK level, AST-based):
+    Cyclomatic complexity per function: max 10 (BLOCK if exceeded)
+    Coupling score per file: max 15 external symbols referenced (BLOCK)
+    Coupling = count of distinct types/functions imported from other modules,
+    measured via DKG edges or tree-sitter import analysis.
+    Rationale: a 150-line file with 3 clean low-complexity functions is fine.
+    A 95-line file with one function at complexity 25 is a monolith in disguise.
+
+  TIER 2 — LINE COUNT LIMITS (WARN level, soft guidance):
+    Language       Production WARN    Test WARN     Hard BLOCK (4x)
+    Rust           100 lines          200 lines     400 lines
+    Go             100 lines          200 lines     400 lines
+    Python         120 lines          250 lines     480 lines
+    TypeScript     150 lines          250 lines     600 lines
+    JavaScript     150 lines          250 lines     600 lines
+    Java           200 lines          300 lines     800 lines
+    Kotlin         150 lines          250 lines     600 lines
+    C#             200 lines          300 lines     800 lines
+    C/C++          150 lines          250 lines     600 lines
+    Ruby           120 lines          200 lines     480 lines
+    Elixir         120 lines          200 lines     480 lines
+    Swift          150 lines          250 lines     600 lines
+    DEFAULT        150 lines          250 lines     600 lines
+
+    WARN: auditor sees it, model continues working. Signals "consider splitting."
+    Hard BLOCK: file is genuinely too large for any model to attend to. Reject write.
+    The 4x multiplier ensures only extreme monoliths are hard-blocked by line count.
+    Normal files are kept small by Tier 1 responsibility metrics.
+
+  WHY TWO TIERS (grounded):
+    Section 3c of research: "Mechanical truncation: avg 19.45% Pass@1 drop."
+    Hard line limits are mechanical truncation of the model's output space.
+    Too aggressive = we lose good code that happens to be slightly long.
+    Responsibility metrics catch the actual problem (god functions, high coupling)
+    without penalizing well-structured files that are a few lines over.
+
+Bridge files: a file that imports and re-exports from child modules.
+  Language-specific bridge patterns:
+  Rust: mod.rs / lib.rs
+  Python: __init__.py
+  TypeScript/JS: index.ts / index.js (barrel file)
+  Go: no bridge needed (package = directory)
+  Java: package-info.java (optional)
+  C#: namespace file or Usings.cs
+
+Entry point: main file connects bridges only.
+
+Token budget rationale:
+  100 lines of Rust ~ 800-1200 tokens. 200 lines of Java ~ 1200-1800 tokens.
+  Both well under MICRO tier 4K ceiling, leaving room for context.
+  (CORRECTED per audit B-7: original "~70 tokens" was wrong by 10x.)
+
+Exceptions (configurable):
+  - Generated code (build.rs output, protobuf, migrations): exempt
+  - Spec/config files (TOML, JSON, YAML, XML): exempt
+  - Legacy code in surgical mode: WARN at 2x, BLOCK at 4x (same as above)
+
+Configuration in elai_cc.toml:
+  [file_discipline]
+  max_cyclomatic_complexity = 10       # per function, BLOCK
+  max_coupling_score = 15              # per file, BLOCK
+
+  [file_discipline.limits]
+  rust = { warn = 100, test_warn = 200, hard_block_multiplier = 4 }
+  python = { warn = 120, test_warn = 250, hard_block_multiplier = 4 }
+  java = { warn = 200, test_warn = 300, hard_block_multiplier = 4 }
+  # etc.
+
+  [file_discipline.exempt]
+  extensions = [".toml", ".json", ".yaml", ".yml", ".xml", ".lock",
+                ".sql", ".proto", ".graphql"]
+  paths = ["generated/", "build/", "vendor/", "node_modules/",
+           "migrations/", "target/"]
+
+Language detection: from ProjectProfile (project-intelligence-design.txt).
+Per-file language: from file extension or tree-sitter grammar detection.
+
+
+========================================================================
+ARCHITECTURE: 5-LAYER ENFORCEMENT
+========================================================================
+
+Same defense-in-depth pattern as anti-staleness. No single layer is enough.
+
+
+LAYER 1: DECOMPOSITION CONSTRAINTS (pre-generation)
+Integration: Phase 4D (designer) + Phase 4E (DecompositionTree)
+
+  1.1 FILE PLAN IN BABY STEP SPEC
+
+    Current baby step spec (BabyStepSpec) has 8 blocks:
+      GROUNDING, PRE_GATE, TASK, TDD, DETERMINISTIC_CHECK, ACCEPTANCE,
+      INTEGRATION, EXIT_CRITERIA.
+
+    Change: add a 9th block: FILE_PLAN.
+
+    FILE_PLAN block specifies EXACTLY which files the baby step touches:
+      FILE_PLAN:
+        CREATE: src/auth/validate.rs (new, ~40 lines, contains validate_jwt)
+        MODIFY: src/auth/mod.rs (add pub mod validate line, 1 line change)
+        DEPEND: src/auth/types.rs (read only, imports Claims type)
+
+    IMPORTANT (per audit B-9): FILE_PLAN REPLACES the existing target_file
+    field in BabyStepSpec.TaskSpec. The two cannot coexist. For MICRO tier
+    (max 1 file per baby step from token-efficiency-design.txt section 3),
+    FILE_PLAN.creates must have len <= 1 and FILE_PLAN.modifies must have
+    len <= 1. Higher tiers allow more files per tier table. This is enforced
+    by decomposer validation with tier-gated length checks:
+
+      Tier     Max creates    Max modifies    Max total files
+      MICRO    1              1               1
+      SMALL    1              2               2
+      MEDIUM   2              3               3
+      LARGE    3              5               5
+
+    The FILE_PLAN is generated by the DESIGNER (phase 4D), not the executor.
+    The designer has access to DKG and knows the existing file structure.
+    The executor receives the FILE_PLAN as a constraint, not a suggestion.
+
+    Enforcement: the executor's output MUST match the FILE_PLAN.
+    If the executor creates a file not in FILE_PLAN -> BLOCK.
+    If the executor modifies a file not in FILE_PLAN -> BLOCK.
+    If a created file exceeds the estimated line count by >50% -> WARN.
+
+  1.2 LOC BUDGET PER BABY STEP (with cumulative tracking)
+
+    Existing: token-efficiency-design.txt section 3 defines max LOC per baby step
+    by model tier (MICRO=15 lines, SMALL=30, MEDIUM=50, LARGE=100).
+
+    Extension: the LOC budget is ALSO a per-file budget. No single file
+    created or modified in a baby step can exceed the language-specific
+    limit after edit.
+
+    CUMULATIVE FILE LINE TRACKER (per audit B-5):
+    The TreeNavigator maintains a HashMap<FilePath, usize> tracking the
+    CURRENT line count of every file touched during the phase. This is
+    updated after each baby step completes. When the decomposer validates
+    a baby step's FILE_PLAN, it checks against the CURRENT line count
+    (not the original DKG count), preventing TOCTOU races where sibling
+    baby steps grow the same file past the limit.
+
+    Decomposer validation (deterministic, in 4E):
+      For each baby step:
+        For each file in FILE_PLAN:
+          current_lines = file_line_tracker.get(path) OR DKG metadata
+          if file is CREATE:
+            estimated_lines <= language_limit
+          if file is MODIFY:
+            current_lines + estimated_delta <= language_limit
+          if violation:
+            SPLIT the baby step. The file write must be decomposed into:
+            a. Extract/create a sub-module file
+            b. Bridge the sub-module from the parent
+            c. Write the actual logic in the sub-module
+
+    This is deterministic validation in the pipeline factory. No LLM needed.
+
+  1.3 MODULE TREE TEMPLATE
+
+    For GREENFIELD projects (not surgical mode):
+    The designer generates a MODULE TREE before any baby step is created.
+    The module tree defines the file structure for the entire concept/phase.
+    Language-specific module conventions are respected.
+
+    Rust example:
+      src/auth/
+        mod.rs              (bridge: re-exports from children)
+        types.rs            (Claims, AuthError, TokenConfig)
+        validate.rs         (validate_jwt, validate_refresh)
+        middleware.rs       (axum middleware layer)
+
+    Python example:
+      src/auth/
+        __init__.py         (bridge: re-exports from children)
+        types.py            (Claims, AuthError dataclasses)
+        validate.py         (validate_jwt, validate_refresh)
+        middleware.py       (FastAPI middleware)
+
+    TypeScript example:
+      src/auth/
+        index.ts            (barrel file: re-exports)
+        types.ts            (Claims, AuthError interfaces)
+        validate.ts         (validateJwt, validateRefresh)
+        middleware.ts       (Express middleware)
+
+    Go example:
+      auth/
+        types.go            (Claims, AuthError structs)
+        validate.go         (ValidateJWT, ValidateRefresh)
+        middleware.go       (HTTP middleware handler)
+        (no bridge needed — Go uses package-level imports)
+
+    Java example:
+      src/main/java/com/example/auth/
+        Claims.java         (one class per file, Java convention)
+        AuthError.java
+        JwtValidator.java
+        AuthMiddleware.java
+
+    The module tree is a SKELETON. Baby steps fill it in order.
+    The tree is stored in the DecompositionTree as a ModuleTree struct.
+    Each baby step references which file(s) in the tree it fills.
+
+    For SURGICAL mode: the existing file structure IS the module tree.
+    Surgical decomposition (pipeline-modes-design.txt section 3) already
+    constrains baby steps to existing files. The file size limit applies
+    to modified files: if a modification would push a file over its
+    language-specific limit, the step must first EXTRACT a sub-module.
+
+
+LAYER 2: TEMPLATE-ENFORCED STRUCTURE (during generation)
+Integration: Phase 4E (baby step execution) + token-efficiency-design.txt section 4
+
+  2.1 SKELETON-FIRST GENERATION
+
+    When a baby step creates a new file, the prompt strategy is:
+    Step A: generate the FILE SKELETON (signatures, types, imports only)
+    Step B: fill each function body ONE AT A TIME
+
+    FILL PROTOCOL (per audit B-6, with inter-fill mini-critic per research):
+    The orchestrator holds the skeleton in memory as a mutable buffer.
+    For each blank:
+      1. Orchestrator assembles prompt with current skeleton state
+      2. LLM generates ONLY the blank content (not the full file)
+      3. MINI-CRITIC CHECK (before patching, per research section 2e):
+         a. Does the fill parse as valid syntax? (tree-sitter on the fragment)
+         b. Does it reference types from the skeleton imports? (simple grep)
+         c. Is it >3 lines? (rejects trivial/placeholder fills)
+         d. Does it contain lazy patterns? (T1 regex subset, fast check)
+         If mini-critic fails: re-prompt for THIS blank immediately (does not
+         count toward baby step retry budget — this is a fill-level retry).
+         Max 2 fill-level retries per blank. After 2: accept partial and
+         flag the blank for dedicated completion (see section 5.1).
+         Research basis (OpenHands critic module, section 2e):
+         "Critic scores across 4 dimensions... improves ill-formed LLM
+         responses by up to 22%."
+      4. Orchestrator patches the validated fill into the in-memory buffer
+      5. Buffer is NOT written to disk yet
+    After ALL blanks are filled (or flagged):
+      6. Orchestrator writes the COMPLETE file to disk in a single write
+      7. T1 and T2 hooks evaluate the final write (not intermediate states)
+    This prevents partial files on disk and catches lazy fills early.
+
+    Skeleton examples by language:
+
+    Rust:
+      use crate::auth::types::{Claims, AuthError, TokenConfig};
+
+      pub fn validate_jwt(token: &str, config: &TokenConfig) -> Result<Claims, AuthError> {
+          ___BLANK_1___
+      }
+
+      pub fn validate_refresh(token: &str, config: &TokenConfig) -> Result<Claims, AuthError> {
+          ___BLANK_2___
+      }
+
+    Python:
+      from .types import Claims, AuthError, TokenConfig
+
+      def validate_jwt(token: str, config: TokenConfig) -> Claims:
+          ___BLANK_1___
+
+      def validate_refresh(token: str, config: TokenConfig) -> Claims:
+          ___BLANK_2___
+
+    TypeScript:
+      import { Claims, AuthError, TokenConfig } from './types';
+
+      export function validateJwt(token: string, config: TokenConfig): Claims {
+          ___BLANK_1___
+      }
+
+      export function validateRefresh(token: string, config: TokenConfig): Claims {
+          ___BLANK_2___
+      }
+
+    Go:
+      package auth
+
+      func ValidateJWT(token string, config *TokenConfig) (*Claims, error) {
+          ___BLANK_1___
+      }
+
+      func ValidateRefresh(token string, config *TokenConfig) (*Claims, error) {
+          ___BLANK_2___
+      }
+
+    Template generation is deterministic (tree-sitter + type info from DKG).
+    Language-specific skeleton generators registered in a LanguageTemplateRegistry.
+
+  2.2 BRIDGE FILE TEMPLATE
+
+    Bridge files are NEVER LLM-generated. They are deterministically assembled
+    from the module tree by the orchestrator.
+
+    SCHEDULED IN: Phase 4E (DecompositionTree implementation). The orchestrator
+    writes bridge files as part of the tree navigation setup, before baby
+    step execution begins. (Per audit W-2: this was previously unscheduled.)
+
+    Language-specific bridge templates:
+
+    Rust (mod.rs):
+      pub mod {child_name};
+      pub use {child_name}::{reexports};
+
+    Python (__init__.py):
+      from .{child_name} import {exports}
+
+    TypeScript (index.ts):
+      export {{ {exports} }} from './{child_name}';
+
+    Go: no bridge files. Package imports are direct.
+
+    Java: no bridge files. Package imports are per-class.
+
+    C# (optional Usings.cs):
+      global using {Namespace}.{ChildModule};
+
+    Bridge files are written by the ORCHESTRATOR, not the executor agent.
+    They cannot contain logic. They must stay within the language limit.
+    If a bridge needs more re-exports than the limit allows, the module
+    needs restructuring (too many children).
+
+  2.3 ENTRY POINT TEMPLATE
+
+    The entry point follows a fixed structure per language:
+
+    Rust:
+      mod auth;
+      mod api;
+      mod storage;
+      mod config;
+
+      fn main() -> anyhow::Result<()> {
+          let config = config::load()?;
+          let storage = storage::init(&config)?;
+          let auth = auth::init(&config)?;
+          api::serve(config, storage, auth)?;
+          Ok(())
+      }
+
+    (CORRECTED per audit I-2: uses anyhow::Result, not Box<dyn Error>.)
+
+    Python:
+      from config import load_config
+      from storage import init_storage
+      from auth import init_auth
+      from api import serve
+
+      def main():
+          config = load_config()
+          storage = init_storage(config)
+          auth = init_auth(config)
+          serve(config, storage, auth)
+
+      if __name__ == "__main__":
+          main()
+
+    TypeScript:
+      import { loadConfig } from './config';
+      import { initStorage } from './storage';
+      import { initAuth } from './auth';
+      import { serve } from './api';
+
+      async function main() {
+        const config = loadConfig();
+        const storage = await initStorage(config);
+        const auth = initAuth(config);
+        await serve(config, storage, auth);
+      }
+      main();
+
+    Entry points stay within language limits. Connect bridges. No logic.
+
+
+LAYER 3: POST-GENERATION COMPLETENESS VERIFICATION (hooks)
+Integration: Phase 3J.10 (tiered hooks) + Phase 4C (plugins)
+
+  NOTE ON HOOK STATUS (per audit W-3): as of 3J.WIRE.RULES completion,
+  T1 hooks load and evaluate rules from rules.db, and T2 hooks perform
+  tree-sitter AST parsing. The stubs referenced in anti-staleness BLOCK-3
+  may be resolved. VERIFY current state of tiered_analysis.rs before
+  implementation. If stubs remain, fix them as Priority 0.
+
+  3.1 T1 HOOK: LAZY CODE DETECTION (regex, <1ms)
+
+    EXISTING RULE (CLAUDE.md): "Zero Lazy Code: no pass bodies, TODO,
+    placeholder returns, except:pass, '# ... rest', mock data in prod."
+
+    Implementation: extend GREP_PATTERN predicate type with language and
+    file_context metadata fields. (Per audit B-8: using existing predicate
+    types avoids unnecessary schema migration. GREP_PATTERN gains two
+    optional fields: language: Option<Language>, file_context: Option<FileContext>.)
+
+    T1 ALWAYS evaluates all patterns. Test-context exemption is handled
+    by T2 (see section 3.3, per audit B-3 and W-5). T1 fires WARN for
+    matches; T2 upgrades to BLOCK or downgrades to ALLOW based on AST context.
+
+    Pattern registry (language-parameterized, loaded from rules.db):
+
+    UNIVERSAL (all languages):
+      r"//\s*TODO\b"                         -- TODO comment
+      r"//\s*FIXME\b"                        -- FIXME comment
+      r"//\s*HACK\b"                         -- HACK comment
+      r"//\s*\.\.\."                         -- // ... (ellipsis)
+      r"//\s*rest of"                        -- // rest of implementation
+      r"#\s*TODO\b"                          -- # TODO (Python/Ruby/Shell)
+      r"#\s*FIXME\b"                         -- # FIXME
+      r"#\s*\.\.\."                          -- # ... (ellipsis)
+      r#""placeholder""#                     -- placeholder string literal
+
+    RUST-SPECIFIC:
+      r"\btodo!\("                           -- todo!() macro
+      r"\bunimplemented!\("                  -- unimplemented!() macro
+      r"fn\s+\w+\([^)]*\)[^{]*\{\s*\}"      -- empty function body
+
+    PYTHON-SPECIFIC:
+      r"\bpass\s*$"                          -- bare pass (FIXED per audit B-1: added \b)
+      r"\braise NotImplementedError\b"       -- not implemented
+      r"def\s+\w+\([^)]*\):\s*\.\.\."       -- function body is just ...
+
+    TYPESCRIPT/JAVASCRIPT-SPECIFIC:
+      r"throw new Error\(['\"](?:not |todo|implement)" -- not implemented
+      r"console\.log\("                     -- debug logging in prod
+        (EXEMPTION per audit I-4: .test.ts, .spec.ts, .test.js, .spec.js files)
+
+    GO-SPECIFIC:
+      r"\bpanic\(\s*['\"](?:not |todo|implement)" -- panic placeholder
+      r"//\s*TODO\b"                         -- (shared with universal)
+      r"func\s+\w+\([^)]*\)[^{]*\{\s*\}"    -- empty function body
+
+    JAVA-SPECIFIC:
+      r"throw new UnsupportedOperationException\(" -- not implemented
+      r"throw new RuntimeException\(['\"]TODO" -- TODO exception
+      r"\{\s*\}\s*$"                         -- empty method body (multiline context)
+
+    C#-SPECIFIC:
+      r"throw new NotImplementedException\(" -- not implemented
+      r"\{\s*\}\s*$"                         -- empty method body
+
+    MAGIC NUMBERS (per audit B-2): REMOVED from T1 regex tier entirely.
+    Magic number detection moved to T2 AST-level (section 3.3 Check 5).
+    Regex cannot distinguish 42 inside a variable name from 42 as a numeric
+    literal. AST can. False positives in T1 would BLOCK legitimate code.
+
+    Verdict at T1 level: WARN (not BLOCK). T2 determines final verdict
+    based on whether the match is inside a test block. This resolves
+    audit B-3 (file-level exemption fails for Rust inline #[cfg(test)]).
+
+    Agent sees generic message: "tool call rejected by policy" (no pattern
+    details, per W-1: prevents gaming across retries).
+
+  3.2 T1 HOOK: FILE SIZE ENFORCEMENT (stat, <1ms)
+
+    After any file write, check:
+      language = detect_language(file_path)  // from extension or tree-sitter
+      limits = file_discipline_config.get(language) OR DEFAULT
+      file_lines = count newlines in written content
+
+      if file is test file (detected by path pattern per language):
+        limit = limits.test
+      elif file extension in exempt_extensions OR path in exempt_paths:
+        limit = EXEMPT
+      else:
+        limit = limits.production
+
+    Test file detection patterns (per language):
+      Rust:     tests/ directory OR _test.rs suffix OR contains #[cfg(test)]
+      Python:   test_ prefix OR _test.py suffix OR tests/ directory
+      Go:       _test.go suffix
+      TypeScript: .test.ts, .spec.ts, __tests__/ directory
+      Java:     src/test/ directory OR *Test.java suffix
+      C#:       *.Tests project OR *Test.cs suffix
+      Ruby:     spec/ directory OR _spec.rb suffix
+      DEFAULT:  test in path OR test in filename
+
+    Verdict (two-tier, per research section 3f):
+      file_lines > hard_block (4x WARN limit):  BLOCK (reject the write)
+      file_lines > WARN limit:                  WARN (allow, flag for auditor)
+      file_lines > WARN limit * 0.8:            INFO (approaching limit)
+
+    Line count alone only BLOCKs extreme monoliths (4x). Normal enforcement
+    is via responsibility metrics in T2 (cyclomatic complexity, coupling).
+    Research basis (section 3c): "Mechanical truncation: avg 19.45% Pass@1 drop."
+    Aggressive line-count blocking loses good code. Responsibility metrics
+    catch the actual structural problem without false positives.
+
+    Agent sees: "tool call rejected by policy"
+
+  3.3 T2 HOOK: AST COMPLETENESS CHECK (tree-sitter, <10ms)
+
+    After any file write that passes T1, parse with tree-sitter.
+    Language grammar selected from file extension (tree-sitter supports 40+).
+
+    Check 1: NO ERROR NODES in the AST.
+      tree-sitter marks unparseable regions as ERROR nodes.
+      Any ERROR node in generated code = BLOCK.
+
+    Check 2: NO EMPTY FUNCTION BODIES (per audit B-3: block-level, not file-level).
+      Traverse the AST. Find all function body / block nodes.
+      FIRST: determine if the node is inside a test block.
+        Rust: ancestor is item with #[cfg(test)] or #[test] attribute
+        Python: ancestor function name starts with test_
+        Go: ancestor function name starts with Test
+        TypeScript: ancestor is describe() or it() or test() call
+        Java: ancestor method has @Test annotation
+        C#: ancestor method has [Test] or [Fact] attribute
+      If inside test block: ALLOW (test code may use placeholders).
+      If in production code AND function body contains ONLY:
+        - comments
+        - a single return with a literal (return 0, return None, return "")
+        - nothing (empty block)
+      Then: BLOCK.
+
+    Check 3: FUNCTION COUNT vs FILE_PLAN.
+      (Per audit W-6: requires FILE_PLAN data passed to T2 hook. The T2Hook
+      interface gains an optional context parameter: Option<&FilePlan>.
+      When None (legacy callers), this check is skipped.)
+
+      Count function declarations in the AST.
+      If AST count < FILE_PLAN expected count: WARN (missing functions).
+      If AST count > FILE_PLAN expected count * 2: WARN (file doing too much).
+
+    Check 4: IMPORT COMPLETENESS.
+      Language-specific import node extraction:
+        Rust: use_declaration, extern_crate_declaration
+        Python: import_statement, import_from_statement
+        Go: import_declaration, import_spec
+        TypeScript: import_statement, import_clause
+        Java: import_declaration
+        C#: using_directive
+      For each symbol used but not imported: WARN (compilation catches this).
+
+    Check 5: MAGIC NUMBER DETECTION (moved from T1 per audit B-2).
+      Find all numeric literal nodes in the AST.
+      ALLOW if: the literal is in a const/static declaration,
+                the literal is 0, 1, 2, -1, 0.0, 1.0 (common constants),
+                the literal is inside a test block,
+                the literal is an array/collection size.
+      WARN (not BLOCK) if: a "suspicious" numeric literal appears in logic.
+      This is advisory — magic numbers are style, not completeness.
+
+    Check 6: RESPONSIBILITY METRICS (research-grounded, BLOCK level).
+      Research basis (section 3f): "Optimal file size = one responsibility,
+      not arbitrary line count."
+
+      6a. CYCLOMATIC COMPLEXITY per function:
+        Traverse AST. For each function, count:
+          +1 for each if/else/elif/else if
+          +1 for each for/while/loop
+          +1 for each match arm / case branch (beyond first)
+          +1 for each && / || in conditions
+          +1 for each ? (ternary) or try/catch
+        If any function exceeds max_cyclomatic_complexity (default 10): BLOCK.
+        Agent sees: "tool call rejected by policy"
+        This catches god functions regardless of file line count.
+
+      6b. COUPLING SCORE per file:
+        Count distinct external symbols referenced (imported types, functions,
+        traits/interfaces from other modules).
+        Source: tree-sitter import analysis (all languages) or DKG edges (Rust).
+        If coupling exceeds max_coupling_score (default 15): BLOCK.
+        High coupling = the file does too many things, touching too many modules.
+        This catches files that are technically short but architecturally monolithic.
+
+      Both metrics are deterministic (AST + import counting). No LLM.
+      Both are configurable in elai_cc.toml [file_discipline].
+
+  3.4 T3 HOOK: COMPILATION CHECK (build tool, language-specific)
+
+    Language-specific build check:
+      Rust:       cargo check -p {crate} --message-format=json
+      Python:     python -m py_compile {file} (syntax) + mypy {file} (types, if configured)
+      Go:         go vet ./...
+      TypeScript: tsc --noEmit
+      Java:       javac -Xlint {file} (or gradle compileJava)
+      C#:         dotnet build --no-restore
+
+    Build command from ProjectProfile.build_system (project-intelligence-design.txt).
+    Runs AFTER T1 and T2. If T1/T2 BLOCK, skip T3 (don't waste time compiling).
+
+
+LAYER 4: AUDITOR ENFORCEMENT (post-execution)
+Integration: Phase 3C (agent system) + Phase 4C (plugins)
+
+  4.1 DETERMINISTIC AUDITOR CHECKS
+
+    Before the LLM auditor runs, the deterministic auditor checks:
+
+    Check 1: FILE SIZE CENSUS
+      List all files modified in this baby step / step / phase.
+      For each file: current_lines vs language-specific limit.
+      Report: any file over limit (BLOCK), any file >80% of limit (WARN).
+
+    Check 2: LAZY CODE SCAN
+      Run the full lazy code pattern set (from 3.1) on ALL modified files.
+      This catches anything that slipped past hooks (e.g., lazy code added
+      by a multi-line edit where the hook checked individual edits).
+
+    Check 3: COMPLETENESS vs DECOMPOSITION TREE
+      The baby step spec said: "write function validate_jwt in validate.rs".
+      Check: does the file now contain a function named validate_jwt?
+      Check: does the function have a non-trivial body (>3 lines)?
+      Check: does the function signature match FILE_PLAN?
+      All checks are AST-based (tree-sitter, language-specific). No LLM.
+
+    Check 4: MODULE COHERENCE (language-specific)
+      Rust: every child module in mod.rs must exist on disk, and vice versa.
+      Python: every import in __init__.py must resolve.
+      TypeScript: every export in index.ts must resolve.
+      Go: all files in package must compile together (go vet).
+      Java: all classes in package must be importable.
+      Orphan detection: files that exist but no bridge/parent references them.
+
+  4.2 LLM AUDITOR GUIDELINES
+
+    The LLM auditor receives additional instructions:
+
+    "COMPLETENESS CHECK: For each function in the modified files:
+    1. Does the function body implement the behavior described in the
+       baby step TASK block? Or does it just return a placeholder?
+    2. Does the function handle edge cases mentioned in the ACCEPTANCE block?
+    3. Are there any 'happy path only' implementations that skip error handling?
+    If you find incomplete implementations, mark them as BLOCK findings."
+
+    This is the LLM's strength: semantic verification that the implementation
+    actually does what it's supposed to do, not just that it compiles.
+    The deterministic checks handle syntax and structure. The LLM handles meaning.
+
+
+LAYER 5: RECOVERY (research-grounded strategies)
+Integration: Phase 4E (BubbleUpHandler)
+
+  Research basis for recovery strategy selection:
+    Section 1: "Prompt engineering ('emotional appeals', tips, threats)
+    empirically worsened scores. Inhibition adaptation = 17.6%."
+    -> Instructional retries ("write complete code!") DO NOT WORK. Removed.
+    -> All retries must be STRUCTURAL (change the task, not the instruction).
+
+    Section 4f: "Primary: Task Decomposition + Interleaved Generation.
+    Final-mile: Constrained Decoding with adaptive variants."
+    -> Decomposition is the #1 recovery strategy (+5.5-5.9% Pass@1).
+
+    Section 4d (Plantain): "Accept partial, rewind incomplete parts."
+    -> Accept-and-complete beats full retry when most output is good.
+
+  5.1 ACCEPT-AND-COMPLETE (new, research-grounded)
+
+    BEFORE triggering full retry, the system evaluates WHAT is incomplete:
+
+    TRIAGE (deterministic, on the rejected/flagged content):
+      Count total functions in the write.
+      Count functions with lazy/empty bodies (from T2 AST check).
+      Compute completeness_ratio = complete_functions / total_functions.
+
+    If completeness_ratio >= 0.5 (majority of functions are good):
+      ACCEPT-AND-COMPLETE strategy:
+      1. ACCEPT the good functions — write them to disk as-is
+      2. For each incomplete function: spawn a DEDICATED completion baby step
+         with the function signature + the complete surrounding file as context
+      3. The completion baby step uses skeleton-first (the function signature
+         is the skeleton, only the body needs filling)
+      This avoids throwing away good work because one function was lazy.
+      Research: Plantain accept-and-rewind recovery rate = 72.7% on MBPP.
+
+    If completeness_ratio < 0.5 (majority is lazy):
+      Full STRUCTURAL RETRY (see below). The output is unsalvageable.
+
+  5.2 STRUCTURAL RETRY SEQUENCE (no instructional retries)
+
+    When a baby step is fully BLOCKED (completeness_ratio < 0.5):
+
+    Retry 1: DECOMPOSE. Split the baby step — each function gets its own
+      dedicated baby step with smaller scope.
+      Research: MoTCoder-7B +5.9% Pass@1 via decomposition.
+      Research: WARNING from ChatDev: "naive multi-agent decomposition drops
+      to 25% correctness." Must use rigid BabyStepSpec, not free-form.
+
+    Retry 2: TEMPLATE. Generate a skeleton with blanks for the failed function.
+      The model fills ONLY the blanks, not the whole function.
+      Research: Interleaved generation +6% Pass@1, -60% latency.
+
+    Retry 3: FEW-SHOT EXAMPLE. Find a similar function in the codebase via
+      DKG and include it as context. The model sees a working implementation
+      of a similar pattern from the same project.
+      Research: TDP (test-driven prompting) +6.09% avg across 8 models.
+
+    After retry 3: BubbleUp to Step level. The step is redecomposed into
+    sub-function-level tasks:
+      Sub-step 1: Write the input validation
+      Sub-step 2: Write the core logic
+      Sub-step 3: Write the error handling
+      Sub-step 4: Connect them into the function body
+    Research: Blueprint2Code achieves 96.3% Pass@1 on HumanEval via
+    split-dependent decomposition.
+
+  5.3 FILE-SIZE-SPECIFIC BUBBLE-UP (unchanged from previous revision)
+
+  5.3 FILE-SIZE-SPECIFIC BUBBLE-UP
+
+    When a baby step is hard-BLOCKED for file size (exceeds 4x language WARN):
+
+    REVISED per audit B-4: the T1 hook captures the REJECTED CONTENT
+    in memory (the write payload that was blocked). The BubbleUpHandler
+    receives this buffer directly. The content never reaches disk.
+    DKG is NOT consulted for unwritten code (it can't index what doesn't
+    exist). The splitter operates on the in-memory buffer only.
+
+    Action: AUTOMATIC EXTRACTION. The orchestrator (not the model):
+      1. Takes the rejected write buffer (in memory, from T1 hook)
+      2. Parses with tree-sitter to identify function boundaries
+      3. Splits into groups of 3-5 functions per file (within language limit)
+      4. Generates new file names from function/class names in the AST
+      5. Generates bridge file connecting the split files
+      6. Creates NEW baby steps to write each split file
+
+    This is deterministic file splitting. The LLM is not trusted to
+    restructure the file because it wrote the monolith in the first place.
+    The system undoes the model's monolithic tendency mechanically.
+
+    Scheduled in Phase 4E (BubbleUpHandler) + Phase 4B (file splitter tool).
+    (Per audit W-4: file splitting is Priority 1, not Priority 3, because
+    without it the file size BLOCK has no recovery path.)
+
+
+========================================================================
+NEW TYPES
+========================================================================
+
+  FilePlan {
+    creates: Vec<FileSpec>,
+    modifies: Vec<FileModSpec>,
+    depends: Vec<FilePath>,           // read-only dependencies
+  }
+  NOTE: FilePlan REPLACES BabyStepSpec.TaskSpec.target_file (per audit B-9).
+
+  FileSpec {
+    path: FilePath,
+    language: Language,               // detected or specified
+    estimated_lines: usize,           // must be <= language limit
+    functions: Vec<FunctionSpec>,     // expected function signatures
+    purpose: String,                  // one-line description
+  }
+
+  FileModSpec {
+    path: FilePath,
+    language: Language,
+    current_lines: usize,            // from file_line_tracker or DKG
+    estimated_delta: i32,            // lines added - lines removed
+    final_lines: usize,             // must be <= language limit
+    changes: Vec<ChangeSpec>,        // what's being modified
+  }
+
+  FunctionSpec {
+    name: String,
+    signature: String,               // full type signature, language-specific
+    estimated_lines: usize,          // body only
+  }
+
+  ModuleTree {
+    root: ModuleNode,
+    language: Language,               // determines bridge conventions
+  }
+
+  ModuleNode {
+    name: String,
+    kind: ModuleKind,                // Source | Bridge | Test | Config
+    estimated_lines: usize,
+    children: Vec<ModuleNode>,
+    exports: Vec<String>,            // public items re-exported from bridge
+    doc: String,                     // one-line module purpose
+  }
+
+  ModuleKind { Source, Bridge, Test, Config, Generated }
+
+  FileSizeConfig {
+    limits: HashMap<Language, LanguageLimits>,
+    warn_threshold: f32,             // default 0.8 (80% of limit)
+    exempt_extensions: Vec<String>,
+    exempt_paths: Vec<String>,
+  }
+
+  LanguageLimits {
+    production: usize,               // line limit for production code
+    test: usize,                     // line limit for test code
+  }
+
+  FileLineTracker {
+    lines: HashMap<FilePath, usize>, // current line count per file
+  }
+  Maintained by TreeNavigator, updated after each baby step.
+
+  CompletenessResult {
+    file_path: FilePath,
+    language: Language,
+    expected_functions: Vec<FunctionSpec>,
+    found_functions: Vec<String>,
+    missing_functions: Vec<String>,
+    empty_bodies: Vec<String>,
+    lazy_patterns: Vec<LazyMatch>,
+    lines: usize,
+    over_limit: bool,
+    language_limit: usize,
+  }
+
+  LazyMatch {
+    line: usize,
+    pattern_id: String,
+    matched_text: String,
+    in_test_block: bool,             // determined by T2 AST check
+  }
+
+  LanguageTemplateRegistry {
+    skeleton_generators: HashMap<Language, Box<dyn SkeletonGenerator>>,
+    bridge_templates: HashMap<Language, BridgeTemplate>,
+    import_patterns: HashMap<Language, Vec<ImportPattern>>,
+    test_detection: HashMap<Language, TestDetectionConfig>,
+  }
+
+  ResponsibilityMetrics {
+    max_cyclomatic_complexity: usize,     // per function, default 10
+    actual_max_complexity: usize,         // highest found in file
+    offending_functions: Vec<String>,     // functions exceeding limit
+    coupling_score: usize,               // distinct external symbols
+    max_coupling: usize,                 // configured limit, default 15
+  }
+
+  TriageResult {
+    total_functions: usize,
+    complete_functions: usize,
+    incomplete_functions: Vec<String>,     // function names with lazy bodies
+    completeness_ratio: f32,              // complete / total
+    strategy: RecoveryStrategy,           // AcceptAndComplete | FullRetry
+  }
+
+  RecoveryStrategy { AcceptAndComplete, FullRetry }
+
+  MiniCriticResult {
+    blank_id: String,
+    parses: bool,                         // tree-sitter fragment parse
+    references_skeleton_types: bool,      // uses types from imports
+    is_nontrivial: bool,                  // >3 lines
+    has_lazy_patterns: bool,              // T1 regex subset
+    verdict: MiniCriticVerdict,           // Accept | RetryFill | FlagForCompletion
+  }
+
+  MiniCriticVerdict { Accept, RetryFill, FlagForCompletion }
+
+
+========================================================================
+PREDICATE CHANGES (per audit B-8)
+========================================================================
+
+  NO new predicate types. Extend existing GREP_PATTERN with optional fields:
+
+  GREP_PATTERN existing schema:
+    pattern TEXT, severity TEXT, ...
+
+  GREP_PATTERN extended (backward-compatible, new fields nullable):
+    + language TEXT           -- NULL = all languages, "rust" = Rust only, etc.
+    + file_context TEXT       -- NULL = any, "production" = skip test files,
+                                "test" = test files only, "skeleton" = skeleton phase
+
+  Seed data: all lazy code patterns from section 3.1 inserted as GREP_PATTERN
+  rows with language and file_context populated.
+
+  FILE_SIZE_GATE: implemented as a METRIC_GATE predicate with:
+    metric = "file_lines", operator = "<=", value = {language_limit}
+  Language-specific values resolved at evaluation time from FileSizeConfig.
+
+  Predicate type count: remains 6 (5 original + GraphReachability), not 8.
+  (Per audit B-8: GraphReachability already exists in predicate.rs.)
+
+
+========================================================================
+PHASE IMPACT ANALYSIS
+========================================================================
+
+COMPLETED PHASES (0-3) — changes needed:
+
+  Phase 3F (rules engine) — COMPLETED
+    Add: language and file_context fields to GREP_PATTERN schema
+    Add: seed rules for lazy code patterns (all languages)
+    Add: FILE_SIZE_GATE as METRIC_GATE instance
+    Impact: moderate. Schema migration (ALTER TABLE, backward-compatible).
+    Existing rules unaffected.
+
+  Phase 3J.10 (tiered hooks) — COMPLETED
+    VERIFY CURRENT STATE before assuming stubs (per audit W-3).
+    Add: lazy code pattern evaluation in T1
+    Add: file size check in T1
+    Add: AST completeness checks in T2 (block-level test detection)
+    Add: Optional<&FilePlan> parameter to T2Hook (per audit W-6)
+    Impact: moderate. New hook evaluation paths + interface extension.
+
+  Phase 3E (context budget) — COMPLETED
+    Add: FILE_PLAN block in baby step prompt assembly
+    Impact: small. ~30-50 tokens per baby step for FILE_PLAN.
+
+  Phase 3C (agent system) — COMPLETED
+    Add: deterministic auditor checks before LLM auditor
+    Impact: moderate. New pre-audit check pipeline.
+
+UPCOMING PHASES — changes needed:
+
+  Phase 4D (pipeline factory L1, designer) — NOT STARTED
+    Add: FILE_PLAN generation as part of BabyStepSpec (REPLACES target_file)
+    Add: ModuleTree generation for greenfield projects
+    Add: per-file LOC estimation using DKG metadata
+    Add: language-specific module conventions from ProjectProfile
+    Impact: significant. Core addition to designer output.
+    NOTE (per audit W-7): phase-4D.txt and phase-4E.txt step files must be
+    updated to include ModuleTree and FilePlan types before implementation.
+
+  Phase 4E (pipeline factory L2, DecompositionTree) — NOT STARTED
+    Add: FILE_PLAN validation with tier-gated file count limits
+    Add: FileLineTracker in TreeNavigator state
+    Add: ModuleTree as first-class struct in DecompositionTree
+    Add: automatic baby step splitting when file would exceed limit
+    Add: file-size-specific BubbleUp handler (deterministic splitting)
+    Add: bridge file generation during tree navigation setup
+    Impact: significant. Touches decomposer, navigator, and BubbleUpHandler.
+
+  Phase 4B (tools) — NOT STARTED
+    Add: deterministic file splitter tool (tree-sitter based, language-aware)
+    Impact: small. New tool, fits existing architecture.
+
+  Phase 4C (plugins / hooks) — NOT STARTED
+    Add: wire T1/T2 hook additions from this design
+    Impact: moderate. Aligns with existing hook architecture.
+
+
+========================================================================
+INTEGRATION WITH EXISTING DESIGNS
+========================================================================
+
+  token-efficiency-design.txt:
+    Section 3 LOC limits are per-baby-step. This design adds per-FILE limits.
+    Section 4 templates become MANDATORY for file creation (skeleton-first).
+    Section 8 verification density gains lazy-code-specific patterns.
+    NO CONFLICTS. Pure extension.
+
+  pipeline-modes-design.txt:
+    Surgical mode constrains to existing files. This design adds: if surgical
+    modification would exceed the LANGUAGE-SPECIFIC limit, the step must
+    first EXTRACT before modifying.
+    Greenfield mode uses fractal decomposition. This design adds: ModuleTree
+    generated before any baby step, with language-appropriate conventions.
+    NO CONFLICTS. Pure extension.
+
+  project-intelligence-design.txt:
+    Language detection (Tier 1) drives which patterns, limits, and templates load.
+    Convention detection (Tier 2) feeds into MODULE_TREE generation.
+    If the project uses by-feature organization, the designer generates
+    a by-feature ModuleTree. If by-type, then by-type.
+    NO CONFLICTS. Natural integration point.
+
+  anti-staleness-enforcement.txt:
+    VERSION_GATE and lazy code patterns are both evaluated in T1 hooks.
+    Lazy code patterns use extended GREP_PATTERN (same predicate type).
+    Evaluation order: lazy code first (a placeholder doesn't need import checking).
+    NO CONFLICTS. Complementary.
+
+
+========================================================================
+IMPLEMENTATION PRIORITY (revised per audit W-4)
+========================================================================
+
+  Priority 0 (prerequisite):
+    VERIFY T1/T2 hook status. If stubs remain, fix them.
+
+  Priority 1 (highest impact, integrates with 4D/4E before they're built):
+    FILE_PLAN block in BabyStepSpec (replaces target_file)
+    LOC budget per-file validation with FileLineTracker
+    ModuleTree type definition (language-parameterized)
+    Skeleton-first generation with fill protocol
+    T1 lazy code detection (language-parameterized patterns)
+    T1 file size enforcement (language-specific limits)
+    DETERMINISTIC FILE SPLITTER (recovery for file size BLOCKs)
+    Effort: integrated into Phase 4D/4E implementation.
+
+  Priority 2 (extends completed phases):
+    T2 AST completeness check (block-level test detection)
+    Deterministic auditor checks (pre-LLM)
+    Bridge file templates (language-specific, orchestrator-generated)
+    Effort: ~1-2 sessions, touches 3J.10 and 3C.
+
+  Priority 3 (recovery mechanisms):
+    Lazy-code-specific BubbleUp strategy
+    Entry point template enforcement
+    Effort: ~1-2 sessions, integrated with Phase 4E BubbleUpHandler.
+
+  Priority 4 (polish):
+    LLM auditor completeness guidelines
+    Module coherence checks (orphan detection)
+    Magic number T2 detection
+    Effort: ~1 session.
+
+
+========================================================================
+AUDIT RESOLUTION LOG
+========================================================================
+
+  B-1 (Python pass regex no word boundary):
+    RESOLVED. Pattern changed to r"\bpass\s*$". Section 3.1.
+
+  B-2 (magic number regex false positives):
+    RESOLVED. Removed from T1 entirely. Moved to T2 AST-level Check 5
+    which detects numeric literal nodes and checks context. Section 3.3.
+
+  B-3 (test exemption file-level, misses inline #[cfg(test)]):
+    RESOLVED. T1 now always WARNs. T2 determines final verdict using
+    AST block-level analysis to detect test contexts. Section 3.3 Check 2.
+
+  B-4 (automatic file splitter references unwritten content):
+    RESOLVED. Splitter operates on rejected write buffer in memory.
+    DKG reference removed. Section 5.3.
+
+  B-5 (TOCTOU: sibling baby steps grow same file):
+    RESOLVED. FileLineTracker in TreeNavigator tracks cumulative line
+    counts, updated after each baby step. Section 1.2.
+
+  B-6 (skeleton fill protocol unspecified):
+    RESOLVED. Orchestrator holds skeleton in memory, patches blanks
+    incrementally, writes final file once. Section 2.1.
+
+  B-7 (100 lines != 70 tokens):
+    RESOLVED. Corrected to "800-1200 tokens" for Rust. Added per-language
+    token estimates. Section: File Size Discipline.
+
+  B-8 (unnecessary new predicate types):
+    RESOLVED. No new predicate types. GREP_PATTERN extended with language
+    and file_context fields. FILE_SIZE_GATE uses METRIC_GATE. Section:
+    Predicate Changes.
+
+  B-9 (target_file vs FILE_PLAN conflict):
+    RESOLVED. FILE_PLAN replaces target_file. Tier-gated file count limits
+    added. Section 1.1.
+
+  W-1 (retry message leaks violation category):
+    RESOLVED. Instructional retries removed entirely (research: inhibition
+    adaptation = 17.6%). All retries are structural. Section 5.2.
+
+  W-2 (bridge generation unscheduled):
+    RESOLVED. Scheduled in Phase 4E. Section 2.2.
+
+  W-3 (T1/T2 stub status may be stale):
+    RESOLVED. Added VERIFY note. Section 3 header.
+
+  W-4 (surgical mode blocked with no recovery until Priority 3):
+    RESOLVED. File splitter moved to Priority 1. Section: Implementation Priority.
+
+  W-5 (PatternContext unusable at T1):
+    RESOLVED. T1 always WARNs. Context filtering is T2's job. Section 3.1.
+
+  W-6 (T2 hook interface change for FILE_PLAN):
+    RESOLVED. Optional<&FilePlan> parameter documented. Section 3.3 Check 3.
+
+  W-7 (ModuleTree not in phase step files):
+    RESOLVED. Note added to Phase 4D impact. Section: Phase Impact Analysis.
+
+  I-2 (Box<dyn Error> in example violates project rules):
+    RESOLVED. Changed to anyhow::Result. Section 2.3.
+
+  I-4 (TypeScript console.log no test exemption):
+    RESOLVED. Test file patterns added (.test.ts, .spec.ts). Section 3.1.
+
+
+========================================================================
+RESEARCH GROUNDING (from LLM-Code-Generation-Summary.txt)
+========================================================================
+
+  All 3 research queries have been executed. Key findings applied:
+
+  FROM QUERY 1 (completeness verification):
+    - Aider: unified diff + AST validation. GPT-4 Turbo laziness 20% -> 61%.
+    - SWE-Agent: ACI blocks syntactically invalid edits. 65% on SWE-bench.
+    - OpenHands: critic module improves ill-formed responses by up to 22%.
+    APPLIED: mini-critic between skeleton fills (section 2.1).
+    APPLIED: AST validation in T2 hooks (section 3.3).
+
+  FROM QUERY 2 (file size / output length):
+    - "Optimal file size = one responsibility, not arbitrary line count."
+    - "Mechanical truncation: avg 19.45% Pass@1 drop."
+    - "Formatting removal: avg 24.5% token reduction, ~0% accuracy loss."
+    APPLIED: responsibility-based metrics (complexity, coupling) as primary
+    enforcement, line count demoted to WARN (section: Principle).
+    APPLIED: formatting removal in token-efficiency-design.txt section 9.
+
+  FROM QUERY 3 (decomposition strategies):
+    - MoTCoder-7B: +5.9% Pass@1 via structured decomposition.
+    - Blueprint2Code: 96.3% Pass@1 on HumanEval (split-dependent).
+    - WARNING: naive multi-agent (ChatDev) drops to 25% correctness.
+    - Plantain accept-and-rewind: 72.7% recovery on MBPP.
+    - "Prompt engineering empirically worsened scores. Inhibition adaptation = 17.6%."
+    APPLIED: structural-only retries, no instructional retries (section 5.2).
+    APPLIED: accept-and-complete before full retry (section 5.1).
+    APPLIED: rigid BabyStepSpec templates, not free-form (section 1.1).
+
+  FROM QUERY 3 (constrained decoding):
+    - CRANE: +10pp accuracy over rigid constrained baselines.
+    - AdapTrack: unconstrained 61.58% -> constrained+AdapTrack 66.11%.
+    - CodeFast: +34% to +452% inference speed, zero Pass@1 loss.
+    APPLIED: adaptive constrained decoding in token-efficiency-design.txt.
+
+  FROM QUERY 3 (best-of-N):
+    - "Requires N > 32 for substantial gains. Defeats purpose of small models."
+    APPLIED: best-of-N limited to concept-first steps only (token-efficiency).
+
+
+========================================================================
+WHAT MAKES THIS DIFFERENT (research-validated)
+========================================================================
+
+Research proves (ImplicitMemBench): "inhibition adaptation = 17.6%."
+Models CANNOT be instructed out of laziness. Every AI coding tool that
+relies on INSTRUCTIONS ("Write complete code", "Don't use placeholders")
+is fighting a losing battle. The model ignores these under load.
+
+This design makes laziness impossible through SYSTEM CONSTRAINTS:
+  - God functions BLOCKED by cyclomatic complexity >10 (T2 AST, section 3.3)
+  - High coupling BLOCKED by >15 external symbols (T2 AST, section 3.3)
+  - todo!/pass/NotImplementedError BLOCKED by T1+T2 pattern+AST checks
+  - Missing functions caught by T2 completeness vs FILE_PLAN comparison
+  - Model CANNOT create files not in FILE_PLAN (hook BLOCKS it)
+  - Model doesn't choose file structure (DESIGNER chose it pre-execution)
+  - Model doesn't choose function signatures (FILE_PLAN specified them)
+  - Bridge files written by orchestrator (deterministic, zero LLM)
+  - Test exemptions are block-level (can't hide lazy code next to tests)
+  - Each blank fill validated by mini-critic before next blank starts
+  - Partial good output ACCEPTED, only lazy parts get completion steps
+
+Recovery is STRUCTURAL, not instructional:
+  - Retry 1: DECOMPOSE the failing step (MoTCoder: +5.9% Pass@1)
+  - Retry 2: TEMPLATE with blanks (interleaved: +6% Pass@1, -60% latency)
+  - Retry 3: FEW-SHOT example from same codebase (TDP: +6.09% avg)
+  - Never: "please try harder" (ImplicitMemBench: makes it worse)
+
+The model's job is reduced to: fill in function bodies that pass tests.
+Everything else is deterministic infrastructure.
+
+"The intelligence is in the infrastructure, not the model."
+
+
+========================================================================
+REASONING ARCHITECTURE INTEGRATION (reasoning-architecture-design.txt)
+========================================================================
+
+The code completeness enforcement layers integrate with the 6-layer
+externalized reasoning pipeline at four points:
+
+1. LAYER 1 EXPANSION (FailureTaxonomy + fix templates):
+   Code completeness violations detected by T1/T2 hooks produce structured
+   errors that feed into reasoning Layer 1 FailureTaxonomy. New categories:
+
+   LAZY_CODE:
+     Regex match from T1 hook (todo!(), pass, placeholder).
+     Fix template: "Replace {lazy_pattern} at line {line} with implementation.
+       Function signature: {signature}. Expected behavior: {baby_step_task}."
+     Layer 1 generates a precise directive for the model.
+
+   EMPTY_BODY:
+     T2 AST check found empty function body in production code.
+     Fix template: "Implement function {name} in {file}. Signature: {sig}.
+       Reference pattern: {dkg_similar_function}."
+     DKG provides a similar working function as context.
+
+   FILE_SIZE_EXCEEDED:
+     T1 hook blocked a write exceeding language-specific hard limit.
+     Fix template: "File {file} exceeds {limit} lines. Extract functions
+       {list} into new file {suggested_name}. Create bridge in {bridge_file}."
+     The file splitter (Layer 5.3) provides the extraction plan.
+
+   These expand the existing 9 FailureTaxonomy categories to 12.
+   All are deterministic (regex + AST), no LLM needed for classification.
+
+2. MISTAKE BOOK INTEGRATION:
+   When a baby step is BLOCKED by completeness hooks (T1 lazy code, T2 empty
+   body, T1 file size), the blocking event is recorded in MistakeBook as:
+     MistakeEntry {
+       failure_category: LAZY_CODE | EMPTY_BODY | FILE_SIZE_EXCEEDED,
+       faulty_line: line from hook report,
+       action_taken: "hook_blocked",
+     }
+   Subsequent retries see: "CONSTRAINT: Do NOT produce lazy code. Previous
+   attempt was blocked for {category} at line {line}."
+   This prevents the model from repeating the same laziness pattern.
+
+3. ACCEPT-AND-COMPLETE + LAYER 2 MICRO-REFLECTION:
+   Layer 5 section 5.1 (accept-and-complete) spawns dedicated completion
+   baby steps for incomplete functions. Before spawning, the system runs
+   reasoning Layer 2 (micro-reflection) on each incomplete function:
+     "Code: {function_with_lazy_body}\nError: empty implementation\n
+      Context types: {types_from_dkg}"
+   The micro-reflection diagnosis (30-word JSON) guides the completion
+   baby step with a precise fix instruction. This is MORE effective than
+   naked retry because the model receives structured diagnosis.
+
+4. BUBBLEUP + REASONING LAYERS:
+   BubbleUpHandler (Phase 4E) gains a new action: DiagnoseAndRetry.
+   This action invokes the reasoning pipeline (Layers 1-4) BEFORE
+   escalating to Redecompose. The sequence becomes:
+
+   Baby step BLOCKED:
+     1. DiagnoseAndRetry (reasoning Layers 1-4, max 15 AB-MCTS branches)
+     2. If resolved: accept. If not:
+     3. Accept-and-complete (if completeness_ratio >= 0.5)
+     4. If not: Redecompose (structural retry)
+     5. If not: BubbleUp to Step level
+
+   This adds a new action between BLOCKED and Redecompose that can resolve
+   many completeness issues without structural retry overhead.
+
+CROSS-REFERENCES:
+  - reasoning-architecture-design.txt: full 6-layer pipeline spec,
+    MistakeBook design, Compressed Context Replay
+  - token-efficiency-design.txt section 5: structural retries happen
+    AFTER reasoning pipeline exhaustion
+  - pipeline-modes-design.txt: surgical mode regression gates serve
+    as verification for reasoning pipeline fixes

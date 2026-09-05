@@ -1,0 +1,187 @@
+Rare Code Flaws in ML - Technical Summary
+
+FUNDAMENTAL PRINCIPLE:
+Training-evaluation separation is critical. Modern distributed computing introduces obscure failure modes causing undetectable overfitting and data leakage.
+
+DISTRIBUTED TRAINING VULNERABILITIES:
+
+Hardware-Level Nondeterminism:
+- GPU arithmetic precision variations across nodes
+- Floating-point accumulation differences
+- Non-reproducible weight initialization
+- Silent model divergence across epochs
+
+Mitigation:
+- Deterministic CUDA kernels
+- Fixed random seeds with synchronization
+- Identical hardware specifications
+- Regular weight checkpointing
+
+GRAPH NEURAL NETWORK LEAKAGE:
+
+Temporal Leakage in GNNs:
+- k-layer receptive field = k hops
+- Future edges included in neighborhood N(v)
+- Recursive message passing propagates future info
+- 30% accuracy inflation during validation
+
+Mathematical Definition:
+$$\mathcal{N}(v)$$ includes edges where $t_{edge} > t_{prediction}$
+
+Transductive Leakage via Global Aggregation:
+- Global metrics calculated before train-test split
+- PageRank, centrality, clustering encode future topology
+- Static feature vectors contain entire network structure
+- Target node features contaminated with global information
+
+Mitigation:
+- Chronological filtering of multi-hop boundaries
+- Local-only metric computation
+- Strict temporal train-validation-test splits
+- Cross-validation with temporal awareness
+
+REINFORCEMENT LEARNING FLAWS:
+
+Deadly Triad in Off-Policy RL:
+- Off-policy learning + function approximation + bootstrapping
+- Buffer staleness from asynchronous distributed training
+- Reuse bias from outdated trajectories
+- Q-value overestimation and policy divergence
+
+Experience Replay Buffer Issues:
+$$\mathcal{D} = \{(s_t, a_t, r_t, s_{t+1})\}$$
+
+Buffer Staleness Problems:
+- Environmental data collection >> policy optimization speed
+- Stored trajectories don't reflect current policy distribution
+- Dynamic bootstrapping on out-of-distribution transitions
+- Rapid policy destabilization
+
+Mitigation:
+- TPDEB (Trajectory-level Prioritized Dual Experience Buffer)
+- Dual replay frameworks with prioritized sampling
+- Real-time buffer freshness monitoring
+- Synchronous training where possible
+
+DATA PREPROCESSING ANTIPATTERNS:
+
+Pandas Memory Misalignment:
+- Cython shift operations fail on bitwise boundaries
+- Catastrophic dtype coercion to generic objects
+- Chained fillna() operations propagate irregular pointers
+- Future state coercion into historical NaN boundaries
+
+Temporal Autoregressive Contamination:
+- Forward-filled NaN values create lookahead bias
+- Features map to future values before training
+- Silent data contamination pipeline
+- Absolute temporal leakage before algorithm processing
+
+Mitigation:
+- Explicit dtype preservation in shift operations
+- Boundary-aware fill operations
+- Temporal validation in preprocessing pipelines
+- Separate historical/future data handling
+
+HUGGINGFACE TRAINER MEMORY LEAKS:
+
+Distributed Evaluation OOM:
+- compute_metrics forces full logits accumulation across GPUs
+- Massive prediction logits consume VRAM
+- Evaluation speed drops logarithmically with paging
+- CUDA OOM exceptions during validation
+
+Workaround Consequences:
+- Artificially small evaluation batches
+- Unrepresentative validation sets
+- Dropped validation loops
+- Training without early stopping mechanisms
+- Heavy overfitting to training data
+
+Mitigation:
+- Streaming metric computation
+- Incremental evaluation without full accumulation
+- Memory-efficient metric calculation
+- Proper validation loop implementation
+
+FRAMEWORK-SPECIFIC VULNERABILITIES:
+
+PyTorch DistributedDataParallel:
+- Gradient accumulation bugs across processes
+- Synchronization barriers causing deadlocks
+- Inconsistent batch normalization statistics
+
+TensorFlow Distribution Strategy:
+- Variable initialization mismatches
+- Optimizer state synchronization failures
+- Checkpoint restoration inconsistencies
+
+JAX/Flax pmap:
+- Device memory fragmentation
+- Collective communication overhead
+- Sharding boundary conditions
+
+DETECTION METHODOLOGIES:
+
+Statistical Anomaly Detection:
+- Sudden accuracy spikes (>30% improvement)
+- Cross-validation variance analysis
+- Temporal consistency checks
+- Distribution shift monitoring
+
+Architectural Code Review:
+- Global aggregation before split detection
+- Buffer staleness identification
+- Data pipeline temporal validation
+- Memory leak pattern recognition
+
+Automated Testing:
+- Deterministic reproduction tests
+- Hardware nondeterminism validation
+- Distributed training consistency checks
+- Evaluation robustness verification
+
+CRITICAL THRESHOLDS:
+
+Temporal Leakage Detection:
+- >20% accuracy improvement indicates potential leakage
+- Cross-validation performance >2x standard deviation
+- Real-time deployment performance degradation >50%
+
+Buffer Staleness Metrics:
+- Policy update rate vs data collection rate ratio
+- Trajectory age distribution analysis
+- Q-value variance monitoring
+- Action entropy changes over time
+
+Memory Leak Indicators:
+- Evaluation time exponential growth
+- GPU memory utilization approaching 100%
+- Increasing paging activity
+- CUDA OOM frequency
+
+PREVENTION FRAMEWORKS:
+
+Deterministic Training Pipeline:
+1. Hardware specification standardization
+2. Fixed random seeds with synchronization
+3. Regular checkpoint validation
+4. Cross-node weight consistency checks
+
+Temporal Data Validation:
+1. Chronological boundary enforcement
+2. Future information filtering
+3. Local-only feature computation
+4. Temporal cross-validation design
+
+Memory Management:
+1. Streaming metric computation
+2. Incremental evaluation algorithms
+3. Memory-efficient data structures
+4. Garbage collection optimization
+
+Distributed System Monitoring:
+1. Real-time performance tracking
+2. Anomaly detection systems
+3. Automated failure recovery
+4. Consistency validation across nodes

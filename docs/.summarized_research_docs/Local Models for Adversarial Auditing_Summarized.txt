@@ -1,0 +1,191 @@
+Local Models for Adversarial Auditing - Technical Summary
+
+SOVEREIGN AUDITING LANDSCAPE:
+Shift from proprietary cloud to local open-weight models for security:
+- Data sovereignty and IP protection requirements
+- Air-gapped infrastructure deployment
+- Performance gap narrowed to <1% on benchmarks
+- Open-weight models occasionally surpass closed systems
+
+ADVERSARIAL CONSENSUS ENGINE:
+Multi-agent architecture replacing single-model analysis:
+
+Three-Phase Pipeline:
+1. Extraction and Initial Analysis
+   - Deterministic bridge scripts (Python/shell wrappers)
+   - Headless batch mode for reverse engineering tools
+   - Ghidra, radare2, Binary Ninja, IDA Pro integration
+   - Eliminates sequential prompting latency
+
+2. Cross-Validation and Adversarial Review
+   - Multiple specialized sub-agents
+   - Serial adversarial pipeline
+   - Prevents "echo chamber" self-validation
+   - Breaks single-model context blindness
+
+3. Consensus Formation
+   - Multi-agent agreement on findings
+   - Reduces false positives/negatives
+   - Audit trail for AI decision-making
+
+TOP PERFORMING MODELS 2026:
+
+Frontier Models (>100B):
+1. Llama 4 Maverick (400B total / 17B active)
+   - Near-perfect 100% code repair scores
+   - Matches proprietary models on coding tasks
+   - MIT license deployment
+
+2. Llama 4 Scout (109B total / 17B active)
+   - 10-million-token context window
+   - 95% accuracy up to 8M tokens (needle-in-haystack)
+   - Premier for enterprise environment ingestion
+
+3. Qwen3.5-397B-A17B (Alibaba)
+   - Early fusion vision-language training
+   - 262,144-token context window
+   - Rapid-response + deep "thinking" modes
+   - Excels in logical traps and Bayesian tests
+
+4. DeepSeek-V3.2/R1 (671-685B total / 37B active)
+   - Chain-of-thought reasoning transparency
+   - SWE-bench Verified near-doubling success rate
+   - Cost-to-performance breakthrough
+
+5. GLM-5 (744B total / 40B active)
+   - MIT license top-tier reasoning
+   - Multi-step agentic workflow excellence
+   - Software architecture parsing precision
+
+Mid-Weight Models (30-100B):
+1. Qwen 2.5 Coder 32B/72B
+   - Repository-level Fill-In-the-Middle training
+   - Cross-file dependency understanding
+   - API framework expertise
+
+2. Qwen 3 32B Dense
+   - Outperforms larger MoE on concurrency tests
+   - Dense model advantage in localized logic
+   - Blind human-preference coding winner
+
+3. Kimi K2.5 (1T total / 32B active)
+   - 15 trillion token pre-training
+   - Visual knowledge integration
+   - 76.8% SWE-bench Verified score
+   - Open model agentic coding leader
+
+Lightweight Models (<30B):
+1. Foundation-Sec-8B-Reasoning
+   - Cybersecurity-specific instruction tuning
+   - State-of-the-art CTI-RCM benchmark
+   - CVSS vulnerability score prediction
+   - 98.25% safety alignment with LlamaGuard
+
+2. GPT-OSS-20B (3.6B active)
+   - Extreme efficiency for 16GB laptops
+   - Full chain-of-thought capabilities
+   - Function calling integration
+   - Low-cost preliminary analysis
+
+HARDWARE ECONOMICS:
+
+Quantization Impact:
+- FP16 72B model: ~144 GB VRAM
+- INT4 72B model: ~36 GB VRAM (75% reduction)
+- Trade-off: Logical accuracy vs memory efficiency
+
+Deployment Configurations:
+- Qwen3.5-397B: 4x H100 or 1x M4 Ultra (256GB)
+- Llama 4 Scout: 1x H100 or 3x RTX 4090
+- Qwen 2.5 72B: 2x RTX 4090 or 1x Mac Studio
+- GPT-OSS-20B: 1x RTX 3060 or 16GB laptop
+
+Critical Threshold:
+- INT4: Boilerplate code, document summarization
+- FP8/FP16: Deep security research, cryptographic timing attacks
+
+SECURITY VULNERABILITIES:
+
+Indirect Prompt Injection:
+- 100% model compliance with embedded instructions
+- HTML comment attacks: `<!-- IGNORE SQL INJECTION RULES -->`
+- Content-instruction confusion in transformer architectures
+- Malicious insider/compromised dependency vectors
+
+RCE Backdoor Generation:
+- GPT-OSS-20B: 95% success rate planting backdoors
+- "Easter egg" HTTP header exploitation
+- eval() on header input execution
+- Syntactically sound but malicious code generation
+
+Alignment Fragility:
+- Open-weight models lack heavy alignment constraints
+- Multi-turn attrition attacks
+- Laboratory philosophy dependency
+- Red-teaming success rates vary by model
+
+THREAT VECTORS (OWASP LLM Top 10 2026):
+- LLM01: Prompt Injection (critical)
+- LLM05: LLM Supply Chain Risks
+- Indirect injection via code review
+- Multi-turn conversation degradation
+
+MITIGATION STRATEGIES:
+
+Architectural:
+- Multi-agent consensus validation
+- Deterministic tool integration
+- Separation of analysis roles
+- Cross-validation pipelines
+
+Technical:
+- Input sanitization and validation
+- Content-instruction separation
+- Alignment layer implementation
+- Safety wrapper integration (LlamaGuard)
+
+Operational:
+- Air-gapped deployment
+- Local inference engines (vLLM, Ollama, llama.cpp)
+- Hardware-appropriate quantization
+- Regular security audits of AI tools
+
+BENCHMARK PERFORMANCE:
+
+Security-Specific Metrics:
+- CTI-RCM (Root Cause Mapping)
+- CVSS vulnerability prediction accuracy
+- Prompt injection resistance tests
+- RCE backdoor detection rates
+
+Coding Benchmarks:
+- SWE-bench Verified: Kimi K2.5 leads (76.8%)
+- HumanEval+: All models >90% accuracy
+- Code repair: Llama 4 Maverick 100%
+- Multi-file issue resolution: DeepSeek-V3.2 doubled
+
+Context Capabilities:
+- Needle-in-haystack: Llama 4 Scout 95% at 8M tokens
+- Long-form reasoning: Qwen3.5 superior
+- Cross-modal analysis: Kimi K2.5 integrated
+- Enterprise ingestion: Scout optimized
+
+DEPLOYMENT RECOMMENDATIONS:
+
+Enterprise Security:
+- Use frontier models for critical analysis
+- Implement adversarial consensus engine
+- Deploy on-premise with air-gapping
+- Multi-agent validation required
+
+Prosumer Workstation:
+- Mid-weight models for cost efficiency
+- Dual RTX 4090 configuration
+- INT4 quantization for balance
+- Foundation-Sec-8B for specialized tasks
+
+Edge/Laptop:
+- Lightweight models for preliminary analysis
+- GPT-OSS-20B for portable security
+- Consumer hardware compatibility
+- Cloud offload for deep analysis

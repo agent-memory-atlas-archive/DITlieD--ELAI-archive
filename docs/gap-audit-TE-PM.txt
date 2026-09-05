@@ -1,0 +1,714 @@
+GAP AUDIT RESULTS: TOKEN EFFICIENCY [TE] + PIPELINE MODES [PM]
+Session: s-880832
+Date: 2026-04-15
+Design docs audited:
+  token-efficiency-design.txt
+  pipeline-modes-design.txt
+
+Existing steps used: A-32 through A-39 and A-41 (taken by PI/AS/RA/CC sessions).
+Available numbers for TE+PM: A-40, A-42, A-43, A-44, A-45, A-46, A-47, A-48.
+
+
+========================================================================
+SECTION 1: PATCH ITEMS FOR ALREADY-COMPLETED STEPS
+========================================================================
+
+These features are specified in the TE/PM design docs but were NOT included
+in the original A-10 and A-18 implementations. A single session should
+patch these into the existing code. These are NOT new steps — they are
+missing details from steps that already shipped.
+
+
+PATCH FOR A-10 (CONTEXT BUDGET ADAPTATION) — already implemented:
+
+  Missing feature 1: FULL 8-SLOT ALLOCATION TABLE PER TIER
+    The TE design (section 2) specifies exact token counts per slot per tier:
+      48GB (30K): System=330, Rules=500, Telescope=1500, RepoMap=3000,
+        CodeContext=10000, SSB=3000, GRC=2000, OutputReserve=512
+      12GB-7B (20K): System=330, Rules=400, Telescope=800, RepoMap=1500,
+        CodeContext=8000, SSB=1500, GRC=1000, OutputReserve=512
+      12GB-3B (35K): System=330, Rules=500, Telescope=1500, RepoMap=3000,
+        CodeContext=14000, SSB=3000, GRC=2000, OutputReserve=512
+      8GB (20K): System=200, Rules=300, Telescope=600, RepoMap=1500,
+        CodeContext=8000, SSB=1500, GRC=1000, OutputReserve=512
+    Verify these exact numbers are in the implementation. If A-10 used
+    generic percentages instead of per-tier absolute values, patch it.
+
+  Missing feature 2: TIER-SPECIFIC OUTPUT RESERVE
+    MICRO=750 tokens, LARGE=4000 tokens. OutputReserve is a hard minimum —
+    budget allocator must NEVER borrow from it for other slots.
+
+  Missing feature 3: TELESCOPE LAYER SKIPPING FOR MICRO
+    MICRO tier skips Layer 1 (project vision) and Layer 2 (concept summary).
+    Includes only Layer 3 (phase goal) and Layer 4 (step context).
+    Saves ~350 tokens. This requires A-36 (telescope types) to exist first,
+    so this may be a deferred integration point rather than a patch.
+
+  READ to verify: token-efficiency-design.txt sections 2 and 9.
+  CHECK: grep for SlotWeights or slot allocation in the codebase and
+    compare against the per-tier table above.
+
+
+PATCH FOR A-18 (REPAIR CONTEXT PROFILE) — already implemented:
+
+  Missing feature 1: 8-SLOT REPAIR_CONTEXT ALLOCATION
+    Total 1400 tokens: System=50, BabyStep=200, MistakeBook=150,
+    CodeContext=500, Example=300, Fix=100, Reserve=100.
+    Verify these exact slot sizes are in the implementation.
+
+  Missing feature 2: GENERATION PROFILE TYPE WITH 7 PROFILES
+    FIRST_ATTEMPT: temp=0.3, top_p=0.9
+    MICRO_REFLECTION: temp=0.3, top_p=0.9
+    INTERROGATION: temp=0.5, top_p=0.95
+    REPAIR_RETRY: temp=1.0, top_p=1.0 (prevents cyclic traps, FixAudit)
+    TREE_BRANCH_A: temp=0.7, top_p=0.95
+    TREE_BRANCH_B: temp=1.0, top_p=1.0
+    TREE_BRANCH_C: temp=0.3, top_p=0.9
+    Verify GenerationProfile enum/struct exists with all 7 variants and
+    their specific temperature/top-p values.
+
+  READ to verify: reasoning-architecture-design.txt COMPRESSED CONTEXT REPLAY
+    and GENERATION PARAMETERS sections. token-efficiency-design.txt section 5.
+
+
+========================================================================
+SECTION 2: NEW A-STEPS (insert into update-implementation-order.txt)
+========================================================================
+
+Insert after A-41 in GROUP A section.
+
+
+STEP A-40: MICRO PER-SLOT OPTIMIZATIONS [TE section 9]
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 9 (TOKEN AUDIT CHECKLIST: all 8 slots with MICRO vs LARGE
+       targets, rule priority filtering, SSB compression, GRC conclusion-only)
+    -> section 2 (effective context budget: 3B on 12GB gets MORE context than
+       7B — the tradeoff table)
+  READ: docs/specs/guide/steps/phase-3E.txt (current context budget allocator)
+  What: implement per-slot compression logic for MICRO tier in context
+        budget assembly. Each slot gets tier-specific assembly behavior:
+        Slot 1 (SystemPrompt): MICRO strips to role + output format + 3 rules
+          only. Removes "you are helpful" framing, moves examples to few-shot.
+          Target: 200 tokens for MICRO, 330 for LARGE.
+        Slot 2 (Rules): MICRO loads top 5 rules only, selected by recency
+          (last 3 baby steps), file relevance, and severity (CRITICAL first).
+          Compact DSL format, not natural language.
+          Target: 150 tokens for MICRO, 500 for LARGE.
+        Slot 3 (Telescope): MICRO skips Layers 1-2 (project vision, concept).
+          Target: 400 tokens for MICRO, 1000 for LARGE.
+        Slot 4 (RepoMap): MICRO OMITS entirely. Baby step already names exact
+          file and function. SMALL: top 10 symbols. MEDIUM+: full map.
+          Target: 0 for MICRO, 2000 for LARGE.
+        Slot 5 (CodeContext): MICRO max 3 snippets (edited function, one caller,
+          one similar). A-RAG compression more aggressive for MICRO.
+          Target: 1200 for MICRO, 6000 for LARGE.
+        Slot 6 (SSB): MICRO last 2 entries only, compressed format
+          ("prev_step: wrote fn X in file Y. Tests: 3/3 pass.").
+          Target: 200 for MICRO, 1500 for LARGE.
+        Slot 7 (GRC): MICRO last CONVERGE step only (conclusion, not chain).
+          Target: 100 for MICRO, 1000 for LARGE.
+        Slot 8 (OutputReserve): MICRO 750. LARGE 4000.
+  Touches: context_budget.rs (phase 3E), potentially rules/ (priority filtering)
+  Prerequisites: A-10 (context budget adaptation with ModelCapabilityProfile)
+  Estimated scope: ~300-400 LOC
+
+
+STEP A-42: TOKEN RECLAMATION TECHNIQUES [TE section 9]
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 9 (TOKEN RECLAMATION TECHNIQUES: 5 techniques, formatting removal
+       research grounding 24.5% savings, language-specific Python preservation)
+    -> section 9 (FORMATTING REMOVAL: 4 sub-points with implementation details,
+       output formatting restoration via tree-sitter)
+  READ: docs/specs/guide/steps/phase-3E.txt (context budget assembly pipeline)
+  What: implement 5 token reclamation techniques in context budget assembly:
+    1. FORMATTING REMOVAL (applied to CodeContext slot):
+       Strip leading/trailing whitespace per line, collapse multiple blank lines,
+       remove trailing comments that repeat the code.
+       PRESERVE: string literals, docstrings, significant indentation (Python).
+       Language-specific: Python preserves indentation. All others strip.
+       Research-grounded: 24.5% token reduction, zero accuracy degradation.
+    2. OUTPUT FORMATTING RESTORATION:
+       After LLM generates code, apply tree-sitter pretty-print to restore
+       proper indentation before writing to disk. Model generates minimally
+       formatted code, system restores deterministically.
+    3. PATH ABBREVIATION:
+       src/middleware/auth.rs -> middleware/auth.rs (strip common prefix).
+       Model can infer src/ from context.
+    4. IMPORT COLLAPSING:
+       Show as "// [12 imports]" with expand-on-request. Full imports waste
+       small model attention. Expand only if model requests specific import.
+    5. DEDUPLICATION:
+       If same type appears in 3 snippets, define it once with reference.
+       Use symbol names instead of full signatures when context is clear.
+  Touches: context_budget.rs (phase 3E assembly), orchestrator/ (output restoration)
+  Prerequisites: A-10 (context budget adaptation)
+  Estimated scope: ~250-350 LOC
+
+
+STEP A-43: ORACLE RESEARCH PIPELINE + TYPES [PM sections 3-6]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 3 (RESEARCH PIPELINE: all 7 phases A through G with full detail)
+    -> section 4 (what stops LLM from trusting bad sources: 5 enforcement levels)
+    -> section 5 (handling "I don't know": first-class output, user fallbacks)
+    -> section 6 (TYPES: ResearchQuery, SourceTier, SourceClassification,
+       ExtractedFact, VerificationLevel, VerifiedClaim, ResearchAnswer,
+       AnswerConfidence — all fields specified)
+  What: implement the Oracle Mode 7-phase research pipeline:
+    Phase A — QUERY FORMULATION (LLM): user question -> 2-4 search queries.
+      Structural rephrasing, not creative. Queries logged in SSB.
+    Phase B — SEARCH EXECUTION (deterministic): execute queries via WebSearch,
+      collect URLs + snippets, deduplicate by URL.
+    Phase C — SOURCE TIER CLASSIFICATION (deterministic, no LLM): classify
+      every URL against lookup table. LLM has ZERO input on tier assignment.
+      Uses source-tiers.toml from A-45.
+    Phase D — FACT EXTRACTION (LLM, constrained): extract ExtractedFact from
+      T1/T2 sources. EXACT QUOTE field is critical — prevents misrepresentation.
+      Facts without exact_quote = UNSUPPORTED (logged but not used).
+    Phase E — CROSS-VERIFICATION (deterministic): count supporting sources per
+      claim. VERIFIED (2+ T1/T2), SUPPORTED (1 T1/T2), WEAK (T3 only),
+      UNSUPPORTED (no exact quotes). Set intersection, not LLM reasoning.
+    Phase F — SYNTHESIS (LLM, constrained): receives ONLY ExtractedFacts,
+      not raw pages. Every sentence must cite a fact. Uncited sentences removed
+      by post-processing regex. Output: answer + evidence chain + confidence.
+    Phase G — POST-VERIFICATION (deterministic): 4 checks — citation completeness,
+      tier consistency, "I don't know" enforcement, hallucination guard.
+      Re-synthesis max 2 retries, then escalate with raw evidence chain.
+    Types: ResearchQuery, SourceTier (T1-T4), SourceClassification,
+      ExtractedFact (with exact_quote), VerificationLevel, VerifiedClaim,
+      ResearchAnswer (with confidence + caveats + unanswered_parts),
+      AnswerConfidence (HIGH/MEDIUM/LOW/UNKNOWN).
+    ~800-1200 LOC. Touches orchestrator/ and cli/.
+  Touches: orchestrator/ (research pipeline), cli/ (output formatting),
+    core/ (types)
+  Prerequisites: A-22 (RESEARCHING FSM state), A-45 (source-tiers.toml)
+  Estimated scope: ~800-1200 LOC
+
+
+STEP A-44: PROJECT INDEXING WIRING [PM section 1B]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 1B (PROJECT INDEXING: full flow from detection to indexing,
+       CURRENT IMPLEMENTATION GAP verification, 4 things that need to happen,
+       exclusion list, re-indexing, storage, incremental updates)
+  READ: docs/specs/guide/update-phase-map.txt
+    -> section 1: phase-3J.txt entry (IndexingService wiring)
+  READ: .elai_cc/crates/knowledge/src/lib.rs (DkgEngine, build_graph API)
+  READ: .elai_cc/crates/orchestrator/Cargo.toml (verify no knowledge dependency)
+  What: wire DKG + BM25 + vector indexing into the pipeline.
+    1. Add elai-knowledge dependency to orchestrator Cargo.toml
+    2. Create IndexingService that calls DkgEngine::new + build_graph +
+       BM25 indexing + vector embedding in sequence
+    3. On first /task in a directory with no .elai_cc/indexes/:
+       detect existing project (section 1 signals), ask user to confirm,
+       run IndexingService with progress output
+    4. Wire incremental updates: SSB file_write events trigger re-index
+       of only changed files via IndexingService
+    Exclusion list: node_modules/, target/, .git/, __pycache__/, dist/,
+      build/, .env, *.key, *.pem, credentials.*, secrets.*.
+      Binary detection: null bytes in first 8KB. .gitignore respected.
+      Configurable: elai_cc.toml [knowledge.exclude] patterns.
+    Storage: .elai_cc/indexes/ (DKG SQLite, tantivy dir, vector cache SQLite).
+    Re-indexing: schema version mismatch -> ask user, degrade to BM25_ONLY.
+  Touches: orchestrator/ (IndexingService, Cargo.toml), cli/ (first-run prompt)
+  Prerequisites: none (Phase 1A DKG exists, 3J.WIRE.E2E exists)
+  Estimated scope: ~200-300 LOC
+
+
+STEP A-45: SOURCE TIER CONFIG [PM section 3C]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 3C (SOURCE TIER CLASSIFICATION: 4-tier table with domain
+       examples, format of source-tiers.toml, lookup table design,
+       SourceTier enum, SourceClassification struct, classification_method)
+  What: create source-tiers.toml config file and SourceTier lookup system.
+    1. Config file: .elai_cc/config/source-tiers.toml with 4 sections:
+       [tier1] domains + patterns (official docs, standards, academic, source code)
+       [tier2] domains + patterns (MDN, StackOverflow score>20, established blogs)
+       [tier3] implicit default for unknown domains
+       [tier4_blocklist] domains + patterns (SEO spam, AI content farms)
+       Ship with ~200 classified domains as defaults.
+    2. SourceTier enum: T1_AUTHORITATIVE, T2_STRONG, T3_WEAK, T4_REJECTED.
+    3. SourceClassification struct: url, domain, tier, classification_method
+       (EXACT_DOMAIN / PATTERN / DEFAULT).
+    4. classify_source(url) -> SourceClassification function.
+       Domain extraction, exact match first, pattern match second, DEFAULT=T3.
+    5. Loaded at startup, cached in memory. Config reload without rebuild.
+  Touches: core/ (types), config/ (new file), orchestrator/ (config loading)
+  Prerequisites: none (standalone config + types)
+  Estimated scope: ~200-300 LOC
+
+
+STEP A-46: CONTEXT TELESCOPE TYPES [PM telescope section + TE section 9]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> CONTEXT TELESCOPE section (all 5 layers, vertical context, horizontal
+       context, surgical mode telescope, types section 6)
+    -> section 6 (ContextTelescope type, BoundedString<N> newtype)
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 9 Slot 3 (telescope sizing per tier)
+    -> STEP FILES REQUIRING UPDATES items 3-4 (phase-3E and phase-3G updates)
+  READ: docs/specs/guide/steps/phase-3G.txt (plan management, PhaseEntry, tree nodes)
+  READ: docs/specs/guide/steps/phase-3E.txt (context budget, Slot 3)
+  What: implement Context Telescope types and tree node summary fields.
+    1. BoundedString<const N: usize> newtype: wraps String, rejects inputs
+       exceeding N tokens at construction via TokenCounter trait.
+       TooLong error type.
+    2. ContextTelescope struct: project_vision (BoundedString<200>),
+       concept_summary (BoundedString<150>), phase_goal (BoundedString<100>),
+       step_context (BoundedString<100>).
+       Methods: from_tree(tree, baby_step_id) walks up DecompositionTree
+       collecting ancestor summaries. render() -> String for prompt injection.
+       token_estimate() -> usize for budget allocation.
+    3. Add summary: BoundedString<N> field on PhaseEntry, ConceptNode, StepNode
+       in plan management types (Phase 3G). Summary is written by decomposer
+       at node creation, frozen in tree struct, never regenerated.
+    4. Update Slot 3 sizing in context budget allocator from ~250-600 tokens
+       to ~550-1050 tokens (telescope content).
+    5. Surgical mode telescope: shallower (3 layers instead of 5). Layer 1
+       auto-generated from DKG concept annotations. Layer 2 from blast radius.
+       Layer 3 = step task. Total ~400-900 tokens.
+  Touches: core/ (BoundedString, ContextTelescope), orchestrator/ (plan types),
+    context_budget.rs (Slot 3 sizing)
+  Prerequisites: none (Phase 3G and 3E exist)
+  Estimated scope: ~300-400 LOC
+
+
+STEP A-47: /RESEARCH CLI COMMAND + FALLBACK CLASSIFIER [PM section 1]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> section 1 (TRIGGER/ROUTING: /research and /ask commands, fallback
+       classifier with HAS_PROJECT_REF / NO_CODE_INTENT rules, classification
+       regex, route table)
+    -> INTEGRATION section item 1 (CLI CHANGES)
+  What: implement /research CLI command and enhanced fallback classifier.
+    1. /research <question> command: routes to Oracle Mode (RESEARCHING state).
+       /ask <question> alias.
+    2. Fallback classifier enhancement (deterministic regex, no LLM):
+       HAS_PROJECT_REF = message references file/function/module in DKG index.
+       HAS_ACTION_VERB = implement/fix/add/create/modify/refactor/build/write.
+       HAS_QUESTION = contains ? or starts with how/what/why/when/does/is/can.
+       NO_CODE_INTENT = not "make it"/"change"/"update the code".
+       Route: action -> /task, project_ref+question -> /explore,
+         question+no_code+no_ref -> /research, default -> /task.
+    3. --surgical and --new flags on /task command.
+  Touches: cli/ (command routing, fallback classifier)
+  Prerequisites: A-22 (RESEARCHING FSM state), A-43 (Oracle research pipeline)
+  Estimated scope: ~150-250 LOC
+
+
+STEP A-48: DKG DATA FLOW EDGES [PM KNOWLEDGE ARCHITECTURE GAP 1]
+  READ: docs/specs/guide/pipeline-modes-design.txt
+    -> KNOWLEDGE ARCHITECTURE ASSESSMENT section GAP 1 (data flow tracking,
+       dkg_data_flow table schema, flow_type enum, tree-sitter extraction,
+       arxiv 2512.08492: 87% vs 56% resolution rate)
+    -> STEP FILES REQUIRING UPDATES item 1 (phase-1A.txt, HIGH priority)
+  READ: docs/specs/guide/steps/phase-1A.txt (current DKG implementation)
+  What: add data flow edges to DKG for surgical mode blast radius improvement.
+    1. New SQLite table: dkg_data_flow (source_node_id INTEGER REFERENCES
+       dkg_nodes, target_node_id INTEGER REFERENCES dkg_nodes,
+       variable_name TEXT, flow_type TEXT CHECK(flow_type IN
+       ('PARAMETER','RETURN','ASSIGNMENT','FIELD_ACCESS'))).
+    2. FlowType enum: PARAMETER, RETURN, ASSIGNMENT, FIELD_ACCESS.
+    3. Tree-sitter extraction during existing parse step:
+       - Parameter: fn foo(x) called with foo(my_var) -> edge
+       - Return: let result = foo() -> edge from foo return to result
+       - Assignment: x = y -> edge
+       - Field access: obj.field -> edge from obj to field
+    4. Edges are HEURISTIC enrichment, not hard gates. Cannot track closures,
+       dynamic dispatch, complex control flow, macros.
+    5. Optional: line-level def-ref edges behind cfg(feature="line_level").
+  Touches: knowledge/ (schema migration, DKG parsing extension, types)
+  Prerequisites: none (Phase 1A DKG exists)
+  Estimated scope: ~300-400 LOC
+
+
+========================================================================
+SECTION 3: DESIGN ADDITIONS TO PHASE 4 (TE + PM items to ADD)
+========================================================================
+
+These items need to be ADDED to existing "DESIGN ADDITIONS TO 4X" sections.
+Some [TE] and [PM] items are already present. Only NEW additions listed.
+
+
+ADD TO "DESIGN ADDITIONS TO 4B":
+  [PM] DKG query tools exposed via IPC: dkg_callers(symbol),
+    dkg_dependents(symbol), dkg_data_flow(variable, direction),
+    dkg_subgraph(entry_point, depth)
+  [PM] Integration wiring check tool: DKG reachability from entry point,
+    grep fallback, import chain check. Orphaned code detection.
+
+ADD TO "DESIGN ADDITIONS TO 4G":
+  [TE] Model swap protocol with 6 strategies (single model default for 12GB,
+    predictive preloading for 24GB+, overlap with deterministic work)
+  [TE] PredictiveLoader type (next_model, preload_state, mmap_handle)
+  [PM] Blast radius thresholds in EscalationPolicy:
+    autonomous_confirm_above_loc (default 1000),
+    autonomous_refuse_above_loc (default 5000)
+
+
+========================================================================
+SECTION 4: DEPENDENCY GRAPH ADDITIONS
+========================================================================
+
+New edges:
+
+  A-10 (done) ──> A-40 (MICRO per-slot)
+  A-10 (done) ──> A-42 (token reclamation)
+  A-22 (done) + A-45 ──> A-43 (Oracle pipeline)
+  A-22 (done) + A-43 ──> A-47 (/research CLI)
+
+  A-44 — independent (Phase 1A DKG + 3J.WIRE.E2E exist)
+  A-45 — independent (standalone config + types)
+  A-46 — independent (Phase 3G + 3E exist)
+  A-48 — independent (Phase 1A DKG exists)
+
+
+========================================================================
+SECTION 5: PARALLELISM UPDATES
+========================================================================
+
+Add to parallel set 1 (no dependencies, can start immediately):
+  A-44 + A-45 + A-46 + A-48
+
+Add to parallel set 4 (after A-10 done):
+  A-40 + A-42 (MICRO per-slot + token reclamation, independent of each other)
+
+New parallel set (after A-45 done):
+  A-43 (Oracle pipeline — needs A-22 done + A-45)
+
+Sequential after A-43:
+  A-47 (/research CLI — needs A-43)
+
+
+========================================================================
+SECTION 6: SCOPE UPDATE
+========================================================================
+
+New steps added by this audit: 8 (A-40, A-42, A-43, A-44, A-45, A-46, A-47, A-48)
+Patch items for completed steps: 2 (A-10, A-18 — verify and fix, not new steps)
+
+New LOC estimate for TE+PM:
+  A-40: ~300-400 LOC (MICRO per-slot)
+  A-42: ~250-350 LOC (token reclamation)
+  A-43: ~800-1200 LOC (Oracle pipeline)
+  A-44: ~200-300 LOC (indexing wiring)
+  A-45: ~200-300 LOC (source tier config)
+  A-46: ~300-400 LOC (telescope types)
+  A-47: ~150-250 LOC (CLI + classifier)
+  A-48: ~300-400 LOC (DKG data flow)
+  Total new: ~2500-3600 LOC across 8 steps
+
+Updated grand total for Group A: 48 steps (A-1/A-3 DONE), ~11500-16100 LOC
+
+
+========================================================================
+SECTION 7: STEP PROMPTS (append to step-prompts.txt)
+========================================================================
+
+
+------------------------------------------------------------------------
+STEP A-40: MICRO PER-SLOT OPTIMIZATIONS
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 9 (TOKEN AUDIT CHECKLIST: all 8 slots with MICRO vs LARGE
+    targets, per-slot compression rules, rule priority filtering logic,
+    SSB compression format, GRC conclusion-only for MICRO)
+  section 2 (effective context budget per tier — understand the tradeoff:
+    3B on 12GB gets MORE context than 7B on 12GB, 35K vs 20K)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3E.txt
+  (current context budget allocator — understand existing slot assembly)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/src/ (find context_budget.rs or equivalent)
+  - grep for "SlotWeights" or "context_budget" or "CodeContext" in .elai_cc/crates/
+  - read the slot assembly pipeline to understand how slots are populated
+
+task: implement step A-40 — add per-slot compression logic for MICRO tier
+in context budget assembly. 8 slots each get tier-specific assembly:
+  SystemPrompt: MICRO=200 tokens (role + format + 3 rules only)
+  Rules: MICRO=150 tokens (top 5 by recency + file relevance + severity)
+  Telescope: MICRO=400 tokens (skip Layers 1-2, keep Layers 3-4)
+  RepoMap: MICRO=0 (omitted entirely, baby step names exact target)
+  CodeContext: MICRO=1200 tokens (max 3 snippets, aggressive A-RAG)
+  SSB: MICRO=200 tokens (last 2 entries, compressed format)
+  GRC: MICRO=100 tokens (last CONVERGE conclusion only)
+  OutputReserve: MICRO=750 tokens (one function + test + JSON)
+~300-400 LOC.
+
+wire it in: tier-specific assembly must be selected based on
+ModelCapabilityProfile.tier from A-10. MICRO path must produce
+valid prompts that stay within attention ceiling.
+
+prerequisite: A-10 (context budget adaptation with ModelCapabilityProfile).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-42: TOKEN RECLAMATION TECHNIQUES
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 9 (TOKEN RECLAMATION TECHNIQUES: 5 techniques, formatting removal
+    research grounding 24.5% savings, language-specific Python preservation)
+  section 9 (FORMATTING REMOVAL: 4 implementation sub-points, Python
+    indentation preservation, output formatting restoration via tree-sitter)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3E.txt
+  (context budget assembly pipeline)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/src/ (context assembly code)
+  - .elai_cc/crates/knowledge/src/ (tree-sitter infrastructure for restoration)
+  - grep for "CodeContext" or "slot.*assembly" or "context.*build" in .elai_cc/
+
+task: implement step A-42 — 5 token reclamation techniques in context
+budget assembly:
+  1. FORMATTING REMOVAL on CodeContext: strip whitespace, collapse blanks,
+     remove redundant comments. Python preserves indentation. Others strip.
+  2. OUTPUT FORMATTING RESTORATION: tree-sitter pretty-print after LLM
+     generates minimally formatted code.
+  3. PATH ABBREVIATION: strip common src/ prefix from file paths.
+  4. IMPORT COLLAPSING: show as "// [N imports]" with expand-on-request.
+  5. DEDUPLICATION: same type in multiple snippets defined once.
+~250-350 LOC.
+
+wire it in: reclamation applied during context assembly (before token counting).
+Must not break Python code (indentation-sensitive).
+Verify with measurement: compare token count before/after reclamation.
+
+prerequisite: A-10 (context budget adaptation).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-43: ORACLE RESEARCH PIPELINE + TYPES
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  section 3 (RESEARCH PIPELINE: all 7 phases A through G with full protocol)
+  section 4 (5 levels preventing LLM from trusting bad sources)
+  section 5 (handling "I don't know" as first-class output)
+  section 6 (TYPES: ResearchQuery, SourceTier, SourceClassification,
+    ExtractedFact with exact_quote, VerificationLevel, VerifiedClaim,
+    ResearchAnswer with confidence, AnswerConfidence enum)
+
+F:\.ELAI_workflow\docs\specs\guide\update-phase-map.txt
+  section 4 (pipeline-modes entries for 4D-ORACLE)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/src/ (find FSM, RESEARCHING state from A-22)
+  - .elai_cc/crates/core/src/ (type patterns for new types)
+  - grep for "RESEARCHING" or "WebSearch" or "research" in .elai_cc/crates/
+
+task: implement step A-43 — the Oracle Mode 7-phase research pipeline.
+  Phase A: query formulation (LLM, 2-4 search queries, logged in SSB)
+  Phase B: search execution (deterministic, WebSearch, dedup by URL)
+  Phase C: source tier classification (deterministic lookup from A-45 config)
+  Phase D: fact extraction (LLM, structured ExtractedFact with exact_quote)
+  Phase E: cross-verification (deterministic set intersection on claims)
+  Phase F: synthesis (LLM, constrained to ExtractedFacts only, citations required)
+  Phase G: post-verification (4 deterministic checks, max 2 re-synthesis retries)
+  Types: ResearchQuery, SourceTier, SourceClassification, ExtractedFact,
+    VerificationLevel, VerifiedClaim, ResearchAnswer, AnswerConfidence.
+  "I don't know" is a valid output when 0 VERIFIED + 0 SUPPORTED facts.
+~800-1200 LOC.
+
+wire it in: pipeline runs inside RESEARCHING FSM state from A-22.
+Source tier classification uses config from A-45. Pipeline returns
+ResearchAnswer to CLI for display. SSB records all research activity.
+
+prerequisite: A-22 (RESEARCHING FSM state), A-45 (source-tiers.toml config).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-44: PROJECT INDEXING WIRING
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  section 1B (PROJECT INDEXING: full flow, CURRENT IMPLEMENTATION GAP with
+    grep verification, 4 things that need to happen, exclusion list,
+    incremental updates, storage, re-indexing degradation)
+
+F:\.ELAI_workflow\docs\specs\guide\update-phase-map.txt
+  section 1: phase-3J.txt entry (IndexingService wiring gap)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/src/lib.rs (DkgEngine API, build_graph)
+  - .elai_cc/crates/knowledge/examples/measure.rs (the only current caller)
+  - .elai_cc/crates/orchestrator/Cargo.toml (verify no knowledge dependency)
+  - grep for "DkgEngine" in .elai_cc/crates/ (confirm gap: ZERO calls in
+    orchestrator or cli)
+  - grep for "EmptyDkgQuerier" in .elai_cc/ (current fallback)
+
+task: implement step A-44 — wire DKG + BM25 + vector indexing into pipeline.
+  1. Add elai-knowledge dependency to orchestrator/Cargo.toml
+  2. Create IndexingService: calls DkgEngine::new + build_graph + BM25
+     indexing + vector embedding in sequence
+  3. First /task trigger: detect existing project, ask user, run indexing
+     with progress output. Store in .elai_cc/indexes/.
+  4. Incremental updates: SSB file_write events trigger re-index of
+     changed files only.
+  Exclusion: node_modules/, target/, .git/, __pycache__/, dist/, build/,
+    .env, *.key, *.pem. Binary: null bytes in first 8KB.
+    .gitignore respected. Configurable via elai_cc.toml [knowledge.exclude].
+~200-300 LOC.
+
+wire it in: IndexingService must be called from CLI on first /task.
+Must replace EmptyDkgQuerier with real DkgQuerierAdapter when indexes exist.
+This is the critical gap blocking surgical mode and oracle mode context.
+
+prerequisite: none (Phase 1A DKG and 3J.WIRE.E2E exist).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-45: SOURCE TIER CONFIG
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  section 3C (SOURCE TIER CLASSIFICATION: full 4-tier table with domain
+    examples, format of source-tiers.toml, lookup table design,
+    SourceTier enum, SourceClassification struct, classification_method)
+
+then read the current source:
+  - .elai_cc/config/ (existing config files)
+  - grep for "SourceTier" or "source.*tier" in .elai_cc/
+  - .elai_cc/crates/core/src/ (type patterns)
+
+task: implement step A-45 — source-tiers.toml config and lookup system.
+  1. .elai_cc/config/source-tiers.toml with ~200 classified domains.
+  2. SourceTier enum: T1_AUTHORITATIVE, T2_STRONG, T3_WEAK, T4_REJECTED.
+  3. SourceClassification struct: url, domain, tier, classification_method.
+  4. classify_source(url) function: domain extract, exact/pattern/default.
+  5. Loaded at startup, cached, reloadable without rebuild.
+~200-300 LOC.
+
+wire it in: must be loadable by A-43 (Oracle pipeline) at runtime.
+
+prerequisite: none (standalone config + types).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-46: CONTEXT TELESCOPE TYPES
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  CONTEXT TELESCOPE section (all 5 layers: project vision 200 tokens,
+    concept summary 150 tokens, phase goal 100 tokens, step context 100 tokens,
+    baby step task 200-500 tokens)
+  section 6 (ContextTelescope type, BoundedString<N> newtype, from_tree method)
+
+F:\.ELAI_workflow\docs\specs\guide\token-efficiency-design.txt
+  section 9 Slot 3 (telescope sizing: MICRO=400, LARGE=1000)
+  STEP FILES REQUIRING UPDATES items 3-4 (phase-3E and phase-3G changes)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3G.txt
+  (plan management: PhaseEntry, tree node types)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-3E.txt
+  (context budget: Slot 3 sizing)
+
+then read the current source:
+  - .elai_cc/crates/orchestrator/src/ (find plan management types)
+  - .elai_cc/crates/core/src/ (type patterns)
+  - grep for "PhaseEntry" or "PlanSkeleton" or "ConceptNode" in .elai_cc/
+
+task: implement step A-46 — Context Telescope types and tree node summaries.
+  1. BoundedString<const N: usize>: newtype, rejects >N tokens. TooLong error.
+  2. ContextTelescope struct: project_vision<200>, concept_summary<150>,
+     phase_goal<100>, step_context<100>. from_tree(), render(), token_estimate().
+  3. Add summary: BoundedString<N> to PhaseEntry, ConceptNode, StepNode.
+  4. Update Slot 3 sizing from ~250-600 to ~550-1050 tokens.
+  5. Surgical mode: 3 layers, ~400-900 tokens.
+~300-400 LOC.
+
+wire it in: ContextTelescope assembled during Slot 3 budget allocation.
+BoundedString enforces limits at construction. Tree nodes must populate summaries.
+
+prerequisite: none (Phase 3G and 3E exist).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-47: /RESEARCH CLI COMMAND + FALLBACK CLASSIFIER
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  section 1 (TRIGGER/ROUTING: /research and /ask commands, fallback
+    classifier regex, HAS_PROJECT_REF/NO_CODE_INTENT, route table)
+  INTEGRATION section item 1 (CLI CHANGES)
+
+then read the current source:
+  - .elai_cc/crates/cli/src/ (command routing, existing /explore)
+  - grep for "explore" or "command" or "route" in .elai_cc/crates/cli/
+
+task: implement step A-47 — /research CLI command and enhanced classifier.
+  1. /research <question> routing to RESEARCHING state. /ask alias.
+  2. Fallback classifier (deterministic regex):
+     HAS_PROJECT_REF, HAS_ACTION_VERB, HAS_QUESTION, NO_CODE_INTENT.
+     Route: action->/task, ref+question->/explore, question+no_code->/research.
+  3. --surgical and --new flags on /task.
+~150-250 LOC.
+
+wire it in: /research routes through A-22 RESEARCHING state to A-43 pipeline.
+Classifier checks DKG for project refs (graceful fallback when no index).
+
+prerequisite: A-22 (RESEARCHING state), A-43 (Oracle pipeline).
+
+[APPEND COMMON FOOTER]
+
+
+------------------------------------------------------------------------
+STEP A-48: DKG DATA FLOW EDGES
+------------------------------------------------------------------------
+
+read these files:
+
+F:\.ELAI_workflow\docs\specs\guide\pipeline-modes-design.txt
+  KNOWLEDGE ARCHITECTURE ASSESSMENT GAP 1 (dkg_data_flow table, flow_type
+    enum, tree-sitter extraction, arxiv 2512.08492: 87% vs 56%)
+  STEP FILES REQUIRING UPDATES item 1 (phase-1A.txt, HIGH priority)
+
+F:\.ELAI_workflow\docs\specs\guide\steps\phase-1A.txt
+  (current DKG: schema, parsing, LanguageGrammar trait)
+
+then read the current source:
+  - .elai_cc/crates/knowledge/src/ (DkgEngine, schema, tree-sitter parsing)
+  - grep for "dkg_edges" in .elai_cc/crates/knowledge/ (existing edge schema)
+
+task: implement step A-48 — add data flow edges to DKG.
+  1. SQLite table: dkg_data_flow(source_node_id, target_node_id,
+     variable_name, flow_type). FK to dkg_nodes.
+  2. FlowType: PARAMETER, RETURN, ASSIGNMENT, FIELD_ACCESS.
+  3. Tree-sitter extraction: parameter passing, return values,
+     assignment, field access.
+  4. Heuristic enrichment, not hard gates. Cannot track closures/dispatch/macros.
+  5. Optional: line-level def-ref behind cfg(feature="line_level").
+~300-400 LOC.
+
+wire it in: populated during DkgEngine::build_graph. Must not slow
+build_graph >20%. Queryable via SQLite for blast radius analysis.
+
+prerequisite: none (Phase 1A DKG exists).
+
+[APPEND COMMON FOOTER]

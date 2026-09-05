@@ -54,7 +54,7 @@ echo        positioning + sources documented in .elai_cc\README.md.
 echo.
 echo  ELAI launch mode:
 echo   [1] Local sidecar  (default - dashboard via local Python sidecar)
-echo   [2] Remote sidecar (friend's GPU box at 192.0.2.10 + dashboard)
+echo   [2] Remote sidecar (remote GPU server at 192.0.2.10 + dashboard)
 echo   [3] REPL           (no dashboard - terminal interactive, local sidecar)
 echo   [4] UI dev         (Vite dev server only - design preview)
 echo   [5] Cloud          (Anthropic Sonnet/Opus via OAuth - no sidecar)

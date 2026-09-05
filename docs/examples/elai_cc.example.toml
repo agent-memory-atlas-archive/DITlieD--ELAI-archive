@@ -1,0 +1,66 @@
+# elai_cc.example.toml — example project configuration for ELAI context artifacts.
+#
+# Place as <project-root>/.elai/config.toml (or pass --config to the CLI).
+# Each [[knowledge.artifacts]] block defines one artifact the AI reads before
+# answering questions about your codebase. The "description" field is injected
+# verbatim into the AI's context briefing — write it as a directive:
+# "Check this before making changes to X."
+
+[knowledge]
+# Optional: override the default context artifact DB path.
+# Default: <project-root>/.elai/context.db
+# db_path = ".elai/context.db"
+
+# ---------------------------------------------------------------------------
+# SQL schema — database contract the AI must respect before generating queries
+# ---------------------------------------------------------------------------
+[[knowledge.artifacts]]
+name        = "sql-schema"
+path        = "db/schema.sql"
+description = "Canonical PostgreSQL schema. Check this before generating any SQL query or migration — all table/column names and constraints are defined here. Never invent column names."
+artifact_type = "sql-schema"
+
+# ---------------------------------------------------------------------------
+# OpenAPI specification — REST API contract
+# ---------------------------------------------------------------------------
+[[knowledge.artifacts]]
+name        = "openapi-spec"
+path        = "docs/api/openapi.yaml"
+description = "OpenAPI 3.1 specification for the public REST API. Check this before generating endpoint code or client calls — all routes, request/response shapes, and auth schemes are defined here."
+artifact_type = "openapi"
+
+# ---------------------------------------------------------------------------
+# Kubernetes manifests — deployment topology the AI must understand
+# ---------------------------------------------------------------------------
+[[knowledge.artifacts]]
+name        = "k8s-manifests"
+path        = "infra/k8s"
+description = "Kubernetes deployment manifests for all services. Check this before generating infrastructure code or recommending resource limits — actual memory/CPU requests, replicas, and service mesh config are here."
+artifact_type = "markdown"
+
+# ---------------------------------------------------------------------------
+# Terraform config — cloud infrastructure as code
+# ---------------------------------------------------------------------------
+[[knowledge.artifacts]]
+name        = "terraform-modules"
+path        = "infra/terraform"
+description = "Terraform modules defining cloud resources (VPC, RDS, S3, IAM). Check this before recommending cloud resource changes — naming conventions, tagging strategy, and module interfaces are here."
+artifact_type = "toml"
+
+# ---------------------------------------------------------------------------
+# Architecture Decision Records — past decisions the AI must not contradict
+# ---------------------------------------------------------------------------
+[[knowledge.artifacts]]
+name        = "adrs"
+path        = "docs/adrs"
+description = "Architecture Decision Records (ADRs). Check this before proposing structural changes — rejected alternatives and their rationale are documented to avoid repeating past mistakes."
+artifact_type = "markdown"
+
+# ---------------------------------------------------------------------------
+# Domain glossary — ubiquitous language for this project
+# ---------------------------------------------------------------------------
+[[knowledge.artifacts]]
+name        = "domain-glossary"
+path        = "docs/glossary.md"
+description = "Domain glossary defining project-specific terms (e.g. 'Order', 'Fulfillment', 'Shipment'). Use these exact terms in generated code and comments — consistency with the domain model is required."
+artifact_type = "markdown"

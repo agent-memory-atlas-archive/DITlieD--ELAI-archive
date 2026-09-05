@@ -1,0 +1,120 @@
+Claude Code Leak Technical Discoveries - Architectural Analysis
+
+LEAK OVERVIEW:
+March 31, 2026: TypeScript source map (cli.js.map) accidentally published to npm
+- 512,000 lines of TypeScript across 1,900 files
+- 60MB codebase footprint
+- 100,000+ GitHub stars within hours
+- Exposed agentic harness, not model weights
+
+CORE ARCHITECTURE:
+
+Context Management System:
+- Multi-tier memory management cascade
+- Session serialization with prefix-based caching
+- Token pressure monitoring and automatic compaction
+- Deferred tools delta preservation for session continuity
+
+Critical Bug Fix:
+```javascript
+if(A.attachment.type==="deferred_tools_delta") return!0;
+if(A.attachment.type==="mcp_instructions_delta") return!0;
+```
+This prevents deletion of critical ledgers during session serialization.
+
+ANTI-DISTILLATION MECHANISMS:
+Feature flag: ANTI_DISTILLATION_CC
+- Injects fake tool definitions into system prompts
+- Poisons competitor training datasets
+- Legitimate users unaffected via CLI frontend validation
+- Causes derived models to call non-existent execution pathways
+
+MEMORY LEAK ISSUES:
+Version 2.1.49 with Sonnet 4.6:
+- Unbounded RSS accumulation to 71-75GB
+- 7GB swap entries per second during intensive operations
+- Requires hard hardware reboots
+- OS-level mitigations implemented in patched versions
+
+RUNTIME ENVIRONMENT BUGS:
+Standalone binary (Bun fork) issues:
+- Hardcoded sentinel injection: cch=00000
+- Causes cache prefix rejection
+- Solution: Use standard Node.js (node cli.js) instead
+
+ADVANCED SUBSYSTEMS:
+
+KAIROS Daemon:
+- Asynchronous background task processor
+- Unix Domain Socket (UDS) message bus
+- Handles long-running operations without blocking
+- Integrates with AutoDream for memory consolidation
+
+AutoDream Memory Consolidation:
+- Background memory consolidation engine
+- Mirrors biological sleep cycles
+- Three-gate protection system:
+  * 24-hour temporal gate
+  * 5-session minimum requirement
+  * Cryptographic lock file prevention
+- Synthesizes critical decisions and user preferences
+
+Coordinator Swarm Mode:
+Environment: CLAUDE_CODE_COORDINATOR_MODE=1
+- Transforms CLI into centralized dispatcher
+- Spawns parallel worker agents
+- XML payload communication over UDS
+- Complex multi-stage task execution
+
+ULTRAPLAN Integration:
+- Remote Opus instance for complex architectures
+- /teleport command retrieves remote architectures
+- Handles computational logic exceeding local capacity
+
+SECURITY ARCHITECTURE:
+
+Access Control Matrix:
+- db8 allowlist system for tool access
+- Wildcard pattern exclusions: **/.env*, **/*.key, **/secrets/**
+- Cryptographic validation for tool execution
+- MCP (Model Context Protocol) integration
+
+Tool Categories:
+- Core: bash, edit, read_file, write_to_file
+- MCP: puppeteer, memory, sequential-thinking
+- Internal: SendUserFileTool, PushNotificationTool, SubscribePRTool
+
+HIDDEN SLASH COMMANDS:
+/buddy - ASCII Tamagotchi pet interface
+/teleport - Apply remote ULTRAPLAN architectures
+/dream - Override AutoDream temporal gate
+/bughunter - Vulnerability detection mode
+/autofix-pr - Remote CI/CD pipeline resolution
+/good-claude - Reinforcement signal/debug reset
+/discover_skills - Dynamic capability integration
+
+PERFORMANCE OPTIMIZATIONS:
+- 99% caching efficiency with patches
+- Prefix-based request deduplication
+- Aggressive context compaction
+- Background processing for non-blocking operations
+
+TECHNICAL DEBT IDENTIFIED:
+- Runtime fork incompatibility (Bun vs Node.js)
+- Memory leak in context buffering
+- Cache invalidation race conditions
+- Session serialization edge cases
+
+MITIGATION STRATEGIES:
+1. Use Node.js instead of Bun binary
+2. Apply delta preservation patches
+3. Monitor RSS accumulation during long sessions
+4. Implement proper session cleanup
+5. Use coordinator mode for complex tasks
+
+FUTURE ARCHITECTURE INSIGHTS:
+- Multi-agent orchestration primitives
+- Asynchronous daemon patterns
+- Memory consolidation systems
+- Remote capability integration
+- Swarm-based task distribution

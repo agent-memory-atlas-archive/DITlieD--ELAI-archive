@@ -1,0 +1,492 @@
+PHASE 3B: SSB (SHARED STATE BOARD)
+Prerequisites: Phase 3A complete (full FSM with all 9 states, evidence gates, INTERACTIVE gating)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Inter-agent communication via SQLite WAL with single-writer guarantee.
+All agent writes go through SSB. Append-only within session.
+SSB is the backbone for inter-agent state: every tool result, finding, claim,
+checkpoint, and phase transition is recorded here. Downstream phases (1C vector
+cache invalidation, 3C agent system, 3D BSP supersteps, 3E context budget) all
+depend on the interface defined here.
+
+A single Ssb instance is permanently bound to one (project_id, session_id) pair.
+Multi-session scenarios (e.g., Phase 3D superstep replay from a different session)
+require a new Ssb instance. This is by design: prevents agent forgery of these fields.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          Section 3 (SSB schema, single-writer, channels)
+  docs/specs/crates/orchestrator.txt          Section 5 (channel types — LastValue, Topic, Ephemeral, Untracked)
+  docs/specs/crates/orchestrator.txt          Section 6 (context budget allocator — SSB slot, file_overlap_score)
+  docs/specs/crates/orchestrator.txt          Section 7A (reasoning trace — action_type='reasoning_trace')
+  docs/specs/crates/core.txt                  Lines 68-82 (ClockProvider trait, RuntimeContext)
+  docs/specs/decisions/audit-results.txt      BLOCK 1 (SQLite WAL single-writer fix)
+  docs/specs/decisions/audit-results.txt      BLOCK 5 (multi-project isolation, project_id namespace)
+  docs/specs/decisions/audit-results.txt      BLOCK 8 (typed action_type enum, ssb_files junction)
+  docs/specs/decisions/audit-results-phase4.txt  WARN-6 (IPC sync — SSB write synchronous with ToolResult dispatch)
+  docs/specs/decisions/risk-register.txt      R10 (SSB write throughput ceiling)
+  docs/specs/architecture-overview.txt        SSB references (simulation-testable, append-only)
+
+RISKS TO WATCH
+  R10: SSB write throughput ceiling.
+    Claim: 50K inserts/sec. Verified: 80K achievable with optimized pragmas
+    (WAL + synchronous=NORMAL + mmap). Agent rate ~1-10/sec. 50x+ headroom.
+    Fallback: batch writes in single transaction (risk-register.txt R10).
+  R-3B-1: WAL checkpoint interference.
+    SQLite auto-checkpoints WAL at 1000 pages by default. During checkpoint,
+    readers may briefly block. Mitigation: wal_autocheckpoint=1000 (default),
+    manual checkpoint only between supersteps (Phase 3D boundary).
+  R-3B-2: r2d2 connection pool WAL file cleanup.
+    r2d2 default idle_timeout closes connections. When the last connection closes,
+    SQLite removes the WAL file, causing errors for other connections.
+    Source: r2d2-sqlite GitHub discussions.
+    Mitigation: disable idle_timeout and max_lifetime on the read pool.
+  R-3B-3: Schema migration on CHECK constraint change.
+    Adding action_types to CHECK constraint on existing ssb.db requires table rebuild
+    (SQLite has no ALTER TABLE MODIFY CONSTRAINT). CREATE TABLE IF NOT EXISTS silently
+    no-ops on existing DB with stale schema. Mitigation: PRAGMA user_version tracking
+    with migration codepath (drop + recreate is acceptable since SSB is session-scoped).
+
+DELIVERABLES: 3 (each independently testable)
+  D1  SSB core (schema + single-writer + WAL config + read pool + migration)
+  D2  Conflict detection + append-only enforcement + event notification
+  D3  Typed action validation + trace records
+
+SCHEMA (from orchestrator.txt Section 3, inline for implementer reference)
+  PRAGMA user_version = 1;  -- increment on schema changes, migration codepath checks this
+
+  CREATE TABLE ssb (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    agent_id    TEXT NOT NULL,
+    superstep   INTEGER NOT NULL DEFAULT 0,
+    action_type TEXT NOT NULL CHECK(action_type IN (
+      'file_write', 'file_read', 'tool_result', 'test_outcome', 'finding',
+      'claim', 'checkpoint', 'model_swap', 'phase_transition',
+      'knowledge_degradation', 'isolation_metric', 'plan_update',
+      'replan_request', 'stub_reference', 'reasoning_trace',
+      'phase_complete', 'memory_monitoring'
+    )),
+    payload     BLOB NOT NULL,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX idx_ssb_project   ON ssb(project_id);
+  CREATE INDEX idx_ssb_session   ON ssb(session_id);
+  CREATE INDEX idx_ssb_superstep ON ssb(superstep);
+  CREATE INDEX idx_ssb_conflict  ON ssb(project_id, superstep);
+
+  CREATE TABLE ssb_files (
+    seq       INTEGER NOT NULL REFERENCES ssb(seq),
+    file_path TEXT NOT NULL
+  );
+  CREATE INDEX idx_ssb_files_path ON ssb_files(file_path);
+  CREATE INDEX idx_ssb_files_seq  ON ssb_files(seq);
+
+  Note: orchestrator.txt Section 3 lists 9 action_types in its synopsis (line 57-58).
+  The full set of 17 is derived from cross-referencing all spec sections that define
+  action_types: Section 7A (reasoning_trace), Section 7 (isolation_metric),
+  Section 8 (plan_update, replan_request), Section 9 (stub_reference),
+  knowledge.txt (knowledge_degradation), technical-analysis-v3.txt Concern 2
+  (phase_complete — atomic durability marker at phase boundary),
+  orchestrator.txt Section 11 (memory_monitoring).
+  Orchestrator.txt Section 3 synopsis is incomplete — treat THIS schema as canonical.
+
+ACTION_TYPE ENUM (Rust side)
+  Implement as a Rust enum with serde Serialize/Deserialize. 17 variants matching
+  the CHECK constraint above. Use #[serde(rename_all = "snake_case")].
+  Typed payload per action_type: define SsbPayload enum with per-type structs
+  validated at write time (BLOCK 8 fix: no opaque BLOBs without schema).
+
+CONFLICT DETECTION QUERY (corrected — requires JOIN)
+  ssb_files has only (seq, file_path). Columns agent_id, session_id, superstep
+  are in ssb table. The query from orchestrator.txt Section 3 is shorthand.
+  Correct SQL:
+    SELECT DISTINCT ssb.agent_id
+    FROM ssb_files
+    JOIN ssb ON ssb_files.seq = ssb.seq
+    WHERE ssb_files.file_path IN (rarray(?1))
+      AND ssb.project_id = ?2
+      AND ssb.session_id != ?3
+      AND ssb.superstep = ?4
+  Uses rusqlite array feature (rarray) for IN clause to preserve statement caching.
+  Filters by project_id to prevent cross-project false positives (BLOCK 5 fix).
+  idx_ssb_conflict compound index supports this query at scale.
+
+WAL CONFIGURATION (required pragmas, order matters)
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA wal_autocheckpoint = 1000;
+  PRAGMA busy_timeout = 5000;
+  PRAGMA cache_size = -64000;    -- 64MB cache
+  PRAGMA foreign_keys = ON;
+  PRAGMA temp_store = MEMORY;
+  Source: sqlite.org/wal.html, powersync.com benchmarks (80K inserts/sec with these).
+  busy_timeout handles SQLITE_BUSY without manual retry for most cases.
+  synchronous=NORMAL is safe with WAL (data survives app crash, not OS crash).
+
+  IMPORTANT: foreign_keys is a per-connection pragma, not database-level.
+  Must be applied to EVERY connection via r2d2 CustomizeConnection trait.
+  Both the single writer connection and all read pool connections need this.
+  Source: sqlite.org/pragma.html (foreign_keys section).
+
+
+STEPS
+
+  3B.1 SKELETON + WAL CONFIGURATION + MIGRATION
+    PRE_GATE:
+      - Phase 3A FSM tests pass:
+        cargo test -p orchestrator --lib fsm 2>&1 | grep "test result: ok"
+      - rusqlite crate exists on crates.io (anti-slopsquatting):
+        cargo search rusqlite --limit 1 2>&1 | grep "rusqlite"
+      - r2d2_sqlite crate exists on crates.io:
+        cargo search r2d2_sqlite --limit 1 2>&1 | grep "r2d2_sqlite"
+    TASK:
+      - Add rusqlite (with bundled and array features for Windows + rarray) and
+        r2d2_sqlite to orchestrator/Cargo.toml.
+      - Create orchestrator/src/ssb.rs module with:
+        - SsbActionType enum (all 17 variants from schema above, including reasoning_trace, phase_complete, memory_monitoring)
+        - SsbEntry struct (seq, project_id, session_id, agent_id, superstep,
+          action_type, payload: Arc<[u8]>, created_at)
+          Note: payload is Arc<[u8]> not Vec<u8> — required because tokio::broadcast
+          needs Clone, and cloning Vec<u8> for each subscriber is O(n) per payload.
+          Arc<[u8]> makes clone O(1) (reference count increment only).
+        - SsbFileEntry struct (seq, file_path)
+        - SsbConfig struct (db_path, pool_size, pragmas)
+        - SsbPragmaApplier struct implementing r2d2::CustomizeConnection to apply
+          all per-connection pragmas (especially foreign_keys = ON) on every checkout.
+        - Ssb struct with new(config, clock: Arc<dyn ClockProvider>) -> Result<Self> that:
+          1. Opens SQLite connection
+          2. Checks PRAGMA user_version: if 0, create tables. If < CURRENT_VERSION,
+             run migration (drop + recreate — SSB is session-scoped, data loss acceptable
+             for old sessions). If == CURRENT_VERSION, no-op.
+          3. Applies WAL pragmas in order specified above
+          4. Creates r2d2 read pool with SsbPragmaApplier as customizer,
+             idle_timeout=None, max_lifetime=None, pool_size=max(num_cpus*2, 4)
+          5. Creates single tokio::mpsc::unbounded_channel for write serialization
+          6. Creates tokio::broadcast channel with capacity=1024 for event notification
+        - SsbWriter handle (clone of mpsc::Sender)
+        - SsbReader trait with:
+          query_by_session(session_id) -> Vec<SsbEntry>
+          query_by_file(file_paths: &[&str]) -> Vec<SsbEntry>
+          query_by_type(action_type: SsbActionType) -> Vec<SsbEntry>
+          query_by_superstep(superstep: i64) -> Vec<SsbEntry>
+          query_conflict(file_paths: &[&str], session_id: &str, superstep: i64) -> Vec<String>
+          last_seq() -> Option<i64>
+        - Ssb::subscribe() -> broadcast::Receiver<SsbEntry>
+        - Ssb::shutdown() -> Result<()> (signals write loop to drain and exit)
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator 2>&1 | grep "Finished"
+      - grep "SsbActionType" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "reasoning_trace" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "journal_mode.*WAL" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "idle_timeout" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "CustomizeConnection\|customize_connection" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "user_version" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "Arc<\[u8\]>\|Arc<dyn ClockProvider>" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+    ADVERSARIAL:
+      - If rusqlite "bundled" feature is missing, compile fails on Windows (no system
+        SQLite). Test: cargo check on Windows without bundled -> expect error.
+      - If rusqlite "array" feature is missing, rarray() is unavailable. Compile will
+        succeed but conflict detection query fails at runtime.
+        Test: grep "array" in Cargo.toml features for rusqlite.
+      - If pragmas applied in wrong order (e.g., foreign_keys before journal_mode),
+        WAL may not activate. Test: query "PRAGMA journal_mode" after init, assert "wal".
+      - If migration drops table with active readers, readers get SQLITE_LOCKED.
+        Migration should only run at Ssb construction (before pool is created).
+        Test: create Ssb on existing V0 DB, assert migration completes and new schema works.
+    ACCEPTANCE:
+      - cargo check -p orchestrator exits 0
+      - All 17 action_type variants present in enum (including reasoning_trace, phase_complete, memory_monitoring)
+      - WAL pragmas applied in correct order (unit test asserts PRAGMA journal_mode returns "wal")
+      - r2d2 pool configured with CustomizeConnection, no idle timeout, no max lifetime
+      - PRAGMA user_version set after table creation
+      - SsbEntry.payload is Arc<[u8]>, not Vec<u8>
+
+
+  3B.2 SINGLE-WRITER CHANNEL + WRITE PATH
+    PRE_GATE:
+      - Step 3B.1 skeleton compiles:
+        cargo check -p orchestrator 2>&1 | grep "Finished"
+    TASK:
+      - Implement the write loop: tokio::spawn a task that receives SsbWriteRequest
+        from mpsc channel and executes INSERT within a transaction.
+      - SsbWriteRequest: { action_type, agent_id, superstep, payload, files: Vec<String> }
+        Session_id and project_id injected by the writer (set at Ssb construction).
+        created_at: use ClockProvider trait from core/ (core.txt L68-82).
+        Inject via RuntimeContext.clock, never SystemTime::now().
+      - Write path:
+        1. BEGIN IMMEDIATE (acquire write lock early to avoid SQLITE_BUSY mid-transaction)
+        2. INSERT INTO ssb (...) VALUES (...)
+        3. For each file in files: INSERT INTO ssb_files (seq, file_path) VALUES (last_insert_rowid(), ?)
+        4. COMMIT
+        5. Broadcast SsbEntry on the broadcast channel (after commit, never before)
+      - Return seq to caller via oneshot channel.
+      - IPC sync requirement (WARN-6): SSB write MUST complete before ToolResult
+        is dispatched to the agent. The write method is async but the caller must
+        .await the seq confirmation before proceeding. Document this contract.
+      - Implement Ssb::write(request) -> Result<i64> that sends to channel and
+        awaits the oneshot response. After shutdown(), returns Err (channel closed).
+      - Shutdown protocol: Ssb::shutdown() drops the mpsc::Sender, write loop drains
+        remaining messages, then exits. Any write() call that has already sent to the
+        channel but not received the oneshot response gets Err(SsbShutdown).
+        Shutdown is idempotent (second call is no-op).
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib ssb::tests::test_single_writer 2>&1 | grep "ok"
+      - cargo test -p orchestrator --lib ssb::tests::test_write_after_shutdown 2>&1 | grep "ok"
+      - Unit test: spawn 10 concurrent write tasks, assert all seqs are sequential
+        and no SQLITE_BUSY errors occur.
+    ADVERSARIAL:
+      - If BEGIN IMMEDIATE is not used and two write requests arrive simultaneously,
+        the second may get SQLITE_BUSY at COMMIT time (wasted work).
+        Test: remove BEGIN IMMEDIATE, send 100 concurrent writes, count SQLITE_BUSY errors > 0.
+      - If the mpsc channel is bounded and full, writes block. Use unbounded_channel
+        for the write path (backpressure handled by agent rate << throughput ceiling).
+        Test: send 10K writes rapidly, assert none are dropped.
+      - If created_at uses wall clock instead of ClockProvider, deterministic replay breaks.
+        Test: inject mock ClockProvider, assert created_at matches mock value.
+      - If broadcast happens before COMMIT and transaction rolls back, subscribers see
+        phantom entries. Test: simulate transaction failure, assert no broadcast emitted.
+      - If write loop panics (e.g., SQLite corruption), oneshot receivers hang.
+        Test: drop write loop handle, assert write() returns Err within 1 second.
+    ACCEPTANCE:
+      - 10K sequential writes complete without error
+      - All seqs monotonically increasing with no gaps
+      - created_at uses ClockProvider (core.txt L68), not SystemTime::now()
+      - Broadcast emitted only after successful COMMIT
+      - write() after shutdown() returns Err
+      - No oneshot receivers hang on write loop termination
+
+
+  3B.3 READ POOL + CONFLICT DETECTION + APPEND-ONLY ENFORCEMENT
+    PRE_GATE:
+      - Step 3B.2 single-writer test passes:
+        cargo test -p orchestrator --lib ssb::tests::test_single_writer 2>&1 | grep "ok"
+    TASK:
+      - Implement SsbReader for Ssb using r2d2 read pool.
+        All reads use read-only connections obtained via pool.get().
+        No BEGIN/COMMIT on reads (WAL provides snapshot isolation for readers automatically).
+      - Conflict detection query (corrected, see CONFLICT DETECTION QUERY section above):
+        Uses JOIN on ssb_files.seq = ssb.seq. Filters by project_id (BLOCK 5).
+        Uses rarray() from rusqlite array feature for IN clause (preserves statement
+        caching — new query string per call loses prepared statement benefit).
+        Return Vec<String> of conflicting agent_ids. Empty = no conflict.
+      - Append-only enforcement:
+        No UPDATE or DELETE statements exist in ssb.rs. The single-writer loop
+        only issues INSERT. Enforce at the type level: SsbWriter has no
+        update/delete methods. The underlying Connection is not exposed.
+        Additional runtime guard: register SQLite update_hook that panics on
+        UPDATE/DELETE to ssb or ssb_files tables (debug builds only).
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib ssb::tests::test_read_pool 2>&1 | grep "ok"
+      - cargo test -p orchestrator --lib ssb::tests::test_conflict_detection 2>&1 | grep "ok"
+      - cargo test -p orchestrator --lib ssb::tests::test_conflict_cross_project 2>&1 | grep "ok"
+      - cargo test -p orchestrator --lib ssb::tests::test_append_only 2>&1 | grep "ok"
+      - grep "rarray" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "JOIN ssb ON" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+    ADVERSARIAL:
+      - If r2d2 pool size is too small (e.g., 1) and multiple agents query
+        simultaneously, reads queue behind each other.
+        Test: set pool_size=1, spawn 10 concurrent reads, measure latency > 10x single read.
+        Mitigation: default pool_size = max(num_cpus * 2, 4).
+      - If conflict detection query omits project_id filter, agents in different
+        projects writing src/main.rs in the same superstep falsely conflict.
+        Test: two projects, same file path, same superstep, assert no conflict.
+      - If conflict detection query uses dynamically generated IN (?1,?2,...?N)
+        instead of rarray(), each unique N produces a new query string, defeating
+        prepared statement caching. At scale (100+ queries/sec), SQLite re-parses
+        and re-plans each time.
+        Test: grep "rarray" in the conflict detection function.
+      - If conflict detection query omits the JOIN and queries ssb_files directly,
+        SQLite returns OperationalError: no such column: agent_id.
+        Test: unit test with actual SQLite (not mock) that runs the conflict query.
+    ACCEPTANCE:
+      - Read pool serves concurrent reads without blocking writer
+      - Conflict detection returns correct agent_ids for overlapping file access
+      - Conflict detection filters by project_id (no cross-project false positives)
+      - Conflict detection uses rarray() for IN clause
+      - UPDATE/DELETE on ssb table panics in debug mode
+
+
+  3B.4 TYPED ACTION VALIDATION + TRACE RECORDS
+    PRE_GATE:
+      - Step 3B.3 all tests pass:
+        cargo test -p orchestrator --lib ssb::tests 2>&1 | grep "test result: ok"
+    TASK:
+      - Define typed payload structs per action_type (17 total):
+        FileWritePayload { path, size_bytes, hash }
+        FileReadPayload { path }
+        ToolResultPayload { tool_id, success, output_summary }
+        TestOutcomePayload { test_name, passed, duration_ms }
+        FindingPayload { severity, category, message, file_path, line }
+        ClaimPayload { claim_text, grounding_source, verified }
+        CheckpointPayload { agent_state_hash, grc_history_hash }
+        ModelSwapPayload { from_model, to_model, reason }
+        PhaseTransitionPayload { from_state, to_state, evidence_summary }
+        KnowledgeDegradationPayload { stage, from_mode, to_mode }
+        IsolationMetricPayload { metric_name, value }
+        PlanUpdatePayload { plan_hash, phase, step }
+        ReplanRequestPayload { reason, requesting_agent }
+        StubReferencePayload { original_seq, stub_reason }
+        ReasoningTracePayload { step_type, content, topic, grounding, conclusion }
+        PhaseCompletePayload { phase_id, agent_id, fsm_state, evidence_artifacts,
+          commit_hashes, test_outcomes }
+          Source: technical-analysis-v3.txt Concern 2. Atomic durability marker at phase
+          boundary. Written BEFORE model unload. Flushed to WAL (fsync) before unload proceeds.
+          Crash before phase_complete -> phase re-executed. Crash after -> phase skipped.
+        MemoryMonitoringPayload { metric_name, value, threshold, action_taken }
+      - Validate payload type matches action_type at write time. Type mismatch
+        returns Err, not panic. The SsbWriter::write method takes a typed
+        SsbPayload enum (15 variants), not raw bytes.
+      - Implement ReasoningTraceEntry integration:
+        Every GRC step and tool call produces a trace record in SSB
+        (orchestrator.txt line 155, 608). Define trait SsbTraceable in orchestrator/
+        with fn to_ssb_payload(&self) -> SsbPayload.
+        ARCHITECTURE NOTE: SsbTraceable is defined in orchestrator/. It is implemented
+        for types from reasoning/ and tools/. Since those crates cannot depend on
+        orchestrator/ (no circular deps), trace writes are initiated by the orchestrator
+        after receiving ThinkStep IPC messages (Tier C) or via in-process GRC callbacks
+        (pre-Tier C). The reasoning/ and tools/ crates never call SSB directly.
+      - Payload serialization: msgpack via rmp-serde (consistent with project-wide
+        decision for disk storage). Wire format uses postcard but SSB is disk storage.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib ssb::tests::test_typed_payloads 2>&1 | grep "ok"
+      - cargo test -p orchestrator --lib ssb::tests::test_payload_mismatch 2>&1 | grep "ok"
+      - cargo test -p orchestrator --lib ssb::tests::test_trace_integration 2>&1 | grep "ok"
+      - grep "SsbPayload" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "ReasoningTracePayload" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+      - grep "rmp_serde\|msgpack" .elai_cc/crates/orchestrator/src/ssb.rs returns hit
+    ADVERSARIAL:
+      - If payload validation is bypassed (e.g., raw bytes inserted), downstream
+        consumers crash on deserialization. Test: attempt to insert raw bytes
+        via write method, assert compile error (type system prevents it).
+      - If msgpack encoding of a payload exceeds 1MB, write rejects with error.
+        (Agent payloads should never approach this; largest is tool output summaries.)
+        Test: create 2MB payload, call write, assert Err returned.
+      - If ReasoningTraceEntry fields change in reasoning crate and the orchestrator's
+        SsbTraceable impl is not updated, traces silently lose data.
+        Test: property-based test that round-trips a random ReasoningTracePayload
+        through SSB and asserts equality.
+      - If SsbTraceable is accidentally implemented inside reasoning/ crate (circular dep),
+        compilation fails. Test: grep reasoning/Cargo.toml for orchestrator dependency,
+        assert no match.
+    ACCEPTANCE:
+      - All 17 action_types have typed payload structs (including ReasoningTracePayload, PhaseCompletePayload, MemoryMonitoringPayload)
+      - Type mismatch at write time returns Err (not panic, not silent)
+      - ReasoningTracePayload round-trips through SSB losslessly
+      - Payload serialization uses msgpack (grep confirms rmp_serde)
+      - SsbTraceable defined in orchestrator/, not reasoning/ or tools/
+      - Trace writes initiated by orchestrator, not by reasoning/tools crates
+
+
+TESTS (organized by category per planning-workflow rules)
+
+  UNIT (deterministic, no network, < 10 seconds each):
+    - Insert single entry, read back, assert fields match
+    - Insert 10K entries, assert all seqs monotonically increasing
+    - Conflict detection: two agents write same file, query returns both agent_ids
+    - Conflict detection: same agent same file, query returns empty (self not conflicting)
+    - Conflict detection: different superstep, query returns empty
+    - Conflict detection: different project_id same file, query returns empty
+    - Append-only: no UPDATE/DELETE methods exist on SsbWriter (compile-time)
+    - Append-only: runtime update_hook panics on attempted UPDATE (debug build)
+    - Typed payload: each of 17 action_types with correct payload succeeds
+    - Typed payload: action_type with wrong payload type returns Err
+    - WAL pragma: after init, PRAGMA journal_mode returns "wal"
+    - WAL pragma: foreign_keys ON verified on pool connections (not just init connection)
+    - Event broadcast: subscriber receives entry after write
+    - Event broadcast: slow subscriber does not block writer (1024 capacity, lagged = logged)
+    - created_at uses injected ClockProvider, not system clock
+    - write() after shutdown() returns Err
+    - Migration: open V0 DB (no tables), assert tables created and user_version set
+    - Migration: open stale DB (old user_version), assert schema upgraded
+    - Conflict detection uses JOIN (actual SQLite, not mock)
+
+  PROPERTY-BASED (randomized inputs, structural invariants):
+    - seq is always monotonically increasing regardless of write order
+    - All writes visible to readers within same connection (no phantom reads)
+    - Conflict detection is symmetric: if A conflicts with B, B conflicts with A
+    - Round-trip: random SsbPayload serialized to msgpack and back equals original
+    - For any N concurrent readers and 1 writer, no reader sees partial transaction
+
+  ADVERSARIAL:
+    - SQLITE_BUSY storm: remove single-writer channel, send 100 concurrent writes
+      directly, count SQLITE_BUSY errors > 0 (proves the channel is necessary)
+    - Disk full simulation: write to read-only path, assert error propagated (not panic)
+    - Payload > 1MB: write large payload, assert rejection with error
+    - WAL file deletion: close all r2d2 connections, reopen, assert WAL recreated
+    - Invalid action_type string in raw SQL: assert CHECK constraint fires
+    - Cross-project conflict false positive: two projects same file same superstep,
+      assert conflict detection returns empty (project_id filter works)
+    - Broadcast before commit: simulate transaction failure, assert no broadcast emitted
+    - Write loop panic: drop write connection, assert pending write() returns Err
+    - Pool connection pragma: get connection from pool, assert PRAGMA foreign_keys = 1
+
+  DETERMINISM:
+    - Same seed + same write sequence = identical SSB content (byte-for-byte DB compare)
+      Uses entropy-quarantined ClockProvider with fixed seed.
+      Source: risk-register.txt R14 / architecture-overview.txt "simulation-testable"
+
+MEASURE
+  - Write throughput: target > 10K inserts/sec on actual hardware (R10 acceptance)
+  - Read latency: p99 < 1ms for query_by_file with 10K entries (WAL guarantee)
+  - Conflict detection latency: < 5ms for 100 file paths against 100K entries
+    (requires idx_ssb_conflict compound index)
+  - Connection pool: 0 connection timeouts during 60-second stress test
+  - Memory: SSB struct + pool < 50MB RSS at 100K entries
+  - Broadcast overhead: < 1% throughput reduction with 3 subscribers (Arc payload)
+
+EXIT CRITERIA
+  SSB provides reliable single-writer inter-agent state with:
+  - Typed, validated payloads (no opaque BLOBs) for all 17 action_types
+  - Conflict detection via ssb_files JOIN ssb with project_id isolation
+  - Append-only guarantee (compile-time + runtime enforcement)
+  - Event notification for downstream consumers (Arc<[u8]> payload, O(1) clone)
+  - Deterministic output under entropy quarantine (ClockProvider, not SystemTime)
+  - Schema migration via PRAGMA user_version
+  - Graceful shutdown with drain
+  - All unit, property-based, adversarial, and determinism tests pass
+
+GROUNDING
+  "50K inserts/sec ceiling" -> VERIFIED: 80K achievable with optimized pragmas.
+    Source: powersync.com/blog/sqlite-optimizations, sqlite.org/wal.html
+  "WAL gives lock-free concurrent reads" -> GROUNDED: TRUE for reads, FALSE for writes.
+    Source: audit-results.txt BLOCK 1, sqlite.org/wal.html
+  "single-writer via tokio::mpsc" -> GROUNDED: audit-results.txt BLOCK 1 fix.
+  "project_id namespace" -> GROUNDED: audit-results.txt BLOCK 5 fix.
+  "typed action_type enum + ssb_files junction" -> GROUNDED: audit-results.txt BLOCK 8 fix.
+  "SSB write synchronous with IPC ToolResult" -> GROUNDED: audit-results-phase4.txt WARN-6.
+  "r2d2 timeout causes WAL file removal" -> VERIFIED: r2d2-sqlite GitHub discussions.
+  "Append-only within session" -> GROUNDED: orchestrator.txt L47, architecture-overview.txt.
+  "rusqlite bundled feature needed for Windows" -> VERIFIED: rusqlite docs (no system SQLite on Windows).
+  "rusqlite array feature for rarray()" -> VERIFIED: rusqlite docs, GitHub issue #345.
+  "msgpack for disk storage" -> GROUNDED: implementation-guide.txt L35 (project-wide decision).
+  "Phase 1C depends on SSB file_write events" -> VERIFIED: grep phase-1C.txt, 10+ SSB references.
+  "ReasoningTraceEntry in SSB" -> GROUNDED: orchestrator.txt L155, L608.
+  "action_type='reasoning_trace'" -> GROUNDED: orchestrator.txt L155.
+  "BEGIN IMMEDIATE for early write lock" -> VERIFIED: sqlite.org/lang_transaction.html.
+  "ClockProvider trait in core/" -> GROUNDED: core.txt L68-82 (not TimeProvider).
+  "foreign_keys is per-connection pragma" -> VERIFIED: sqlite.org/pragma.html.
+  "tokio::broadcast requires Clone" -> VERIFIED: tokio docs (T: Clone + Send).
+  "Arc<[u8]> makes clone O(1)" -> GROUNDED: Rust reference (Arc::clone increments refcount).
+  "Conflict query needs JOIN" -> VERIFIED: ssb_files has only (seq, file_path), adversarial
+    audit script confirmed OperationalError on direct column reference.
+  "PRAGMA user_version for migration" -> VERIFIED: sqlite.org/pragma.html#pragma_user_version.
+
+AUDIT FIXES APPLIED (from adversarial audit s-1427264)
+  BLOCK 1: Added reasoning_trace as 15th action_type variant (was missing from CHECK constraint).
+    Subsequently added phase_complete (16th) and memory_monitoring (17th) from technical-analysis-v3.txt.
+  BLOCK 2: Rewrote conflict detection query with proper JOIN on ssb_files.seq = ssb.seq
+  BLOCK 3: Replaced all TimeProvider references with ClockProvider (core.txt L68)
+  BLOCK 4: Added project_id filter to conflict detection query (BLOCK 5 fix completeness)
+  BLOCK 5: Changed SsbEntry.payload from Vec<u8> to Arc<[u8]> for O(1) broadcast clone
+  WARN 1: Added idx_ssb_conflict compound index on (project_id, superstep)
+  WARN 2: Added SsbPragmaApplier implementing r2d2 CustomizeConnection for per-connection pragmas
+  WARN 3: Added shutdown() method with drain protocol, write-after-shutdown returns Err
+  WARN 4: Added PRAGMA user_version migration strategy in schema and step 3B.1
+  WARN 5: Added architecture note that SsbTraceable is in orchestrator/, trace writes
+           initiated by orchestrator after IPC messages, not by reasoning/tools directly
+  WARN 6: Changed conflict detection to use rarray() from rusqlite array feature
+  INFO: Documented single (project_id, session_id) binding constraint in GOAL section
+  INFO: Added note about orchestrator.txt Section 3 synopsis being incomplete

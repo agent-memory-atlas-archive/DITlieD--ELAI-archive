@@ -1,0 +1,44 @@
+Halugate
+
+Hallucination Mitigation Techniques:
+
+Multi-Model Contrastive Decoding (MCD):
+- Base model + "evil" hallucination-prone model + "truthful" model
+- Identifies tokens that evil model likes but truthful model rejects
+- Prunes hallucinatory branches in real-time
+- 3x VRAM usage, high latency - best for offline verification
+
+Regularized Contrastive Decoding (RCD):
+- Single-model approach with adversarial fine-tuning
+- Synthesizes "worst-case scenario" hallucinations mathematically
+- Penalizes tokens matching synthesized patterns during inference
+- Medium VRAM impact, low latency - efficient for production
+
+Layer-Wise Interventions:
+- DoLa: Early layer output vs final layer comparison
+- LayerCD: Final layer deviation detection and correction
+- Dynamic correction of trajectory when visual data overridden by text
+
+Representation Engineering:
+- Truthfulness Separator Vectors (TSV): 0.00005% parameters for geometric reshaping
+- Pushes internal representations away from hallucination clusters toward truth clusters
+- Near-zero latency impact, plug-and-play implementation
+- Forces "truthful topology" in latent space
+
+Dynamic Multimodal Activation Steering (DMAS):
+- Database-driven semantic steering for vision-language models
+- Identifies separate "truthfulness heads" (layer 30) and "perception heads" (layer 31)
+- Top-K head injection with hyperparameters (α, β, K)
+- +94.66 MME points, -20.2% CHAIR hallucination reduction
+
+Production Integration (vLLM Era 2026):
+- HaluGate: Real-time token-level detection in C++/CUDA
+- Two-stage pipeline: Sentinel classification + NLI verification
+- Speculative decoding: EAGLE3/P-EAGLE with verification model offset
+- Shared KV-cache and context for minimal latency impact
+
+Economic Trade-offs:
+- MCD: Highest accuracy, severe computational cost
+- TSV/DMAS: Near-zero overhead, optimal for real-time
+- DeCo: Model-agnostic, excellent for visual tasks
+- Production systems combine multiple approaches based on use case

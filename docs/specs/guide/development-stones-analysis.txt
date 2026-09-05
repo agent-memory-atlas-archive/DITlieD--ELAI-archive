@@ -1,0 +1,657 @@
+ELAI_CC DEVELOPMENT STONES ANALYSIS
+Major bottlenecks, engineering risks, and solution directions.
+Generated: 2026-04-15
+Source: full spec review (ELAI_COMPLETE_SUMMARY.txt) + external analysis cross-check.
+
+
+================================================================================
+METHODOLOGY
+================================================================================
+
+A free-tier model identified 6 "stones" (major risks). Each was graded against
+the actual ELAI spec for accuracy. 6 additional stones were identified that the
+original analysis missed. All 12 are ranked by project-kill risk with solution
+directions.
+
+
+================================================================================
+STONE 1: DISTRIBUTION (Rust + Python + CUDA + Tauri)
+================================================================================
+
+Source: external analysis (partially valid, mischaracterized stack)
+Kill risk: MEDIUM
+
+THE PROBLEM
+  ELAI's advanced local features (FA2, DoLa, steering vectors, logit manipulation)
+  require the custom Python sidecar (elai_inference/server.py) running PyTorch
+  with CUDA. FA2 has no Python 3.13 wheel on Windows and requires exact CUDA
+  toolkit alignment. Packaging a desktop app that also requires a perfectly aligned
+  Python + CUDA environment on arbitrary machines is deployment hell.
+
+  The external analysis incorrectly says "vLLM" -- the stack is a custom sidecar,
+  not vLLM. But the core distribution problem is identical.
+
+WHY IT MATTERS
+  Users who can't get the sidecar running get zero local inference. GitHub issues
+  dominated by "sidecar crashed" / "CUDA OOM" / "flash-attn won't build" will
+  drain development time.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - Cloud mode (cloud-mode-design.txt) as a first-class path. Users who can't run
+    the sidecar use HYBRID/CLOUD mode with identical validation pipeline.
+  - Ollama as fallback provider (no FA2, but works).
+
+SOLUTION DIRECTIONS
+  1. Ship cloud mode as the default first-run experience. Local sidecar is opt-in
+     "advanced" mode. Cloud mode works immediately with zero setup.
+  2. Docker/WSL2 container for the sidecar with pre-built CUDA + FA2. User installs
+     Docker, pulls image, done. Eliminates wheel-building on arbitrary systems.
+  3. Pre-built wheels: ship platform-specific FA2 wheels (win64-cu121, linux-cu121)
+     bundled with the installer. Eliminates the "pip install flash-attn" build step.
+  4. Ollama bridge with limited features: for users who have Ollama already, provide
+     a degraded-but-working path. No FA2/DoLa/steering, but basic inference works.
+  5. Hardware detection on first launch: probe GPU, CUDA version, available VRAM.
+     Auto-select the right mode (cloud/ollama/sidecar) instead of failing.
+  6. Tauri sidecar management: Tauri has built-in sidecar process management. Use it
+     to bundle a minimal Python env (embedded Python + pre-installed deps) that ships
+     with the installer. Heavy (~2GB) but eliminates user-side Python management.
+
+
+================================================================================
+STONE 2: ECOSYSTEM MATRIX (Toolchain Integration)
+================================================================================
+
+Source: external analysis (valid, partially addressed by spec)
+Kill risk: MEDIUM
+
+THE PROBLEM
+  For ELAI's deterministic gates to work, it must run build tools, tests, and
+  linters for each supported language, then parse their outputs programmatically.
+  Each toolchain has different output formats that change between versions:
+    - Rust: cargo check JSON output (stable, well-structured)
+    - Python: pytest output (variable), ruff (stable JSON), mypy (semi-structured)
+    - JS/TS: npm/yarn/pnpm/bun (fragmented), eslint (JSON mode), jest/vitest (JSON)
+
+  When a build tool changes its CLI output format, ELAI's FailureTaxonomy regexes
+  break silently. ELAI thinks the build succeeded, or can't parse the error.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - FailureTaxonomy: 9 regex-based error categories with deterministic classification.
+  - Project Intelligence: auto-detects 20 build systems, 200 frameworks, 7+ languages.
+  - Delegates to project's OWN linters (doesn't re-implement clippy/ruff/eslint).
+  - Incremental linting with caching (<1s per-file re-lint).
+
+SOLUTION DIRECTIONS
+  1. JSON output modes everywhere: most modern tools support --format=json or
+     --output-format=json. Use structured output exclusively, never parse human-
+     readable text. JSON schemas change less frequently than text formatting.
+  2. Versioned parser modules: each toolchain parser declares which tool versions it
+     supports. On version mismatch, fall back to "generic error" classification
+     instead of silent misparse.
+  3. Start with 2 languages only: Rust (best tooling, most structured output) and
+     Python (largest user base). TypeScript third. Prove the pipeline works before
+     expanding. The spec's 7+ language ambition is Phase 4+ territory.
+  4. Community-contributed parsers: language packs (TOML + regex bundles) that users
+     can submit and share. Same mechanism as domain rule packs.
+  5. Regression tests per parser: golden-file tests with captured tool outputs. When
+     a tool updates, the golden files catch format drift before users do.
+  6. LSP diagnostics as universal fallback: Language Server Protocol provides
+     standardized diagnostics across all languages. If the specific parser fails,
+     fall back to LSP diagnostic parsing (always structured JSON-RPC).
+
+
+================================================================================
+STONE 3: DKG ON DYNAMIC LANGUAGES
+================================================================================
+
+Source: external analysis (valid concern)
+Kill risk: HIGH (for adoption)
+
+THE PROBLEM
+  Tree-sitter parses syntax, not semantics. It works excellently for Rust and Go
+  where imports and types are explicit. For Python and JavaScript/TypeScript:
+    - Dynamic imports: importlib.import_module(f"plugins.{name}")
+    - Dependency injection: constructor injection, decorator-based wiring
+    - React context wrappers, HOCs, dynamic prop spreading
+    - Python metaclasses, __getattr__, monkey patching
+    - TypeScript declaration merging, ambient modules
+
+  If the DKG misses a dependency, the Context Telescope assembles incomplete context.
+  The LLM generates a fix that breaks the un-indexed file. The compiler rejects it.
+  The LLM can't see the file causing the issue. Infinite repair loop.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - Graceful degradation: HYBRID -> SPARSE_ONLY -> BM25_ONLY on component failure.
+  - BM25 full-text search catches keyword co-occurrence even without DKG edges.
+  - A-RAG hierarchical retrieval provides broader context than DKG alone.
+  - CatRAG query-aware graph traversal can follow partial edges.
+  - Currently Rust-only; Python/TS/Go grammars planned (acknowledged gap).
+
+SOLUTION DIRECTIONS
+  1. LSP-backed DKG for dynamic languages: Python (Pyright/Pylance), TypeScript
+     (tsserver), Go (gopls) all have mature language servers that resolve imports,
+     find references, and compute call graphs better than raw tree-sitter. Use LSP
+     "find all references" and "go to definition" to build DKG edges. Tree-sitter
+     for syntax, LSP for semantics.
+  2. Hybrid static + runtime analysis for Python: combine tree-sitter AST (catches
+     90% of imports) with a lightweight runtime import tracer (importlib hook that
+     logs actual imports during test runs). Test runs reveal dynamic dependencies
+     that static analysis misses.
+  3. Convention-based heuristics: most Python dynamic imports follow patterns
+     (Django apps, Flask blueprints, pytest plugins, SQLAlchemy models). Detect the
+     framework (Project Intelligence already does this) and apply framework-specific
+     import resolution rules.
+  4. "Uncertain edge" DKG nodes: when static analysis suspects but can't confirm a
+     dependency, add a MAYBE edge with low confidence. Context Telescope includes
+     MAYBE edges when token budget allows. Better to include a false positive than
+     miss a true dependency.
+  5. User-assisted DKG correction: when ELAI hits an import it can't resolve, prompt
+     the user once. Store the resolution in an override file that survives
+     regeneration (spec already has this for Project Intelligence).
+  6. Accept the ceiling: for truly dynamic code (eval, exec, runtime-generated
+     classes), no static analysis works. Fall back to BM25 + grep-based context
+     assembly. Document the limitation. "I don't know" is a valid output.
+
+
+================================================================================
+STONE 4: VRAM MANAGEMENT AND MODEL SWAPPING
+================================================================================
+
+Source: external analysis (mostly wrong about the design)
+Kill risk: LOW
+
+THE PROBLEM (as stated by external analysis)
+  Moving 7-14GB of weights from system RAM to GPU VRAM across PCIe is disruptive.
+  VRAM fragmentation causes CUDA OOM when KV cache doesn't clear before new model.
+
+WHY THE EXTERNAL ANALYSIS IS MOSTLY WRONG
+  The spec says "One project on GPU at a time" (line 203). The design is single-
+  model-at-a-time on 12GB. ModelPool manages load/unload lifecycle with predictive
+  pre-loading via mmap based on FSM state. Multi-model only on 48GB (2x3090).
+  The external analysis imagines concurrent models fighting for VRAM on 12GB,
+  which isn't the design.
+
+REAL RISK (smaller)
+  Swap latency: unloading model A + loading model B takes 2-8 seconds depending
+  on PCIe generation and model size. For a task that needs executor -> auditor ->
+  executor cycling, this adds 4-16 seconds per cycle. Annoying but not fatal.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - Predictive pre-loading: FSM state signals upcoming model need, pre-loads via
+    mmap before the transition actually happens.
+  - SLO quality tiers: auditor=BEST, executor=GOOD, memory-writer=BASIC. Not every
+    agent needs the biggest model.
+  - GPU multiplexing for small models on spare VRAM.
+
+SOLUTION DIRECTIONS
+  1. Single-model architecture for 12GB: use the SAME model (7B) for both executor
+     and auditor roles. Different system prompts, same weights. Zero swap cost.
+     Auditor quality comes from deterministic checks (T1/T2), not model size.
+  2. Keep 3B always loaded as background utility: 1.92GB is small enough to co-exist
+     with 7B on 12GB (1.92 + 5.18 = 7.1GB, leaves ~5GB for KV cache). 3B handles
+     embeddings, quick classifications. 7B handles generation.
+  3. Quantized auditor: if a different auditor model is needed, use a more aggressive
+     quantization (2-bit) that fits in remaining VRAM alongside the executor.
+  4. PCIe pre-warming: during auditor phase (which is mostly deterministic checks),
+     begin streaming executor weights into GPU in background. By the time auditor
+     finishes, executor is partially loaded.
+
+
+================================================================================
+STONE 5: INFINITE THRASHING LOOP
+================================================================================
+
+Source: external analysis (already addressed in spec)
+Kill risk: LOW
+
+THE PROBLEM
+  LLM gets stuck in a local minimum: fix A causes error B, fix B re-introduces A.
+  Autonomous mode could burn 45 minutes thrashing before hitting futility threshold.
+
+WHY THIS IS LARGELY SOLVED IN THE SPEC
+  The spec has the most comprehensive anti-thrashing design of any AI coding tool:
+  - MistakeBook: Blake3 hashes of failed diffs. Model never re-generates the same
+    failed output. Forbidden diffs injected as constraints, max 150 tokens.
+  - Fresh context per retry: model NEVER sees its own failed chain-of-thought.
+    Gets a fresh 1400-token context assembly. CTIM-Rover finding: showing failed
+    code degrades success from 42% to 31-40%.
+  - Temperature 1.0 for repair loops: prevents cyclic traps. FixAudit validated.
+  - Anti-spiral: 3x same step = escalate to next reasoning layer.
+  - 6-layer reasoning escalation: L1 deterministic (60-70%) -> L2 micro-reflection
+    -> L3 interrogation tree -> L4 AB-MCTS -> L5 cloud diagnostic -> L6 cloud gen.
+  - Futility threshold: hard cap before escalation to human.
+
+REMAINING RISK
+  The heuristics for "when to give up" vs "when to try harder" need tuning based on
+  real-world data. Too aggressive = tasks abandoned that could succeed. Too lenient =
+  compute waste. This is an empirical tuning problem, not a design flaw.
+
+SOLUTION DIRECTIONS
+  1. Adaptive futility threshold: track historical success rates per error category.
+     If "type mismatch" errors have 95% L1 fix rate, allow more retries. If "logic
+     error" has 30% fix rate, escalate faster.
+  2. User-configurable patience: "aggressive" (fail fast, ask human early),
+     "patient" (try all layers before asking), "autonomous" (try everything
+     including cloud before failing).
+  3. Cost-aware escalation: in cloud mode, factor API cost into escalation decision.
+     Spending $0.50 on retries for a $0.02 task is waste.
+
+
+================================================================================
+STONE 6: ANTI-STALENESS DATABASE MAINTENANCE
+================================================================================
+
+Source: external analysis (valid but scoped)
+Kill risk: LOW-MEDIUM
+
+THE PROBLEM
+  deprecated_patterns table in rules.db needs constant updates. Tech moves fast.
+  What's best practice today is deprecated in 6 months. The nightly dep audit
+  scrapes 7 package registries. API rate limits, registry downtimes, and false
+  positives (flagging minor updates as breaking changes) are engineering work.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - Nightly dep audit across 7 registries with freshness recalculation.
+  - Self-discovery: when auditor catches same violation 3+ times, auto-proposes
+    a new rule. Rules lifecycle: PROPOSED -> CANDIDATE -> SHADOW -> ACTIVE.
+  - Counterfactual shadow testing: proves rules actually CAUSE better outcomes.
+  - Time-aware confidence decay: rules with no true positives in 90 days lose
+    confidence, auto-deprecated below 0.25.
+
+SOLUTION DIRECTIONS
+  1. Community rule registry: users can publish and share rule packs. Popular
+     rules get promoted. Like ESLint's shared configs but for ELAI.
+  2. Registry API abstraction: single interface for crates.io, npm, PyPI, etc.
+     with rate limiting, caching, and circuit breakers. Failed registry = skip
+     (not crash). This is standard data engineering.
+  3. Semantic versioning awareness: only flag MAJOR version bumps as potential
+     breaking changes. Minor/patch updates are informational only. Reduces false
+     positive rate dramatically.
+  4. Vendor-specific channels: subscribe to official deprecation feeds (Rust
+     edition guides, Python PEPs, Node.js LTS schedule) rather than scraping
+     raw registry data.
+  5. Start with Rust + Python only: these have the most stable ecosystems with
+     the best machine-readable deprecation metadata.
+
+
+================================================================================
+STONE A: COLD START PROBLEM (missed by external analysis)
+================================================================================
+
+Kill risk: HIGH
+
+THE PROBLEM
+  Before ELAI does anything useful on a new project, it must:
+    1. Build DKG: tree-sitter parse every source file into dependency graph (SQLite)
+    2. Build BM25 index: tantivy full-text index of every non-binary file
+    3. Compute dual embeddings: GraphCodeBERT (768d) + Granite (384d) via ONNX
+    4. Run PageRank: importance ranking on the DKG graph
+    5. Populate rules.db: detect project language/framework, load relevant rules
+    6. Run SPLADE: optional sparse keyword expansion
+
+  On a 100K+ LOC codebase, this is 5-30 minutes of GPU/CPU work. On a 500K LOC
+  monorepo, potentially longer. User's first experience with ELAI is a loading bar.
+  Most users will close the app and never return.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - Graceful degradation: components can fail individually without crashing.
+  - Per-project isolation: indexes are cached per-project, so re-opening is fast.
+  - Startup readiness gate with canary query.
+
+WHAT THE SPEC DOES NOT ADDRESS
+  - Progressive indexing strategy (what works before full indexing completes).
+  - First-run user experience during indexing.
+  - Prioritized indexing (index the files the user is likely to touch first).
+
+SOLUTION DIRECTIONS
+  1. Progressive indexing with immediate usability:
+     Phase 1 (<5s): BM25 only. Tantivy is fast enough to index 100K LOC in seconds.
+       ELAI is usable with keyword search only. DKG, vectors, PageRank in background.
+     Phase 2 (<30s): DKG for imports only (not function bodies). Gives dependency
+       edges without full AST analysis. Context Telescope works at module level.
+     Phase 3 (<5min): Full DKG + vectors for files in the active working set (files
+       changed in last 7 days via git log).
+     Phase 4 (background): Everything else. User never waits for this.
+  2. Git-aware prioritization: index files that have been recently modified first.
+     These are most likely to be relevant to the user's current task. Use git log
+     --diff-filter to identify hot files.
+  3. On-demand indexing: when the user gives a task, index the files mentioned in
+     the task + their DKG neighbors FIRST, then proceed. Full index continues async.
+  4. Index caching and sharing: if two developers work on the same repo, share the
+     BM25 + DKG index via a committed .elai_cc/index/ directory (gitignored but
+     shareable via LAN/cloud storage). Second developer gets instant start.
+  5. Pre-built framework indexes: for popular frameworks (Next.js, Django, Rails),
+     ship partial indexes of the framework's own source code. User's code still
+     needs indexing but framework understanding is instant.
+  6. Show useful work during indexing: while indexing, ELAI can already answer
+     questions via BM25 search, show project structure, detect language/framework.
+     Make the loading state productive, not passive.
+
+
+================================================================================
+STONE B: 3B MODEL QUALITY CLIFF (missed by external analysis)
+================================================================================
+
+Kill risk: HIGH (highest overall risk)
+
+THE PROBLEM
+  Measured data (A-1 baseline harness):
+    - 3B NF4+FA2: 72% pass@1, 1.92GB weights, ~40K context window
+    - 7B NF4+FA2: 90% pass@1, 5.18GB weights, ~25K context window
+    - DoLa: HARMFUL on 7B (-15% code quality)
+    - Steering vectors: NEUTRAL on 7B
+
+  72% pass@1 means 28% of baby steps fail on first attempt. For a 30-step task:
+    - Expected failures: ~8.4 steps
+    - Each failure triggers reasoning pipeline (2-90 seconds per layer)
+    - Best case (8 failures, all L1 fixed): +16 seconds overhead
+    - Typical case (8 failures, mixed L1-L3): +60-240 seconds overhead
+    - Worst case (failures reaching L4-L5): minutes of extra compute or API cost
+
+  The 12GB GPU is the stated default target hardware. If the default model (3B)
+  gives a notably worse experience, users judge ELAI by its worst configuration.
+
+  Meanwhile, 7B at 90% pass@1 = ~3 failures per 30-step task. 3x fewer retries.
+  Dramatically better user experience. And 7B fits on 12GB (5.18GB weights).
+
+THE TRADEOFF
+  - 3B: more context (40K) but lower quality (72%)
+  - 7B: less context (25K) but higher quality (90%)
+  - The spec's own data shows 100% pass rate degrades after 16K tokens for 7B.
+    But baby steps are 25-40 LOC. Context per step is well under 16K for most tasks.
+
+SOLUTION DIRECTIONS
+  1. Make 7B the default on 12GB. It fits (5.18GB + KV cache for 25K context =
+     ~10-11GB total). The quality jump from 72% to 90% is worth the context
+     reduction from 40K to 25K. Most steps don't need 40K context anyway.
+  2. Adaptive model selection per step: use 7B for generation (quality matters),
+     switch to 3B for classification/auditing tasks where accuracy is less critical.
+     Model swap costs 2-5 seconds but both fit the VRAM budget if not simultaneous.
+  3. Focus Tunnel + ShortCoder = 45-65% effective context increase. Applied to 7B's
+     25K base, effective context becomes ~36-41K -- nearly matching 3B's raw 40K
+     but with 90% pass rate instead of 72%.
+  4. 3B as the "draft model" in speculative decoding: 3B proposes tokens, 7B
+     verifies. Gets 7B quality at near-3B speed. Spec already evaluated this
+     (Phase 1F), though findings were mixed.
+  5. Baby step sizing calibration: if 3B is used, reduce step size from 25 LOC to
+     15 LOC. Smaller steps = simpler tasks = higher pass rate. More steps total
+     but fewer retries per step.
+  6. Per-task model selection: simple tasks (rename variable, add import, fix typo)
+     use 3B. Complex tasks (implement algorithm, refactor module) use 7B. Task
+     complexity classification is deterministic (token count, file count, DKG edges).
+
+RECOMMENDED APPROACH
+  Make 7B the 12GB default. Use 3B only as: (a) long-context fallback when a single
+  step truly needs >25K context, (b) background utility for embeddings and
+  classification, (c) draft model in speculative decoding if measurements support it.
+
+
+================================================================================
+STONE C: SQLITE CONTENTION (missed by external analysis)
+================================================================================
+
+Kill risk: MEDIUM
+
+THE PROBLEM
+  5 SQLite databases active simultaneously during execution:
+    1. SSB (Shared State Board): 17 action types, append-only, ~50K inserts/sec
+    2. DKG: dependency graph queries during context assembly
+    3. rules.db: predicate evaluation on every tool use
+    4. BM25/tantivy: keyword search during context assembly
+    5. Vectors: embedding similarity search during context assembly
+
+  All accessed concurrently during execution. Dashboard adds read load on SSB.
+  WAL mode allows concurrent reads but single-writer. If SSB writes queue behind
+  DKG updates or rules evaluations, orchestrator stalls.
+
+  Spinning disk users (still common in some markets) will see much worse performance
+  than SSD users due to random I/O patterns across 5 database files.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - WAL mode for SSB (concurrent reads).
+  - Per-project isolation (no cross-project contention).
+  - 50K inserts/sec ceiling documented.
+
+SOLUTION DIRECTIONS
+  1. Connection pool separation: each database gets its own connection pool. SSB
+     writes never block on DKG reads. This is standard SQLite practice but must
+     be explicit in the implementation.
+  2. Batch SSB writes: buffer 10-50ms of action inserts into single transactions.
+     Reduces write frequency from per-action to per-batch. 50ms batching at 1000
+     actions/sec = 50 actions per transaction = 20 transactions/sec (well within
+     SQLite comfort zone).
+  3. Read-only connections for dashboard: SQLite WAL allows unlimited concurrent
+     readers. Dashboard opens its own read-only connection, never contends with
+     orchestrator writes.
+  4. In-memory caching for hot-path reads: rules.db predicates are evaluated on
+     every tool use. Cache the active rule set in memory (BTreeMap). Invalidate
+     only when rules.db changes (rare during execution).
+  5. SSD as soft requirement: document that spinning disk is supported but degraded.
+     Auto-detect disk type on first run, warn if spinning.
+  6. Consider redb for SSB specifically: redb is a Rust-native embedded database
+     with better concurrent write performance than SQLite. SSB is the hottest path.
+     Other databases (DKG, rules, vectors) are read-heavy during execution and fine
+     with SQLite.
+  7. Tantivy is already separate: BM25 uses tantivy's own storage format, not
+     SQLite. So the actual SQLite contention is across 4 databases, not 5.
+
+
+================================================================================
+STONE D: TESTING BOOTSTRAP ON LEGACY CODE (missed by external analysis)
+================================================================================
+
+Kill risk: HIGH
+
+THE PROBLEM
+  ELAI's evidence gate protocol requires:
+    TESTING_FIRST -> EXECUTING: "all tests fail for right reasons"
+    EXECUTING -> AUDITING: "at least 1 test flipped from fail to pass"
+
+  This assumes tests exist. For legacy codebases with zero test coverage (the
+  majority of real-world projects), ELAI must WRITE tests for code it didn't
+  create. This requires understanding existing behavior without documentation --
+  arguably the hardest task in software engineering.
+
+  A 7B model will hallucinate test expectations. The model doesn't know what the
+  function SHOULD return, only what it DOES return. But to know what it does return,
+  you need to run it -- which requires understanding its dependencies, setup, and
+  side effects.
+
+WHY THIS IS WORSE THAN IT LOOKS
+  - Legacy code often has implicit dependencies (global state, singletons, env vars)
+  - Test setup for legacy code requires mocking infrastructure that doesn't exist
+  - The "right reason" for test failure is ambiguous when the model doesn't know
+    the intended behavior
+  - Users' first task with ELAI is likely on their existing (untested) codebase
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - Surgical mode: designed for existing codebases, uses DKG as primary grounding.
+  - Regression gates: "existing tests don't break" is weaker but achievable.
+  - 6-layer reasoning escalation: cloud diagnostic can help with test generation.
+
+SOLUTION DIRECTIONS
+  1. Observation-based test generation: instead of understanding code semantics,
+     RUN the code and observe actual behavior. Capture inputs/outputs, generate
+     tests that assert current behavior (characterization tests). This is the
+     Michael Feathers "Working Effectively with Legacy Code" approach.
+     Implementation: instrument function entry/exit, run existing scripts/main,
+     record I/O pairs, generate pytest/cargo test from recordings.
+  2. Weaker evidence gates for legacy code: when Project Intelligence detects
+     zero existing tests, use relaxed gates:
+       TESTING_FIRST -> EXECUTING: "compilation succeeds" (not "tests fail right")
+       EXECUTING -> AUDITING: "new tests pass AND existing behavior unchanged"
+     This is less safe but pragmatic for zero-test codebases.
+  3. Human-assisted test bootstrapping: prompt the user for test expectations on
+     the FIRST task only. "I see function calculate_tax(). What should
+     calculate_tax(100.0, 0.08) return?" Store answers as golden test cases.
+     Subsequent tasks use these as regression anchors.
+  4. Cloud escalation for test generation: test generation is a diagnosis task
+     (understanding behavior), not a generation task (writing new code). Cloud
+     models (Sonnet/Opus) are dramatically better at understanding existing code.
+     Use cloud for test writing, local for code writing. Minimal code exposure
+     (only the function signature + body, not the whole codebase).
+  5. Type-driven test generation: for typed languages (Rust, TypeScript), generate
+     property-based tests from type signatures alone. No behavioral understanding
+     needed. "This function takes Vec<i32> and returns i32 -- test with empty vec,
+     single element, large vec, negative numbers." Less precise but zero-cost.
+  6. Incremental test adoption: don't require full test coverage before first task.
+     Write tests only for the code ELAI is about to modify (blast radius from DKG).
+     Gradually build test coverage as ELAI works on more files.
+  7. Test template library: for common patterns (CRUD endpoints, data transformers,
+     CLI commands), ship test templates that the model fills in. Reduces the model's
+     job from "understand + write test" to "fill in the blanks."
+
+
+================================================================================
+STONE E: TREE-SITTER PER-LANGUAGE TAX (missed by external analysis)
+================================================================================
+
+Kill risk: MEDIUM
+
+THE PROBLEM
+  Each new language requires approximately 6 integration surfaces:
+    1. Tree-sitter grammar (parsing source into AST)
+    2. DKG extraction rules (mapping AST nodes to dependency graph edges)
+    3. AST pattern rules (Tier 1/2 rule predicates using tree-sitter queries)
+    4. FailureTaxonomy regexes (classifying build/test errors for that language)
+    5. Toolchain integration (running the language's build system, test runner)
+    6. Linter integration (running and parsing the language's linter output)
+
+  7 target languages x 6 surfaces = 42 integration points. Each one is a
+  maintenance burden when tools update. Each one needs tests. Each one needs
+  documentation.
+
+  The effort scales LINEARLY with language count. There is no economy of scale.
+  A bug in the Python DKG extractor doesn't help fix a bug in the TS extractor.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - Language-parameterized designs (same architecture, different data per language).
+  - Community language packs as TOML/SQLite bundles.
+  - Graceful degradation (BM25 works for any language without DKG).
+  - Project Intelligence auto-detects language and framework.
+
+SOLUTION DIRECTIONS
+  1. LSP as universal DKG backend: Language Server Protocol provides "find all
+     references," "go to definition," "workspace symbols" for every major language.
+     Mature LSP servers exist for Python (Pyright), TypeScript (tsserver), Go
+     (gopls), Java (Eclipse JDT), Rust (rust-analyzer). Use LSP for DKG edges
+     instead of custom tree-sitter extraction rules. Reduces surface 2 from
+     "custom per language" to "standard protocol."
+  2. Tiered language support:
+     Tier 1 (full): Rust, Python, TypeScript. Custom DKG extraction, full AST
+       rules, complete FailureTaxonomy. These 3 languages cover ~60% of target users.
+     Tier 2 (good): Go, Java. LSP-backed DKG, basic AST rules, JSON output parsing.
+     Tier 3 (basic): Everything else. BM25 + grep only. No DKG, no AST rules.
+       Still useful for simple tasks.
+  3. Community-contributed language packs: publish the language pack format. Let
+     community contributors add languages. Each pack is a self-contained bundle
+     (TOML config + tree-sitter queries + regex patterns + test golden files).
+  4. Shared toolchain parser infrastructure: JSON output parsing is similar across
+     tools. Build a generic JSON-path-based error extractor. Configure per-tool via
+     TOML (error_path = "$.diagnostics[*].message", file_path = "$.diagnostics[*].file").
+     Reduces surface 4-6 to configuration instead of code.
+  5. Test-driven language addition: every language pack ships with golden-file tests.
+     When a tool updates its output format, CI catches it immediately. No silent
+     regressions.
+
+
+================================================================================
+STONE F: CLOUD MODE TRUST GAP (missed by external analysis)
+================================================================================
+
+Kill risk: MEDIUM
+
+THE PROBLEM
+  Cloud mode sends code to external APIs (Anthropic, OpenAI). Enterprise and
+  security-conscious users will not use this. They are restricted to local-only
+  mode, which means 7B quality maximum (on current hardware). The best ELAI
+  experience requires cloud, but the most lucrative market (enterprise) can't
+  use cloud.
+
+WHAT THE SPEC ALREADY ADDRESSES
+  - Privacy controls: redaction patterns, blocked paths, audit trail of all cloud
+    API calls.
+  - Cloud is "diagnosis only" in some layers -- never generates code, just analyzes.
+  - HYBRID mode: local first, cloud only on failure.
+  - 32B on 2x3090 (48GB) as production target closes the quality gap.
+
+SOLUTION DIRECTIONS
+  1. "Bring your own endpoint" (BYOE): user provides their own API-compatible
+     endpoint (vLLM, TGI, Ollama server on a beefy machine). ELAI treats it as
+     "cloud" but the data never leaves the user's network. This is the killer
+     feature for enterprise.
+  2. Self-hosted inference tier: document how to run vLLM with Qwen2.5-72B or
+     similar on user-owned hardware (rented A100s, on-prem servers). ELAI connects
+     via the existing provider abstraction.
+  3. Redaction as the default: in HYBRID mode, redact by default (strip comments,
+     variable names, string literals before sending to cloud). The structural code
+     is less sensitive than the semantic content. Cloud model works with structural
+     hints, local model generates the actual code.
+  4. On-device 32B as the answer: the 2x3090 target with 32B NF4+FA2+TQ4 is the
+     real solution. 32B quality should approach cloud model quality for code
+     generation. This eliminates the trust gap entirely for users willing to invest
+     in hardware.
+  5. Air-gapped mode: explicit "never contact any external service" mode. No
+     telemetry, no registry checks, no cloud anything. Pure local. Some features
+     disabled (nightly dep audit, cloud escalation) but the core pipeline works.
+  6. Differential privacy for cloud calls: add noise to identifiers before sending.
+     Function names become f_001, variable names become v_042. Structure preserved,
+     semantics obscured. Cloud model can still diagnose structural issues.
+
+
+================================================================================
+RISK RANKING (all 12 stones)
+================================================================================
+
+Rank  Stone                       Risk        Category
+----  --------------------------  ----------  -------------------------
+ 1    B: 3B Quality Cliff         HIGH        User experience
+ 2    D: Testing Bootstrap        HIGH        Adoption / first use
+ 3    A: Cold Start               HIGH        Adoption / first impression
+ 4    3: DKG Dynamic Langs        HIGH        Market reach
+ 5    E: Language Tax              MEDIUM      Scalability / maintenance
+ 6    1: Distribution             MEDIUM      Deployment
+ 7    2: Ecosystem Matrix         MEDIUM      Maintenance
+ 8    C: SQLite Contention        MEDIUM      Performance engineering
+ 9    F: Cloud Trust Gap          MEDIUM      Enterprise market
+10    6: Anti-Staleness           LOW-MEDIUM  Maintenance
+11    4: VRAM Swapping            LOW         Spec already handles
+12    5: Thrashing                LOW         Spec already handles
+
+NOTES ON RANKING
+  - Stones B, D, A are ranked highest because they affect FIRST-TIME users. A tool
+    that makes a bad first impression never gets a second chance.
+  - Stone 3 (DKG dynamic langs) is high because limiting to Rust limits the market
+    to a niche audience.
+  - Stones 4 and 5 are LOW because the spec already has strong designs addressing
+    them. The external analysis didn't read the spec carefully enough.
+  - Stone F becomes LOW if BYOE is implemented. Enterprise users bring their own
+    inference endpoint and the trust gap disappears.
+
+
+================================================================================
+STRATEGIC RECOMMENDATIONS
+================================================================================
+
+PHASE 1 (before first public release):
+  - Make 7B the default on 12GB. This alone fixes the #1 risk.
+  - Implement progressive indexing (cold start). BM25 in <5s, DKG async.
+  - Ship cloud mode as default first-run. Local sidecar is opt-in.
+  - Weaker evidence gates for zero-test codebases.
+
+PHASE 2 (first 3 months after release):
+  - Add Python and TypeScript to Tier 1 language support.
+  - Implement LSP-backed DKG for dynamic languages.
+  - Add "bring your own endpoint" for enterprise users.
+  - Community language pack format and first community contributions.
+
+PHASE 3 (6-12 months after release):
+  - Observation-based test generation for legacy code.
+  - Full 7-language support (Tier 1/2/3).
+  - 32B on 2x3090 as the premium local experience.
+  - Community rule registry.
+
+
+================================================================================
+END OF ANALYSIS
+================================================================================

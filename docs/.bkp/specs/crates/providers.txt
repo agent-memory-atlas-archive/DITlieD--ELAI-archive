@@ -1,0 +1,258 @@
+CRATE: providers/
+Purpose: LLM provider trait + implementations + layer-level optimizations + model lifecycle.
+Source: design_document.txt PART 3 (trait), PART 5.6 (anti-hallucination), PART 6.6 (ModelPool).
+Depends on: core/
+
+
+1. RESPONSIBILITIES
+
+  - LlmProvider trait: complete, embed, token_count, token_count_estimate
+  - Provider implementations: Anthropic, OpenAI, Ollama, VllmLocal (Phase 2+), LlamaCpp
+  - LayerConfig: per-model inference optimizations
+  - ModelPool: VRAM tracking, load/unload lifecycle, predictive pre-loading
+  - Node-level cache with TTL and float normalization (design 31.6)
+  - Assistant prefill continuation for code output (design 31.13)
+
+
+2. LLMPROVIDER TRAIT
+
+  trait LlmProvider {
+      fn complete(prompt, config) -> Stream<Token>;
+      fn embed(text) -> Vec<f32>;
+      fn token_count(text) -> usize;          // exact, real tokenizer
+      fn token_count_estimate(text) -> usize;  // sampling-based, O(lines/N)
+  }
+
+  Sampling estimation (design 31.9):
+    Sample every Nth line (N=10 default).
+    Count tokens on sampled lines using real tokenizer. Multiply by N.
+    Accuracy: 95%+ for files >100 lines. Exact for files <=N lines.
+
+
+3. LAYERCONFIG
+
+  Phase 0-1 (ollama — available immediately):
+    OllamaConfig: temperature, top_p, grammar constraints (constrained decoding).
+    All roles get temperature/top-p per role in elai_cc.toml.
+    Executor: standard inference, rely on GRC for grounding.
+    Auditor: low temperature (0.1-0.3), tier 2 enforcement mode per below.
+
+    Tier 2 enforcement mode (new field in elai_cc.toml [agents.{role}.tier2_mode]):
+      GRAMMAR:    GBNF/grammar constraints applied at generation time.
+                  Use for: Gemma 4 (natively robust, has delimiter tokens).
+                  NOT for: DeepSeek-R1-Distill, any model requiring CoT traces.
+      INSTRUCTOR: Free generation + post-hoc JSON schema validation + retry.
+                  Model generates freely (including <think> tags for R1).
+                  Output parsed for JSON. If invalid: inject parsing error,
+                  re-prompt (max 3 retries). On retry exhaustion: ESCALATE to
+                  human with last valid JSON fragment (if any) or empty finding
+                  set with error description. Preserves full reasoning capability.
+                  Use for: DeepSeek-R1-Distill, reasoning-heavy models.
+      AUTO:       Select based on model metadata. Models with requires_cot=true
+                  in model registry get INSTRUCTOR. Others get GRAMMAR.
+
+    Default per role:
+      executor (Gemma 4):       GRAMMAR
+      auditor (R1-Distill):     INSTRUCTOR
+      designer (Gemma 4):       GRAMMAR
+      prompt-engineer (Qwen):   GRAMMAR (Qwen has native structured output)
+
+    Evidence:
+      "Using SGLang/vLLM JSON enforcement on R1 without complex multi-step
+       prompting consistently produces semantic garbage." (llm-json-schema-generation section 7)
+      "Gemma 4: highly robust against zero-shot hallucination spikes...
+       reliable high-speed structured extraction." (llm-json-schema-generation section 7)
+      RTX 3060 constrained decoding: <9 OTPS (llm-json-schema-generation section 5, table).
+      At 3 INSTRUCTOR retries, worst case: ~66s for one auditor response on RTX 3060.
+
+    GBNF limitations (enforced at schema compilation time in compile_schema()):
+      - Max 3 levels of nesting (deeper causes stack overflow SIGSEGV in ollama GBNF engine)
+      - No recursive $ref definitions
+      - No uniqueItems, contains, not, if/then/else (unsupported in CFGs)
+      - Regex patterns must use ^ and $ anchors (complex patterns cause
+        catastrophic backtracking and server crashes)
+      - additionalProperties defaults to false; setting true causes
+        unescaped newline hallucinations
+      All SCHEMA_REQUIRED predicates must be flattened to max 3 nesting levels.
+      compile_schema() in rules/ crate must validate these constraints
+      before inserting SCHEMA_REQUIRED predicate into rules.db.
+      Violation at compile time = specific error, not runtime crash.
+      Source: llm-json-schema-generation.md section 2.2
+
+    Tier 2 rule enforcement: grammar constraints (GRAMMAR mode) or post-hoc
+    validation (INSTRUCTOR mode) enforce SCHEMA_REQUIRED predicates from rules.db
+    (see rules.txt section 3-4). Predicates queried from SQLite at prompt construction.
+    Examples: opposing_thesis, trial_count, commission+slippage+spread.
+
+  Phase 1+ speculative decoding (ollama supports natively):
+    Draft model: same family, smaller variant (e.g. Gemma 4 2B as draft for Gemma 4 31B).
+    Expected: 1.5-2x throughput on consumer hardware (EAGLE-3: 2x-6.5x on large models,
+      lower on small models like 2.3B; arxiv 2503.01840, NeurIPS'25).
+    Cost: ~2GB additional VRAM for draft model (~4.8GB headroom on 3060 after main model).
+    TIDE pattern (temporal incremental draft): if draft model stales, target model hidden
+      states adapt the draft in real-time. 1.15x over static speculative decoding.
+    Config: [providers.ollama.speculative] draft_model, num_draft_tokens (default 5).
+    EVALUATE in Phase 1: measure actual throughput gain on RTX 3060. Adopt if >1.3x.
+    Disabled by default for auditor role (low temperature + constrained output reduces
+      speculative acceptance rate, diminishing returns).
+
+  Phase 2+ (vLLM — after integration):
+    VllmConfig: DoLa, TurboQuant, steering vectors.
+    Executor (Gemma 4 31B): TurboQuant (3.8-6.4x KV cache compression) + DoLa (factuality).
+    Auditor (DeepSeek-R1-32B): DoLa amplified + skepticism steering vectors.
+    Prompt-engineer (Qwen 3.5 27B): constrained decoding only.
+    Context-compiler: high temperature (0.7), completeness steering.
+
+  CRITICAL: ollama is a black box — no layer-level intervention.
+  DoLa/TurboQuant require vLLM or custom inference.
+
+
+4. MODELPOOL (VRAM lifecycle)
+
+  Tracks: {model_id -> ModelState(Loaded(gpu_id, vram_used) | Unloaded | Loading)}
+  VRAM query: nvml-wrapper (NVIDIA) or sysinfo (cross-platform fallback).
+
+  Priority levels:
+    ACTIVE:  needed by running agent. Never unloaded.
+    PRELOAD: needed by next agent (predicted from FSM). Background load if VRAM allows.
+    IDLE:    not needed soon. Unloaded first on VRAM pressure.
+
+  SLO quality tiers (Murakkab-derived, arxiv 2508.18298):
+    Per-agent quality tier controls model selection and resource allocation.
+    BEST:  auditor, researcher — highest precision model, full VRAM allocation.
+    GOOD:  executor, context-compiler — standard model, standard allocation.
+    FAIR:  prompt-engineer — can use smaller model variant (e.g. quantized).
+    BASIC: memory-writer — smallest capable model, minimal resources.
+    Tier stored in elai_cc.toml [agents.{role}.slo_tier].
+    ModelPool uses tier to decide: which model variant, which GPU, how much VRAM.
+    Tier mismatch (BEST role assigned BASIC model) logged as WARNING.
+
+  GPU multiplexing (Murakkab-derived):
+    Small models (<4GB) can colocate on the same GPU with a large model's idle headroom.
+    Embedding model (~1.5GB) + cross-encoder (~130MB) on GPU1 while executor on GPU0.
+    Memory-writer (~4GB) can share GPU1 with embedding model during MEMORIZING.
+    Multiplexing requires VRAM accounting: sum(colocated) <= GPU_VRAM - safety_margin (1GB).
+    Phase 0-1 (single GPU): no multiplexing, sequential model loading only.
+    Phase 2+ (dual GPU): multiplexing enabled on GPU1 for small models.
+
+  Predictive pre-loading (FSM-driven, deterministic):
+    EXECUTING -> pre-load auditor. AUDITING -> pre-load executor.
+    PLANNING -> pre-load prompt-engineer. TESTING_FIRST -> pre-load executor.
+
+  Workload profiling (Murakkab-derived):
+    Track per-agent per-phase: tokens_in, tokens_out, latency_ms, vram_peak_mb.
+    Stored in SSB as action_type='workload_profile' at phase boundary.
+    Used by ModelPool for future allocation decisions (Phase 2+ optimization).
+    Phase 0-1: collect data only, no optimization. Phase 2+: EVALUATE MILP solver
+    for optimal model placement based on accumulated profiles.
+
+  Ollama integration:
+    POST /api/generate (triggers load), DELETE /api/delete (unload).
+    KEEP_ALIVE parameter controls auto-unload timeout.
+    Dual-GPU: CUDA_VISIBLE_DEVICES per ollama instance or --gpu flag.
+
+  Swap protocol:
+    1. Determine next model needed (informed by SLO tier and workload profile).
+    2. Fits alongside current (multiplexing check)? Load in parallel.
+    3. Doesn't fit: wait for phase_complete SSB record (atomic durability marker).
+       Precondition: phase_complete record flushed to SQLite WAL (fsync).
+       Only proceed with unload after fsync confirms durability.
+    4. Unload current model from GPU.
+    5. Load new model.
+    6. Health check inference on new model.
+       Failure -> reload previous model from ModelPool cache
+       (model binary still on disk, re-load ~15-30s).
+    7. Resume pipeline (spawn new agent process).
+    Crash recovery: see orchestrator.txt section 7B for full semantics.
+
+  vLLM integration (Phase 2+):
+    vLLM manages own GPU memory. ModelPool delegates to vLLM scheduler.
+    Multiple models via --served-model-name with tensor parallelism.
+    MILP-based scheduling (EVALUATE): solve for optimal model-to-GPU assignment
+    at each phase boundary using accumulated workload profiles. Solver: coin-or/cbc
+    or highs (Rust bindings). Reoptimize at phase boundaries, not per-request.
+    Decision: implement only if heuristic scheduling proves insufficient in Phase 2 metrics.
+
+
+5. NODE-LEVEL CACHE (design 31.6)
+
+  struct CachePolicy { key_fn, ttl_seconds }
+  CacheKey: xxhash after normalization.
+  Float normalization: NaN -> u64::MAX, -0.0 -> 0.0, round to 6 decimal places.
+  In-memory HashMap<CacheKey, (Output, Instant)> per node. NOT checkpointed.
+  TTL checked on access: expired entries removed.
+
+
+6. ASSISTANT PREFILL CONTINUATION (design 31.13)
+
+  On finish_reason=Length during EXECUTING phase code generation:
+    Append partial response as assistant turn, send continuation.
+    Max 3 continuations. Merged output validated by tree-sitter parse.
+    SCOPE: code generation in EXECUTING only. Never applied to reasoning/planning.
+
+
+7. CLAW-CODE MODULE MAPPING
+
+  From claw-code api/ crate (4,377 LOC source, verified 2026-04-06):
+    Anthropic + OpenAI-compat providers -> KEEP, extend with embed() + token_count()
+    Provider trait (send_message + stream_message) -> EXTEND to full LlmProvider
+    Phase 0 dual-trait period: old Provider trait kept as internal impl detail, marked #[deprecated].
+      New OllamaProvider implements LlmProvider directly. AnthropicClient/OpenAiCompatClient
+      continue using old Provider trait. Migration to LlmProvider happens in Phase 1+.
+    prompt_cache.rs: 4 SystemTime::now() calls (cache expiry) — must use ClockProvider after Phase 0.9.
+    anthropic.rs: 2 SystemTime::now() calls (retry timing) — must use ClockProvider after Phase 0.9.
+    sse.rs: both api/src/sse.rs (279 LOC) and runtime/src/sse.rs (158 LOC) exist.
+      Keep api/ version, strip runtime/ version during restructure.
+  From claw-code tools/ crate:
+    tools/lib.rs imports api::* (line 6) — must update to providers:: during restructure.
+
+
+8. DEPENDENCIES
+
+  KEEP: reqwest (HTTP client for API calls), serde
+  ADD: nvml-wrapper or sysinfo, xxhash (cache keys)
+  Phase 2+: vLLM HTTP/gRPC client
+
+
+9. ONNX MODEL HEALTH PROTOCOL
+
+  ONNX models stored at .elai_cc/models/onnx/ (canonical path, see core.txt).
+  Pre-staged via setup script (outside session), not auto-downloaded.
+  Missing models at startup -> DEGRADED mode (BM25_ONLY), not crash.
+
+  ONNX models loaded via ort (GraphCodeBERT, Granite, cross-encoder, SPLADE)
+  share GPU memory with main LLM inference. Health protocol:
+
+  On load: verify ONNX session creates successfully. Run one dummy inference.
+    Failure -> log ERROR, mark model as UNAVAILABLE. Knowledge engine enters degraded mode.
+
+  During operation: circuit breaker per model (see knowledge.txt section 6).
+    Providers crate exposes: OnnxModelStatus { model_id, state: HEALTHY | DEGRADED | UNAVAILABLE }.
+    ModelPool tracks ONNX models alongside LLM models in unified VRAM accounting.
+
+  ONNX + LLM contention:
+    Embedding models (~1-2GB) allocated on GPU1 when executor/auditor on GPU0.
+    If single GPU: ONNX models run CPU-only (slower, zero VRAM contention).
+    ModelPool.can_fit_onnx(model_size) checks before GPU allocation.
+
+
+10. TESTABLE INVARIANTS
+
+  - token_count_estimate within 15% of exact for files >100 lines
+  - ModelPool never exceeds VRAM capacity (load blocked if insufficient)
+  - Model swap only at phase boundaries (never mid-agent-execution)
+  - Cache hit skips model invocation entirely
+  - Float normalization: key(-0.0) == key(0.0), key(NaN) == key(NaN)
+  - Prefill continuation only triggers on finish_reason=Length in EXECUTING
+  - ONNX model load failure marks model UNAVAILABLE (does not crash process)
+  - ModelPool VRAM accounting includes ONNX models alongside LLM models
+  - SLO tier mismatch (BEST role + BASIC model) logged as WARNING
+  - Multiplexed models: sum(colocated_vram) <= GPU_VRAM - 1GB safety margin
+  - Workload profile emitted at every phase boundary (action_type='workload_profile')
+  - No multiplexing on single-GPU configuration (Phase 0-1)
+  - Speculative decoding throughput measured and logged per model pair
+  - Draft model VRAM included in ModelPool accounting (not invisible overhead)
+  - Tier 2 GRAMMAR mode: GBNF constraints reject schemas with >3 nesting or $ref cycles
+  - Tier 2 INSTRUCTOR mode: max 3 retries, ESCALATE on exhaustion (never silent failure)
+  - Tier 2 AUTO mode: requires_cot=true models get INSTRUCTOR, others get GRAMMAR
+  - R1-Distill models never use GRAMMAR mode (CoT lobotomized)

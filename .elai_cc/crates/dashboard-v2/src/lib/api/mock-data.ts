@@ -74,10 +74,10 @@ const weeks = (n: number) => NOW - n * 7 * 24 * 60 * 60 * 1000;
 // ------------------------------------------------------------------
 export const RECENT_PROJECTS: ProjectSummary[] = [
   { name: 'elai_cc', path: 'F:\\.ELAI_workflow\\.elai_cc', last_opened_iso: new Date(mins(180)).toISOString() },
-  { name: 'my-rust-api', path: 'C:\\maintainer\\projects\\rust-api', last_opened_iso: new Date(days(2)).toISOString() },
-  { name: 'trading-bot', path: 'C:\\maintainer\\projects\\trading-bot', last_opened_iso: new Date(days(1)).toISOString() },
-  { name: 'game-engine', path: 'C:\\maintainer\\projects\\game-engine', last_opened_iso: new Date(weeks(1)).toISOString() },
-  { name: 'kimi-clone', path: 'C:\\maintainer\\projects\\kimi-clone', last_opened_iso: new Date(weeks(3)).toISOString() },
+  { name: 'my-rust-api', path: 'C:\\Users\\user\\projects\\rust-api', last_opened_iso: new Date(days(2)).toISOString() },
+  { name: 'trading-bot', path: 'C:\\Users\\user\\projects\\trading-bot', last_opened_iso: new Date(days(1)).toISOString() },
+  { name: 'game-engine', path: 'C:\\Users\\user\\projects\\game-engine', last_opened_iso: new Date(weeks(1)).toISOString() },
+  { name: 'kimi-clone', path: 'C:\\Users\\user\\projects\\kimi-clone', last_opened_iso: new Date(weeks(3)).toISOString() },
 ];
 
 // ------------------------------------------------------------------

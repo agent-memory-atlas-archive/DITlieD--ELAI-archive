@@ -1,0 +1,375 @@
+RISK REGISTER
+Source: design_document.txt PART 12 + all addenda.
+Last updated: 2026-04-06. R56-R60 added from technical-analysis-v3.txt.
+
+
+MITIGATED BY DESIGN
+
+R25 (was HIGH): LLM ignores or drops domain rules from context
+  Prompt-only enforcement is probabilistic. Context pressure drops rules.
+  Mitigation: self-improving three-tier enforcement (rules.txt).
+    Rules are DATA in SQLite, not markdown files. Evaluated by Rust interpreter.
+    Tier 1: deterministic Rust/AST+grep checks — ~80 of 104 rules across 5 domains.
+    Tier 2: constrained decoding — forced output schemas for ~9 rules.
+    Tier 3: prompt guidance + auditor — ~33 semantic rules (self-discovery target).
+    Predicate DSL: 5 types (AST_PATTERN, GREP_PATTERN, SCHEMA_REQUIRED, METRIC_GATE, COMPOSITE).
+    Rule lifecycle: PROPOSED->CANDIDATE->SHADOW->ACTIVE->RETIRED (deterministic promotion).
+    Self-discovery: auditor patterns crystallize into Tier 1/2 rules automatically.
+    Contract tests (254+ minimum) verify the enforcer itself.
+  Status: mitigated by architecture. Tier 3 residual risk reduced over time by self-discovery.
+
+
+CLOSED
+
+R1: CruciTitan compilation -> COMPILES. Provider needs extension not rewrite.
+R2: Licensing -> private software, not a concern.
+R3: Gemma 4 31B -> confirmed on ollama.
+R17: claw-code-rust-port -> COMPILES (26.24s, 0 errors, 13 warnings).
+
+
+ACTIVE
+
+R4 (MEDIUM): VRAM contention with dual-GPU
+  2x 3090 24GB. Gemma4 ~18-20GB + auditor ~18GB + embedding + OS overhead.
+  Mitigation: phase-aware GPU scheduling, embedding shares GPU with idle agent.
+  Fallback: serialize agents or offload embedding to CPU.
+
+R5 (MEDIUM): DoLa/TurboQuant requires vLLM, not ollama
+  Ollama has no layer-level API. Design phased: ollama 0-1, vLLM 2+.
+  Fallback: constrained decoding works on ollama.
+
+R6 (MEDIUM): Agent parallelism resource contention
+  Mitigation: resource-aware scheduler (nvml-wrapper/sysinfo).
+  Fallback: serialize all agents on single GPU.
+
+R7 (LOW): tree-sitter grammar gaps
+  Start with Rust, Python, TypeScript, Go. Extend as needed.
+
+R8 (MEDIUM): Pipeline Factory meta-orchestration complexity
+  Risk: over-engineering meta-layer before base proven.
+  Mitigation: Phase 0-3 builds executor. Phase 4 adds pipeline generation.
+
+R9 (LOW): Empire circular deps (D2 blocker, not D1)
+  elai_cc replaces factory-brain CLI, not the engine.
+
+R10 (MEDIUM): SSB write throughput ceiling
+  50K inserts/sec ceiling. Agent rate ~1-10/sec. 50x headroom.
+  Fallback: batch writes in single transaction.
+
+R11 (LOW): Feasibility probe false negatives
+  Stub too simple may pass but full impl fails.
+  Mitigation: auditor reviews stub quality.
+
+R12 (MEDIUM): Research Agent quality for novel domains
+  Sparse evidence for first-of-kind tasks.
+  Mitigation: all-TRAINING flagged HIGH_RISK, human required.
+
+R13 (LOW): Project switch latency
+  ~30-60 seconds per switch. Batch work per project.
+
+R14 (MEDIUM): Self-modification reward hacking
+  Mitigation: benchmark uses 3 SWE-bench rotation instances + trigger task.
+  Frequency: MSI-adaptive (IMPROVING: 1 per 3, STABILIZING: 1 per 5, DIVERGING: paused).
+  Objective hacking defense: DGM Appendix H documents metric gaming (node 114).
+  Trigger task with known-answer detects gaming. 3-layer write locks on metrics code.
+
+R15 (LOW): VLM media validation accuracy
+  LLaVA-7B MMMU 36.4%. VLM is ADVISORY, Tier 1 has veto.
+
+R16 (MEDIUM): Self-modification resource contention
+  Mitigation: lowest priority, idle time only, user preempts.
+
+R18 (LOW): claw-code module quality unknown
+  666 tests but quality unverified.
+  Mitigation: auditor reviews each module during Phase 0.
+
+R19 (MEDIUM): UntrackedValue memory accumulation
+  Mitigation: orchestrator monitors per superstep via DeepSizeOf trait (not size_of_val).
+  Threshold: configurable in elai_cc.toml [orchestrator.bsp.untracked_memory_limit_bytes].
+  Default: 10MB per channel. Force-clear at 2x threshold (20MB).
+  Logged to SSB as action_type='memory_monitoring'.
+
+R20 (LOW): PageRank density degradation
+  Density guard at 0.3. Fallback: BM25 only.
+
+R21 (LOW): Cache key collision on normalized floats
+  Round to 6 decimals. Cache hit still validated by auditor.
+
+R22 (MEDIUM): ONNX Runtime GPU contention with main model
+  GraphCodeBERT + Granite + cross-encoder all via ort. (SPLADE deferred to Phase 1G.)
+  Embedding models (~1-2GB total) share GPU with idle agent slot.
+  Cross-encoder runs CPU-only (no contention).
+  Risk: ort ONNX session + ollama/vLLM fight for GPU memory.
+  Mitigation: embedding on GPU1 only when executor/auditor on GPU0.
+  Fallback: all ONNX models CPU-only (slower but zero contention).
+  Note: ort::Session::run() takes &mut self. Concurrent embed() calls serialized via
+  Arc<Mutex<Session>> per model. No GPU contention from within-process parallelism.
+
+R23 (LOW): Plan skeleton exceeds 4k token budget on very large plans
+  Plans with >50 phases could overflow skeleton budget.
+  Mitigation: skeleton enforces one-liner per phase. 50 phases * ~60 tokens = 3k.
+  Fallback: hierarchical skeleton (group phases into sections, expand on demand).
+
+R24 (LOW): SPLADE ONNX dependency weight vs retrieval gain
+  ~500MB model, ONNX Runtime dep for marginal recall improvement.
+  Mitigation: feature-gated (cfg(feature="splade")). Measured in Phase 1G.
+  Decision: drop if <5% recall improvement over BM25 alone.
+
+R25 is above (MITIGATED BY DESIGN section).
+
+R26 (MEDIUM): ONNX model failure cascading to total knowledge engine outage
+  GraphCodeBERT, Granite, SPLADE, cross-encoder all via ort. Single model crash
+  could propagate to full query pipeline failure.
+  Mitigation: per-model circuit breaker (knowledge.txt section 6). Graceful
+  degradation cascade: HYBRID -> SPARSE_ONLY -> BM25_ONLY (knowledge.txt section 5).
+  Fallback: all ONNX models CPU-only eliminates GPU contention entirely.
+
+R27 (LOW): Knowledge engine startup delay blocking FSM
+  ONNX model loading takes 5-15s. First query after startup may timeout.
+  Mitigation: startup readiness gate with canary query (knowledge.txt section 7).
+  Orchestrator blocks IDLE -> PLANNING until readiness confirmed or degraded mode entered.
+
+R28 (LOW): Index format migration on elai_cc upgrade
+  DKG schema, vector dimensions, or BM25 format changes require full index rebuild.
+  Mitigation: index_version.toml tracking (knowledge.txt section 10). Old index archived.
+  Rebuild cost: ~30s for 50K LOC. User notified before rebuild.
+
+R29 (LOW): Cross-encoder concurrency under parallel agents
+  Single ONNX session, not thread-safe. Multiple agents reranking simultaneously queue.
+  Mitigation: tokio::Semaphore(1) with max queue depth 4 (knowledge.txt section 11).
+  Overflow returns unranked results. Acceptable degradation.
+
+R30 (LOW): Tree-sitter parse failure losing files from DKG
+  Unsupported languages or syntax errors cause file to be excluded from AST graph.
+  Mitigation: fallback to BM25 + vector indexing for unparseable files (knowledge.txt section 8).
+  Zero orphan files invariant: every project file in at least BM25 index.
+
+R31 (HIGH): Agent learns enforcement patterns and crafts bypass outputs
+  Blocking-based enforcement is visible to the agent. Agent receives BLOCK verdicts
+  with rule details, can search for enforcement code, can probe boundaries.
+  Sufficiently capable model could craft outputs that pass Tier 1 checks while
+  violating intent. Research shows thwarted agents develop evasion strategies.
+  Mitigation: three-tier agent isolation (orchestrator.txt section 12).
+    Tier A (Phase 0-1): invisible walls — hidden paths return "not found", error
+      sanitization strips enforcement details, .elai_cc/ excluded from indexes.
+    Tier B (Phase 3-4): sandbox execution — Firecracker/gVisor microVM per agent,
+      restricted filesystem, no network by default.
+    Tier C (Phase 4+): process separation — separate OS process per agent, IPC
+      communication, capability-restricted.
+  Residual risk: timing side-channels, model training data containing enforcement
+  patterns from elai_cc source (if open-sourced). Tier B + C mitigate both.
+
+R32 (MEDIUM): Sandbox latency impact on agent turn time
+  Firecracker microVM adds ~125ms boot per bash command. gVisor adds ~200ms.
+  Agent turn involves 2-5 bash calls: +250-1000ms per turn.
+  Mitigation: persistent sandbox per agent session (boot once, reuse).
+  Fallback: gVisor has lower overhead for persistent sandboxes.
+  Measure on target hardware before committing. Phase 0-1 uses host chroot (no VM).
+
+R33 (MEDIUM): Visibility filter false negatives leaking harness internals
+  Glob patterns may not cover all harness paths. New files in .elai_cc/ may be
+  added without updating hidden_paths config.
+  Mitigation: default deny for .elai_cc/** (glob covers all subdirectories).
+  Additional: knowledge engine exclude_paths config in elai_cc.toml.
+  Audit: Phase 0 contract test verifies no .elai_cc/ path is agent-accessible.
+
+R34 (HIGH): IPC as primary attack surface under Tier C
+  IPC channel is the only communication path between untrusted agents and the
+  orchestrator. Attacks: message injection, impersonation, oversized frames,
+  burst flooding, schema-invalid payloads, socket hijack via /tmp.
+  Mitigation: SO_PEERCRED verification on connection. MAX_FRAME_SIZE=10MB hard cap.
+  0700 socket directory with pre-existence check. Adversarial IPC test battery
+  in Phase 4A. Postcard deserialization bounded by frame size.
+
+R35 (HIGH): GRC budget self-attestation under process isolation
+  Agent binary enforcing its own GRC budget is self-attestation. Untrusted process
+  can lie about budget state.
+  Mitigation: orchestrator counts ThinkStep/GroundingRequest messages per topic
+  externally. Budget enforcement moved entirely to orchestrator IPC gateway.
+  Agent binary budget is advisory only.
+
+R36 (HIGH): Auditor self-discovery circular trust
+  Auditor is untrusted process whose findings drive rule proposals. Same auditor
+  validates proposed rules = circular trust. Persistent adversarial auditor could
+  promote malicious rules to ACTIVE over multiple pipelines.
+  Mitigation: source=AUDITOR proposed rules never auto-promote to CANDIDATE.
+  Require human approval OR independent second auditor verification.
+  mutable=0 safety rules protected from all automated modification.
+
+R37 (MEDIUM): Windows isolation weaker than Linux
+  Windows lacks namespace isolation equivalent to Linux CLONE_NEWNS/NEWPID/NEWNET.
+  AppContainer provides partial isolation but is not equivalent to Linux namespaces.
+  ACL-based denial bypassed by NTFS junctions, reparse points.
+  Mitigation: documented as explicitly weaker. Linux is production security target.
+  AppContainer used where available. Fallback to restricted token + Job object
+  with known limitations documented.
+
+R38 (MEDIUM): Self-modification lock bypass via bash/git indirection
+  IPC-level path locking insufficient alone. Agent can write build scripts via
+  BashRequest that overwrite locked files, or stage git commits touching locked paths.
+  Mitigation: three-layer defense (orchestrator.txt section 12 self-mod restrictions):
+    1. IPC path filtering with canonical realpath comparison.
+    2. Filesystem read-only mount of locked dirs in agent namespace.
+    3. Git commit diff filtering by orchestrator.
+
+R39 (LOW): IPC protocol version mismatch on partial upgrade
+  Orchestrator and agent binary must agree on IPC protocol. Partial upgrade
+  (one binary updated, other not) causes silent corruption or connection failure.
+  Mitigation: version handshake on connection. Mismatch -> agent killed immediately.
+  Both binaries compiled from same workspace, version embedded at build time.
+
+R40 (MEDIUM): Config archive variant explosion
+  Population-based config archive (self-modification.txt section 2) accumulates variants.
+  50-variant cap prevents unbounded growth, but DGM sigmoid-weighted selection with
+  many low-score variants may waste evaluation cycles on dead-end lineages.
+  Mitigation: max 50 variants. Lowest-score archived to cold storage on overflow.
+  Exploration bonus bounded (h_i = 1/(1+n_i)). Variants with score=0 after 3 pipeline evaluations
+  auto-archived (not selected again unless explicitly restored by human).
+
+R41 (LOW): Counterfactual SHADOW testing cost
+  Extra auditor run per SHADOW rule trigger increases AUDITING phase duration.
+  Typically 0-3 SHADOW rules at any time, so 0-3 extra auditor runs per AUDITING.
+  Mitigation: batch all SHADOW findings into single counterfactual auditor run.
+  Worst case: doubles AUDITING phase time. Acceptable given SHADOW is temporary
+  (N pipelines, default 5). If measured overhead >2x, reduce to sampling
+  (counterfactual test 1 in 3 triggers instead of all).
+
+R42 (LOW): Self-referential alignment loop divergence
+  Log-driven proposals could chase noise in SSB logs (e.g. single pipeline anomaly
+  triggers modification that doesn't generalize). Config archive mitigates by
+  preserving the parent variant — bad modification becomes low-score variant,
+  parent remains available. Staged evaluation (10->50->200) catches non-generalizing
+  changes early. Cross-transfer validation catches FM-specific artifacts.
+  MSI (DarwinNet-derived) now detects divergence explicitly and pauses self-mod.
+
+R43 (LOW): Speculative research execution wasting compute on pruned branches
+  FlashResearch-derived speculative execution starts child queries before parent
+  converges. If parent changes direction, speculative children are wasted compute.
+  Mitigation: bounded by speculative_depth (default 2) * breadth_factor (default 3)
+  = max 6 speculative nodes. Disabled for local models (single GPU, sequential only).
+  speculative_hit_rate metric tracked for adaptive tuning.
+
+R44 (LOW): Session DAG branch explosion
+  CMV-derived branch-and-explore allows forking session state. Uncontrolled branching
+  could create excessive snapshots consuming disk and confusing session resume.
+  Mitigation: max 3 active branches per session (enforced on creation). Merged
+  branches cleaned up. SQLite storage bounded by project disk quota.
+
+R45 (LOW): Structurally lossless trimming losing recoverable stub references
+  Trimming stubs large tool results with SSB seq references. If SSB is compacted
+  or session_dag.db corrupted, stubs become unrecoverable.
+  Mitigation: SSB is append-only within session (never compacted during session).
+  Stubs reference SSB seq which is immutable. Stub recovery failure degrades to
+  re-executing the tool call (slow but correct).
+
+R46 (MEDIUM): MILP solver dependency and solve time (deferred, Phase 2+)
+  If Murakkab-derived MILP scheduling is adopted, adds solver dependency (coin-or/cbc
+  or highs). Solve time for complex configurations could exceed phase boundary budget.
+  Mitigation: deferred to Phase 2+ and only if heuristic proves insufficient.
+  Fallback: heuristic scheduling remains available. MILP solve bounded by timeout.
+
+R47 (LOW): proptest contract tests may find predicate DSL edge cases late in Phase 3F
+  Property-based contract tests (rules.txt section 9A) may discover regex/AST-query
+  bugs in seed rule predicates after static contract tests already pass. Shrunk
+  counter-examples require predicate fixes before rules go ACTIVE.
+  Mitigation: run proptest suite early in Phase 3F (immediately after static tests pass).
+  Counter-examples auto-inserted as source=GENERATED in contract_tests table.
+  Predicate fixes bounded: each fix must pass both static and proptest suites.
+
+R48 (MEDIUM): Entropy quarantine incomplete — transitive dependency uses raw libc time/rng
+  Phase 0.8 bans direct std::time/rand usage, but transitive deps (e.g. quanta,
+  getrandom, rdkafka) may make raw libc syscalls bypassing the entropy traits.
+  If undetected, DST (Phase 3I) produces non-deterministic results despite seeded PRNG.
+  Mitigation: audit all transitive dependencies during Phase 0.8. Use cargo tree +
+  grep for gettimeofday, clock_gettime, getrandom, /dev/urandom in dep source.
+  Replace high-risk deps with pure-Rust alternatives or madsim-compatible mocks.
+  CI check: run same test twice with same seed, diff SSB output. Any difference = leak.
+
+R49 (LOW): madsim ecosystem fragmentation for IPC testing
+  madsim requires replacing tokio crates with madsim-specific versions (madsim-tonic,
+  madsim-etcd, etc.). If our IPC layer uses crates without madsim equivalents,
+  the DST integration in Phase 3I becomes partial (some code paths untested).
+  Mitigation: IPC layer uses raw Unix domain sockets (postcard over AF_UNIX), not
+  high-level RPC frameworks. madsim supports socket-level mocking natively.
+  If specific crates are unmockable: wrap them behind trait interfaces, provide
+  deterministic test doubles.
+
+R50 (LOW): Speculative decoding VRAM contention on RTX 3060
+  Draft model (~2GB) + main model (~5GB Q4_K_M) + embedding model (~1.5GB) on 12GB GPU.
+  Total: ~8.5GB. Leaves ~3.5GB for KV cache + OS. May be tight for long contexts.
+  Mitigation: evaluate in Phase 1F. If VRAM insufficient, disable speculative decoding
+  on single-GPU config, enable only on dual-GPU production target.
+
+R51 (LOW): Incremental compilation feedback loop may slow EXECUTING phase
+  cargo check adds 2-5s per file write. With 10-15 files per EXECUTING phase,
+  that's 20-75s of compilation checking overhead.
+  Mitigation: bounded at 3 retries per file. Files that fail 3x get NEEDS_AUDIT flag
+  and move to auditor (no further compilation checks). Compilation checks run
+  in background while executor works on next file (async, not blocking).
+
+R53 (LOW): Learned reward model for variant screening introduces selection bias
+  If SWE-World-derived reward model (Phase 4G EVALUATE) is adopted, predictor trained
+  on historical PipelineOutcome data may bias toward variants that match training
+  distribution but fail on novel task types or codebases.
+  Mitigation: reward model is screening only — real staged evaluation remains the gate.
+  All variants that pass predictor screening still run real Stage 1 (10 tasks).
+  Predictor accuracy tracked: predicted_score vs actual_score correlation.
+  If correlation < 0.5 over 20 predictions: disable predictor, revert to DGM selection.
+  Precondition: only adopted after >50 pipelines with outcome data.
+
+R52 (LOW): FsmReferenceModel (digital sibling) diverges from actual FSM over time
+  As the actual FSM gains complexity (new states, new evidence gates, new channel types),
+  the reference model must be updated in lockstep. If they diverge, DST produces
+  false positives (reference says X, actual does Y, both are correct but different).
+  Mitigation: reference model is deliberately simple (~500 LOC). It models state
+  transitions, not full business logic. Every FSM change includes a corresponding
+  reference model update as part of the same commit (enforced by contract test:
+  reference model and actual FSM must agree on 10,000 random sequences).
+
+R54 (LOW): Tokenizer silent truncation corrupts embeddings for long functions
+  GraphCodeBERT max_seq_len=512 tokens (HuggingFace model card). Functions >512 tokens
+  are truncated, embedding represents only the prefix. Caller has no signal unless warned.
+  Mitigation: OrtSession logs tracing::warn on truncation with token counts.
+  Phase 1C improvement adds test_truncation_warning_on_long_input.
+  Long-term: chunking strategy (tree-sitter AST) should split at function boundaries
+  so most inputs stay under 512 tokens. Reference: code-sage uses tree-sitter for this.
+
+R55 (LOW): usearch HNSW index corruption on unclean shutdown
+  usearch Index::save writes index to disk. If process crashes mid-save, index file
+  may be corrupt. Next startup Index::load fails.
+  Mitigation: rebuild index from vector_cache (SQLite is source of truth, WAL-protected).
+  Phase 1C improvement: load() failure triggers rebuild, not crash.
+  Cost: rebuild time proportional to vector_cache size (~30s for 50K chunks).
+
+R56 (LOW): Phase Sizing heuristic accuracy
+  L2 Phase Sizing estimates phase_complexity from structural proxies (files_touched *
+  avg_file_tokens). Actual code may be larger/smaller than average.
+  Mitigation: SPLIT_TASK (Phase 4G) catches cases at runtime. L2 Phase Sizing is
+  proactive layer, SPLIT_TASK is reactive recovery. No cascading between them.
+  Source: technical-analysis-v3.txt Concern 4.
+
+R57 (LOW): Scope enumeration completeness
+  ThinkStep.scope enumeration in GRC Observe step may miss task components that are
+  not obvious from the task description (implicit requirements, edge cases).
+  Mitigation: post-tool GREP rules detect unextracted content (images, tables).
+  Completeness QualityMetric in QualitySpec for auditor verification.
+  Source: technical-analysis-v3.txt Concern 3.
+
+R58 (LOW): L1 budget-aware over-constraining
+  L1 Designer may over-constrain phase sizing based on file count heuristic,
+  producing too many small phases when fewer larger ones would be more efficient.
+  Mitigation: L2 merge operation combines adjacent phases with no external dependents.
+  Source: technical-analysis-v3.txt Concern 4.
+
+R59 (LOW): Designer agent produces low-quality PipelineSpec on local models
+  Local model (Gemma 4 31B) may produce structurally valid but semantically weak
+  PipelineSpec compared to cloud models.
+  Mitigation: L2 structural validation catches invalid specs. Feasibility probe
+  catches resource misestimates. Auditor reviews plan quality at evidence gate.
+  Source: technical-analysis-v3.txt Concern 5.
+
+R60 (LOW): phase_complete SSB record overhead
+  Extra SSB write per phase boundary (~16 bytes payload + row overhead).
+  Mitigation: negligible vs 50K/sec SSB throughput ceiling. One write per phase
+  boundary, not per tool call. ~8 extra writes per full pipeline execution.
+  Source: technical-analysis-v3.txt Concern 2.

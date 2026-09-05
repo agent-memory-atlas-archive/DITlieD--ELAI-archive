@@ -1,0 +1,42 @@
+The Solution to Hallun Train
+
+Training Data Curation Pipeline:
+
+Rejection Sampling (Best of N Approach):
+- Big model generates 5 ideas per data point
+- Deterministic script scores ideas programmatically
+- Filters: banned phrases, architecture validation, JSON structure
+- Only highest-scoring ideas advance to training dataset
+
+Strict Prompt Engineering (SCAMPER Implementation):
+- Teacher model prompt enforces structured output format
+- Substitutions: [Model references proxy data], [Model lists merged repos]
+- Output format: JSON with Final SaaS concept
+- Prevents malformed data and hallucination contamination
+
+Grounding via Deterministic Verification:
+- ML background required for validation logic
+- Script checks: GitHub repo existence, spike validation, signal replay
+- Rejects ideas failing deterministic verification before training
+- Ensures only grounded, verified concepts reach small model
+
+Quality Control Pipeline:
+- Pre-generation: Idea filtering and validation
+- Post-generation: Automated scanning and testing
+- Red flags tracked: hallucinations, generic patterns, malformed data
+- Training proceeds only with verified "golden" dataset
+
+Key Implementation Steps:
+1. Scrape raw proxy data from sources
+2. Generate constrained ideas via big model
+3. Score and filter programmatically
+4. Verify against ground truth sources
+5. Fine-tune small model on cleaned dataset
+
+Anti-Hallucination Measures:
+- JSON structure validation prevents malformed training data
+- Reference checking ensures claims are grounded
+- Multiple verification stages catch different error types
+- Small model learns only pure, verified logic patterns
+
+Result: Small model trained on mathematically clean, grounded dataset without inheriting large model hallucinations.

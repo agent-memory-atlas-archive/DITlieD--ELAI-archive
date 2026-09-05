@@ -1,0 +1,63 @@
+SOTA RAG Architectures for Codebases
+
+Paradigm Shift: From static Dense+AST Hybrid RRF to agentic, iterative, token-efficient frameworks for complex codebase orchestration (2026).
+
+Core Architectural Evolution:
+
+Legacy Problems (Hybrid RRF):
+- Static concatenation of disjointed retrieval signals
+- Lacks multi-hop reasoning for execution paths
+- Cannot resolve deep variable dependencies
+- Exponential token consumption in exploratory retrieval
+- Semantic drift in structural graph traversal
+
+Next-Generation Architecture Components:
+
+TeaRAG (Iterative Compression):
+- Inverse Preference Optimization (IP-DPO) for reasoning compression
+- Token reduction: 30-70% while maintaining accuracy
+- Punishes verbose reasoning, rewards concise logic
+- Paired with AutoRefine for active filtering during generation
+
+A-RAG (Agentic Hierarchical Interfaces):
+- Three-tier retrieval: Keyword → Semantic → Chunk Read
+- LLM autonomously dictates information granularity
+- Reduces exploratory token waste by 55-87%
+- Dynamic query refinement based on intermediate results
+
+CatRAG (Topological Graph Traversal):
+- Query-aware dynamic edge weighting
+- Prevents static graph fallacy and semantic drift
+- Complete evidence chain mapping across files
+- Real-time graph modulation during reasoning
+
+RAGBoost (Prefix Caching):
+- Contextual ordering for high cache reuse
+- Neutralizes prefill latency in multi-turn retrieval
+- Accuracy-preserving prefix indexing
+- Reduces computational overhead by 40-60%
+
+CodeAgents (Multi-Agent Security):
+- Structured pseudocode interfaces vs unstructured NL
+- Strongly typed variables with bounded loops
+- Token reduction: Input 55-87%, Output 41-70%
+- 56% success rate on VirtualHome benchmark
+
+Blast Containment Architecture:
+- Intent-centric interfaces with time-limited permits
+- State Vector snapshotting for rollback capability
+- Active Context tracking in topological graphs
+- Memory Buffer monitoring for swarm coordination
+
+Performance Metrics:
+- Token efficiency: 30-87% reduction across frameworks
+- Accuracy preservation: <5% degradation vs verbose baselines
+- Latency improvement: 40-60% prefill reduction
+- Security: Deterministic compilation failures for unauthorized actions
+
+Implementation Requirements:
+- Multi-tiered retrieval (Keyword → Semantic → Chunk)
+- Dynamic graph modulation with query awareness
+- Iterative reasoning compression during generation
+- Prefix caching with contextual ordering
+- Bounded execution with state snapshotting

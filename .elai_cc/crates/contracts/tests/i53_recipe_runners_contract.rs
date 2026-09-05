@@ -10,7 +10,7 @@
 //      mvp_tool_specs() AND build_tool_catalog() (source-scan proof)
 //
 // Constraint: no live `just` or `make` binary assumed (not in PATH on this machine).
-// Cargo IS assumed (C:\maintainer\.cargo\bin\cargo.exe verified in PATH).
+// Cargo IS assumed (C:\Users\user\.cargo\bin\cargo.exe verified in PATH).
 
 use std::path::Path;
 use elai_tools::archive_reader::{list_archive, read_archive_entry};

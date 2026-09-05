@@ -1,0 +1,244 @@
+INTEGRATION: SELF-MODIFICATION SYSTEM
+Source: design_document.txt PART 22 (self-improvement loop), PART 27 (self-modification).
+References: FunSearch (DeepMind, Nature 2024), Darwin Godel Machine (arxiv 2505.22954).
+
+NOTE ON DGM: the Darwin Godel Machine is a population-based evolutionary system
+where coding agents self-modify their own codebases, validated empirically on benchmarks
+(SWE-bench 20%->50%). It is NOT a config management pattern. elai_cc adopts specific
+tested mechanisms from DGM (config archive, log-driven proposals, staged evaluation,
+self-referential alignment) but is architecturally different: elai_cc modifies configs
+and rules around a frozen FM, DGM modifies agent codebases including tools and strategy.
+See external-analysis.txt PAPERS REFERENCED for full attribution.
+
+
+1. CORE SAFETY PROPERTY
+
+  The modifying agent NEVER evaluates its own modifications.
+  Deterministic benchmarks judge. The agent proposes, code decides.
+
+
+2. THREE-LAYER ARCHITECTURE
+
+  LAYER 1 — DATA (automatic, no approval):
+    What changes: template rankings, rule trigger counts, pipeline outcome metrics.
+    Mechanism: pure arithmetic from PipelineOutcome. No LLM.
+    Security/safety/architecture rules NEVER auto-adjusted.
+
+  LAYER 2 — CONFIG (full pipeline, auditor approval):
+    What changes: new rules, GRC budgets, context ratios, model assignments,
+      templates, tool configs.
+
+    Proposal mechanism (DGM log-driven, replaces heuristic triggers):
+      Self-mod agent queries SSB for full pipeline trace: every phase outcome,
+      every audit finding, every anti-spiral trigger, every context budget reduction,
+      every rule trigger count, AND every reasoning_trace entry (orchestrator.txt 7A).
+      Reasoning traces provide WHERE in the GRC chain reasoning failed, not just THAT
+      a phase failed. E.g. "executor's observe step cited a stale grounding source at
+      step 4, causing a cascade of wrong hypotheses" -> propose stricter cache invalidation.
+      Agent analyzes own failure logs to propose targeted improvements.
+      This is more direct than threshold heuristics (low first-try ratio,
+      excessive tokens, etc.) which remain as fallback triggers only.
+      DGM proved: log-driven diagnosis (analyzing evaluation logs, failed tasks,
+      patches, test results) enables targeted self-improvement. DGM's diagnosis FM
+      analyzes the parent's codebase + running logs to identify specific improvements
+      (DGM section 2.4). Without self-improving meta-agent, gains taper off (section 9D).
+      Reasoning traces add richer signal than phase outcomes alone (our design choice).
+
+    Config archive (DGM population-based, replaces single config + rollback):
+      Storage: config_variants table in self_mod_history.db
+        config_variants(variant_id TEXT PK, parent_id TEXT, score REAL,
+          children_count INTEGER, config_blob BLOB, created_at INTEGER,
+          pipeline_outcomes TEXT, status TEXT CHECK(status IN ('ACTIVE','ARCHIVED','REVERTED')))
+      On each Layer 2 mod: create new variant branching from selected parent.
+      Parent selection (DGM sigmoid-weighted, section 2.3):
+        s_i = sigmoid(lambda * (alpha_i - alpha_0))  [performance, lambda=10, alpha_0=0.5]
+        h_i = 1 / (1 + n_i)                          [exploration bonus, n_i = children count]
+        w_i = s_i * h_i;  p_i = w_i / sum(w_j)       [all variants have non-zero probability]
+      DGM proved: archive beats hill-climbing. Agent at iteration 4 temporarily dropped
+        performance but spawned lineage exceeding all predecessors. Single-config rollback
+        would have killed that lineage.
+      Max archive size: 50 variants (oldest low-score variants archived to cold storage).
+      Active config: variant with status='ACTIVE'. Only one at a time.
+
+    Process (a self-modification IS a pipeline task):
+      1. EVALUATE: after every pipeline completion, self-mod agent reads SSB logs.
+         Decides whether a modification is worth pursuing. Evaluation is cheap (SSB query).
+         Execution still bounded: max 1 self-mod per 3 completed pipelines.
+      2. SELECT PARENT: DGM sigmoid-weighted selection from config_variants archive.
+      3. PROPOSE: log-driven proposal targeting specific config change.
+      4. PLAN: proposed change as PipelineSpec targeting .elai_cc/ config.
+         Full 4-stage elaboration (research -> plan -> validate -> probe).
+      5. SANDBOX: copy selected parent config to .elai_cc/sandbox/{mod_id}/
+      6. BENCHMARK: staged evaluation (DGM-proven cost reduction):
+         Stage 1: 10 tasks (basic sanity). Fail -> discard immediately.
+         Stage 2: 50 tasks (if Stage 1 passes). Include trigger task.
+         Stage 3: 200 tasks (if >40% success on 60-task subset AND ranks top 2 in archive).
+           Threshold per DGM section 2.5. TestOutcomeReport: any pass_to_fail -> reject.
+           Include 3 SWE-bench rotation instances.
+         Comparison is deterministic: subtract two numbers.
+      7. PROOF GATE (IC3-Evolve pattern, before Stage 2):
+         Run DST reference model with the proposed config change against
+         a FIXED set of 10 regression test traces (canonical cassettes).
+         Gate checks SOUNDNESS, not behavioral identity:
+           PASS: all evidence gates still trigger correctly, no BLOCK findings
+             bypassed, no test regression (PASS_TO_FAIL), FSM reaches COMPLETE.
+           FAIL: evidence gate bypassed (e.g., UNGROUNDED claim reaches EXECUTING),
+             test regression detected, FSM stuck or crashes.
+         The gate does NOT reject different FSM action sequences — a config
+         change that correctly tightens rule thresholds will produce different
+         BLOCK/ALLOW distributions, and that is expected and valid.
+         Key distinction from IC3-Evolve: IC3's gate checks correctness
+         (SAFE/UNSAFE classification matches ground truth). Our gate checks
+         soundness (evidence gates not bypassed, no regressions), not
+         behavioral identity.
+         Evidence: "Rounds r093-r094 proposed a clause-cleaning heuristic showing
+           +9 solved instances... However, it failed independent witness validation"
+           (IC3-Evolve section 10.1). "This separates optimization from soundness."
+           (IC3-Evolve section 4)
+      8. FINAL GATE: better on trigger task AND no SWE-bench regression
+         AND auditor finds no safety regressions
+         AND no evidence gate definitions modified
+         AND proof gate passed (step 7)
+         -> INSERT as new variant (status='ACTIVE'), demote previous active to 'ARCHIVED'.
+         -> FAIL: insert as variant with low score (stays in archive for future branching).
+      9. CROSS-TRANSFER VALIDATION (post-gate, optional):
+         Test winning config with a different FM (e.g. cloud model if primary is local).
+         DGM proved improvements that transfer across models are genuine, not FM-specific.
+         Fail -> flag as FM-specific optimization, keep but mark.
+
+    Slot-restricted patches (IC3-Evolve pattern):
+      Self-mod agent edits are restricted to specific config "slots":
+        Slot 1: GRC budgets (max_calls, max_chars per role)
+        Slot 2: Rule thresholds (FP rate, TP rate, promotion gates)
+        Slot 3: Context budget percentages (repo_map_pct, code_context_pct, ssb_pct, grc_pct)
+          Note: changes to auditor's code_context_pct require human approval per Layer 3
+          (auditor context quality affects the alignment loop).
+        Slot 4: Model parameters (temperature, top_p per role)
+      Max 1 slot modified per proposal. Cross-slot changes require
+      explicit Compass&Jump mode (higher evidence bar).
+      Forbidden: FSM states, IPC protocol, security rules, evidence gates.
+
+    Anti-reward-hacking locks (PreToolUse enforced):
+      READ-LOCKED during self-mod: metrics code, gate definitions,
+      auditor config, benchmark harness, test suite, config_variants table schema.
+      Modifying agent cannot write to these. Period.
+
+  LAYER 3 — STRUCTURE (human approval, always):
+    What changes: FSM state additions, new agent roles, GRC protocol changes,
+      evidence gate modifications, core pipeline control flow.
+    Same process as Layer 2 but human review required in BOTH modes.
+
+
+3. SELF-IMPROVEMENT METRICS
+
+  PipelineOutcome { template_id, project_id, phases_total, phases_passed_first_try,
+    audit_findings_total, audit_findings_block, test_coverage_final,
+    time_to_complete_seconds, tokens_consumed_total, human_interventions,
+    rules_triggered: Vec<(RuleId, TriggerCount, CatchRate)>,
+    test_outcomes: TestOutcomeReport }
+
+  TestOutcomeReport (SWE-bench-derived 4-category grading):
+    FAIL_TO_PASS:  tests that failed before this pipeline and pass after (resolution).
+    PASS_TO_PASS:  tests that passed before and still pass (maintenance).
+    FAIL_TO_FAIL:  tests that failed before and still fail (no regression, no fix).
+    PASS_TO_FAIL:  tests that passed before but now fail (REGRESSION).
+    Used by self-modification gate: a config variant that produces any PASS_TO_FAIL
+    regressions is rejected even if it has positive FAIL_TO_PASS improvements.
+    This is stricter than false_positive_rate alone: it catches cases where a rule
+    change fixes some violations but breaks previously passing code.
+    Derived from: SWE-bench harness grading.py get_eval_tests_report().
+
+  Modification Solidification Index (MSI, DarwinNet-derived, arxiv 2604.01236):
+    Single convergence metric for the self-modification process, inspired by DarwinNet's
+    Protocol Solidification Index (PSI). Tracks whether self-modification is improving,
+    stagnating, or diverging.
+
+    MSI = weighted_moving_avg(delta_score) over last N config variants (default N=10).
+      delta_score = variant.score - variant.parent.score
+      MSI in [-1, 1]. Positive = improving. Near-zero = stagnating. Negative = diverging.
+
+    Phase classification:
+      MSI > 0.3:   IMPROVING — self-mod is productive, continue.
+      -0.1 < MSI <= 0.3: STABILIZING — diminishing returns, reduce frequency.
+      MSI <= -0.1: DIVERGING — self-mod is making things worse, pause and review.
+
+    Actions:
+      IMPROVING:   maintain current self-mod frequency (1 per 3 pipelines).
+      STABILIZING: reduce to 1 per 5 pipelines. Log "self-mod entering diminishing returns."
+      DIVERGING:   pause self-mod entirely. Alert user. Revert to highest-score variant.
+
+    MSI stored in self_mod_history.db alongside config_variants.
+    Computed after every Layer 2 benchmark completion. Pure arithmetic, no LLM.
+
+  Rule weight adjustment:
+    SAFETY RULES (Security, Safety, Architecture): NEVER auto-adjusted.
+    ADJUSTABLE RULES (Style, Custom): high false positive -> flag for REFINEMENT (not removal).
+
+
+4. SELF-REFERENTIAL ALIGNMENT (DGM-derived)
+
+  DGM's key insight: the task the system solves IS the capability needed to
+  self-improve. Coding agents that get better at coding get better at modifying
+  their own code. elai_cc's version: pipeline execution quality directly informs
+  self-modification quality through the log-driven proposal mechanism.
+
+  The feedback loop:
+    pipeline runs -> SSB logs accumulate -> self-mod reads logs -> proposes change
+    -> counterfactual rule testing validates change is causal (see rules.txt section 5A)
+    -> config archive captures variant -> next pipeline benefits -> better logs
+    -> better proposals -> tighter loop
+
+  Without self-referential alignment: self-mod fires on disconnected heuristics,
+    proposes generic changes, improvement is random walk.
+  With self-referential alignment: self-mod reads actual failure patterns,
+    proposes targeted fixes, improvement compounds.
+
+  Limitation: elai_cc's loop is weaker than DGM's because the FM is frozen.
+  DGM agents modify their own tools and strategies; elai_cc can only modify
+  configs, rules, budgets, and templates around a fixed model. The FM's coding
+  ability doesn't improve, only the orchestration around it does.
+
+
+5. ROLLBACK PROTOCOL
+
+  Every Layer 2 mod: new variant in config_variants archive.
+  Monitored for 3 pipeline runs. Auto-revert if metrics degrade >10%
+  (variant status set to 'REVERTED', previous active variant restored).
+  Storage: .elai_cc/global/self_mod_history.db
+
+
+6. RESOURCE SCHEDULING
+
+  Lowest priority. Idle time only. User task always preempts.
+  Evaluation (log reading + proposal): after every pipeline. Cheap (SSB query).
+  Execution (sandbox + benchmark): frequency controlled by MSI (default 1 per 3 pipelines).
+    MSI IMPROVING: 1 per 3. MSI STABILIZING: 1 per 5. MSI DIVERGING: paused.
+  Staged evaluation reduces cost: most bad variants eliminated at Stage 1 (10 tasks).
+  Full Stage 3 (200 tasks) runs only for top candidates. ~90 min at lowest priority.
+
+
+7. TESTABLE INVARIANTS
+
+  - Self-mod agent cannot write to metrics/gates/auditor-config during pipeline
+  - Layer 2 benchmarked against deterministic metrics (no LLM judgment)
+  - Auto-revert on >10% degradation over 3 pipelines (variant status -> REVERTED)
+  - Layer 3 always requires human_approved=true
+  - Sandbox physically separate from active config
+  - Config archive: only one variant has status='ACTIVE' at any time
+  - Config archive: all variants have non-zero selection probability (DGM sigmoid-weighted)
+  - Config archive: max 50 variants (overflow archives lowest-score)
+  - Staged evaluation: Stage 1 failure -> no Stage 2 (early termination enforced)
+  - Log-driven proposals: self-mod agent reads SSB logs (not heuristic threshold only)
+  - Cross-transfer validation: FM-specific optimizations flagged (not silently applied)
+  - Self-referential loop: every self-mod proposal cites specific SSB log entries as evidence
+  - MSI computed after every Layer 2 benchmark (pure arithmetic, no LLM)
+  - MSI DIVERGING pauses self-mod and alerts user (never silently continues)
+  - MSI STABILIZING reduces frequency to 1 per 5 pipelines (not 1 per 3)
+  - MSI in [-1, 1] range (weighted moving average of delta_score)
+  - Config variant with any PASS_TO_FAIL regressions is rejected at gate
+  - TestOutcomeReport computed for every pipeline (4-category, deterministic)
+  - Proof gate runs against 10 canonical cassettes before Stage 2 (soundness check)
+  - Proof gate rejects evidence-gate-bypass but allows different BLOCK/ALLOW distributions
+  - Slot restriction: max 1 slot per self-mod proposal
+  - Cross-slot changes require Compass&Jump mode (enforced by proposal validator)
+  - Slot 3 auditor code_context_pct changes require human approval (Layer 3 escalation)

@@ -1,4 +1,4 @@
-/// remote_sidecar.rs — boot the friend's GPU box sidecar via SSH, start the
+/// remote_sidecar.rs — boot the remote GPU server sidecar via SSH, start the
 /// local SSH tunnel, poll for health, then launch the V2 dashboard.
 ///
 /// Invoked by `elai.exe --remote-sidecar` / `elai.bat --remote`.

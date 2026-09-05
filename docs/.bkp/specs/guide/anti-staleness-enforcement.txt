@@ -1,0 +1,768 @@
+ANTI-STALENESS ENFORCEMENT DESIGN
+Date: 2026-04-13 (revised after adversarial audit)
+Status: DESIGN (not yet scheduled for implementation)
+Depends on: Phase 3J (sidecar), Phase 3F (rules engine), Phase 1I (resilience), Phase 3J.10 (hooks)
+Research basis: docs/research-summary.md (3 consolidated research documents)
+Audit basis: .elai_cc/outdated-tech-audit.md (48 findings from codebase audit)
+Adversarial audit: 7 BLOCKs, 8 WARNs addressed in this revision (see AUDIT RESOLUTION section)
+
+
+PROBLEM STATEMENT
+
+LLMs default to frequency-based retrieval from training distribution. If blake2
+appeared 10,000 times in training data and blake3 appeared 50 times near cutoff,
+the model mathematically favors blake2. This is not a bug — it is an architectural
+inevitability of static training (Doc 1, "parametric memory is structurally hostile
+to temporal accuracy").
+
+Measured impact (from ICSE 2025 "LLMs Meet Library Evolution"):
+  - Java: 72% AI failure rate on deprecated APIs
+  - Python: 38% failure rate on deprecated APIs
+  - ~40% increase in failure rate for post-cutoff library versions (VersiCode)
+  - 2.74x more security vulnerabilities in AI-generated PRs vs human-written
+
+ELAI-specific audit (2026-04-13, outdated-tech-audit.md):
+  - 9 critical findings (blake2, wrong torch kwarg, fake streaming, etc.)
+  - 14 high findings (outdated rand, dual logging, unwrap violations)
+  - Root cause: every finding traces to the model picking the training-era default
+    over the current best practice
+
+Small models (3B-7B, e.g. Qwen2.5-Coder) are especially vulnerable due to
+limited parametric capacity (Doc 2: "parameter-efficient models are especially
+vulnerable to library version hallucination"). Measured: 7B API hallucination
+rate 40% baseline, 100% with DoLa (baseline_findings_and_actions.md Part 7).
+External orchestration, not internal reasoning, is the solution (Doc 3 key theme 6).
+Gemma 4 E2B: REJECTED (mixed head_dim blocks FA2, 18x larger KV cache).
+
+
+ARCHITECTURE: FOUR-LAYER DEFENSE-IN-DEPTH
+
+Research consensus (Doc 1-3): single-point mitigation fails. Defense-in-depth
+across pre-generation, during-generation, post-generation, and maintenance is
+mandatory. ELAI already has building blocks for all four layers.
+
+
+LAYER 1: PRE-GENERATION (context assembly)
+Integration: Phase 3E (context budget) + Phase 3F (rules engine) + Phase 1E (RAG pipeline)
+
+  1.1 FRESHNESS SCORING IN RAG RETRIEVAL
+
+    Current: RRF fusion (BM25 + code_vec + text_vec) in knowledge/src/pipeline.rs
+    uses cosine similarity only. No temporal signal.
+
+    Change: Add recency decay factor to RRF scoring.
+
+    Formula (revised per BLOCK-2 and WARN-2):
+      relevance = cosine_sim * recency_decay * access_boost
+      recency_decay = exp(-t * ln2 / half_life_days)
+        where t = (now - last_modified) in days
+        half_life_days: configurable, default 180 (6 months = 50% weight)
+        Floor: max(min_decay, recency_decay) where min_decay = 0.05
+      access_boost = 1.0 + ln(1.0 + access_count / boost_normalization)
+        boost_normalization: configurable, default 15
+        Hard cap: min(access_boost, 2.0)
+
+    Rationale for formula changes (from BLOCK-2, WARN-2):
+      - Exponential decay replaces quadratic: at 30 days a document retains 89%
+        (not 99.3%), at 180 days retains 50%, at 365 days retains 25%. Significantly
+        more aggressive for the code indexing use case vs web crawl.
+      - Logarithmic access_boost with hard cap at 2.0x: prevents frequently-used
+        stale code (blake2, used hundreds of times) from dominating fresh code.
+        At 100 accesses: boost = 1.0 + ln(1 + 100/15) = 1.0 + ln(7.67) = 3.04,
+        capped to 2.0. Fresh code with 0 accesses: boost = 1.0. Max ratio = 2.0x
+        (was unbounded, reaching 7.2x+ in original formula).
+
+    Implementation (revised per BLOCK-6):
+      - Freshness metadata stored in SIDECAR SQLite table (freshness_meta.db),
+        NOT in tantivy BM25 schema or vector_cache schema. This avoids tantivy
+        schema fingerprint breakage on upgrade. Tantivy and vector_cache schemas
+        remain unchanged.
+      - freshness_meta.db schema:
+          CREATE TABLE file_freshness (
+              file_path TEXT PRIMARY KEY,
+              last_modified_epoch INTEGER NOT NULL,
+              access_count INTEGER NOT NULL DEFAULT 0
+          );
+      - Populated from filesystem mtime during DKG build_graph and BM25 index_file.
+      - pipeline.rs rerank stage: JOIN result chunk paths against freshness_meta.db,
+        multiply freshness factor into RRF score. Missing entries default to
+        recency_decay=1.0, access_boost=1.0 (no penalty for untracked files).
+      - Docs/specs/changelogs: separate half_life (default 90 days, more aggressive)
+        configurable via FreshnessConfig.doc_half_life_days.
+
+    Phase touched: 1E (pipeline.rs), new file: knowledge/src/freshness.rs
+    New types: FreshnessConfig { half_life_days, doc_half_life_days, boost_norm,
+               min_decay, max_boost }
+    No tantivy/vector_cache schema changes required.
+
+  1.2 VERSION-AWARE RULES (new predicate type)
+
+    Current: rules.db has 6 predicate types (AST_PATTERN, GREP_PATTERN,
+    SCHEMA_REQUIRED, METRIC_GATE, COMPOSITE, GRAPH_REACHABILITY).
+    None are version-aware.
+
+    Change: Add VERSION_GATE predicate type.
+
+    Schema addition to rules.db:
+      deprecated_patterns table:
+        pattern_id TEXT PRIMARY KEY,
+        ecosystem TEXT NOT NULL,        -- "cargo" | "pip" | "npm" | "go" | "maven"
+                                        --   | "nuget" | "bundler" | "composer"
+        deprecated_name TEXT NOT NULL,  -- "blake2" | "rand 0.8" | "http.server"
+        replacement_name TEXT NOT NULL, -- "blake3" | "rand 0.9" | "fastapi+uvicorn"
+        deprecated_since TEXT,          -- ISO date or version string
+        severity TEXT NOT NULL,         -- "BLOCK" | "WARN"
+        reason TEXT                     -- short explanation for agent error message
+
+      Ecosystem coverage (language-parameterized):
+        cargo:    Rust crates (crates.io)
+        pip:      Python packages (PyPI)
+        npm:      JavaScript/TypeScript packages (npmjs.com)
+        go:       Go modules (proxy.golang.org)
+        maven:    Java/Kotlin packages (Maven Central)
+        nuget:    C#/.NET packages (nuget.org)
+        bundler:  Ruby gems (rubygems.org)
+        composer: PHP packages (packagist.org)
+
+    VERSION_GATE predicate evaluation (revised per WARN-3, language-parameterized):
+      1. Extract imports/dependencies from code action via language-specific regex sets:
+         a. Source imports (per language):
+            Rust:       r"use\s+(\w+)" / r"extern crate (\w+)"
+            Python:     r"import\s+(\w+)" / r"from\s+(\w+)\s+import"
+            Go:         r'"([\w./]+)"' inside import blocks
+            TypeScript: r"from\s+['\"]([^'\"]+)['\"]" / r"require\(['\"]([^'\"]+)"
+            Java:       r"import\s+([\w.]+)" (extract package root)
+            C#:         r"using\s+([\w.]+)" (extract namespace root)
+            Ruby:       r"require\s+['\"](\w+)" / r"gem\s+['\"](\w+)"
+         b. Dependency declarations (per ecosystem):
+            cargo:      '{name}\s*=' in TOML [dependencies] sections
+            pip:        '{name}' in requirements.txt/pyproject.toml [project.dependencies]
+            npm:        '"{name}"' in package.json dependencies/devDependencies
+            go:         '{module}' in go.mod require block
+            maven:      '<artifactId>{name}</artifactId>' in pom.xml
+            nuget:      'Include="{name}"' in .csproj PackageReference
+            bundler:    "gem '{name}'" in Gemfile
+      2. Cross-reference against deprecated_patterns table (ecosystem-filtered)
+      3. Return BLOCK (if severity=BLOCK) or WARN (if severity=WARN)
+      This ensures both source imports AND dependency declarations are caught
+      across all supported languages and ecosystems (addresses WARN-3).
+
+    Seed data: populate from outdated-tech-audit.md findings (blake2, rand 0.8,
+    http.server, log crate, async-trait, Box<dyn Error>, etc.)
+
+    Self-discovery integration (revised per WARN-4):
+      When auditor finds a deprecated usage 3+ times, auto-propose VERSION_GATE rule.
+      Requires extending ViolationRecord with optional replacement_name: Option<String>
+      field. When replacement_name is None, self-discovery proposes a GREP_PATTERN
+      (existing behavior). When replacement_name is Some(...), self-discovery proposes
+      a VERSION_GATE with both deprecated_name and replacement_name populated.
+      The auditor must provide replacement_name in its finding for this pathway to fire.
+
+    Phase touched: 3F (rules/src/predicate.rs, rules/src/self_discovery.rs)
+    New types: DeprecatedPattern, VersionGatePredicate
+    Changed types: ViolationRecord gains replacement_name: Option<String>
+
+  1.3 CONSTITUTIONAL SPEC INJECTION
+
+    Current: context budget Slot 2 (PhaseSpec) contains phase goals and contracts.
+    No explicit version constraints or "do not use" lists.
+
+    Change (revised per WARN-7): Inject constitutional constraints as part of
+    PhaseSpec CONTENT at assembly time (inside context_budget.rs assemble()),
+    BEFORE token counting. This means the constraints are measured and included
+    in the PhaseSpec token count. They do NOT create a separate unbounded injection.
+
+    Format appended to PhaseSpec content:
+      CONSTRAINTS (auto-generated from rules.db, do not violate):
+      - DO NOT USE blake2. Use blake3.
+      - DO NOT USE rand 0.8. Use rand >= 0.9.
+      - DO NOT USE http.server. Use FastAPI + uvicorn.
+      [from deprecated_patterns WHERE severity = 'BLOCK']
+
+    This is the InsertPrompt strategy from Doc 2 (ICSE 2025): pre-generation
+    prompt injection shifting logit probabilities away from legacy tokens.
+
+    Phase touched: 3E (context_budget.rs assemble() function)
+    Token cost: ~5-15 tokens per constraint. If total constraints exceed 200 tokens,
+    truncate to highest-severity entries. This budget is part of the PhaseSpec
+    fixed allocation, not additive.
+
+
+LAYER 2: DURING GENERATION (inference sidecar)
+Integration: Phase 3J (sidecar server.py) + Phase 3J.5 (steering vectors)
+
+  2.1 ETC (ENTROPY-TREND CONSTRAINT) MONITORING
+
+    REVISED ARCHITECTURE (per BLOCK-1 and BLOCK-7):
+
+    The original design added ETC to the manual Python token loop (server.py:391-436).
+    Audit finding C-04 mandates replacing that loop with model.generate() +
+    LogitsProcessor for 10-50x speedup. These are mutually exclusive in the same
+    code path.
+
+    Resolution: implement ETC as a HuggingFace LogitsProcessor subclass.
+
+    class ETCLogitsProcessor(LogitsProcessor):
+        """Monitors entropy trends during model.generate() and flags
+        high-uncertainty tokens for post-generation search."""
+
+        def __init__(self, threshold, import_pattern):
+            self.H_prev = 0.0
+            self.dH_prev = 0.0
+            self.triggered = False
+            self.trigger_token_idx = -1
+            self.threshold = threshold
+            self.import_pattern = import_pattern  # compiled regex
+
+        def __call__(self, input_ids, scores):
+            probs = torch.softmax(scores, dim=-1)
+            H = -(probs * probs.log()).sum(dim=-1).item()
+            dH = H - self.H_prev
+            d2H = dH - self.dH_prev
+            self.H_prev = H
+            self.dH_prev = dH
+
+            if d2H > self.threshold:
+                # Decode recent tokens to check if import-context
+                recent = tokenizer.decode(input_ids[0, -20:])
+                if self.import_pattern.search(recent):
+                    self.triggered = True
+                    self.trigger_token_idx = input_ids.shape[1]
+
+            return scores  # never modify scores, only observe
+
+    Usage in model.generate():
+        etc = ETCLogitsProcessor(threshold=..., import_pattern=IMPORT_RE)
+        output = model.generate(
+            input_ids,
+            max_new_tokens=max_tokens,
+            logits_processor=[dola_processor, etc],
+            ...
+        )
+        if etc.triggered:
+            # Post-generation: extract partial output up to trigger point,
+            # call orchestrator search API, regenerate from trigger point
+            # with search results injected into context
+            partial = output[0, :etc.trigger_token_idx]
+            search_result = call_orchestrator_search(partial)
+            regenerated = model.generate(
+                torch.cat([input_ids, partial, encode(search_result)]),
+                max_new_tokens=max_tokens - etc.trigger_token_idx,
+                ...
+            )
+
+    This preserves model.generate() speed (C-04 fix) while still detecting
+    high-entropy moments. The search happens BETWEEN generation calls, not
+    mid-token.
+
+    Threshold (revised per BLOCK-7):
+      Default: UNCALIBRATED. Must run calibration before deployment.
+      Calibration procedure:
+        1. Generate 100 code completions with ETC logging enabled (threshold=0)
+        2. Record all d2H values and their token contexts
+        3. Compute percentile distribution of d2H at import-context tokens vs
+           non-import tokens
+        4. Set threshold at p95 of non-import d2H (meaning: only triggers when
+           uncertainty is higher than 95% of normal generation tokens)
+        5. Store calibrated threshold in elai_cc.toml [inference.etc_threshold]
+      Until calibrated, ETC is DISABLED (threshold = f64::INFINITY).
+      Calibration script: metrics/calibrate_etc_threshold.py
+
+    Phase touched: 3J (server.py, after C-04 model.generate migration)
+    New types (Python): ETCLogitsProcessor, ETCCalibrationResult
+    New types (Rust): SearchTriggerPayload in providers/src/sidecar_client.rs
+    Prerequisite: C-04 (replace manual token loop with model.generate) MUST be
+    implemented first. ETC cannot coexist with the manual loop.
+
+    IMPORTANT: ETC uses LogitsProcessor which is compatible with model.generate().
+    DoLa also uses LogitsProcessor. However, DoLa is HARMFUL on 7B models
+    (measured 2026-04-14: -15% code quality, -6% factuality, 4.7x slower,
+    destroys stop-token distribution). ETC and DoLa LogitsProcessors must NOT
+    be stacked on models < 32B. ETC should be the ONLY LogitsProcessor on
+    7B/14B. DoLa is only viable on 32B+ (64 layers, untested but projected).
+    Target model for ETC calibration: Qwen2.5-Coder-7B (not Gemma).
+
+  2.2 FRESHNESS STEERING VECTOR
+
+    Current: Phase 3J.5 implements ActAdd steering vectors with per-role
+    contrast pairs and mid-layer injection. Existing vector: "skepticism.npz"
+    (computed in metrics/compute_steering_vector.py).
+
+    Change: Compute a "modern_api_preference" steering vector from contrast pairs.
+
+    Contrast pairs (revised per WARN-1 — equal token length templates):
+      All pairs use identical template structure to avoid positional encoding
+      contamination. Template: "The recommended {domain} library is {name}"
+
+      Positive examples (modern):
+        "The recommended hashing library is blake3"
+        "The recommended async mutex is tokio sync Mutex"
+        "The recommended random library is rand zero point nine"
+        "The recommended inference context is torch inference mode"
+        "The recommended web framework is FastAPI with uvicorn"
+
+      Negative examples (deprecated):
+        "The recommended hashing library is blake2"
+        "The recommended async mutex is standard sync Mutex"
+        "The recommended random library is rand zero point eight"
+        "The recommended inference context is torch no grad"
+        "The recommended web framework is http server BaseHTTPRequestHandler"
+
+      Token length difference between each pair: <= 2 tokens (due to name length
+      variation). The template prefix is identical, so hidden state at the
+      divergence point captures the semantic difference, not positional artifacts.
+
+    Steering formula (from Doc 3, "TTSV"):
+      v_fresh = (1/N) * sum(h_modern_i - h_deprecated_i)
+      Hidden state extracted at the LAST shared token position (just before names
+      diverge), not at sequence end. This further isolates the semantic direction.
+      Inject at mid-layers: h'_pos = h_pos + alpha * v_fresh
+      alpha: configurable, default 0.3 (conservative to avoid coherence loss)
+
+    Compute script: metrics/compute_steering_vector.py must be extended to accept
+    multiple pairs (current: single pair). Batch all pairs, average the difference
+    vectors.
+
+    Auto-update: when deprecated_patterns table changes, trigger recomputation.
+    Store at: models/steering_vectors/modern_api.npz
+
+    MEASURED STATUS (2026-04-14, baseline_findings_and_actions.md):
+      Steering on Qwen2.5-Coder-7B: NEUTRAL. Infrastructure works (vectors
+      compute, store, apply via forward hooks), but generic contrast pairs
+      have zero measurable effect on output quality. Domain-specific pairs
+      (the anti-staleness pairs above) have not been tested yet.
+      Possible causes: coefficient=5.0 may need tuning for hidden_dim=3584,
+      layer 9 (n_layers//3) may not be optimal, pairs too generic.
+      Ship DISABLED by default. Enable after domain-specific pair testing.
+
+    Phase touched: 3J.5 (steering vectors), metrics/compute_steering_vector.py
+    Risk: if alpha too high, output quality degrades (Doc 3 warning). Must tune.
+
+  2.3 CONSTRAINED DECODING FOR IMPORTS (vLLM only, feature-gated)
+
+    Current: Phase 3J mentions vLLM integration with cfg(feature="vllm").
+    vLLM supports XGrammar for constrained decoding.
+
+    REVISED APPROACH (per BLOCK-4):
+    Negative lookahead regex (e.g. "(?!blake2)") cannot compile to finite automata.
+    XGrammar and Outlines use FSM-based engines that only support regular languages.
+    Negative lookahead is PCRE-class and will fail at compile time.
+
+    Resolution: use POSITIVE ALLOWLIST via JSON Schema, not negative regex.
+
+    Implementation:
+      - Generate JSON Schema from deprecated_patterns table:
+        {
+          "type": "object",
+          "properties": {
+            "imports": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["blake3", "rand 0.9", "tokio::sync::Mutex", ...]
+              }
+            }
+          }
+        }
+      - Use vLLM guided_json mode (not guided_regex) for import-context lines
+      - Alternative: use EBNF grammar that enumerates allowed crate names:
+          import_stmt ::= "use " allowed_crate "::" rest_of_path ";"
+          allowed_crate ::= "blake3" | "tokio" | "tracing" | "thiserror" | ...
+        XGrammar supports EBNF natively (verified: XGrammar docs, Nov 2024).
+      - Only active during import-context (detected by preceding tokens)
+      - Fallback: if vLLM not available (ollama), skip (Layer 1+3 still active)
+
+    Phase touched: 3J (VllmProvider), providers/src/vllm_client.rs
+    Dependency: vLLM >= 0.7.0 with XGrammar (verified: vLLM structured outputs docs)
+    Risk: allowlist must be maintained. Auto-generate from non-deprecated crates in
+    Cargo.toml + deprecated_patterns.replacement_name values.
+
+
+LAYER 3: POST-GENERATION (auditing and hooks)
+Integration: Phase 3J.10 (tiered hooks) + Phase 4C (plugin system) + Phase 3C (auditor)
+
+  3.1 T1 HOOK: VERSION_GATE EVALUATION
+
+    PREREQUISITE (per BLOCK-3):
+    T1Hook.evaluate() currently loads zero rules (tiered_analysis.rs:110 has
+    `let rules: &[...] = &[];`). T2Hook returns HookVerdict::Allow unconditionally
+    (tiered_analysis.rs:209-218). Both are TODO stubs.
+
+    Before adding VERSION_GATE, these stubs MUST be implemented:
+      Step 0: T1Hook loads active rules from rules.db at construction time
+              (cached in-memory HashMap, refreshed on rules.db write notification).
+      Step 1: T1Hook.evaluate() iterates loaded rules, evaluates predicates.
+      Step 2: Add VERSION_GATE as new predicate type evaluated in Step 1.
+
+    Implementation after prerequisite:
+      - VERSION_GATE case in predicate evaluator (rules/src/predicate.rs)
+      - T1 hook extracts imports and dependency declarations via the
+        language-parameterized regex sets from section 1.2. Language detected
+        from file extension. Ecosystem detected from manifest file type.
+      - Cross-references deprecated_patterns table (in-memory cache, ecosystem-filtered)
+      - BLOCK: rejects the SSB write, agent sees "tool call rejected by policy"
+      - WARN: allows write but records finding in SSB, auditor will see it
+
+    Phase touched: 3J.10 (T1 hook fix), 3F (predicate evaluator)
+    Performance: regex + hash lookup, well under 1ms budget.
+
+  3.2 T2 HOOK: AST-LEVEL IMPORT EXTRACTION
+
+    Current: T2 hook status should be VERIFIED (may no longer be a stub after
+    3J.WIRE.RULES completion — see code-completeness-enforcement-design.txt
+    audit note W-3).
+
+    Change: Implement T2 to extract import/use/dependency declarations via
+    tree-sitter AST, then cross-reference against deprecated_patterns.
+
+    Implementation (language-parameterized via tree-sitter grammars):
+      - Parse file_write actions with tree-sitter (grammar selected by file extension)
+      - Language-specific AST node extraction:
+        Rust:       use_declaration, extern_crate_declaration
+        Python:     import_statement, import_from_statement
+        TypeScript: import_statement, import_clause
+        Go:         import_declaration, import_spec
+        Java:       import_declaration
+        C#:         using_directive
+        Ruby:       method_call where name = "require" or "gem"
+      - Cross-reference extracted package/crate/module names against deprecated_patterns
+      - More precise than T1 regex: catches aliased imports, selective imports,
+        and wildcard imports that regex may miss
+      - For manifest files (Cargo.toml, package.json, pyproject.toml, go.mod):
+        T2 cannot use tree-sitter (no grammars for these formats).
+        Manifest changes handled by T1 regex (section 3.1 step b) only.
+
+    Phase touched: 3J.10 (T2 hook), knowledge/src/ast_adapter.rs
+    Performance: tree-sitter parse <10ms for files under 5K lines (budget met).
+
+  3.3 DETERMINISTIC-FIRST AUDITOR MODE
+
+    Current: auditor agent uses LLM judgment for findings. Doc 3 shows LLM-as-Judge
+    is unreliable for deterministic code verification (23% category disagreement,
+    severity scores 6.2 to 9.1 for same snippet).
+
+    Change: Before LLM audit, run deterministic checks (language-parameterized):
+      1. Build check (from ProjectProfile.build_cmd):
+         Rust: cargo check + cargo clippy
+         Python: python -m py_compile + ruff check
+         Go: go vet + golangci-lint
+         TypeScript: tsc --noEmit + eslint
+         Java: gradle compileJava + checkstyle
+         Other: ProjectProfile.build_cmd + ProjectProfile.lint_cmd
+      2. VERSION_GATE rules evaluation on all changed files (ecosystem-filtered)
+      3. Import cross-reference against deprecated_patterns (language-specific regex)
+      4. Lazy code pattern scan (from code-completeness-enforcement-design.txt 3.1)
+      5. Only after deterministic checks pass: LLM auditor reviews for logic/design
+
+    This is the Agentless-inspired approach from Doc 3: "deterministic scripts handle
+    traversal/reading, LLM only generates targeted patches."
+
+    Phase touched: 3C (auditor agent config), 4C (PostToolUse hooks)
+    New config: [agents.auditor] deterministic_first = true (in elai_cc.toml)
+
+
+LAYER 4: MAINTENANCE (offline, periodic)
+Integration: New — no existing phase covers periodic maintenance
+
+  4.1 NIGHTLY DEPENDENCY AUDIT
+
+    Schedule: once per 24 hours (or on-demand via CLI command).
+
+    Actions (revised per BLOCK-5, WARN-6, now multi-ecosystem):
+      Per-ecosystem registry queries:
+      1. Rust (cargo): crates.io REST API
+         GET https://crates.io/api/v1/crates/{name}
+         Response: JSON with .crate.max_version field.
+         Rate limit: 1 req/sec, requires User-Agent header.
+      2. Python (pip): PyPI JSON API
+         GET https://pypi.org/pypi/{name}/json
+         Response: JSON with .info.version field (latest stable).
+         No rate limit. Use PyPI API as primary, pip index as fallback.
+      3. JavaScript/TypeScript (npm): npm registry API
+         GET https://registry.npmjs.org/{name}/latest
+         Response: JSON with .version field.
+         No auth required for public packages.
+      4. Go (go): Go module proxy
+         GET https://proxy.golang.org/{module}/@latest
+         Response: JSON with .Version field.
+      5. Java (maven): Maven Central Search API
+         GET https://search.maven.org/solrsearch/select?q=g:{group}+AND+a:{artifact}
+         Response: JSON with .response.docs[0].latestVersion field.
+      6. C#/.NET (nuget): NuGet API
+         GET https://api.nuget.org/v3-flatcontainer/{name}/index.json
+         Response: JSON with .versions array (last = latest).
+      7. Ruby (bundler): RubyGems API
+         GET https://rubygems.org/api/v1/gems/{name}.json
+         Response: JSON with .version field.
+
+      After all queries:
+      8. Update deprecated_patterns table with new findings:
+         - New entry if a dependency has a newer major version
+         - Severity = WARN for minor updates, BLOCK for known-deprecated
+         - Ecosystem field populated from the registry source
+      9. Write audit report to .elai_cc/metrics/dep_audit_{date}.toml
+
+    Implementation:
+      - Rust: new CLI subcommand (elai dep-audit)
+      - Uses reqwest (already a dep) to query all registry APIs
+      - Auto-detects which ecosystems are present by scanning for manifest
+        files (Cargo.toml, package.json, pyproject.toml, go.mod, pom.xml,
+        *.csproj, Gemfile) in the project directory
+      - Parses JSON responses, compares against manifest version specs
+      - Inserts/updates deprecated_patterns rows (with ecosystem field)
+      - Rate limiting: per-registry (crates.io 1/s, others as documented)
+      - Can be triggered by OS scheduler (Task Scheduler on Windows) or
+        by Phase 4H self-modification loop
+
+    Phase touched: cli/ (new subcommand), rules/ (deprecated_patterns table)
+    New types: DepAuditResult, DepAuditEntry
+
+  4.2 FRESHNESS DECAY RECALCULATION
+
+    Schedule: alongside dependency audit (same cron trigger).
+
+    Actions:
+      1. Scan all indexed files for last_modified timestamps
+      2. Recompute recency_decay in freshness_meta.db
+      3. Prune entries below minimum decay threshold (configurable, default 0.05)
+         from freshness_meta.db (RAG results for pruned files get default score)
+      4. Log pruned count to metrics
+
+    Phase touched: knowledge/src/freshness.rs
+
+  4.3 STEERING VECTOR REFRESH
+
+    Schedule: when deprecated_patterns table changes (triggered by 4.1).
+
+    Actions:
+      1. Generate new equal-length contrast pairs from deprecated_patterns table
+         using template: "The recommended {domain} library is {name}"
+      2. Run compute_steering_vector.py with new pairs (batch mode)
+      3. Write models/steering_vectors/modern_api.npz
+      4. Sidecar picks up on next request (no restart needed if lazy-loaded)
+
+    Phase touched: 3J.5 (steering vectors), metrics/
+
+
+NEW TYPES SUMMARY
+
+  Rust:
+    FreshnessConfig { half_life_days, doc_half_life_days, boost_norm,
+                      min_decay, max_boost }
+    DeprecatedPattern { pattern_id, ecosystem, deprecated_name, replacement_name,
+                        deprecated_since, severity, reason }
+    VersionGatePredicate (new variant in PredicateType enum)
+    SearchTriggerPayload { partial_text, detected_context, query }
+    DepAuditResult { entries: Vec<DepAuditEntry>, timestamp, total_outdated }
+    DepAuditEntry { name, ecosystem, current_version, latest_version, severity }
+
+  Python (sidecar):
+    ETCLogitsProcessor (HuggingFace LogitsProcessor subclass)
+    ETCCalibrationResult { threshold, p95_non_import, sample_count }
+
+  SQLite:
+    deprecated_patterns table in rules.db (schema in section 1.2)
+    freshness_meta.db: file_freshness table (schema in section 1.1)
+
+  Changed types:
+    ViolationRecord: +replacement_name: Option<String> (for VERSION_GATE auto-proposal)
+
+
+IMPLEMENTATION PRIORITY
+
+  Priority 0 (prerequisites — must complete before any Priority 1 work):
+    - Fix T1Hook to load rules from rules.db (BLOCK-3: current stub loads nothing)
+    - Fix T2Hook to parse AST (BLOCK-3: current stub returns Allow unconditionally)
+    - Implement C-04: replace manual token loop with model.generate() + LogitsProcessor
+    Order: T1/T2 fix -> C-04 fix -> then Priority 1 can begin.
+
+  Priority 1 (highest impact, least effort — wire into existing infrastructure):
+    1.2 VERSION_GATE predicate + deprecated_patterns table (rules engine exists)
+    1.3 Constitutional spec injection (context budget assembly exists)
+    3.1 T1 hook VERSION_GATE evaluation (after prerequisite fix)
+    Effort: ~2-3 phases of work. Addresses 23 of 48 audit findings (48%) that
+    are detectable by import/dependency pattern matching.
+
+  Priority 2 (high impact, moderate effort — extends existing sidecar):
+    2.2 Freshness steering vector (ActAdd infrastructure exists)
+    2.1 ETC entropy monitoring (after C-04 model.generate migration)
+    3.3 Deterministic-first auditor mode (auditor config exists)
+    Effort: ~3-4 phases. Adds during-generation and post-generation layers.
+    NOTE: 2.1 requires ETC calibration run before deployment (BLOCK-7).
+
+  Priority 3 (medium impact, new infrastructure):
+    1.1 Freshness scoring in RAG (sidecar SQLite + scoring formula)
+    3.2 T2 hook AST import extraction (tree-sitter stub exists)
+    4.1 Nightly dependency audit (crates.io/PyPI JSON APIs)
+    Effort: ~3-4 phases. Completes the maintenance loop.
+
+  Priority 4 (lower impact, highest complexity — vLLM-dependent):
+    2.3 Constrained decoding for imports (requires vLLM + XGrammar EBNF)
+    4.2 Freshness decay recalculation
+    4.3 Steering vector refresh automation
+    Effort: ~2-3 phases. Requires vLLM integration to be production-ready first.
+
+
+RESEARCH CITATIONS
+
+  Doc 1: Temporal Knowledge Degradation survey
+    - FreshQA: cache-first = 24% accuracy, live-crawl = 79% (55-point gap)
+    - Reinforced Hesitation: lambda=1-5 gives 60% abstention, <2% error (SWE sweet spot)
+    - TimeSPEC: multi-phase temporal verification architecture
+    - Shapley-DCLR: isolates decision-critical temporal contamination
+
+  Doc 2: Code Generation Staleness
+    - ICSE 2025 "LLMs Meet Library Evolution": 7 LLMs, 145 API mappings, AUP/DUR metrics
+    - ICML 2025 CodeSync: DPO/ORPO/SimPO insufficient for API freshness
+    - GitChameleon 2.0: version-conditioned generation benchmark (328 problems)
+    - InsertPrompt: pre-generation deprecated API injection (ICSE 2025)
+    - ReplaceAPI: post-generation AST-level deprecated call substitution
+    - Gemma-2B blueprint: AST KG + proactive tool-use + constrained decoding
+
+  Doc 3: Agentic Self-Verification
+    - LLM-as-Judge: 23% category disagreement, severity 6.2-9.1 variance on same code
+    - Agentless: 32% SWE-bench at $0.70/issue, deterministic > agentic for 2B
+    - ETC: entropy derivatives for uncertainty detection (generalized from
+      Decide-Then-Retrieve framework; "ETC Algorithm" is a synthesis label from
+      research summary, not a standalone cited paper — trace to specific source
+      before external publication)
+    - TTSV: steering vectors for "documentation adherence" + "modern API syntax"
+      (arxiv 2308.10248, Activation Addition)
+    - Probing-RAG: hidden state uncertainty probe triggers external search
+    - Constitutional spec-driven: 73% reduction in deprecated code + security defects
+    - Freshness scoring: exponential decay with logarithmic access boost
+
+
+INTEGRATION WITH EXISTING PHASE MAP
+
+  This design does NOT create new phases. It adds sub-steps to existing phases:
+
+  Phase 1E (pipeline): add FreshnessConfig to RRF scoring, new freshness.rs module
+  Phase 3E (context budget): inject constitutional constraints into PhaseSpec content
+  Phase 3F (rules engine): add VERSION_GATE predicate + deprecated_patterns table,
+    extend ViolationRecord with replacement_name
+  Phase 3J (sidecar): implement ETCLogitsProcessor (after C-04 model.generate fix),
+    add ETC calibration script
+  Phase 3J.5 (steering vectors): compute modern_api_preference vector with
+    equal-length template pairs
+  Phase 3J.10 (tiered hooks): fix T1/T2 stubs first, then wire VERSION_GATE into T1,
+    implement T2 AST extraction
+  Phase 3C (agent system): add deterministic_first config for auditor
+  Phase 4H (self-mod): trigger nightly dep audit + steering vector refresh
+
+  Suggested scheduling: after Phase 3J is fully complete and validated.
+  Can be implemented incrementally (Priority 0 -> 1 -> 2 -> 3 -> 4).
+  Decision doc required at workflow/reasoning/ before EXECUTING state (WARN-5).
+
+
+AUDIT RESOLUTION LOG
+
+  BLOCK-1 (ETC vs model.generate conflict):
+    RESOLVED. ETC reimplemented as LogitsProcessor subclass that observes entropy
+    without modifying scores. Search happens between generation calls, not mid-token.
+    Section 2.1 fully rewritten.
+
+  BLOCK-2 (unbounded access_boost):
+    RESOLVED. access_boost changed to ln(1 + count/norm) with hard cap at 2.0x.
+    Formula in section 1.1 updated with mathematical verification.
+
+  BLOCK-3 (T1 hook loads zero rules):
+    RESOLVED. Added Priority 0 prerequisite: fix T1/T2 stubs before any VERSION_GATE
+    work. Section 3.1 updated with explicit Step 0/1/2 ordering.
+
+  BLOCK-4 (negative lookahead regex not FSM-compatible):
+    RESOLVED. Replaced negative regex with positive JSON Schema allowlist and EBNF
+    grammar approach. Section 2.3 fully rewritten.
+
+  BLOCK-5 (cargo search not machine-parseable):
+    RESOLVED. Replaced cargo search with crates.io REST API (JSON). Replaced pip index
+    with PyPI JSON API. Section 4.1 fully rewritten.
+
+  BLOCK-6 (BM25 schema migration breaks existing indexes):
+    RESOLVED. Freshness metadata moved to separate sidecar SQLite (freshness_meta.db).
+    No tantivy or vector_cache schema changes. Section 1.1 implementation rewritten.
+
+  BLOCK-7 (ETC threshold unvalidated):
+    RESOLVED. Default changed to DISABLED (threshold = infinity). Mandatory calibration
+    procedure added. Calibration script specified. Section 2.1 threshold subsection
+    rewritten.
+
+  WARN-1 (unequal token length contrast pairs):
+    RESOLVED. All contrast pairs use equal-length template "The recommended {domain}
+    library is {name}". Hidden state extracted at last shared token position.
+    Section 2.2 contrast pairs rewritten.
+
+  WARN-2 (quadratic decay too gentle):
+    RESOLVED. Replaced with exponential decay (half-life 180 days). At 30 days: 89%
+    weight (was 99.3%). Section 1.1 formula replaced.
+
+  WARN-3 (VERSION_GATE misses Cargo.toml):
+    RESOLVED. Dual regex sets: source imports + TOML dependency declarations.
+    Sections 1.2 and 3.1 updated.
+
+  WARN-4 (self-discovery incomplete for VERSION_GATE):
+    RESOLVED. ViolationRecord extended with replacement_name: Option<String>.
+    Section 1.2 self-discovery integration rewritten.
+
+  WARN-5 (no decision doc):
+    ACKNOWLEDGED. Note added to Integration section: decision doc required before
+    EXECUTING state.
+
+  WARN-6 (pip index versions requires pip >= 25.1):
+    RESOLVED. Primary source changed to PyPI JSON API (no pip version dependency).
+    pip index kept as fallback only. Section 4.1 rewritten.
+
+  WARN-7 (constitutional constraints in fixed Slot 2):
+    RESOLVED. Clarified: constraints injected INTO PhaseSpec content at assembly time,
+    measured by token counter, truncated at 200 tokens. Not a separate injection point.
+    Section 1.3 rewritten.
+
+  WARN-8 (ungrounded 60% claim):
+    RESOLVED. Replaced with grounded figure: "23 of 48 audit findings (48%)" with
+    derivation from outdated-tech-audit.md finding categories.
+
+
+========================================================================
+REASONING ARCHITECTURE INTEGRATION (reasoning-architecture-design.txt)
+========================================================================
+
+The anti-staleness layers integrate with the 6-layer externalized reasoning
+pipeline at three points:
+
+1. LAYER 1 (DETERMINISTIC) + VERSION_GATE:
+   Reasoning Layer 1 FailureTaxonomy includes MISSING_IMPORT and UNDEFINED_SYMBOL.
+   When Layer 1 localizes an import error, it queries deprecated_patterns before
+   generating a fix template. If the attempted import matches a deprecated_name,
+   the fix template uses the replacement_name instead:
+     Model tried: "use blake2::..."
+     Layer 1 detects: deprecated_patterns match (blake2 -> blake3)
+     Fix instruction: "Use blake3 instead of blake2. Import: use blake3::..."
+   This catches staleness errors BEFORE they reach hooks or auditor.
+   Projected: resolves 30-40% of anti-staleness violations at zero LLM cost.
+
+2. ETC (SECTION 2.1) + GG SIGNAL 3:
+   ETC entropy monitoring (ETCLogitsProcessor) produces entropy trend data
+   during generation. reasoning-architecture-design.txt Layer 4 (AB-MCTS) uses
+   this as GG Signal 3: if entropy spikes mid-generation, the model is uncertain
+   and likely hallucinating an API name. Early termination prevents wasting a
+   retry on garbage output. ETC and GG share the same entropy data source.
+
+3. STEERING VECTORS (SECTION 2.2) + REPAIR GENERATION:
+   When the reasoning pipeline triggers repair retries (Layers 2-4),
+   the freshness steering vector (modern_api_preference) is active during
+   ALL repair generations. This biases the model toward modern APIs even
+   when generating code under exploration (temperature 1.0 repair retries).
+   The steering vector is a forward hook — it applies regardless of
+   generation parameters, providing a persistent anti-staleness baseline.
+
+4. CONSTRAINED DECODING (SECTION 2.3) + AB-MCTS:
+   AB-MCTS branches (Layer 4) use the same constrained decoding for imports
+   as first-attempt generation. The positive allowlist (JSON Schema or EBNF)
+   prevents deprecated imports from appearing in ANY branch candidate.
+   This is especially important because AB-MCTS uses temperature 1.0,
+   which would otherwise increase the probability of deprecated tokens.
+
+CROSS-REFERENCES:
+  - reasoning-architecture-design.txt: Layer 1 fix templates, GG signals
+  - token-efficiency-design.txt section 5: reasoning pipeline runs before
+    structural retries, both share the same MistakeBook for tracking

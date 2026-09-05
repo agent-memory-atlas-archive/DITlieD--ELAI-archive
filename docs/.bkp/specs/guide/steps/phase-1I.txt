@@ -1,0 +1,343 @@
+PHASE 1I: RESILIENCE LAYER (circuit breaker, degradation, startup, tracing)
+Prerequisites: Phase 1E complete (query pipeline exists) AND Phase 1G complete (cross-encoder exists for semaphore work)
+  BLOCKING NOTE: implementation-guide.txt dep graph (L141) shows 1E -> 1I only.
+  This is incomplete. Phase 1I also requires 1G because step 1I.5 adds concurrency
+  control around the cross-encoder delivered in 1G. The dep graph MUST be updated
+  to show both 1E -> 1I and 1G -> 1I before this phase begins implementation.
+  Without this fix, an implementer following only the dep graph will start 1I after
+  1E but before 1G, causing compile failures at step 1I.5.
+  ACTION REQUIRED: update implementation-guide.txt L141 to add 1G -> 1I edge.
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Make the knowledge pipeline survive individual component failures gracefully.
+Circuit breakers, degradation cascade, startup readiness, query validation,
+cross-encoder concurrency control, pipeline tracing, index versioning.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/knowledge.txt             Sections 5-8 (degradation, circuit breaker,
+                                               startup readiness, tree-sitter fallback)
+  docs/specs/crates/knowledge.txt             Sections 10-12 (index versioning,
+                                               cross-encoder concurrency, query tracing)
+  docs/specs/architecture-overview.txt        Section 4 (readiness_check -> ReadinessStatus)
+
+
+STEPS
+
+  1I.1 CIRCUIT BREAKER
+    PRE_GATE:
+      - cargo test --lib passes (Phase 1G baseline intact)
+      - knowledge crate compiles: cargo check -p elai_knowledge
+      - Cross-encoder reranker exists (Phase 1G deliverable): grep -r "cross.encoder\|rerank" .elai_cc/crates/knowledge/src/ returns matches
+      - ClockProvider trait exists (entropy quarantine): grep -r "ClockProvider" .elai_cc/crates/core/src/ returns trait definition
+    TASK:
+      - Implement EmbeddingCircuitBreaker struct with states: CLOSED, OPEN, HALF_OPEN
+      - Independent instance per ONNX model (GraphCodeBERT, Granite, cross-encoder, SPLADE)
+      - Config: failure_threshold=3 (transient), failure_window=60s, half_open_timeout_base=30s
+      - All time access via ClockProvider (entropy quarantine, deterministic testing)
+      - Failure classification (Azure Architecture Center pattern):
+          TRANSIENT (timeout, temporary OOM): count toward threshold (3 needed to open)
+          PERMANENT (segfault, model file missing, invalid ONNX): open immediately after 1 failure
+          Classification via error type enum, not string matching
+      - Exponential backoff for successive OPEN timeouts (AWS Builders Library pattern):
+          First OPEN: 30s. Second consecutive OPEN: 60s. Third: 120s. Cap: 120s.
+          Deterministic jitter per model (hash of model_id, not random) to prevent
+          thundering herd when multiple breakers recover simultaneously
+      - State NOT checkpointed (resets to CLOSED on restart)
+      - On OPEN: skip model, return fallback immediately
+      - On HALF_OPEN: allow limited probe calls. Require 2 consecutive successes before
+        CLOSED (Azure pattern: success counter with threshold prevents premature recovery
+        on flaky models). Any failure -> OPEN (reset timer, increase backoff).
+      - Fresh ONNX InferenceSession for HALF_OPEN probes (do not reuse potentially-corrupted
+        session — ONNX Runtime issues #20043/#20354 show sessions can crash or hang)
+    DETERMINISTIC_CHECK:
+      - cargo test circuit_breaker -- passes
+      - grep -r "EmbeddingCircuitBreaker" .elai_cc/crates/knowledge/src/ returns struct definition
+      - grep -r "CLOSED\|OPEN\|HALF_OPEN" .elai_cc/crates/knowledge/src/ returns enum variants
+    ADVERSARIAL:
+      - If failure_window clock uses wall time instead of injectable time source, tests become non-deterministic. Test: inject mock clock, advance by 60s, verify breaker opens.
+      - If circuit breaker state is shared across models, one model failure takes down all models. Test: fail GraphCodeBERT only, assert Granite breaker remains CLOSED.
+      - If HALF_OPEN probe succeeds once but model is flaky, premature CLOSED causes immediate re-open oscillation. Test: 1 success then 1 failure in HALF_OPEN -> stays HALF_OPEN or re-opens (not CLOSED).
+      - If all breakers use fixed timeout and recover simultaneously, all ONNX models reload at once causing GPU OOM. Test: 4 breakers with same failure time get different HALF_OPEN times (jitter).
+      - If permanent error (segfault) is classified as transient, 2 more doomed retries waste time. Test: permanent error opens breaker after 1 call, not 3.
+      - If HALF_OPEN reuses corrupted ONNX session, probe always fails -> breaker never recovers. Test: after OPEN, probe creates new InferenceSession (mock verifies new session constructed).
+    ACCEPTANCE:
+      - 3 transient failures within 60s opens breaker: test asserts state==OPEN after 3rd timeout error
+      - 1 permanent failure opens immediately: test asserts state==OPEN after 1st segfault/missing-model error
+      - Failures spread across >60s stay CLOSED: test with 3 failures at 0s, 61s, 122s
+      - HALF_OPEN requires 2 consecutive successes for CLOSED: 1 success -> still HALF_OPEN, 2nd success -> CLOSED
+      - HALF_OPEN failure after 1 success resets counter: success then failure -> OPEN, counter reset
+      - Exponential backoff: first OPEN=30s, second=60s, third=120s (mock clock, verify timeout values)
+      - Jitter is deterministic: same model_id always produces same jitter offset
+      - Different models get different jitter: 4 models produce 4 distinct HALF_OPEN times
+      - Fresh session on probe: mock verifies InferenceSession::new called during HALF_OPEN, not reused
+      - Each model has independent breaker: test fails one model, asserts others remain CLOSED
+    GROUNDING:
+      - "3 failures within 60s" -> GROUNDED: knowledge.txt:L139
+      - "HALF_OPEN after 30s timeout" -> GROUNDED: knowledge.txt:L141-142 (base value, now with backoff)
+      - "State NOT checkpointed" -> GROUNDED: knowledge.txt:L151
+      - "Independent per ONNX model" -> GROUNDED: knowledge.txt:L135
+      - "Success counter with threshold in HALF_OPEN" -> GROUNDED: Azure Architecture Center circuit breaker diagram (success count threshold before CLOSED)
+      - "Exponential backoff with jitter" -> GROUNDED: AWS Builders Library "Timeouts, retries and backoff with jitter" + Azure "increasing time-out timer"
+      - "Failure classification transient vs permanent" -> GROUNDED: Azure Architecture Center "Types of exceptions" section
+      - "Fresh session on probe" -> GROUNDED: ONNX Runtime issues #20043 (session crashes), #20354 (session hangs)
+
+
+  1I.2 SEARCHMODE CASCADE AND DEGRADATION
+    PRE_GATE:
+      - 1I.1 circuit breaker compiles and tests pass
+      - BM25 layer exists (Phase 1B deliverable): grep -r "tantivy\|bm25" .elai_cc/crates/knowledge/src/ returns matches
+      - Vector search exists (Phase 1C deliverable): grep -r "vector.*search\|embed" .elai_cc/crates/knowledge/src/ returns matches
+    TASK:
+      - Implement SearchMode enum: HYBRID, SPARSE_ONLY, BM25_ONLY
+      - Cascade trigger: any layer failure drops to next mode
+      - Fallback chain per model:
+          GraphCodeBERT fail -> TEXT-vector-only (Granite)
+          Granite fail -> CODE-vector-only (GraphCodeBERT)
+          Both fail -> SPARSE_ONLY (BM25 + SPLADE)
+          SPLADE fail -> BM25_ONLY
+          Cross-encoder fail -> skip reranking, use vector similarity scores
+      - Mode restored automatically when failed component passes health check
+        Health check mechanism: circuit breaker HALF_OPEN probe (see 1I.1). When probe
+        succeeds, breaker transitions CLOSED, cascade re-evaluates available layers.
+        Polling: driven by circuit breaker half_open_timeout (30s), not a separate timer.
+      - Every mode change logged to SSB as action_type='knowledge_degradation'
+    DETERMINISTIC_CHECK:
+      - cargo test search_mode -- passes
+      - cargo test degradation -- passes
+      - grep -r "SearchMode" .elai_cc/crates/knowledge/src/ returns enum with 3 variants
+      - grep -r "knowledge_degradation" .elai_cc/crates/knowledge/src/ returns SSB logging
+    ADVERSARIAL:
+      - If mode restoration races with new failures, mode can oscillate between HYBRID and SPARSE_ONLY. Test: simulate flapping model (fail-recover-fail in <1s), assert mode stabilizes within bounded time.
+      - If SSB logging blocks on I/O, degradation itself is delayed. Test: assert mode switch completes before SSB write (async logging).
+      - If SPLADE is disabled (conditional Phase 1H), SPARSE_ONLY has no SPLADE component. Test: with SPLADE disabled, SPARSE_ONLY == BM25_ONLY, cascade skips straight.
+    ACCEPTANCE:
+      - Kill embedding model -> search returns BM25 results within 100ms of failure detection
+      - Mode auto-restores when model health check passes: test kills model, restores, asserts mode returns to HYBRID
+      - SSB contains knowledge_degradation event for every mode change: test queries SSB after cascade
+      - Never total outage: BM25_ONLY is always reachable (tantivy has no ONNX dependency)
+    GROUNDING:
+      - "HYBRID -> SPARSE_ONLY -> BM25_ONLY" -> GROUNDED: knowledge.txt:L117-120
+      - "Mode restored when health check passes" -> GROUNDED: knowledge.txt:L123
+      - "Logged to SSB as knowledge_degradation" -> GROUNDED: knowledge.txt:L124
+      - "GraphCodeBERT fail -> TEXT-vector-only" -> GROUNDED: knowledge.txt:L145-149
+
+
+  1I.3 QUERY VALIDATOR
+    PRE_GATE:
+      - knowledge crate compiles: cargo check -p elai_knowledge
+    TASK:
+      - Implement QueryValidator that runs before any embedding call
+      - Reject: empty queries (zero tokens after whitespace split)
+      - Reject: queries > 10,000 chars
+      - Reject: queries containing null bytes or control characters
+      - Validation latency: <1ms (no model invocation)
+    DETERMINISTIC_CHECK:
+      - cargo test query_valid -- passes
+      - grep -r "QueryValidator" .elai_cc/crates/knowledge/src/ returns struct
+      - grep -r "10.000\|10_000\|MAX_QUERY" .elai_cc/crates/knowledge/src/ returns length constant
+    ADVERSARIAL:
+      - If validation runs after embedding call starts, OOM can occur on 10MB query before rejection. Test: assert validation rejects 10,001-char query without any ONNX model call (mock model that panics if called).
+      - If "empty" check only counts chars (not tokens), whitespace-only queries pass and waste embedding compute. Test: query of 100 spaces is rejected.
+      - If control character check misses \r\n (legitimate), valid multi-line queries are rejected. Test: query with \n passes validation.
+    ACCEPTANCE:
+      - Empty string rejected: QueryValidator::validate("") returns Err
+      - 10,001-char string rejected: QueryValidator::validate(&"a".repeat(10_001)) returns Err
+      - Null byte rejected: QueryValidator::validate("hello\0world") returns Err
+      - Control char rejected: QueryValidator::validate("hello\x07world") returns Err
+      - Valid query accepted: QueryValidator::validate("fn main()") returns Ok
+      - Newline in query accepted: QueryValidator::validate("fn\nmain()") returns Ok
+      - Validation completes in <1ms: benchmark or timing assert
+    GROUNDING:
+      - "Max query length: 10,000 chars" -> GROUNDED: knowledge.txt:L127
+      - "Reject null bytes and control characters" -> GROUNDED: knowledge.txt:L128
+      - "Reject empty queries" -> GROUNDED: knowledge.txt:L129
+      - "Validation runs in <1ms" -> GROUNDED: knowledge.txt:L130
+
+
+  1I.4 STARTUP READINESS
+    PRE_GATE:
+      - 1I.1 circuit breaker exists
+      - 1I.2 SearchMode cascade exists
+    TASK:
+      - Implement startup readiness sequence:
+          1. Load ONNX models (GraphCodeBERT, Granite, cross-encoder, optionally SPLADE)
+          2. Open SQLite databases (DKG graph, vector cache, BM25 index)
+          3. Run canary query: embed("fn main()") + BM25 search("main") + rerank
+          4. All layers must return non-error within 5s
+          5. Canary embedding drift check: compute cosine similarity of embed("fn main()")
+             against a reference vector stored at build time. If similarity < 0.85, model
+             weights are likely corrupted or wrong version loaded. Fail canary, enter DEGRADED.
+             Reference vector generated once during first successful startup and persisted
+             in index_version.toml as canary_reference_vec.
+             Evidence: embedding audit best practices — a model that loads but produces
+             garbage embeddings silently corrupts all downstream retrieval.
+          6. Report ReadinessStatus to orchestrator
+      - ReadinessStatus enum: READY, DEGRADED, UNAVAILABLE
+        READY: all layers passed canary query
+        DEGRADED: ONNX models failed but BM25 operational -> BM25_ONLY SearchMode
+        UNAVAILABLE: BM25 also failed (SQLite corrupt, disk error) -> total outage
+        Invariant: DEGRADED implies SearchMode==BM25_ONLY (not HYBRID or SPARSE_ONLY)
+      - If startup fails after 3 retries: enter DEGRADED mode (BM25_ONLY), log WARNING
+      - If BM25 also fails: enter UNAVAILABLE, log ERROR, orchestrator blocks all transitions
+      - Orchestrator gates FSM: IDLE -> PLANNING blocked until knowledge engine READY or DEGRADED
+        UNAVAILABLE blocks all FSM transitions (no work possible without any search)
+    DETERMINISTIC_CHECK:
+      - cargo test startup_readiness -- passes
+      - cargo test canary_query -- passes
+      - grep -r "ReadinessStatus" .elai_cc/crates/knowledge/src/ returns enum with 3 variants
+      - grep -r "readiness_check" .elai_cc/crates/knowledge/src/ returns fn implementation
+    ADVERSARIAL:
+      - If canary query hangs (ONNX model deadlock), startup blocks forever. Test: canary has 5s timeout, startup returns DEGRADED after timeout.
+      - If ONNX model loads but produces garbage embeddings (wrong weights, corrupted file), false READY reported and all retrieval silently degrades. Test: swap model with random-weight ONNX, canary drift check detects similarity < 0.85, returns DEGRADED.
+      - If reference vector doesn't exist yet (first startup), drift check can't run. Test: missing reference -> skip drift check, generate and persist reference after successful canary.
+      - If 3 retries run sequentially without backoff, startup takes 15s minimum on transient failure. Test: verify total startup time <20s even with 3 retries.
+    ACCEPTANCE:
+      - Healthy system: readiness_check returns READY within 5s (integration test with loaded models)
+      - All ONNX models fail: readiness_check returns DEGRADED after 3 retries, BM25_ONLY mode active
+      - BM25 also fails: readiness_check returns UNAVAILABLE (not DEGRADED)
+      - UNAVAILABLE blocks FSM: test asserts IDLE -> PLANNING transition rejected when UNAVAILABLE
+      - Canary query timeout: readiness_check returns DEGRADED within 5s (not hanging)
+      - Canary drift detection: cosine_sim(canary_vec, reference_vec) < 0.85 -> DEGRADED (not READY)
+      - First startup (no reference): drift check skipped, reference vector persisted after success
+      - DEGRADED implies BM25_ONLY: test asserts SearchMode==BM25_ONLY when ReadinessStatus==DEGRADED
+      - ReadinessStatus is READY|DEGRADED|UNAVAILABLE: grep confirms enum has exactly 3 variants
+    GROUNDING:
+      - "canary: embed('fn main()') + BM25 search('main') + rerank" -> GROUNDED: knowledge.txt:L159
+      - "within 5s" -> GROUNDED: knowledge.txt:L160
+      - "3 retries then BM25_ONLY" -> GROUNDED: knowledge.txt:L164
+      - "ReadinessStatus: READY | DEGRADED | UNAVAILABLE" -> GROUNDED: architecture-overview.txt:L99
+      - "Estimated startup 5-15s" -> GROUNDED: knowledge.txt:L165
+      - "Canary embedding drift check" -> GROUNDED: embedding audit best practices (dev.to/aairom "Decoding AI's Inner Language: How to Test Your Embedding Models") — models that load but produce wrong embeddings silently corrupt retrieval
+
+
+  1I.5 CROSS-ENCODER SEMAPHORE
+    PRE_GATE:
+      - Cross-encoder reranker exists and compiles (Phase 1G deliverable)
+      - cargo test rerank -- passes (1G tests still green)
+    TASK:
+      - Add tokio::Semaphore(1) guard around cross-encoder ONNX session access
+      - One reranking at a time. Queued requests wait in bounded channel (capacity 4).
+      - Concurrency model: Semaphore(1) + bounded_channel(4) = max 5 in-flight (1 active + 4 queued)
+      - 6th concurrent request overflows: returns unranked results immediately
+      - Batching optimization: if multiple requests queued, merge candidate sets and rerank once
+    DETERMINISTIC_CHECK:
+      - cargo test semaphore -- passes
+      - cargo test rerank_queue -- passes
+      - grep -r "Semaphore" .elai_cc/crates/knowledge/src/ returns Semaphore(1) usage
+    ADVERSARIAL:
+      - If semaphore is not acquired before ONNX session access, concurrent rerank calls corrupt session state. Test: spawn 10 concurrent rerank calls, assert no panic/corruption.
+      - If queue overflow silently drops results instead of returning unranked, caller gets empty response. Test: overflow returns original candidates in input order (unranked, not empty).
+      - If batching merges candidate sets but returns results in wrong order per-query, callers get mixed results. Test: two concurrent queries with disjoint candidates, assert each caller gets only their candidates back.
+    ACCEPTANCE:
+      - Semaphore serializes access: 2 concurrent reranks, second starts after first finishes (timing assert)
+      - 6th concurrent request overflows: 1 active + 4 queued = 5 in-flight, 6th returns unranked immediately
+      - Overflow returns candidates (not empty): test asserts result.len() == input.len() on overflow
+      - Batching merges correctly: 2 queued requests with 10 candidates each -> 1 rerank call with 20 candidates
+      - Batching segregates results: each caller receives only their original candidates (reranked), not the merged set
+    GROUNDING:
+      - "tokio::Semaphore(1)" -> GROUNDED: knowledge.txt:L219
+      - "Max queue depth: 4" -> GROUNDED: knowledge.txt:L220
+      - "Overflow returns unranked results" -> GROUNDED: knowledge.txt:L220
+      - "Merge candidate sets and rerank once" -> GROUNDED: knowledge.txt:L221
+      - "<50ms per reranking" -> GROUNDED: knowledge.txt:L222
+
+
+  1I.6 QUERY TRACE
+    PRE_GATE:
+      - 1I.1 through 1I.5 compile (circuit breaker, cascade, validator, readiness, semaphore all exist)
+      - tracing crate in Cargo.toml: grep "tracing" .elai_cc/crates/knowledge/Cargo.toml returns dependency
+    TASK:
+      - Implement QueryTrace struct and StageTrace struct per knowledge.txt:L229-244
+      - QueryTrace fields: query_id (UUID), stages (Vec<StageTrace>), total_latency_ms, mode (SearchMode), result_count
+      - StageTrace fields: stage (String), latency_ms, input_count, output_count, error (Option<String>), circuit_breaker_state (Option<String>)
+      - Stages: "bm25", "splade", "code_vector", "text_vector", "pagerank", "catrag", "arag", "rerank", "token_fit"
+      - Emit via tracing crate at DEBUG level
+      - Aggregated per-session statistics (p50/p99 per stage) stored in SSB at session end
+      - NOT stored in SSB per-query (too verbose)
+    DETERMINISTIC_CHECK:
+      - cargo test query_trace -- passes
+      - grep -r "QueryTrace" .elai_cc/crates/knowledge/src/ returns struct definition
+      - grep -r "StageTrace" .elai_cc/crates/knowledge/src/ returns struct definition
+      - grep -r "tracing::debug\|tracing::event" .elai_cc/crates/knowledge/src/ returns trace emission
+    ADVERSARIAL:
+      - If QueryTrace is constructed but never emitted, tracing is dead code. Test: run query with tracing subscriber, assert DEBUG event contains QueryTrace data.
+      - If latency measurement uses wall clock, traces are non-deterministic in CI. Test: latency fields are populated (>0) but exact values not asserted.
+      - If circuit_breaker_state is not populated in StageTrace, degradation debugging is blind. Test: trigger circuit breaker open, assert StageTrace.circuit_breaker_state == Some("OPEN").
+    ACCEPTANCE:
+      - Every query() call emits exactly one QueryTrace: test runs 3 queries, captures 3 trace events
+      - StageTrace covers all active stages: HYBRID mode trace has entries for bm25, code_vector, text_vector, rerank at minimum
+      - Degraded mode trace reflects mode: BM25_ONLY trace has mode==BM25_ONLY and only "bm25" stage
+      - p50/p99 aggregation computes correctly: test with known latencies, assert expected percentiles
+    GROUNDING:
+      - "QueryTrace struct" -> GROUNDED: knowledge.txt:L230-236
+      - "StageTrace struct" -> GROUNDED: knowledge.txt:L237-244
+      - "DEBUG level, not SSB" -> GROUNDED: knowledge.txt:L246
+      - "Aggregated stats in SSB at session end" -> GROUNDED: knowledge.txt:L247
+      - "9 stages" -> GROUNDED: knowledge.txt:L238
+
+
+  1I.7 INDEX VERSION SCHEMA
+    PRE_GATE:
+      - knowledge crate compiles: cargo check -p elai_knowledge
+      - Project directory structure exists: .elai_cc/projects/ path convention established
+    TASK:
+      - Implement index_version.toml read/write at .elai_cc/projects/{id}/index_version.toml
+      - Schema: [index] version, dkg_schema_version, vector_dimensions (code=768, text=384), bm25_format, created_at
+      - On upgrade: compare versions, trigger full rebuild or BM25-only rebuild or reuse
+      - Archive old index before rebuild to index_backup_{version}/
+      - User notified before rebuild (not silent)
+    DETERMINISTIC_CHECK:
+      - cargo test index_version -- passes
+      - grep -r "index_version" .elai_cc/crates/knowledge/src/ returns schema handling
+      - Test writes index_version.toml, re-reads, asserts round-trip correctness
+    ADVERSARIAL:
+      - If version file is missing (first run), code panics instead of creating default. Test: absent file -> create default version 1.
+      - If version file is corrupted (invalid TOML), index is silently reused with wrong schema. Test: corrupted file -> full rebuild + warning.
+      - If archive fails (disk full), rebuild proceeds and destroys old index. Test: archive failure -> abort rebuild, return error.
+    ACCEPTANCE:
+      - Round-trip: write index_version.toml, read back, all fields match
+      - Missing file: creates default with version=1 (no panic)
+      - Version mismatch: triggers rebuild notification (not silent)
+      - Archive created before rebuild: test asserts index_backup_{version}/ exists after upgrade
+    GROUNDING:
+      - "index_version.toml schema" -> GROUNDED: knowledge.txt:L195-201
+      - "Full rebuild on schema change, BM25 only on format change" -> GROUNDED: knowledge.txt:L203-207
+      - "Old index archived" -> GROUNDED: knowledge.txt:L208
+      - "User notified" -> GROUNDED: knowledge.txt:L211
+
+
+VERIFY
+  - cargo check -p elai_knowledge compiles with all new types
+  - cargo test --lib passes (no regressions from Phase 1G)
+  - Project isolation under degradation: query with project_id=A in BM25_ONLY mode
+    never returns results from project B's index (prior phases 1A/1B/1C own isolation
+    implementation; this verifies isolation holds under degraded SearchMode)
+  - Vector cache invalidation under degradation: file_write event invalidates cache
+    entries even when in SPARSE_ONLY or BM25_ONLY mode (no stale embeddings on recovery)
+  NOTE: project isolation invariants (knowledge.txt:L274-279) are owned by phases
+  1A (DKG), 1B (BM25), 1C (vectors). This phase verifies they hold under degradation.
+
+MEASURE
+  - Degradation latency: time from ONNX failure injection to SearchMode switch (<100ms target)
+  - Canary query latency on healthy system (<5s)
+  - Circuit breaker recovery time: OPEN -> HALF_OPEN -> CLOSED (<35s typical)
+  - Cross-encoder semaphore contention: p99 queue wait time under load
+  - QueryTrace overhead: <1ms per query (tracing event emission cost)
+  - Index version check latency: <10ms (TOML parse + comparison)
+
+EXIT CRITERIA
+  Integration test: full query pipeline on elai_cc's own codebase returns results.
+  Pipeline survives individual ONNX model failure without total outage.
+  Circuit breaker transitions through all 3 states correctly.
+  Degradation cascade reaches BM25_ONLY and auto-recovers.
+  Startup readiness gate blocks FSM until READY or DEGRADED.
+  Cross-encoder semaphore prevents concurrent ONNX corruption.
+  QueryTrace emitted for every query at DEBUG level.
+  Index version migration preserves old index as backup.
+
+PHASE 1 OVERALL MEASUREMENTS
+  Index build time, query latency per layer, token savings, dual-vector vs single-vector
+  accuracy, reranker precision gain, SPLADE recall delta, degradation cascade correctness,
+  startup readiness latency.

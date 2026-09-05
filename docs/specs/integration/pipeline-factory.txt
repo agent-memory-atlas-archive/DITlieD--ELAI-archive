@@ -1,0 +1,296 @@
+INTEGRATION: PIPELINE FACTORY
+Source: design_document.txt PART 15 (all), PART 23 (Research Agent),
+  PART 25 (Feasibility Probe), PART 26 (Plan Elaboration), PART 29 (QualitySpec).
+
+
+1. PURPOSE
+
+  elai_cc is a universal automation engine, not a code assistant.
+  User provides ANY goal. System DESIGNS the pipeline, BUILDS it, EXECUTES it.
+  LLM handles creative/written work. Everything else is deterministic infrastructure.
+
+
+2. THREE-LAYER ARCHITECTURE
+
+  L1 — PIPELINE DESIGNER (LLM-driven, GRC-grounded):
+    Agent role: Designer (distinct from Executor — see orchestrator.txt S14).
+    Input: human task description + SystemConstraints (including model_max_context,
+      available_for_work, avg_file_tokens, avg_test_tokens).
+    L1 Observe step includes: "Context budget: {available_for_work} tokens. Each file
+      averages {avg_file_tokens} tokens. Phase must touch at most
+      {floor(available_for_work * 0.4 / avg_file_tokens)} files."
+    Bootstrap: when knowledge index has <10 files, avg_file_tokens defaults to 150,
+      avg_test_tokens defaults to 80 (from elai_cc.toml [planning.sizing]).
+    GRC decomposes into sub-questions, each answered via VERIFIED sources.
+    If needed rule set doesn't exist -> research, propose, auditor review, install.
+    Output: PipelineSpec (TOML/msgpack) + QualitySpec.
+
+  L2 — PIPELINE BUILDER (deterministic, no LLM):
+    Input: PipelineSpec.
+    Validates components exist, creates FSM states, configures agents,
+    installs rules, estimates resources, generates dependency graph,
+    creates test harness skeleton.
+    Output: ExecutablePipeline in .elai_cc/pipelines/{id}/
+
+  L3 — PIPELINE EXECUTOR (existing FSM + agents + rules):
+    Input: ExecutablePipeline. Runs the execution loop (INTERACTIVE or AUTONOMOUS).
+
+
+3. PLAN ELABORATION PIPELINE (5-stage)
+
+  Stage 1 — RESEARCH: Research Agent + GRC. Output: Research Report (structured).
+    >= 1 BENCHMARK or OFFICIAL_DOCS grounded alternative per capability.
+    All-TRAINING capabilities flagged HIGH_RISK -> require human input in both modes.
+
+  Stage 2 — PLAN ASSEMBLY: L1 Designer + GRC. Output: PipelineSpec with grounded steps.
+    L1 can ONLY reference alternatives from Research Report.
+    L1 receives SystemConstraints with model context budget and file size averages.
+
+  Stage 3 — STRUCTURAL VALIDATION: L2, pure Rust, deterministic.
+    Tools exist, models in registry, no cycles, resources fit hardware.
+    Includes Kahn's algorithm cycle detection before producing ExecutablePipeline.
+    Cyclic dependency -> ValidationError::CyclicDependency with cycle path.
+
+  Stage 3.5 — PHASE SIZING (L2, deterministic, no LLM):
+    Estimates phase_complexity from structural proxies:
+      phase_complexity = files_touched * avg_file_tokens
+                       + test_count * avg_test_tokens
+                       + contract_count * CONTRACT_OVERHEAD (default 200)
+    available_for_work computed from context budget allocator formula.
+    Split trigger: phase_complexity > available_for_work * SPLIT_RATIO (0.6).
+    Split by contract boundaries (skeleton input/output contracts), then directory proximity.
+    Max split depth: 2 (matches Phase 4G SPLIT_TASK limit).
+    Merge: adjacent phases only, no external dependents between them.
+    preserve_contracts: sub-phases inherit parent's input/output contracts.
+
+  Stage 4 — FEASIBILITY PROBE: empirical stub testing of novel steps.
+    < 50 line stubs, max 3 alternatives per step before escalation.
+
+
+4. RESEARCH AGENT — design PART 23
+
+  Role: researcher. Model: cloud preferred or Gemma4 + web search.
+  GRC budget: high (10/1200).
+  Process: decompose -> per-capability structured search -> rank by evidence quality.
+  Evidence levels: BENCHMARK > OFFICIAL_DOCS > BLOG_POST > TRAINING.
+  Output: structured Research Report (not prose).
+
+
+5. TREE-STRUCTURED RESEARCH ARCHITECTURE (Deep Research Engine)
+
+  NOT a single-shot web search. Tree-structured parallel expansion with
+  speculative execution and dual-threshold convergence.
+  Verified pattern from ALL production systems (Gemini, OpenAI, Perplexity)
+  per arxiv 2508.05668, 2508.12752, 2506.18096.
+  Tree structure and adaptive resource allocation per arxiv 2510.05145 (FlashResearch).
+
+  struct ResearchTree {
+      plan: ResearchPlan,
+      state: SharedResearchState,
+      root: ResearchNode,
+      breadth_factor: u32,          // parallel child queries per node, default: 3
+      depth_limit: u32,             // max tree depth, default: 5
+      max_iterations: u32,          // per-node iteration cap, default: 10
+      phi_min: f64,                 // goal satisfaction threshold, default: 0.7
+      psi_min: f64,                 // quality threshold, default: 0.6
+      speculative_depth: u32,       // look-ahead execution depth, default: 2
+  }
+
+  ResearchNode {
+      question: String,
+      parent: Option<NodeId>,
+      children: Vec<NodeId>,
+      phi: f64,                     // goal satisfaction score [0,1]
+      psi: f64,                     // quality score [0,1]
+      status: NodeStatus,           // Pending | Active | Converged | Pruned
+  }
+
+  Per-node research loop:
+    1. FORMULATE: GRC generates search query from sub-question + prior findings
+    2. SEARCH: web search tool returns top N results (configurable, default 10)
+    3. EXTRACT: fetch page content, sampling-based relevance filtering
+       (read first 500 tokens, score, read full if above threshold)
+    4. REFLECT: GRC evaluates new findings:
+       - Goal satisfaction (phi): does this answer the sub-question? [0,1]
+       - Quality (psi): is the answer well-sourced and consistent? [0,1]
+       - Contradictions with prior findings?
+       - New sub-questions raised? -> spawn child nodes (bounded by breadth_factor)
+       - Information gain: new unique facts vs already known
+    5. CONVERGE, EXPAND, OR ITERATE:
+       - phi >= phi_min AND psi >= psi_min: node converged, move to children/siblings
+       - phi < phi_min: sub-question not answered, iterate or spawn children
+       - contradictions: formulate disambiguation query as child node
+       - depth >= depth_limit: stop expansion, report partial with confidence
+       - max_iterations reached: report partial with confidence level
+
+  Speculative execution (FlashResearch-derived):
+    When a node's preliminary findings (phi > 0.4) suggest likely child questions,
+    begin researching the top speculative_depth children BEFORE the parent fully
+    converges. If the parent changes direction, speculative children are pruned.
+    Cost: wasted compute on abandoned branches (bounded by speculative_depth * breadth_factor).
+    Benefit: 30-50% wall-clock reduction on deep research queries (FlashResearch benchmark).
+    Local models: speculative execution disabled (single GPU, sequential only).
+    Cloud APIs: speculative execution enabled (parallel requests, rate-limit aware).
+
+  Adaptive resource allocation:
+    breadth_factor and depth_limit adjusted per query complexity:
+      Simple query (single concept):   breadth=2, depth=3
+      Moderate query (comparison):     breadth=3, depth=4
+      Complex query (novel domain):    breadth=4, depth=5
+    Complexity assessed by GRC during PLANNING phase (observe step).
+
+
+6. PARALLEL SUB-QUESTION PROCESSING
+
+  Independent sub-questions researched in parallel via Dynamic Fan-Out
+  (orchestrator.txt section 8). Tree structure enables deeper parallelism:
+    - Root children: parallel (independent sub-questions)
+    - Speculative children: parallel with parent (if cloud API)
+    - Local models: sequential within each tree level (one GPU, one model)
+    - Cloud APIs: parallel across breadth, rate-limit aware
+    - Deferred aggregation node collects all sub-results after tree converges
+    - Pruned branches: resources freed immediately for active branches
+
+
+7. SOURCE QUALITY TIERING (deterministic, no LLM)
+
+  Every fetched page gets a source_quality score:
+    TIER_1 (1.0): arxiv papers, official docs, RFC documents
+    TIER_2 (0.8): GitHub repos >100 stars, StackOverflow accepted answers
+    TIER_3 (0.6): blog posts from known technical authors, conference talks
+    TIER_4 (0.4): general blog posts, forum discussions
+    TIER_5 (0.2): social media, unverified sources
+
+  Assignment: domain-based lookup table + heuristic rules.
+  Configurable per project in elai_cc.toml [research.trusted_domains].
+  Ranking: evidence_level * source_quality_avg (pure arithmetic).
+
+
+8. STRUCTURED RESEARCH OUTPUT
+
+  ResearchReport {
+      query: String,
+      tree: ResearchTreeSnapshot,         // full tree structure for traceability
+      sub_questions: Vec<SubQuestionResult>,
+      total_sources_fetched: usize,
+      total_sources_used: usize,
+      total_iterations: usize,
+      total_nodes_explored: usize,
+      total_nodes_pruned: usize,
+      speculative_hit_rate: f64,          // % of speculative branches that were useful
+      convergence_status: Vec<(String, ConvergenceStatus)>,
+  }
+
+  SubQuestionResult {
+      question: String,
+      answer: String,
+      sources: Vec<SourceCitation>,      // URL + extracted quote + quality tier
+      confidence: f64,                   // source count * quality * agreement
+      phi: f64,                          // goal satisfaction at convergence
+      psi: f64,                          // quality at convergence
+      depth: u32,                        // tree depth of this node
+      alternatives: Vec<Alternative>,
+      contradictions: Vec<Contradiction>, // surfaced, never silently resolved
+  }
+
+
+9. RESEARCH PROGRESS TRACKING
+
+  Every search iteration writes to SSB:
+    action_type='research_step'
+    payload: { sub_question, iteration, urls_fetched, findings_count, info_gain }
+
+  INTERACTIVE mode (default, Phase 3): user sees real-time progress via SSB reads.
+    User approves each phase gate before pipeline advances.
+  AUTONOMOUS mode (Phase 4G): logged for post-run analysis, gates auto-advance.
+
+
+10. QUALITYSPEC — design PART 29
+
+  Defines "quality" in measurable terms per pipeline.
+  QualityMetric { name, target, unit, method, phase, hard_fail }
+  MediaSpec { output_name, format, resolution, ssim_threshold, vlm_check,
+    output_type: OutputType }
+  OutputType enum { Web, Model3D, Audio, UiScreenshot, Animation, Image, Custom(String) }
+  PerfSpec { name, target, unit, method, sample_count }
+  L2 validates every metric has automated check method. Unmeasurable -> REJECT.
+
+  Per-phase visual check field in PipelineSpec phases:
+    visual_check: bool (default false). When true AND phase has MediaSpec,
+    the render-capture-evaluate loop activates during EXECUTING.
+    L2 validates: visual_check=true requires a MediaRenderAdapter for the
+    phase's output_type. Missing adapter -> ValidationError (not silent skip).
+    See media-validator.txt section 7 for full Render-Capture-Evaluate architecture.
+
+  Completeness QualityMetric examples (proactive thinking, Concern 3):
+    { name: "image_extraction", target: 100, unit: "%",
+      method: "grep_output", phase: "EXECUTING", hard_fail: false }
+    { name: "table_extraction", target: 100, unit: "%",
+      method: "grep_output", phase: "EXECUTING", hard_fail: false }
+    { name: "modality_coverage", target: 100, unit: "%",
+      method: "count_modalities", phase: "AUDITING", hard_fail: true }
+  method: grep_output scans tool results. count_modalities checks scope enumeration.
+
+
+11. MODEL CAPABILITY REGISTRY — design PART 15.6
+
+  Per-model: capabilities, vram_required, max_context, strengths, weaknesses, provider.
+  Selection: score = sum(capability_match) * context_fit * vram_feasibility.
+  No LLM judgment — pure numeric ranking.
+  Extension: L1 queries ollama /api/tags, runs capability probe, registers.
+
+
+12. EXTERNAL TOOL AUTO-DISCOVERY — design PART 15.7
+
+  Three levels: AVAILABLE (on PATH), INSTALLABLE (package manager), UNAVAILABLE.
+  Tool wrapper: execute(args)->ToolResult, validate_output()->bool, version()->SemVer.
+  Auto-discovery: query PATH, package managers, web search. Auditor reviews proposals.
+
+
+13. SELF-EXTENDING RULES — design PART 15.2
+
+  L1 creates new rule categories at runtime.
+  Proposed as Rust-evaluable predicates. Auditor validates.
+  Rule templates shipped: SaaS, Trading, Game, Data, Security, ML, Custom.
+
+
+14. PIPELINE COMPOSITION
+
+  Complex tasks = multiple pipelines.
+  Each sub-pipeline has own FSM. Results feed parent via structured handoff.
+
+
+15. PIPELINE TEMPLATES
+
+  Completed pipelines become reusable templates.
+  Stored in .elai_cc/templates/{type}/ as PipelineSpec + outcomes.
+  Versioned. Improvements propagate. Minimum 3 executions before ranking applied.
+  Template ranking formula (PART 22.2):
+    score = first_try_ratio*0.4 + coverage*0.3 + (1-block_ratio)*0.2 + token_efficiency*0.1
+
+
+16. TESTABLE INVARIANTS (research engine)
+
+  - Every node has bounded iterations (max_iterations enforced per node)
+  - Tree depth bounded by depth_limit (default 5, never exceeded)
+  - Tree breadth bounded by breadth_factor per node (default 3)
+  - Dual-threshold convergence: node converged only when phi >= phi_min AND psi >= psi_min
+  - Source quality scores are deterministic (domain lookup, no LLM)
+  - Research Report confidence = arithmetic from source data (verifiable formula)
+  - Contradictions are surfaced, never silently resolved
+  - Total sources tracked (fetched vs used) for efficiency metrics
+  - Parallel sub-questions bounded by resource limits (local: sequential)
+  - Speculative execution disabled when local model (single GPU)
+  - Speculative execution bounded by speculative_depth * breadth_factor nodes
+  - Pruned speculative branches free resources immediately
+  - Research tree is always acyclic (child never references ancestor)
+  - speculative_hit_rate tracked for adaptive tuning
+  - L1 Designer receives SystemConstraints with model_max_context
+  - avg_file_tokens defaults to 150 when index has <10 files
+  - Phase Sizing split trigger: phase_complexity > available_for_work * 0.6
+  - Phase Sizing max split depth: 2
+  - Phase Sizing preserves input/output contracts from skeleton
+  - Phase Sizing + SPLIT_TASK do not cascade
+  - Cycle detection runs before ExecutablePipeline production
+  - Cyclic phase dependency -> ValidationError::CyclicDependency (no deadlock)
+  - Designer is distinct AgentRole from Executor

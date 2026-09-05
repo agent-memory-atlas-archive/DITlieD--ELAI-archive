@@ -1,0 +1,676 @@
+MVP IMPLEMENTATION ORDER: IDEA-TO-WEBSITE
+Date: 2026-04-16
+Status: ACTIVE PLAN
+Goal: user types an idea -> ELAI researches, plans, builds, tests, audits -> working website
+
+ASSUMPTIONS:
+  - Phases pre-0 through 3K: COMPLETE
+  - Group A steps A-1 through A-48: COMPLETE
+  - Phase 4A (agent process isolation): COMPLETE
+  - Phase 4B (full tool suite): COMPLETE
+  - Phase 4C (plugins): COMPLETE
+  - Phase 4D.1 through 4D.10 (pipeline factory L1, recursive decomposition): COMPLETE
+  - Phase 4D.11 through 4D.18 (web research infrastructure): NOT DONE
+  - Phase 4E (pipeline factory L2, execution engine): NOT DONE
+  - Phase 4K (dashboard): NOT DONE
+  - Web quality pack (scaffold templates, web rules): NOT WRITTEN YET
+
+WHAT THE MVP DEMONSTRATES:
+  1. User opens Tauri app, sees project selector, creates new project folder
+  2. Types: "portfolio site with dark theme, project grid, contact form"
+  3. ELAI researches via SearXNG: picks framework, verifies packages on npm,
+     checks latest versions, finds best practices
+  4. Designer decomposes: 3-4 concepts, ~8 phases, ~18 baby steps
+  5. Activity stream shows: scaffold template applied -> tests written ->
+     code generated -> validated -> audited -> next step
+  6. User sees diffs, accepts/declines, adds steering constraints
+  7. Dev server starts, preview link appears, user clicks to see website
+  8. Task completes, code committed
+
+WHAT MAKES IT "HIGH QUALITY WEBSITES":
+  - Grounded research: framework/package choices verified via web search, not training data
+  - Scaffold templates: curated, tested project starters (no hallucinated configs)
+  - Web-specific rules in rules.db: accessibility, semantic HTML, responsive CSS,
+    no inline styles, no !important, all enforced deterministically at Tier 1/2
+  - Dev server validation: build passes + server responds + no console errors
+  - TDD: tests written before every baby step, auditor verifies independently
+  - Baby step sizing: 40 LOC max per step (7B model), small enough to get right
+
+
+========================================================================
+CRITICAL PATH (4 blocks, sequential with some parallelism)
+========================================================================
+
+BLOCK 1: WEB RESEARCH INFRASTRUCTURE (4D.11 through 4D.18)
+BLOCK 2: EXECUTION ENGINE (4E.1 through 4E.12)
+BLOCK 3: WEB QUALITY PACK (WEB.1 through WEB.3, new steps)
+BLOCK 4: DASHBOARD (4K.1 through 4K.5, Tauri MVP)
+
+Dependency chain:
+  BLOCK 1 (4D.11-18) must finish before BLOCK 2 (4E needs complete 4D)
+  BLOCK 3 (WEB) is independent — can run parallel with BLOCK 2 or BLOCK 4
+  BLOCK 4 (4K.1-5) can start after BLOCK 2 starts (4K.1-2 only need SSB, not 4E)
+  BLOCK 4 has NO Axum dependency — Tauri calls SsbViewer directly from Rust.
+
+Optimized schedule:
+  Session 1-8:   BLOCK 1 (4D.11-18, sequential)
+  Session 5-8:   BLOCK 3 (WEB.1-3, parallel with late BLOCK 1 if second session available)
+  Session 9-14:  BLOCK 2 (4E.1-12, sequential)
+  Session 11-13: BLOCK 4 start (4K.1-3, parallel with late BLOCK 2)
+  Session 14-15: BLOCK 4 finish (4K.4-5, sequential)
+
+Conservative estimate: 16-19 sessions sequential, 12-14 with parallelism.
+
+
+========================================================================
+BLOCK 1: WEB RESEARCH INFRASTRUCTURE (4D.11 through 4D.18)
+========================================================================
+
+Full step definitions are in docs/specs/guide/steps/phase-4D.txt
+(lines 681-1261). Each step has READ blocks, PRE_GATE, TASK,
+DETERMINISTIC_CHECK, ADVERSARIAL, ACCEPTANCE, and GROUNDING sections.
+
+Summary of what each step delivers:
+
+  4D.11  WEB SEARCH CLIENT (SearXNG integration)
+         New crate: web_search/. SearxClient struct. Docker setup script.
+         IPC proxy integration (Research Agent never has direct network).
+         Rate limiting, retry, health check.
+         ~200-300 LOC
+
+  4D.12  CONTENT EXTRACTION (HTML to clean text)
+         WebFetcher + ContentExtractor trait. readability-rust or basic extraction.
+         robots.txt respect. Per-domain rate limiting. Max 2MB body.
+         ~250-350 LOC
+
+  4D.13  SOURCE QUALITY TABLE (trusted domain lookup)
+         SourceQualityTable: 200+ domains from trusted sites list.
+         5-tier deterministic lookup. Configurable in elai_cc.toml.
+         Subdomain rules (*.gov -> Tier1, *.edu -> Tier3).
+         ~200-300 LOC
+
+  4D.14  WEB A-RAG (hierarchical retrieval for web content)
+         WebContentIndex, WebChunk. Sentence splitting for prose (not code).
+         KeywordSearch + SemanticSearch + ChunkRead. Progressive disclosure.
+         Embedding via sidecar or CPU fallback. Keyword-only fallback.
+         ~300-400 LOC
+
+  4D.15  VRAM-TIERED RESEARCH CONFIG
+         [research.vram_tiers] in elai_cc.toml. 6 tiers (8/12/12_7b/16/24/48GB).
+         Auto-detect from GPU VRAM. Per-tier: chunk size, breadth, depth,
+         convergence thresholds, embedding device, concurrent fetches.
+         ~200-300 LOC
+
+  4D.16  TOKEN BUDGET MANAGER (evidence pruning)
+         ResearchBudgetManager. Evidence admission policy. Pruning by tier
+         (Tier5 first, Tier1 never). Evidence compression for tight budgets.
+         Integration with A-RAG progressive disclosure.
+         ~200-300 LOC
+
+  4D.17  RESEARCH ORCHESTRATOR (wire everything together)
+         WebResearchOrchestrator: drives per-node FORMULATE-SEARCH-EXTRACT-
+         REFLECT-CONVERGE loop. IPC proxy for all 4 request types. SSB tracking.
+         Graceful degradation (SearXNG down, sidecar down).
+         ~300-400 LOC
+
+  4D.18  END-TO-END MEASUREMENT
+         10 research queries (3 simple, 4 moderate, 3 complex).
+         Metrics: time, sources, convergence, budget utilization.
+         Run on 12GB with 3B and 7B. Extraction quality check.
+         ~100-200 LOC benchmark
+
+  BLOCK 1 TOTAL: ~1750-2550 LOC, 8 sessions
+
+
+========================================================================
+BLOCK 2: EXECUTION ENGINE (4E.1 through 4E.12)
+========================================================================
+
+Full step definitions are in docs/specs/guide/steps/phase-4E.txt.
+Each step has full PRE_GATE, TASK, DETERMINISTIC_CHECK, ADVERSARIAL,
+ACCEPTANCE, and GROUNDING sections.
+
+Summary of what each step delivers:
+
+  4E.1   SKELETON (types + stubs)
+         ExecutablePipeline, DependencyGraph, DagNode, PipelineFsmState,
+         ResourceEstimate, TestHarnessSkeleton, RepairAction, RepairOutcome.
+         9 stub functions: build, validate, repair, generate_states,
+         generate_harness, estimate, detect_novel, configure_agents, install_rules.
+         ~300-400 LOC
+
+  4E.2   VERIFY (compilation + existing tests)
+         cargo build --workspace, cargo test --workspace, zero regressions.
+
+  4E.3   TESTS (contract + integration, expected FAIL)
+         8-point structural validation tests, DAG repair tests, novel step
+         detection tests, FSM state generation tests, test harness generation
+         tests, resource estimation tests, proptest.
+         >= 30 contract tests, all expected to FAIL.
+
+  4E.4   ADVERSARIAL TESTS
+         Cycle injection, resource overflow, max repair rounds, predicate
+         injection, visual_check without adapter.
+         >= 10 adversarial tests, expected FAIL.
+
+  4E.5   IMPLEMENT (make tests pass)
+         PipelineBuilder: 5-stage pipeline (research -> assembly -> validation
+         -> phase sizing -> test harness). StructuralValidator: 8 checks.
+         DagRepairLoop: REORDER + SUBSTITUTE, max 10 rounds.
+         FsmStateGenerator, TestHarnessGenerator, ResourceEstimator,
+         NoveltyDetector, AgentConfigurator, RuleInstaller.
+         ~600-800 LOC
+
+  4E.6   MEASURE
+         Assembly latency (<1s for 10-phase), repair round counts,
+         novel step detection accuracy.
+
+  4E.7   DECOMPOSITION TREE SKELETON
+         DecompositionTree typed struct. Concept -> Phase -> Step -> BabyStep.
+         TreeNavigatorState, BabyStepResult, BabyStepOutcome, BubbleUpEvent,
+         DecompositionLevel, BubbleUpAction, BubbleUpPolicy.
+         ~200-300 LOC
+
+  4E.8   TREE NAVIGATION + BUBBLE-UP TESTS (TDD, expected FAIL)
+         Depth-first traversal tests (linear, branching, dependency skip,
+         pre-gate failure, completion, crash recovery). BubbleUp tests:
+         BabyStep(3) -> Step(2) -> Phase(1) -> Concept(0) -> Escalate.
+         Integration checkpoint tests (deferred vs non-deferred, per-level).
+         proptest: random tree shapes + random failure sequences.
+         >= 18 tests, all expected FAIL.
+
+  4E.9   BABY STEP EXECUTION CYCLE TESTS (TDD, expected FAIL)
+         Per-baby-step cycle tests: context assembly (<1K tokens in Slot 3),
+         pre-gate check (pass/fail), TDD (tests before code), EXECUTING
+         (T1/T2/T3 hooks fire), AUDITING (deterministic checks), ACCEPTANCE
+         (min_tests_passing met), integration (deferred vs non-deferred),
+         exit criteria, max lines enforcement.
+         >= 15 tests, all expected FAIL.
+
+  4E.10  IMPLEMENT TREE NAVIGATOR + BUBBLE-UP + BABY STEP CYCLE
+         DepthFirstNavigator: topological sort concepts, phases, steps,
+         baby steps. Pre-gate evaluation via BashSandbox. BubbleUpHandler:
+         count failures per level, compare against BubbleUpPolicy thresholds.
+         Baby step execution orchestration: context assembly from
+         BabyStepGrounding into Slot 3, drive FSM through
+         TESTING_FIRST -> EXECUTING -> AUDITING per baby step.
+         IntegrationCheckpoint recording. TreeNavigatorState serialization
+         to msgpack for crash recovery.
+         ~500-700 LOC (combined navigator + bubble-up + execution cycle)
+
+  4E.11  IMPLEMENT INTEGRATION CHECKPOINTS
+         4 levels: BABY_STEP (build check <5s), STEP (module tests <30s),
+         PHASE (crate tests <60s), CONCEPT (workspace tests <120s).
+         For web: BABY_STEP = npm run build, PHASE = npm run dev + health check.
+         Integration test stubs generated by L2 builder from IntegrationSpec.
+         Integration failures trigger appropriate bubble-up level.
+         All results logged to SSB.
+
+  4E.12  MEASURE
+         End-to-end: PipelineSpec in -> baby steps execute -> result out.
+         Measure traversal time, retry rates, bubble-up frequency.
+
+  BLOCK 2 TOTAL: ~1600-2200 LOC, 6-8 sessions (4E.2/4E.6/4E.12 are light)
+
+
+========================================================================
+BLOCK 3: WEB QUALITY PACK (new steps, not in any existing doc)
+========================================================================
+
+These steps are NEW. They create web-specific infrastructure that makes
+ELAI produce high-quality websites rather than "code that compiles."
+Can run in parallel with BLOCK 2 or early BLOCK 4.
+
+
+STEP WEB.1: SCAFFOLD TEMPLATES
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> Layer 2 sections 2.1-2.3 (skeleton-first generation, fill protocol)
+  READ: docs/specs/guide/token-efficiency-design.txt
+    -> section 4 Principle 2 (show don't tell, few-shot from templates)
+  READ: docs/.source/empire/shared/archives/factory-static/docs/catalog-system.md
+    -> Section templates (hero, features, cta, etc.), component manifest pattern
+  READ: docs/.source/empire/shared/archives/factory-static/docs/10-factory/architecture.md
+    -> Config-driven generation, theme system, asset tracking
+  What: curated, tested web project starter templates.
+  DESIGN INFLUENCE (factory-static):
+    factory-static transforms JSON config into complete static sites through a
+    9-worker sequential pipeline. Key patterns adopted here:
+    1. Section-level composition: the section (hero, features, cta) is the unit
+       of assembly, not the page. factory-static's content.ts (93 lines) defines
+       10 section types as pure functions returning HTML with {{key}} placeholders.
+       Its Svelte components (Hero 94 LOC, Features 28, Plans 64, Nav 55, Footer 70)
+       are full rendered implementations with styling and locale store bindings.
+       THESE ARE NOT COPIED. factory-static's components are Bun-native, depend on
+       its localeStore, band layout wrappers, and theme system — not portable.
+       ELAI writes NEW section components per framework, using factory-static's
+       section taxonomy (which sections exist and what props they take) as the
+       design reference. The taxonomy is battle-tested (333 tests, 759ms).
+    2. Theme-as-CSS-variables: factory-static converts hex to HSL and uses
+       [data-theme="dark|light"] selectors. Templates use the same pattern.
+    3. Config-driven application: factory-static's SiteConfig JSON -> site.
+       ELAI's apply_template is the same: manifest.toml + variables -> project.
+    4. Asset manifest: factory-static tracks assets with optimization hints
+       (width, height, format). Templates include assets.json schema.
+    factory-static differences NOT adopted:
+    - Bun runtime (ELAI uses npm/Vite for broader model training data coverage)
+    - WebSocket live sync (ELAI uses dev server + browser refresh)
+    - 7 output channels (ELAI outputs to local filesystem only for MVP)
+    - In-memory SQLite state machine (ELAI uses SSB for build state)
+    - factory-static's actual component code (Bun/localeStore-dependent, not portable)
+  TASK:
+    - Template directory: .elai_cc/templates/web/
+    - 4 templates, each a complete buildable project:
+        vite-svelte/
+          package.json (pinned versions, tested 2026-04-16)
+          vite.config.ts
+          tsconfig.json
+          src/App.svelte (minimal shell with slot)
+          src/main.ts
+          src/app.css (CSS reset + custom properties for theming)
+          src/sections/  (ELAI-authored section components, taxonomy from factory-static)
+            Hero.svelte      (title, subtitle, cta — new code, same section concept)
+            Features.svelte  (feature grid with props — new code)
+            Cta.svelte       (call-to-action block — new code)
+            Footer.svelte    (multi-column footer — new code)
+            Gallery.svelte   (responsive image grid — new code)
+          .gitignore
+          README.md (one line: "Generated by ELAI")
+        vite-react/
+          Same structure, React equivalents. JSX, not TSX for simplicity.
+          src/sections/ with same 5 section types as React components (new code).
+        astro/
+          astro.config.mjs, src/pages/index.astro, src/layouts/Base.astro
+          src/components/ with same section types as Astro components (new code).
+        vanilla/
+          index.html, style.css, main.js, no build tool, no deps
+          sections/ as HTML partials included via JS (new code).
+    - Theme preset in every template (factory-static pattern):
+        app.css or theme.css includes CSS custom properties:
+          :root { --bg: hsl(220 13% 7%); --fg: hsl(0 0% 95%); --primary: hsl(162 68% 51%); ... }
+          [data-theme="light"] { --bg: hsl(0 0% 98%); --fg: hsl(220 13% 7%); ... }
+        Designer picks colors during research; apply_template substitutes HSL values.
+        Default palette: ELAI brand (teal #2dd4a8 primary, dark charcoal #0d1117 bg).
+    - Asset manifest schema (factory-static pattern):
+        Each template includes assets.json with structure:
+          { "logo": { "src": "", "alt": "" }, "favicon": { "src": "" },
+            "images": [] }
+        Execution engine populates during baby steps. Dev server serves from manifest.
+    - Each template validates: npm install && npm run build exits 0.
+      (vanilla: no build step, just static files.)
+    - Section components are FIM-compatible (focus-tunnel-design.txt):
+        Each section has clear prefix/suffix boundaries for fill-in-middle generation.
+        Model fills content between component shell markers, never rewrites the shell.
+        Aligns with code-completeness Layer 2 fill protocol.
+    - Template metadata: .elai_cc/templates/web/manifest.toml
+        [[template]]
+        name = "vite-svelte"
+        description = "SvelteKit with Vite, TypeScript, modern CSS"
+        languages = ["typescript", "svelte", "css"]
+        build_command = "npm run build"
+        dev_command = "npm run dev"
+        dev_port = 5173
+        recommended_for = ["portfolio", "dashboard", "app"]
+        model_familiarity = "high"  # lots of training data for Svelte+Vite
+        sections = ["hero", "features", "cta", "footer", "gallery"]
+        theme_system = "css-variables"  # factory-static HSL pattern
+        validation_commands = ["npm run build", "npm run dev -- --host"]
+    - Template application is DETERMINISTIC (baby step 1, no LLM):
+        fn apply_template(template_name: &str, target_dir: &Path,
+          variables: &BTreeMap<String, String>) -> Result<()>
+        Variables: {project_name}, {description}, {author}, {primary_hsl},
+          {bg_hsl}, {fg_hsl}, {accent_hsl}.
+        Copy files, substitute variables, run npm install.
+        Section selection: variables include {sections} list. Only copy
+        section components that are requested (designer decides based on research).
+    - Template selection: designer picks from manifest based on research.
+      If research says "use Svelte" and template exists -> use it.
+      If no matching template -> fall back to vanilla + LLM generates config.
+      ProjectProfile.framework (project-intelligence-design) auto-detects
+      existing framework in non-greenfield projects.
+  DETERMINISTIC_CHECK:
+    - ls .elai_cc/templates/web/vite-svelte/package.json exists
+    - ls .elai_cc/templates/web/manifest.toml exists
+    - ls .elai_cc/templates/web/vite-svelte/src/sections/Hero.svelte exists
+    - For each template: cd template && npm install && npm run build exits 0
+    - grep -r "apply_template" .elai_cc/crates/ returns matches
+    - grep -r "sections" .elai_cc/templates/web/manifest.toml returns matches
+  ACCEPTANCE:
+    - 4 templates exist, all build successfully
+    - Each template includes >= 5 section components (hero, features, cta, footer, gallery)
+    - Theme CSS uses custom properties with [data-theme] selectors
+    - manifest.toml has entries for all 4 with sections and theme_system fields
+    - apply_template copies files, substitutes variables including HSL theme values
+    - Template versions pinned (no ^ or ~ in package.json)
+    - Section components have clear FIM boundaries (prefix/suffix markers)
+  Estimated scope: ~250 LOC Rust + ~800 LOC template files (4 templates x ~5 sections)
+
+
+STEP WEB.2: WEB QUALITY RULES (seed into rules.db)
+  READ: docs/specs/guide/steps/phase-3F.txt (rules engine, seed rules)
+  READ: docs/specs/guide/anti-staleness-enforcement.txt
+    -> section 1.2 (VERSION_GATE, deprecated_patterns — extend for web)
+  READ: docs/specs/guide/code-completeness-enforcement-design.txt
+    -> Layer 3 sections 3.1-3.3 (T1/T2 hook patterns, per-language)
+  READ: docs/.source/empire/shared/archives/factory-static/docs/catalog-system.md
+    -> Component manifest constraints, section isolation pattern
+  What: ~30 web-specific rules enforced deterministically.
+  DESIGN INFLUENCE (factory-static):
+    factory-static enforces strict patterns that produce clean output:
+    - ~150 lines per file (SoC principle) -> WEB_COMPONENT_SIZE rule
+    - CSS custom properties only for colors (ThemeConfig) -> WEB_THEME_VARS_ONLY
+    - Section isolation (no cross-section imports) -> WEB_SECTION_ISOLATION
+    - Config-driven only (zero per-client logic) -> WEB_NO_INLINE_LOGIC
+    - Immutable builds (no mutation after creation) -> aligns with T1 idempotency
+    These are battle-tested in factory-static's 333-test suite.
+  TASK:
+    - TIER 1 rules (regex, <1ms, zero prompt tokens):
+        WEB_NO_INLINE_STYLE:     style="..." in .html/.svelte/.jsx/.tsx
+        WEB_NO_IMPORTANT:        !important in .css/.scss
+        WEB_IMG_ALT:             <img without alt= attribute
+        WEB_ANCHOR_REL:          <a target="_blank" without rel="noopener"
+        WEB_NO_DOCUMENT_WRITE:   document.write( in .js/.ts
+        WEB_NO_VAR:              \bvar\b in .js/.ts (use const/let)
+        WEB_NO_CONSOLE_LOG:      console.log( in non-test .js/.ts
+        WEB_NO_HARDCODED_COLOR:  #[0-9a-fA-F]{3,8} in .css outside :root/var()
+        WEB_NO_EVAL:             \beval\( in .js/.ts
+        WEB_NO_INNERHTML:        innerHTML\s*= in .js/.ts (XSS risk)
+        WEB_THEME_VARS_ONLY:     color/background in component .css must use var(--)
+                                 not raw hex/rgb/hsl (factory-static: ThemeConfig pattern)
+        WEB_FONT_DISPLAY:        @font-face without font-display: (promote from T3)
+    - TIER 2 rules (AST via tree-sitter, <10ms):
+        WEB_FORM_LABELS:         <form> elements have associated <label>
+        WEB_SEMANTIC_HTML:       <div> used where <nav>/<main>/<footer>/<article> appropriate
+        WEB_NO_DEEP_NESTING:     CSS nesting >4 levels
+        WEB_SINGLE_EXPORT:       Component files have single default export
+        WEB_BUTTON_TYPE:         <button> without type= attribute
+        WEB_HEADING_ORDER:       h1-h6 used in sequential order (no h3 before h2)
+        WEB_LIST_STRUCTURE:      <ul>/<ol> direct children are <li> only
+        WEB_LANG_ATTR:           <html> has lang attribute
+        WEB_COMPONENT_SIZE:      Component file exceeds 150 LOC -> WARN
+                                 (factory-static: ~150 lines per file SoC rule)
+        WEB_SECTION_ISOLATION:   Section component imports from sibling section -> BLOCK
+                                 (factory-static: sections are self-contained units)
+        WEB_NO_FIXED_CONTAINER:  Container elements with width: [0-9]+px -> WARN
+                                 (factory-static: responsive output, no fixed pixel widths)
+    - TIER 3 rules (semantic, auditor verifies, ~50-100 tokens):
+        WEB_RESPONSIVE:          No fixed pixel widths on containers (T2 catches obvious cases)
+        WEB_COLOR_CONTRAST:      Text on background meets WCAG AA (4.5:1)
+        WEB_FOCUS_VISIBLE:       Interactive elements have visible focus styles
+        WEB_META_VIEWPORT:       <meta name="viewport"> present with sensible values
+    - Domain tag: "web" on all rules above. Auto-activated when
+      ProjectProfile.framework (project-intelligence-design) contains
+      web framework names. ProjectProfile auto-detection is the trigger,
+      not a manual flag.
+    - deprecated_patterns additions for web:
+        moment.js -> date-fns or dayjs (moment is deprecated since 2020)
+        request -> node-fetch or undici (request deprecated 2020)
+        create-react-app -> Vite (CRA deprecated 2023)
+        enzyme -> @testing-library/react (enzyme unmaintained)
+        webpack (for new projects) -> Vite (factory-static uses Bun, ELAI uses Vite)
+        jQuery -> vanilla DOM or framework (factory-static is zero-jQuery)
+    - Seed via SQL insert into rules.db, same mechanism as existing seed rules.
+    - Rule count: 12 T1 + 11 T2 + 4 T3 = 27 rules + 6 deprecated patterns.
+  DETERMINISTIC_CHECK:
+    - sqlite3 rules.db "SELECT COUNT(*) FROM rules WHERE domain='web'" >= 25
+    - sqlite3 rules.db "SELECT COUNT(*) FROM deprecated_patterns WHERE language='javascript'" >= 6
+    - cargo test -p rules --lib -- web_rules (tests exist)
+  ACCEPTANCE:
+    - >= 25 web rules seeded in rules.db with correct tiers
+    - >= 6 deprecated web package patterns in deprecated_patterns
+    - Rules activate when domain="web" detected via ProjectProfile
+    - T1 rules fire on test fixtures (inline style, !important, missing alt,
+      hardcoded color in component CSS, missing font-display)
+    - T2 rules fire on test fixtures (oversized component, cross-section import)
+  Estimated scope: ~350 LOC (SQL + Rust test fixtures)
+
+
+STEP WEB.3: DEV SERVER VALIDATION
+  READ: docs/specs/guide/steps/phase-4E.txt
+    -> 4E.11 (integration checkpoint implementation, 4 levels)
+  READ: docs/specs/guide/steps/phase-4B.txt
+    -> validation pipeline (5 tiers)
+  READ: docs/.source/empire/shared/archives/factory-static/docs/40-deploy/production.md
+    -> Atomic symlink deployment (draft/live/previous slots)
+  READ: docs/.source/empire/shared/archives/factory-static/docs/20-core/deployer.md
+    -> Zero-downtime slot architecture, build immutability
+  What: verify the website actually works, not just compiles.
+  DESIGN INFLUENCE (factory-static):
+    factory-static's deployment model provides patterns for dev validation:
+    1. Build immutability: UUID-based builds, never mutated after creation.
+       ELAI adopts: build artifacts go to .elai_cc/builds/{step_id}/, not
+       overwritten in-place. Failed builds preserved for debugging.
+    2. Slot architecture (draft/live/previous): atomic symlink flips for
+       zero-downtime. ELAI adopts simplified version: "draft" = current baby
+       step build (may be broken), "live" = last passing build (always
+       available for preview). On WEB_DEV_SERVER pass: promote draft -> live.
+       User always sees a working preview, even mid-implementation.
+    3. Health check pattern: factory-static checks output structure
+       (/{locale}/index.html, /theme.css, /assets.json). ELAI checks:
+       HTTP 200 + </html> + <meta viewport> + no stderr errors.
+    factory-static differences NOT adopted:
+    - WebSocket real-time sync (ELAI uses browser auto-refresh via Vite HMR)
+    - 7 output channels (ELAI: local filesystem only)
+    - Playwright render-capture (deferred to Phase 4I media validator)
+  TASK:
+    - WebValidationTier in validation pipeline (extends existing 5 tiers):
+        Tier WEB_BUILD: run build_command from template manifest. Exit 0 = pass.
+          Build output goes to .elai_cc/builds/{step_id}/ (immutable, factory-static pattern).
+        Tier WEB_DEV_SERVER: start dev_command, HTTP GET localhost:{dev_port},
+          verify 200 + response body contains </html> + <meta name="viewport">.
+          Capture stderr: any line matching /error/i -> WARN (not BLOCK for MVP).
+          Kill server after check.
+          Timeout: 15s for server start, 5s for HTTP check.
+        Tier WEB_LINT (optional): if eslint/stylelint config exists in project,
+          run it. Report WARN on violations, not BLOCK (linting is advisory
+          for MVP, rules.db handles the hard blocks).
+    - Build slot system (simplified factory-static deployer):
+        .elai_cc/web-preview/
+          draft/  -> symlink to .elai_cc/builds/{current_step_id}/
+          live/   -> symlink to .elai_cc/builds/{last_passing_step_id}/
+        On WEB_BUILD pass: update draft symlink.
+        On WEB_DEV_SERVER pass: promote draft -> live (atomic symlink swap).
+        Dev server always serves from live/ so user preview is stable.
+        First baby step: draft and live both point to scaffold template output.
+    - Integration with 4E.11 checkpoints:
+        BABY_STEP level: npm run build (fast, <10s)
+        STEP level: npm run build + output structure check (<15s)
+        PHASE level: npm run dev + health check (slower, <30s)
+        CONCEPT level: npm run dev + full page render check (<60s)
+    - Dev server lifecycle:
+        fn start_dev_server(dir: &Path, command: &str, port: u16) -> Result<DevServerHandle>
+        fn check_dev_server(port: u16) -> Result<DevServerStatus>
+        fn stop_dev_server(handle: DevServerHandle) -> Result<()>
+        DevServerHandle holds child process PID for cleanup.
+        Drop impl kills process to prevent zombie dev servers.
+    - Preview URL: when dev server check passes, emit SSB action:
+        action_type = "preview_available"
+        payload = { url: "http://localhost:{port}", step_id, slot: "live" }
+        Dashboard (4K.6 ACTIVITY window) renders as clickable link.
+        On new baby step completion: dashboard auto-refreshes preview if
+        live slot updated (SSB event triggers WebSocket push to dashboard).
+  DETERMINISTIC_CHECK:
+    - grep -r "WebValidationTier" .elai_cc/crates/ returns matches
+    - grep -r "start_dev_server" .elai_cc/crates/ returns matches
+    - grep -r "preview_available" .elai_cc/crates/ returns matches
+    - ls .elai_cc/web-preview/ directory structure exists after first build
+    - test -L .elai_cc/web-preview/live (live is a symlink)
+  ACCEPTANCE:
+    - WEB_BUILD tier: runs npm run build, stores output in builds/{step_id}/
+    - WEB_DEV_SERVER tier: starts server, checks health (200 + html + viewport), stops server
+    - Build slot system: draft/live symlinks created, promotion on pass
+    - No zombie processes after validation (Drop impl verified)
+    - preview_available SSB action emitted with slot field on success
+    - Failed builds preserved in builds/{step_id}/ for debugging
+  Estimated scope: ~350 LOC
+
+
+  BLOCK 3 TOTAL: ~950 LOC Rust + ~800 LOC template files, 3-4 sessions
+    (WEB.1 grew: 5 section components per template x 4 templates + theme system)
+
+
+========================================================================
+BLOCK 4: DASHBOARD (4K.1 through 4K.5, Tauri MVP)
+========================================================================
+
+Full step definitions are in docs/specs/guide/steps/phase-4K.txt.
+Each step has PRE_GATE, TASK, DETERMINISTIC_CHECK, ADVERSARIAL,
+and ACCEPTANCE sections. Visual identity from
+docs/specs/guide/dashboard-design.txt (colors, typography, layout language)
+applies to Tauri webview identically.
+
+Tech decision: Tauri v2 replaces Axum + SolidJS.
+  - Eliminates: HTTP REST API, WebSocket protocol, CORS, port management
+  - Tauri #[tauri::command] calls SsbViewer (Rust) directly from frontend JS
+  - Frontend: Svelte in Tauri webview (small, reactive, good Tauri match)
+  - Data flow: frontend polls SsbViewer via invoke() every 500ms (no WS needed)
+  - Distribution: single .exe (Tauri bundles WebView2 bootstrapper on Windows)
+  - Verified: tauri = "2.10" on crates.io (v2.10.3, 2026-04-16)
+
+Summary of what each step delivers:
+
+  4K.1   SSB READ-ONLY VIEWER LIBRARY
+         SsbViewer struct. 8 typed query functions. 2 new SSB action types
+         (INTERVENTION_REQUEST, INTERVENTION_RESPONSE). Read-only SQLite
+         connection. <10ms per query. HEALTH_SNAPSHOT and WINDOW_STATE
+         deferred to post-MVP.
+         ~250-350 LOC
+
+  4K.2   TAURI APP SCAFFOLD + TAURI COMMANDS
+         New dashboard/ crate (Tauri binary). 6 #[tauri::command] functions
+         wrapping SsbViewer. Svelte frontend scaffold with visual identity
+         (dark theme, teal accents). tauri.conf.json, build.rs.
+         No HTTP server. No WebSocket. No CORS.
+         ~250 LOC (Rust + Svelte scaffold + config)
+
+  4K.3   PROJECT SELECTOR + TASK INPUT (single screen)
+         "+ New Project" (name + parent picker, creates folder) or
+         "Open Existing" (folder dialog). Template picker for empty folders.
+         Task input with [Start] button.
+         4 Tauri commands (list_projects, create_project, select_project, submit_task).
+         ~280 LOC (Svelte + Rust commands)
+
+  4K.4   MAIN WORKSPACE: PLAN TREE + ACTIVITY FEED
+         Two-panel layout: plan tree (left) + activity feed (right).
+         Draggable divider. Status bar with FSM state.
+         Plan tree: phases/steps/baby steps with status indicators.
+         Activity feed: reasoning, edit, validate, test, preview entries.
+         Preview link: clickable localhost URL via shell::open.
+         500ms polling via setInterval + invoke().
+         ~370 LOC (Svelte, no new Rust commands needed)
+
+  4K.5   DIFF VIEWER + ACCEPT/DECLINE + PREVIEW LINK
+         Unified diff viewer for INTERVENTION_REQUEST (ApproveChange).
+         Accept/Decline/Retry controls. Per-hunk granular control.
+         Multi-file navigation. 1 new Tauri command (get_action_detail).
+         Preview link in activity feed opens system browser.
+         ~270 LOC (Svelte + 1 Rust command)
+
+  BLOCK 4 TOTAL: ~1390-1490 LOC, 5 sessions
+
+
+========================================================================
+STEPS NOT INCLUDED IN MVP (defer to post-MVP)
+========================================================================
+
+  4D.19+      Future web research extensions
+  4E.13+      Future execution engine extensions
+  4F          Feasibility probe (nice to have, user judges feasibility)
+  4G          Autonomous mode (interactive is the demo)
+  4H          Self-modification (post-MVP)
+  4I          Media validator (user's browser is the visual check)
+  4J          Empire integration (conditional)
+  Dashboard post-MVP (was 4K.6-4K.13, now in DEFERRED section of phase-4K.txt):
+    MONITOR window, EXPLORE window, sidebar with mode icons,
+    intervention notifications (browser/webhook/Discord/Slack),
+    window management (tabs/history/session recovery),
+    visual polish (animations, responsive breakpoints, Lucide icons),
+    slash command autocomplete, disambiguation cards, autonomous mode UI,
+    HEALTH_SNAPSHOT + WINDOW_STATE SSB types, WebSocket/SSE push
+  Groups C-G  From post-phase4-implementation-order.txt (all post-MVP)
+
+
+========================================================================
+ESTIMATED TOTAL SCOPE
+========================================================================
+
+  BLOCK 1 (4D.11-18):   8 steps,  ~1750-2550 LOC,  ~8 sessions
+  BLOCK 2 (4E.1-12):   12 steps,  ~1600-2200 LOC,  ~6-8 sessions
+  BLOCK 3 (WEB.1-3):    3 steps,  ~1750 LOC,       ~3-4 sessions
+  BLOCK 4 (4K.1-5):     5 steps,  ~1390-1490 LOC,  ~5 sessions
+
+  TOTAL: 28 steps, ~6490-7990 LOC, ~22-25 sequential sessions
+         or ~16-19 with parallelism (BLOCK 3 parallel, BLOCK 4 early start)
+
+
+========================================================================
+QUICK REFERENCE: SESSION-BY-SESSION EXECUTION ORDER
+========================================================================
+
+  Sequential (no parallelism):
+
+    Sessions 1-8:    4D.11, 4D.12, 4D.13, 4D.14, 4D.15, 4D.16, 4D.17, 4D.18
+    Sessions 9-11:   WEB.1, WEB.2, WEB.3
+    Sessions 12-19:  4E.1, 4E.2+3, 4E.4+5, 4E.6+7, 4E.8+9, 4E.10, 4E.11, 4E.12
+      Note: 4E.8+9 pair = both TDD test steps (navigation + baby step cycle).
+      4E.10 = combined implementation (navigator + bubble-up + execution cycle).
+    Sessions 20-24:  4K.1, 4K.2, 4K.3, 4K.4, 4K.5
+
+  With parallelism (recommended):
+
+    Sessions 1-8:    BLOCK 1 (4D.11-18)
+    Sessions 6-8:    BLOCK 3 (WEB.1-3) parallel with late BLOCK 1
+    Sessions 9-16:   BLOCK 2 (4E.1-12)
+    Sessions 13-15:  BLOCK 4 start (4K.1-3) parallel with late BLOCK 2
+    Sessions 16-17:  BLOCK 4 finish (4K.4-5)
+
+  Note: "session" = one implementation cycle (read spec, write tests,
+  implement, audit). Light steps (verify, measure) can pair with the
+  next step in a single session.
+
+
+========================================================================
+END-TO-END DEMO WALKTHROUGH (what the user sees after MVP)
+========================================================================
+
+  1. elai --dashboard (or elai.bat)
+     -> Tauri desktop window opens (native app, not browser tab)
+     -> project selector screen: ELAI logo, dark theme, recent projects
+
+  2. User clicks "+ New Project" -> types "my-portfolio", picks D:\ as parent
+     -> ELAI creates D:\my-portfolio\, adds to project list
+
+  3. Empty folder -> template picker: "Choose a starter: Svelte, React, Astro, Vanilla"
+     -> user picks Svelte (or designer auto-picks based on research)
+
+  4. User types: "portfolio site with dark theme, project showcase grid,
+     contact form with validation, responsive"
+     -> clicks [Start] (purple button)
+
+  5. Plan tree (left panel) shows decomposition:
+       concept 1: Layout + Theme (3 phases)
+       concept 2: Project Showcase (3 phases)
+       concept 3: Contact Form (2 phases)
+
+  6. Activity feed (right panel) streams:
+       [scaffold] Applied vite-svelte template         00:00
+       [validate] npm run build: pass                  00:02
+       [reasoning] Planning Header component...        00:05
+       [test] Writing test: header renders nav links   00:08
+       [test] 1 test written, 1 fail (expected)        00:10
+       [edit] src/lib/Header.svelte +24 -0             00:15
+       [validate] T1: 4/4 pass, T2: AST ok            00:16
+       [test] 1 pass, 0 fail                           00:18
+       ...
+
+  7. Diff viewer appears (replaces activity feed temporarily):
+       Step 2.3 proposes changing grid layout
+       src/lib/ProjectGrid.svelte +42 -8
+       [Accept] [Decline] [Retry]
+     User clicks Accept
+
+  8. After ~18 baby steps (~15-30 minutes on 12GB GPU):
+       Activity feed: [preview] http://localhost:5173 (clickable teal link)
+     User clicks -> default browser opens, shows their portfolio site
+
+  9. Code committed to git. User has a working, tested, audited website
+     built by a 7B model on their own GPU. All inside one desktop app.

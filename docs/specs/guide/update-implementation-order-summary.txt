@@ -1,0 +1,272 @@
+UPDATE IMPLEMENTATION ORDER — CONDENSED SUMMARY
+Date: 2026-04-13 | Phases 0-3 COMPLETE, Phase 4 NOT started.
+
+6 source designs: Project Intelligence [PI], Anti-Staleness [AS], Token Efficiency [TE],
+Pipeline Modes [PM], Code Completeness [CC], Reasoning Architecture [RA]
+
+================================================================================
+GROUP A: FOUNDATIONS (before Phase 4, extends completed phases 1-3)
+================================================================================
+
+A-1  [DONE] Baseline Measurement Harness [TE]
+     Standalone binary measuring 7 model capabilities (attention curve, retry rate, few-shot delta, etc.)
+     Results: FA2 critical (4x ceiling), 7B 90% pass@1, 3B 72%, attention 16K+ w/FA2, DoLa HARMFUL on 7B
+     ~800-1200 LOC | No prereqs
+
+A-2  T1/T2 Hook Fix [AS, CC]
+     Fix T1Hook to load rules from rules.db (currently loads nothing)
+     Fix T2Hook to parse AST (currently returns Allow unconditionally)
+     ~200-300 LOC | No prereqs
+
+A-3  [DONE] model.generate() Migration [AS]
+     Replace manual Python token loop with model.generate() + LogitsProcessor (10-50x speedup)
+     Done during FastAPI rewrite (patch-1.18)
+
+A-4  Project Intelligence Tier 1 [PI]
+     ProjectProfile struct, build system/language/framework/test/CI detection, build command registry
+     ~600-800 LOC, 22+ tests | No prereqs
+
+A-5  Project Intelligence Tier 2 + Rule Seeding [PI]
+     Convention extraction (naming, error handling, module org, test patterns), auto-seed rules
+     ~400-500 LOC | Prereqs: A-4
+
+A-6  VERSION_GATE + Deprecated Patterns [AS]
+     VERSION_GATE predicate, deprecated_patterns table in rules.db, seed from outdated-tech-audit.md
+     Blocks 48% of audit findings. ~300 LOC | Prereqs: A-2
+
+A-7  Constitutional Injection + T1 VERSION_GATE Hook [AS]
+     Inject CONSTRAINTS block into PhaseSpec content, wire VERSION_GATE into T1 hook
+     ~200 LOC | Prereqs: A-6
+
+A-8  Freshness Steering Vector [AS]
+     Compute modern_api_preference steering vector from contrast pairs
+     ~100 LOC Python | Prereqs: A-6
+
+A-9  ETC Entropy Monitoring [AS]
+     ETCLogitsProcessor (observes entropy, triggers search between generations), calibration script
+     Disabled by default until calibration. ~200 LOC | Prereqs: A-3
+
+A-10 Context Budget Adaptation [TE]
+     ModelCapabilityProfile input, slot weights adapt per tier, attention ceiling enforcement
+     ~200-300 LOC | Prereqs: A-1
+
+A-11 Project Intelligence Tier 3 + Telescope [PI]
+     LLM-assisted project vision, domain classification, architecture inference, context telescope
+     ~300-400 LOC | Prereqs: A-4, A-5
+
+A-12 Deterministic-First Auditor [AS, CC]
+     5-step deterministic check before LLM audit: build, VERSION_GATE, file size, lazy code, completeness
+     Language-parameterized build commands (7 languages)
+     ~300-400 LOC | Prereqs: A-6, A-4, A-21
+
+A-13 RAG Freshness Scoring [AS]
+     freshness_meta.db sidecar SQLite, exponential decay + access boost in RRF scoring
+     ~300 LOC | No prereqs
+
+A-14 T2 AST Import Extraction [AS]
+     T2 hook extracts imports via tree-sitter, cross-references deprecated_patterns (<10ms budget)
+     ~200 LOC | Prereqs: A-2, A-6
+
+A-15 Nightly Dependency Audit [AS]
+     CLI subcommand querying 7 registry APIs, auto-detects ecosystems, updates deprecated_patterns
+     ~400-500 LOC | Prereqs: A-6
+
+A-16 PI Latency Measurement [PI]
+     Profile latency on 5+ real projects (1K/10K/50K/100K/500K LOC)
+     ~100 LOC | Prereqs: A-4, A-5, A-11
+
+A-17 GG Sidecar Response Extension [RA]
+     Add mean_logprob, min_logprob, entropy_mean, entropy_max to sidecar response (zero extra cost)
+     ~50 LOC | Prereqs: A-3
+
+A-18 Repair Context Profile [RA]
+     REPAIR_CONTEXT slot allocation (1400 tokens, prioritizes MistakeBook over RepoMap for retries)
+     GenerationProfile type with 7 profiles (varying temperature/top-p per use case)
+     ~200-250 LOC | Prereqs: A-10
+
+A-19 Interrogation Tree Storage [RA]
+     InterrogationTree/QuestionNode/Choice types in rules.db, 3-7 questions per diagnosis
+     Seed trees for Rust, Python, Go, TypeScript. Terminal nodes map to FixTemplates.
+     ~400-500 LOC | Prereqs: A-6
+
+A-20 Mistake Book SSB Schema [RA]
+     MistakeEntry type, max 5 per baby step, blake3 diff hashing for forbidden_diffs
+     CTIM-Rover guardrail: no variable names in constraints, only structural patterns
+     ~250-300 LOC | No prereqs
+
+A-21 CC Hook Enforcement [CC]
+     T1 lazy code regex (per-language), T1 file size limits (11 languages), T2 AST completeness
+     Cyclomatic complexity max 10, coupling score max 15, GREP_PATTERN language extension
+     ~400-500 LOC | Prereqs: A-2, A-6
+
+A-22 RESEARCHING FSM State [PM]
+     New FSM state allowing WebSearch + KnowledgeEngine, blocking file edit/bash/git
+     ~100-150 LOC | No prereqs
+
+A-23 Micro-Reflection Types + Protocol [RA]
+     500-token context, JSON-constrained output, stores results in MistakeBook (Layer 2 reasoning)
+     ~150-200 LOC | Prereqs: A-20
+
+A-24 ShortCoder Context Compression [TE]
+     AST-preserving simplification: 10 tree-sitter rules (collapse bodies to signatures, strip comments)
+     ~200-250 LOC | Prereqs: A-10
+
+A-25 GG Generation Novelty Signal [RA]
+     Cosine similarity between GraphCodeBERT embeddings of current vs previous generation
+     ~80-100 LOC | Prereqs: A-17
+
+--- PROMPT-TO-ARCHITECTURE STEPS (replace prompt tokens with physical gates) ---
+
+A-26 Tool Routing Layer
+     Intercept Bash calls matching dedicated tools (cat->Read, sed->Edit, etc.), reject with hint
+     Replaces ~375 prompt tokens. ~150-200 LOC | No prereqs
+
+A-27 Bash Safety Filter
+     Blocklist: push --force, reset --hard, rm -rf, etc. BLOCK with explanation + safer alternative
+     Replaces ~1050 prompt tokens. ~150-200 LOC | No prereqs
+
+A-28 Git Commit Workflow Tool
+     New git_commit tool: 4-step workflow in ~200 LOC Rust. Single biggest token savings (4500->30 tokens)
+     ~250-350 LOC | No prereqs
+
+A-29 Agent Prompt Template
+     Structured template wrapping sub-agent tasks (context/task/constraints/output)
+     Model provides 1 sentence, orchestrator adds briefing. 3875->50 tokens. ~200-250 LOC | No prereqs
+
+A-30 Output Postprocessor
+     Emoji stripper, length enforcer, sycophancy prefix stripper. Replaces ~375 prompt tokens.
+     ~150-200 LOC | No prereqs
+
+A-31 Action Classifier + Confirmation Gate
+     Tag tool calls: SAFE/REVERSIBLE/IRREVERSIBLE/SHARED_STATE. Gate dangerous actions.
+     Replaces ~550 prompt tokens. ~200-250 LOC | No prereqs
+
+--- PI COMPLETIONS ---
+
+A-32 PI Tier 1 Completions
+     Override file, build system priority, ~200 framework entries, test runner patterns, command validation
+     ~350-450 LOC | Prereqs: A-4
+
+A-33 PI Tier 2 Completions
+     Path prefix stripping, naming convention thresholds (STRONG/MODERATE/MIXED), per-language error handling
+     Rule lifecycle: auto-promote after 5 successes, auto-retire after 3 false positives
+     ~250-350 LOC | Prereqs: A-5
+
+A-34 RA Self-Discovery — Failure Taxonomy Extension
+     Auto-propose new FailureTaxonomy categories after 3+ recurring error patterns
+     ~200-300 LOC | Prereqs: A-6, A-2
+
+A-35 PI Multi-Language DKG Grammars
+     LanguageGrammar for Python, TypeScript, Go, Java, C# (tree-sitter + symbol/edge extraction)
+     ~500-700 LOC | Prereqs: A-5
+
+A-36 PI Tier 3 + Telescope Completions
+     Language-specific fix templates, few-shot via DKG similarity, convention-aware templates
+     ~300-400 LOC | Prereqs: A-11, soft A-35
+
+A-37 RA VRAM-Tier Layer Configuration
+     Auto-detect VRAM, configure reasoning layers per tier (8/12/16/24/48GB)
+     AB-MCTS branches: 5 on 8GB, 15 on 12GB, 20 on 16GB. Cloud budget config.
+     ~250-350 LOC | Prereqs: A-17
+
+A-38 PI Incremental Profile Updates
+     Change detection at baby step/phase boundaries, per-tier incremental re-profiling, schema versioning
+     ~200-300 LOC | Prereqs: A-4, A-5, A-11
+
+A-39 AS During-Generation Safety Defaults
+     Ship steering DISABLED, ETC DISABLED. DoLa/ETC incompatibility guard (<64 layers = no stacking)
+     ~100-150 LOC | Prereqs: A-8, A-9
+
+A-40 MICRO Per-Slot Optimizations [TE]
+     Per-slot compression for MICRO tier: strip system prompt, top 5 rules only, skip RepoMap, etc.
+     MICRO total: ~3000 tokens vs LARGE ~17330 tokens
+     ~300-400 LOC | Prereqs: A-10
+
+A-41 AS Deterministic Auditor Completions
+     7-language build command registry, 5-step check order with early exit, 4 CC checks wired in
+     ~250-350 LOC | Prereqs: A-12, A-4
+
+A-42 Token Reclamation Techniques [TE]
+     5 techniques: formatting removal (24.5% savings), output restoration, path abbreviation,
+     import collapsing, deduplication
+     ~250-350 LOC | Prereqs: A-10
+
+A-43 Oracle Research Pipeline + Types [PM]
+     7-phase pipeline: query formulation -> search -> source tier classification -> fact extraction ->
+     cross-verification -> synthesis -> post-verification. 8 core types.
+     ~800-1200 LOC | Prereqs: A-22, A-45
+
+A-44 Project Indexing Wiring [PM]
+     Wire DKG + BM25 + vector indexing into pipeline, first-run prompt, incremental updates via SSB
+     ~200-300 LOC | No prereqs
+
+A-45 Source Tier Config [PM]
+     source-tiers.toml with ~200 classified domains. T1-T4 tiers. Deterministic URL classification.
+     ~200-300 LOC | No prereqs
+
+A-46 Context Telescope Types [PM, TE]
+     BoundedString<N> newtype, ContextTelescope struct (4 layers), summary fields on tree nodes
+     ~300-400 LOC | No prereqs
+
+A-47 /research CLI Command + Fallback Classifier [PM]
+     /research and /ask commands, deterministic regex classifier routing questions vs tasks
+     ~150-250 LOC | Prereqs: A-22, A-43
+
+A-48 DKG Data Flow Edges [PM]
+     New dkg_data_flow table (PARAMETER/RETURN/ASSIGNMENT/FIELD_ACCESS), tree-sitter extraction
+     Heuristic enrichment for blast radius. ~300-400 LOC | No prereqs
+
+================================================================================
+GROUP B: DESIGN ADDITIONS TO PHASE 4
+================================================================================
+
+B-1  Constrained Decoding [TE]
+     Grammar-guided generation, JSON schema mode, CRANE adaptive constraints, CodeFast early stopping
+     Prereqs: A-1, A-10
+
+B-2  Constrained Decoding for Imports [AS]
+     Positive allowlist via JSON Schema/EBNF for import lines. vLLM-only. Lowest priority AS.
+     Prereqs: B-1, A-6
+
+B-3  Maintenance Automation [AS]
+     Freshness decay recalculation, steering vector refresh automation
+     Prereqs: A-13, A-8, A-15
+
+--- PHASE 4 DESIGN ADDITIONS (checklists, not separate steps) ---
+
+4B additions: FailureTaxonomy expansion [RA], DKG query tools via IPC [PM]
+4C additions: ShortCoder in PostToolUse [CC], hooks already wired by A-2/A-6/A-21
+4D additions: SurgicalDecomposer [PM], Oracle pipeline [PM], baby step sizing per tier [TE],
+              FILE_PLAN block [CC], ModuleTree [CC], AB-MCTS budget [RA]
+4E additions: skeleton-first + fill protocol [CC], FileLineTracker [CC], file splitter [CC],
+              BubbleUp escalation [RA]
+4G additions: retry strategy + futility detection [TE], Layer 1-6 escalation [RA],
+              CloudSpendTracker [RA], model swap protocol [TE], blast radius thresholds [PM]
+4H additions: nightly dep audit trigger [AS], steering vector refresh [AS]
+4A, 4F, 4I, 4J: no design additions
+
+================================================================================
+PARALLELISM (independent sets that can run simultaneously)
+================================================================================
+
+Set 1: A-2, A-4, A-13, A-20, A-22, A-26-A-31, A-44, A-45, A-46, A-48 (all independent)
+Set 2: A-5, A-6, A-17 (after A-2/A-4)
+Set 2b: A-32, A-33, A-35 (after A-4/A-5)
+Set 3: A-8, A-9, A-7, A-14, A-19, A-21, A-23, A-25, A-34 (after their prereqs)
+Set 3b: A-37 (after A-17)
+Set 3c: A-36, A-38, A-41 (after A-11/A-12)
+Set 3d: A-39 (after A-8 + A-9)
+Set 4: A-10 -> A-18 + A-24 (sequential then parallel)
+Set 4b: A-40, A-42 (after A-10)
+Set 4c: A-43 (after A-45)
+Sequential: A-43 -> A-47
+
+================================================================================
+SCOPE TOTALS
+================================================================================
+
+Group A (48 steps, 2 done): ~11,500-16,100 LOC across ~25-35 sessions
+Group B (3 steps): standalone features extending Phase 3J/providers
+Design additions to Phase 4: integration checklists (not separate steps)
+Completed phases modified: 1A, 1E, 3C, 3E, 3F, 3J
+New phases: 3L (Project Intelligence), 3J.BASELINE

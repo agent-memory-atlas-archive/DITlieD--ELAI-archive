@@ -1,0 +1,1114 @@
+PROJECT INTELLIGENCE DESIGN: AUTOMATIC PROJECT UNDERSTANDING
+Date: 2026-04-13
+Status: PROPOSAL (audited, revised) — needs user review
+Author: Claude Opus 4.6 (design session, not implementation)
+
+AUDIT HISTORY:
+  2026-04-13: adversarial audit found 6 BLOCKs, 10 WARNs, 4 INFOs.
+  All BLOCKs addressed in this revision:
+    B1 (DKG Rust-only):     Tier 2 now has regex fallback for non-Rust (section 3)
+    B2 (DKG not wired):     Dependency changed to 3J.WIRE.E2E confirmed (section 10)
+    B3 (LOC underestimate): Honest estimates: ~250-350 LOC for DKG ext (section 10)
+    B4 (dry-run sandbox):   Two-tier verification: static (safe) + execution (opt-in) (section 5)
+    B5 (ort RC pin):        Documented as known issue, not 3L blocker (section 10)
+    B6 (phase ordering):    Ordering note added, index fix required (section 10)
+  WARNs addressed: crate placement (section 10), absolute paths (section 3C),
+    test count (45 from 25, section 10), latency UNGROUNDED labels (sections 1,3,4,9,13),
+    TOML comment preservation (override file, sections 1,12), decision doc (section 12),
+    glob vs globset (section 12), Box<dyn Error> (section 12), concept NULL (section 8),
+    SSB event bus (section 9), build system priority (section 2A).
+
+
+========================================================================
+PROBLEM STATEMENT
+========================================================================
+
+Current state: ELAI requires the user to explain basic project facts.
+"Use cargo to build." "Tests are in tests/." "The model is at X path."
+This is the experience of every AI coding tool today. Users waste tokens
+on explanations that the system should derive from the project itself.
+
+Your friend's workflow hardcodes: Stack=Bun/TypeScript/Svelte5.
+Your CLAUDE.md hardcodes: Stack=Rust/Python/Cargo/Pytest.
+Both approaches break the moment the user switches projects.
+
+Goal: ELAI opens ANY project directory and within seconds knows:
+  - What languages are used and in what proportion
+  - How to build, test, lint, format, and run the project
+  - What coding conventions the project follows
+  - What frameworks and libraries are in use
+  - What the project IS (web app, CLI tool, library, game, ML pipeline)
+  - Where tests live and how they're structured
+  - What CI system is used and what it checks
+
+The user says "/task add rate limiting to the API" and ELAI already
+knows it's a Rust/Axum project, tests with cargo test, uses snake_case,
+handles errors with thiserror, and has existing rate-limit middleware
+it should extend rather than replace. No explanation needed.
+
+The "holy shit this model is smart" effect comes from the SYSTEM doing
+all the understanding work deterministically. The local model receives
+a prompt so specific and grounded that even a 3B parameter model produces
+correct output. The intelligence is in the infrastructure, not the model.
+
+
+========================================================================
+1. PROJECT PROFILE (the central data structure)
+========================================================================
+
+Every project gets a ProjectProfile — a comprehensive, auto-generated
+description of the project's structure, conventions, and tooling.
+
+Generated: on first /task or /fix in a new directory (alongside indexing).
+Stored: .elai_cc/project-profile.toml (human-readable, editable).
+Updated: incrementally when significant changes detected.
+Cost: Tier 1 UNGROUNDED <5s, Tier 2 UNGROUNDED <30s, Tier 3 UNGROUNDED <60s.
+  Total UNGROUNDED <90s first time. All latency numbers are ESTIMATES
+  that MUST be replaced by measured values from the benchmark harness
+  (same discipline as token-efficiency-design.txt section 1). The
+  implementation phase must include a profiling latency benchmark on
+  at least 5 open-source projects of varying size (1K, 10K, 50K, 100K, 500K LOC).
+
+The profile is NOT a prompt. It is structured data consumed by:
+  - Context Telescope Layer 1 (Project Vision, ~200 tokens)
+  - Prompt assembly (exact build/test commands in baby step prompts)
+  - Surgical decomposition (convention constraints on generated code)
+  - Rules engine (auto-seeded project-specific rules)
+  - Build command dispatch (system knows how to compile/test/lint)
+
+User override: any field in project-profile.toml can be manually edited.
+Manual edits are preserved across regeneration via a separate file:
+  .elai_cc/project-profile-overrides.toml
+This file is NEVER auto-generated or auto-modified. The profiler merges
+overrides on top of auto-detected values (overrides win). This avoids
+the TOML comment preservation problem (standard TOML serializers strip
+comments, so marking overrides with # MANUAL in the main file would be
+lost on regeneration). The override file is the escape hatch for
+non-standard projects.
+
+
+========================================================================
+2. TIER 1: STRUCTURAL DISCOVERY (deterministic, no LLM, <5s)
+========================================================================
+
+Pure filesystem analysis. Pattern matching on known config files.
+No guessing. If the signal isn't there, the field is UNKNOWN.
+
+2A. BUILD SYSTEM DETECTION
+
+  Scan project root (and one level deep for monorepos) for:
+
+  Config File                 Build System        Build Cmd              Test Cmd                    Lint Cmd
+  Cargo.toml                  Cargo (Rust)        cargo build            cargo test                  cargo clippy
+  package.json                Node.js             (read scripts.build)   (read scripts.test)         (read scripts.lint)
+  pyproject.toml              Python (modern)     (read build-system)    pytest / python -m pytest   ruff check / flake8
+  setup.py                    Python (legacy)     python setup.py build  pytest                      (detect from deps)
+  go.mod                      Go                  go build ./...         go test ./...               golangci-lint run
+  CMakeLists.txt              CMake (C/C++)       cmake --build build    ctest --test-dir build      (detect clang-tidy)
+  Makefile / GNUmakefile      Make                make                   make test                   make lint
+  build.gradle / build.gradle.kts  Gradle (Java/Kotlin)  ./gradlew build  ./gradlew test            ./gradlew lint
+  pom.xml                     Maven (Java)        mvn compile            mvn test                    mvn checkstyle:check
+  mix.exs                     Mix (Elixir)        mix compile            mix test                    mix credo
+  Gemfile                     Bundler (Ruby)      bundle exec rake build bundle exec rspec           bundle exec rubocop
+  composer.json               Composer (PHP)      composer install       (read scripts.test)         (read scripts.lint)
+  *.csproj / *.sln            .NET (C#)           dotnet build           dotnet test                 dotnet format --verify
+  deno.json / deno.jsonc      Deno (TS/JS)        deno compile           deno test                   deno lint
+  bun.lockb / bunfig.toml     Bun (TS/JS)         bun build              bun test                    (read scripts.lint)
+  Zig build.zig               Zig                 zig build              zig build test              (none standard)
+  meson.build                 Meson (C/C++)       meson compile -C build meson test -C build         (detect via wrap)
+  justfile                    Just                just build             just test                   just lint
+  Taskfile.yml                Task                task build             task test                   task lint
+
+  For package.json/pyproject.toml/composer.json: READ the scripts/tool
+  section to get exact commands. Don't assume "npm test" — the project
+  may use "vitest", "jest", "mocha", etc. The config file is truth.
+
+  For Makefile/justfile/Taskfile: parse target names. Common targets:
+  build, test, lint, format, clean, run, dev, serve, deploy.
+  If "test" target exists, that's the test command. Read it.
+
+  Monorepo detection:
+    Signal: workspace declaration in Cargo.toml [workspace], package.json
+    "workspaces", pnpm-workspace.yaml, lerna.json, nx.json, turbo.json.
+    When detected: index each workspace member separately but share the
+    top-level profile. Build commands may be per-workspace.
+
+  Priority: if multiple build systems exist (e.g., Makefile + Cargo.toml),
+  prefer the LANGUAGE-NATIVE build system over generic wrappers.
+  Priority order (highest first):
+    1. Language-native: Cargo.toml (Rust), go.mod (Go), mix.exs (Elixir), etc.
+    2. Package manager: package.json, pyproject.toml, Gemfile, composer.json
+    3. Task runners: justfile, Taskfile.yml
+    4. Generic: Makefile, CMakeLists.txt
+  Special case: Cargo workspace roots with [workspace] but no [package]
+  are still Cargo projects — the workspace member list IS the source reference.
+  The old heuristic ("most source file references wins") is WRONG for
+  workspaces and is replaced by this explicit priority list.
+
+  Output: BuildSystemProfile { system, build_cmd, test_cmd, lint_cmd,
+    format_cmd, run_cmd, clean_cmd, monorepo: bool, workspaces: Vec }
+
+
+2B. LANGUAGE DETECTION
+
+  Two signals combined:
+
+  Signal 1 — File extension census:
+    Walk all non-ignored files (respect .gitignore). Count by extension.
+    Map extension to language: .rs=Rust, .py=Python, .ts=TypeScript,
+    .js=JavaScript, .go=Go, .java=Java, .c=C, .cpp=C++, .cs=C#,
+    .rb=Ruby, .ex/.exs=Elixir, .php=PHP, .zig=Zig, .swift=Swift,
+    .kt=Kotlin, .lua=Lua, .dart=Dart, .svelte=Svelte, .vue=Vue, etc.
+
+  Signal 2 — tree-sitter parse success:
+    DKG indexing (Phase 1A) already tries to parse every file with
+    tree-sitter. Track which grammars succeed. This confirms the
+    extension-based detection and catches edge cases (e.g., .h files
+    could be C or C++ — tree-sitter parse with both, check which has
+    fewer errors).
+
+  Output: LanguageProfile { primary: Language, secondary: Vec<Language>,
+    distribution: HashMap<Language, FileCount>, tree_sitter_coverage: f32 }
+
+
+2C. FRAMEWORK DETECTION
+
+  Detect frameworks from dependency declarations + file patterns:
+
+  Language    Signal                                          Framework
+  Rust        Cargo.toml deps contain "axum"                  Axum (web)
+  Rust        Cargo.toml deps contain "actix-web"             Actix (web)
+  Rust        Cargo.toml deps contain "bevy"                  Bevy (game)
+  Rust        Cargo.toml deps contain "leptos"                Leptos (fullstack)
+  Rust        Cargo.toml deps contain "tauri"                 Tauri (desktop)
+  Python      pyproject.toml deps contain "fastapi"           FastAPI (web)
+  Python      pyproject.toml deps contain "django"            Django (web)
+  Python      pyproject.toml deps contain "flask"             Flask (web)
+  Python      pyproject.toml deps contain "torch"             PyTorch (ML)
+  Python      pyproject.toml deps contain "tensorflow"        TensorFlow (ML)
+  TypeScript  package.json deps contain "next"                Next.js (web)
+  TypeScript  package.json deps contain "svelte"              Svelte (web)
+  TypeScript  package.json deps contain "react"               React (web)
+  TypeScript  package.json deps contain "vue"                 Vue (web)
+  TypeScript  package.json deps contain "express"             Express (server)
+  Go          go.mod contains "gin-gonic/gin"                 Gin (web)
+  Go          go.mod contains "gofiber/fiber"                 Fiber (web)
+  Java        build.gradle contains "spring-boot"             Spring Boot (web)
+  C#          *.csproj contains "Microsoft.AspNetCore"        ASP.NET (web)
+  Elixir      mix.exs deps contain "phoenix"                  Phoenix (web)
+  Ruby        Gemfile contains "rails"                        Rails (web)
+
+  This is a LOOKUP TABLE, not LLM inference. ~200 entries cover the vast
+  majority of popular frameworks. Unknown frameworks are detected as
+  "custom" and logged — Tier 3 can attempt classification.
+
+  Output: Vec<FrameworkDetection { name, version, category, confidence }>
+
+
+2D. TEST RUNNER DETECTION
+
+  Beyond "does cargo test work" — understand test structure:
+
+  Location pattern:
+    Same-file tests:     #[cfg(test)] mod tests (Rust), if __name__=="__main__" (Python)
+    Adjacent tests:      foo.rs + foo_test.rs, foo.py + test_foo.py
+    Separate directory:  tests/, __tests__/, spec/, test/
+    Mixed:               combination of above
+
+  Naming pattern:
+    test_ prefix (Python pytest), _test suffix (Go), #[test] attribute (Rust),
+    describe/it blocks (Jest/Mocha/Vitest), deftest (Elixir ExUnit)
+
+  Coverage tool:
+    Detected from: CI config, Makefile targets, package.json scripts
+    Common: cargo-llvm-cov, pytest-cov, istanbul/c8, go tool cover
+
+  Output: TestProfile { runner_cmd, location_pattern, naming_pattern,
+    coverage_tool: Option, test_count_estimate, fixture_dir: Option }
+
+
+2E. LINTER / FORMATTER DETECTION
+
+  Config File              Tool              Language
+  rustfmt.toml / .rustfmt.toml   rustfmt     Rust
+  clippy.toml                    clippy       Rust
+  .eslintrc.* / eslint.config.*  ESLint       JS/TS
+  .prettierrc.* / prettier.config.*  Prettier JS/TS/CSS
+  biome.json                     Biome        JS/TS
+  ruff.toml / .ruff.toml         Ruff         Python
+  .flake8 / setup.cfg [flake8]   Flake8       Python
+  pyproject.toml [tool.black]    Black        Python
+  .golangci.yml                  golangci-lint  Go
+  .clang-format                  clang-format   C/C++
+  .editorconfig                  EditorConfig   Any
+
+  Output: Vec<LintProfile { tool, config_path, language, auto_fix: bool }>
+
+
+2F. ENTRY POINT DETECTION
+
+  Language    Signal
+  Rust        fn main() in src/main.rs or [[bin]] in Cargo.toml
+  Python      if __name__ == "__main__" or [project.scripts] in pyproject.toml
+  Node.js     "main" or "bin" in package.json
+  Go          func main() in main.go or cmd/ directory
+  Java        public static void main(String[]) or Spring @SpringBootApplication
+  C#          static void Main() or top-level statements in Program.cs
+
+  Output: Vec<EntryPoint { file, kind: Binary|Library|Script|Server }>
+
+
+2G. CI / DEPLOYMENT DETECTION
+
+  Config File                              CI System
+  .github/workflows/*.yml                  GitHub Actions
+  .gitlab-ci.yml                           GitLab CI
+  Jenkinsfile                              Jenkins
+  .circleci/config.yml                     CircleCI
+  bitbucket-pipelines.yml                  Bitbucket Pipelines
+  .travis.yml                              Travis CI
+  Dockerfile / docker-compose.yml          Docker
+  fly.toml                                 Fly.io
+  vercel.json                              Vercel
+  netlify.toml                             Netlify
+  render.yaml                              Render
+  railway.toml                             Railway
+  serverless.yml                           Serverless Framework
+
+  CI config is valuable: it reveals the REAL build/test/deploy pipeline
+  the project uses. If CI runs "pnpm run test:e2e", that's a signal.
+
+  Output: CiProfile { system, config_path, detected_steps: Vec<String> }
+
+
+========================================================================
+3. TIER 2: CONVENTION EXTRACTION (deterministic, no LLM, UNGROUNDED <30s)
+========================================================================
+
+CRITICAL LIMITATION (auditor BLOCK): as of Phase 1A implementation,
+DkgEngine::build_graph() only registers RustGrammar. Python, TypeScript,
+and Go files are NOT parsed into the DKG. This means:
+
+  - Tier 2 convention extraction from DKG data works ONLY for Rust projects.
+  - For non-Rust projects, Tier 2 falls back to REGEX-BASED extraction
+    (direct file scanning, not DKG queries). This is slower and less
+    accurate but functional. See FALLBACK PATH below.
+  - Phase 1A must be extended with additional LanguageGrammar impls
+    (Python, TypeScript, Go, Java, C#) BEFORE Tier 2 DKG-based extraction
+    works for those languages. This is a PREREQUISITE tracked in section 10.
+
+FALLBACK PATH (non-Rust, no DKG data available):
+  When DKG has no symbols for the project's primary language:
+  1. Naming conventions: regex scan on source files directly (match
+     function/class definition patterns per language via tree-sitter
+     parse WITHOUT DKG storage — parse-and-discard for stats only).
+  2. Error handling: grep-based detection (try/except count, if err != nil
+     count, Result<> return type count) — no AST needed.
+  3. Module organization: filesystem path analysis only (no DKG edges).
+  4. Test patterns: filesystem + grep (test_ prefix, describe/it blocks).
+  Fallback quality: MODERATE (less accurate than DKG-based, but usable).
+  Fallback fields marked with `source: "regex_fallback"` in profile TOML.
+
+Runs AFTER DKG indexing (Phase 1A) for Rust projects. For non-Rust
+projects, runs independently using the regex fallback path.
+
+3A. NAMING CONVENTION DETECTION
+
+  DKG path (Rust, when DKG data available):
+    Query DKG for all function names and type names. Classify each.
+
+  Regex fallback (non-Rust or DKG unavailable):
+    Scan source files with tree-sitter parse-and-discard. Extract
+    function/class/method names via language-specific AST queries
+    (fn_item for Rust, function_definition for Python, function_declaration
+    for TS/JS, func_declaration for Go). No DKG storage needed.
+
+  Classification for both paths:
+    snake_case:    count matches [a-z][a-z0-9_]*
+    camelCase:     count matches [a-z][a-zA-Z0-9]*  (starts lowercase, has uppercase)
+    PascalCase:    count matches [A-Z][a-zA-Z0-9]*
+    SCREAMING_SNAKE: count matches [A-Z][A-Z0-9_]*
+    kebab-case:    count matches [a-z][a-z0-9-]*
+
+  Per category (functions, types, constants, modules):
+    If >80% follow one pattern: STRONG convention. Auto-seed as rule.
+    If 60-80%: MODERATE convention. Auto-seed as WARN-level rule.
+    If <60%: MIXED. No rule seeded. Note in profile.
+
+  Output: NamingConventions { functions: Convention, types: Convention,
+    constants: Convention, modules: Convention }
+
+
+3B. ERROR HANDLING PATTERN DETECTION
+
+  Language-specific detection. Uses DKG when available (Rust), otherwise
+  grep/regex-based detection (all languages). BM25 assists keyword search:
+
+  Rust:
+    Count function return types from DKG: Result<T, E> vs Option<T> vs raw T.
+    Detect error crate: grep for "thiserror" / "anyhow" / "eyre" in Cargo.toml.
+    Detect error propagation: grep for "?" operator frequency vs .unwrap() frequency.
+
+  Python:
+    Count try/except blocks (tree-sitter AST). Detect custom exception classes.
+    Check for typing annotations (-> Optional, -> Result pattern with returns lib).
+
+  TypeScript:
+    Count try/catch blocks. Detect Result/Either pattern from fp-ts or neverthrow.
+    Check for error boundary components (React).
+
+  Go:
+    Count `if err != nil` patterns. Detect error wrapping (fmt.Errorf with %w).
+
+  Output: ErrorHandlingProfile { pattern: ErrorPattern, error_crate: Option,
+    propagation_style: PropagationStyle, custom_error_types: Vec<String> }
+
+
+3C. MODULE ORGANIZATION PATTERN
+
+  Analyze directory structure from file paths RELATIVE TO PROJECT ROOT.
+
+  CRITICAL: DKG currently stores absolute paths (e.g., C:\Users\...\src\auth\mod.rs).
+  All path analysis MUST strip the project root prefix first to get relative paths
+  (e.g., src/auth/mod.rs). Clustering on absolute paths produces meaningless
+  results like "C:" as a cluster. Implementation: PathBuf::strip_prefix(project_root).
+  For the regex fallback path (non-Rust): use the file walker's relative paths directly.
+
+  Pattern         Signal
+  Flat            All source files in one directory (src/*.rs)
+  By-type         Separated by file type (models/, controllers/, views/)
+  By-feature      Grouped by domain (auth/, billing/, users/)
+  Layered         Clean architecture layers (domain/, application/, infrastructure/)
+  Monorepo        Multiple independent packages (packages/*, crates/*)
+
+  Detection: cluster RELATIVE file paths by first directory component under src/.
+  If clusters correlate with module types (all structs in models/) -> by-type.
+  If clusters correlate with domain (auth has handlers+models+tests) -> by-feature.
+
+  Output: ModuleOrganization { pattern: OrgPattern, root_modules: Vec<String> }
+
+
+3D. TEST PATTERN DETECTION
+
+  From DKG + filesystem analysis:
+
+  Test co-location: ratio of tests in same file vs separate directory
+  Assertion style: assert!, assert_eq! (Rust) vs pytest assert vs expect() (Jest)
+  Test helper patterns: fixture files, factory functions, mock modules
+  Integration vs unit ratio: files in tests/ vs inline #[cfg(test)]
+
+  Output: TestPatternProfile { colocation: Colocation, assertion_style: String,
+    has_fixtures: bool, has_mocks: bool, integration_ratio: f32 }
+
+  CROSS-REFERENCE: TestPatternProfile feeds into:
+    - code-completeness-enforcement-design.txt: T1 file size hook uses
+      test file detection patterns (language-specific) from this profile
+      to apply test limits (200 lines) vs production limits (100-200 lines).
+    - code-completeness-enforcement-design.txt: T2 AST hook uses test
+      block detection patterns (language-specific) from this profile to
+      determine whether lazy code patterns are in test vs production context.
+
+
+3E. DEPENDENCY ANALYSIS
+
+  Extract full dependency list from build system config:
+    Cargo.toml: [dependencies] + [dev-dependencies]
+    package.json: dependencies + devDependencies
+    pyproject.toml: [project.dependencies] + [project.optional-dependencies]
+    go.mod: require block
+
+  Classification (TWO tiers — simple first, deep if DKG available):
+
+  TIER A — DECLARATION-ONLY (no DKG needed, all languages):
+    DEV-ONLY: declared in dev-dependencies section
+    DECLARED: declared in regular dependencies section
+    Version constraint check: pinned (=1.2.3), ranged (^1.2), or wild (*)?
+    This works for ALL languages immediately.
+
+  TIER B — USAGE-BASED (requires DKG import edges, Rust-only initially):
+    CORE: imported by >50% of source files (DKG import edge traversal)
+    PERIPHERAL: imported by <10% of source files
+    UNUSED: declared but never imported (flag for user attention)
+    NOTE: Tier B requires iterating dkg_edges for every declared dep
+    across every source file. This is a graph traversal proportional to
+    |deps| * |files|. For a project with 50 deps and 200 files, this is
+    10K edge lookups — non-trivial. Must be measured, not assumed fast.
+    For non-Rust projects (no DKG): skip Tier B, report DECLARED only.
+
+  Output: DependencyProfile { total, declared: Vec, dev_only: Vec,
+    core: Vec (Tier B only), peripheral: Vec (Tier B only),
+    unused: Vec (Tier B only), pinning_strategy: PinningStrategy,
+    classification_depth: "declaration_only" | "usage_based" }
+
+  CROSS-REFERENCE: DependencyProfile feeds into:
+    - anti-staleness-enforcement.txt: VERSION_GATE deprecated_patterns table
+      uses ecosystem field to match language-specific dependency formats
+    - code-completeness-enforcement-design.txt: FilePlan validation uses
+      declared dependencies to verify imports reference real packages
+    - token-efficiency-design.txt: prompt assembly includes dependency
+      names from ProjectProfile so the model knows what's available
+
+
+========================================================================
+4. TIER 3: SEMANTIC UNDERSTANDING (LLM-assisted, optional, UNGROUNDED <60s)
+========================================================================
+
+Optional because the system WORKS without it. Tier 1+2 provide enough
+for correct operation. Tier 3 adds the "wow" factor.
+
+4A. PROJECT VISION GENERATION
+
+  Inputs (all from Tier 1 + 2, no file reading needed):
+    - Primary language + frameworks detected
+    - Module organization pattern
+    - Entry point types (binary, library, server)
+    - Top 10 core dependencies by import frequency
+    - README.md first 500 tokens (if exists, read once)
+    - Cargo.toml/package.json description field (if exists)
+
+  LLM prompt (~800 tokens input):
+    "Given this project profile, write a 200-token project description
+     covering: what it is, core tech stack, architecture pattern, and
+     key constraints. Output ONLY the description, no commentary."
+
+  Constrained: output <= 200 tokens (model tier MICRO can handle this).
+  Stored as: project_vision field in project-profile.toml.
+  Used by: Context Telescope Layer 1 for every baby step prompt.
+
+  Fallback (no LLM available): template-based generation:
+    "{primary_language} {project_type} using {frameworks}. {module_count}
+     modules, {test_count} tests. Build: {build_cmd}. Test: {test_cmd}."
+  ~40 tokens. Functional if not elegant.
+
+
+4B. DOMAIN CLASSIFICATION
+
+  Classify project into domains for rule activation:
+
+  Domain          Signals (from Tier 1+2)
+  WEB_BACKEND     Server framework detected + route handlers in DKG
+  WEB_FRONTEND    React/Vue/Svelte/Angular detected + component files
+  FULLSTACK       Both backend and frontend signals
+  CLI_TOOL        Binary entry point + arg parser dep (clap, argparse, commander)
+  LIBRARY         Library entry point + no binary + published to registry
+  GAME            Game engine detected (bevy, unity, godot, pygame)
+  ML_PIPELINE     ML framework detected (torch, tensorflow, jax) + training code
+  DATA_PIPELINE   ETL deps (pandas, polars, spark) + pipeline orchestration
+  MOBILE          React Native / Flutter / Swift / Kotlin Android
+  DESKTOP         Tauri / Electron / Qt / GTK
+  EMBEDDED        no_std, cortex-m, esp-hal, bare metal indicators
+  DEVOPS          Terraform / Ansible / Pulumi + infrastructure definitions
+
+  Used by: rules engine (domain-specific rules activate automatically),
+  prompt templates (different instruction patterns per domain).
+
+  Output: Vec<DomainClassification { domain, confidence, signals }>
+
+
+4C. ARCHITECTURE INFERENCE
+
+  From DKG dependency graph + module organization:
+
+  Detect architectural patterns:
+    LAYERED: clear dependency direction (handlers -> services -> repos)
+    HEXAGONAL: ports + adapters pattern (traits at core, impls at edge)
+    MICROSERVICES: multiple independent services with IPC/HTTP between them
+    MONOLITH: single deployment unit, shared state
+    EVENT_DRIVEN: message queue deps + event handler patterns
+    SERVERLESS: lambda/function handler patterns
+
+  This is advisory only — used for Context Telescope, not enforcement.
+  If detection confidence < 0.6, output UNKNOWN. No guessing.
+
+
+========================================================================
+5. BUILD COMMAND REGISTRY (deterministic dispatch)
+========================================================================
+
+The system needs to execute build/test/lint commands. These come from
+the ProjectProfile, not from asking the user or guessing.
+
+  BuildCommandRegistry {
+    build:  Vec<BuildCommand>,   // may have multiple (e.g., frontend + backend)
+    test:   Vec<TestCommand>,    // includes unit, integration, e2e
+    lint:   Vec<LintCommand>,
+    format: Vec<FormatCommand>,
+    run:    Vec<RunCommand>,     // for dev server or binary execution
+    clean:  Vec<CleanCommand>,
+  }
+
+  BuildCommand {
+    cmd: String,                 // exact shell command
+    working_dir: PathBuf,        // relative to project root
+    env: HashMap<String, String>,// any needed env vars
+    timeout_s: u32,              // default per build system
+    scope: CommandScope,         // FULL | CRATE(name) | WORKSPACE_MEMBER(name)
+  }
+
+  Population: directly from Tier 1 detection. For each build system,
+  the registry maps to known commands. For custom commands (Makefile
+  targets, package.json scripts), the actual script content is read
+  and stored.
+
+  Scoped commands: for surgical mode, the system needs to test ONLY
+  the affected crates/modules. BuildCommand.scope enables:
+    cargo test -p affected_crate (Rust)
+    npm test -- --testPathPattern=affected_module (Jest)
+    pytest tests/test_affected.py (Python)
+
+  Validation: two-tier command verification.
+
+  TIER A — STATIC VERIFICATION (no execution, always safe):
+    Check that the command binary exists on PATH (which/where).
+    Check that config files referenced by the command exist.
+    Parse Makefile/justfile/Taskfile targets to verify target names.
+    For package.json: verify script key exists in JSON.
+    For Cargo.toml: verify [package] or [workspace] section exists.
+    Cost: pure filesystem checks, <100ms, zero side effects.
+
+  TIER B — EXECUTION VERIFICATION (opt-in, requires user confirmation):
+    Commands like `cargo check`, `pytest --collect-only` have side effects
+    (cargo check writes to target/, pytest imports modules and can execute
+    module-level code). These are code execution vectors on untrusted projects.
+    TIER B verification ONLY runs after explicit user consent:
+      "Verify build commands by running them? This executes code. (y/N)"
+    When Phase 4A (process isolation) is available: Tier B runs inside a
+    Tier C sandbox (same infrastructure as feasibility stubs). Until 4A:
+    Tier B requires user opt-in and runs unsandboxed with a warning.
+    If user declines: commands marked UNVERIFIED (static-only).
+    UNVERIFIED commands still work — they just lack confirmation.
+
+  User sees:
+    "Build: cargo build [VERIFIED: binary exists, Cargo.toml valid]"
+    "Test: cargo test [UNVERIFIED: run 'elai verify-commands' to confirm]"
+
+
+========================================================================
+6. PROJECT-SPECIFIC RULE SEEDING
+========================================================================
+
+The rules engine (Phase 3F) supports auto-seeding rules. Currently,
+seed rules are hardcoded (~33 rules). ProjectProfile extends this with
+per-project rules derived from convention detection.
+
+Auto-seeded rules (examples):
+
+  Convention Detected                    Rule Seeded
+  functions: snake_case (>80%)           AST_PATTERN: new function names must be snake_case
+  error crate: thiserror                 GREP_PATTERN: error types must derive thiserror::Error
+  test location: same-file               GREP_PATTERN: new modules must include #[cfg(test)] block
+  formatter: rustfmt.toml exists         METRIC_GATE: rustfmt --check must pass before commit
+  linter: clippy.toml exists             METRIC_GATE: cargo clippy must pass with zero warnings
+  framework: axum                        SCHEMA_REQUIRED: handler fns must return impl IntoResponse
+  pinning: exact versions                GREP_PATTERN: new deps must use = version constraints
+
+  Rule lifecycle: auto-seeded rules start as SHADOW (logged but not blocking).
+  After 5 successful enforcements (the code already follows the convention),
+  they auto-promote to ACTIVE. If they cause 3+ false positives, they
+  auto-retire. This is the existing Phase 3F lifecycle, just with a new
+  source of initial rules.
+
+  Trust level: project-detected rules have MEDIUM trust (same as auditor-
+  discovered rules). They can be overridden by user rules (HIGH trust).
+
+
+========================================================================
+7. PER-PROJECT ISOLATION
+========================================================================
+
+Each project directory gets its own .elai_cc/ containing:
+
+  .elai_cc/
+    project-profile.toml       # THIS document's output
+    indexes/
+      dkg.db                   # tree-sitter dependency graph
+      bm25/                    # tantivy full-text index
+      vectors.db               # embedding cache
+    projects/{id}/
+      ssb.db                   # shared state board
+      rules.db                 # rules engine (seeded from profile)
+      sessions/                # session state
+    config/
+      elai_cc.toml             # project config (overrides global)
+      source-tiers.toml        # Oracle mode config (if used)
+    metrics/                   # benchmark results, phase metrics
+
+  Dashboard flow (future):
+    1. User opens ELAI dashboard
+    2. Sees list of known projects (stored in global config)
+    3. Selects a project or adds new directory
+    4. ELAI loads that project's .elai_cc/
+    5. If first time: runs Tier 1+2 profiling + DKG indexing
+    6. User sees: "Detected: Rust/Axum web backend, 47 source files,
+       cargo test (12 tests pass), clippy configured. Ready."
+    7. User types task. No explanation needed.
+
+  Project switching: closing one project and opening another is instant
+  (just loading a different .elai_cc/ directory). No state leaks between
+  projects. The local model doesn't "remember" the previous project —
+  it receives a fresh prompt assembled from the new project's profile.
+
+
+========================================================================
+8. CONTEXT TELESCOPE INTEGRATION
+========================================================================
+
+The Context Telescope (pipeline-modes-design.txt) has 5 layers.
+ProjectProfile feeds Layer 1 and influences all others:
+
+LAYER 1 — PROJECT VISION (from Tier 3 or template fallback)
+  Before ProjectProfile: manually written or empty.
+  After ProjectProfile: auto-generated, always populated.
+  Content: "{language} {domain} using {frameworks}. {architecture}.
+  {key_constraints}. Build: {build_cmd}. Test: {test_cmd}."
+  This tells the model WHAT it's working on, in every baby step.
+
+  NOTE: pipeline-modes-design.txt section 4 mentions auto-generating
+  surgical mode Layer 1 from "DKG concept annotations" — but dkg_nodes
+  concept TEXT column is always NULL (concept_stale=1, no code fills it).
+  ProjectProfile replaces that dead path. Layer 1 is populated from
+  ProjectProfile.project_vision (Tier 3 LLM output) or the template
+  fallback (Tier 1 data). DKG concept annotations are NOT used.
+
+LAYER 2-4 — DECOMPOSITION SUMMARIES (generated during planning)
+  The decomposer LLM receives the ProjectProfile in its context.
+  This means decomposition uses real project conventions, not generic ones.
+  "Split into steps that follow this project's by-feature organization"
+  instead of "split into appropriate steps."
+
+PROMPT ASSEMBLY — BUILD/TEST COMMANDS IN BABY STEPS
+  Every baby step that produces code includes:
+    "After writing this function, verify: {test_cmd} -p {affected_crate}"
+  The model doesn't need to guess how to test. The exact command is there.
+
+FEW-SHOT EXAMPLES — CONVENTION-MATCHED
+  When few-shot is recommended (token-efficiency-design.txt section 4),
+  examples are selected from the SAME PROJECT via DKG similarity search.
+  The model sees how THIS project handles errors, names functions, etc.
+  "Here's how this codebase implements a similar function: [DKG result]"
+
+TEMPLATE GENERATION — CONVENTION-AWARE
+  Fill-in-the-blank templates (token-efficiency-design.txt section 4)
+  use detected conventions: error types, naming, import style.
+  Template: "fn {snake_case_name}(...) -> Result<T, {project_error_type}>"
+  Not: "fn {name}(...) -> {return_type}"
+
+REASONING PIPELINE — LANGUAGE-PARAMETERIZED (reasoning-architecture-design.txt)
+  The 6-layer externalized reasoning pipeline uses ProjectProfile extensively:
+
+  Layer 1 (deterministic error reasoning):
+    Fix templates are language-specific. MISSING_IMPORT templates use
+    ProjectProfile.language to generate correct import syntax:
+      Rust: "use {crate}::{symbol};"
+      Python: "from {module} import {symbol}"
+      Go: "import \"{package}\""
+      TypeScript: "import {{ {symbol} }} from '{module}';"
+    DKG edge traversal (Rust) or regex fallback (non-Rust) for localization.
+
+  Layer 2 (micro-reflection):
+    Context types from DKG are language-specific signatures.
+    JSON-constrained output format is identical across languages.
+
+  Layer 3 (interrogation tree):
+    Decision trees are LANGUAGE-PARAMETERIZED via ProjectProfile.language.
+    Rust trees include: lifetime/borrow questions, trait bound questions.
+    Python trees include: type hint questions, import resolution.
+    Go trees include: goroutine/channel questions, error wrapping.
+    Trees stored as data in rules.db with language field.
+    Domain-tagged via ProjectProfile domain classification (section 4B).
+
+  Layer 1 fix templates also use:
+    ProjectProfile.build_system.build_cmd for compilation verification.
+    ProjectProfile.build_system.test_cmd for test execution.
+    ProjectProfile.error_handling for error type references in fixes.
+
+  CROSS-REFERENCE: reasoning-architecture-design.txt LAYER 3 section
+    defines InterrogationTree { root, language, domain } where language
+    comes from ProjectProfile and domain from DomainClassification.
+
+
+========================================================================
+9. INCREMENTAL UPDATES
+========================================================================
+
+The profile is NOT static. It updates when the project changes.
+
+Triggers for re-profiling:
+  - New dependency added (Cargo.toml/package.json changed)
+  - New source directory created (module organization may change)
+  - Build system config changed
+  - CI config changed
+  - After every N baby steps (N=50, lightweight Tier 1 refresh)
+
+  Change detection: filesystem watcher (notify crate) or explicit check
+  at baby step boundaries. NOTE: the original design referenced SSB
+  file_write events as a trigger, but SSB event-driven re-indexing is
+  NOT wired in any existing phase. This design uses filesystem checks
+  at defined points (baby step completion, phase transition) instead of
+  an event bus. If SSB event wiring is added later (3J or beyond), it
+  can replace the polling approach.
+
+Incremental strategy:
+  Tier 1: re-scan only changed config files. UNGROUNDED <1s.
+  Tier 2: re-analyze only new/changed symbols in DKG. UNGROUNDED <5s.
+  Tier 3: re-generate project vision only if Tier 1 or 2 changed significantly
+           (new framework detected, language mix shifted >10%). UNGROUNDED <30s.
+
+Version tracking: project-profile.toml has a schema_version field.
+When ELAI updates and the profile schema changes, it re-runs full profiling.
+
+
+========================================================================
+10. PHASE PLACEMENT AND IMPACT ON EXISTING PHASES
+========================================================================
+
+PHASE ORDERING NOTE:
+  The phase index currently has 3J and 3K in inverted order (3K listed
+  before 3J in the index despite 3J being implemented first). This
+  design uses 3L as the next available ID. Before implementation, the
+  phase index should be updated to reflect actual ordering:
+  3A-3I (existing), 3J (vLLM/providers), 3K (RAG hardening), 3L (this).
+
+
+NEW SUB-PHASE: 3L (PROJECT INTELLIGENCE)
+
+  CRATE PLACEMENT: knowledge/ crate (types + Tier 2 extraction logic).
+    ProjectProfile struct and Tier 1 detection can live in core/ (no deps needed).
+    Tier 2 convention extraction lives in knowledge/ (needs DKG access).
+    CLI orchestrates: calls Tier 1 (core), then Tier 2 (knowledge), writes profile.
+    Orchestrator reads profile as TOML config (no knowledge/ dependency needed).
+    This avoids adding elai-knowledge as an orchestrator dependency.
+
+  Dependencies:
+    HARD: Phase 3J.WIRE.E2E confirmed green (DKG wired into pipeline).
+      Without this, Tier 2 DKG-based extraction has no runtime data source.
+      If 3J.WIRE.E2E is incomplete: Tier 2 uses regex fallback only.
+    HARD: Phase 3F (rules engine, for auto-seeding).
+    SOFT: Phase 1A multi-language grammars (for Tier 2 on non-Rust projects).
+      Without this: Tier 2 uses regex fallback (functional but less accurate).
+      Multi-language DKG is a separate work item (1A-MULTILANG), not a 3L blocker.
+    KNOWN ISSUE: ort = "=2.0.0-rc.12" in knowledge/Cargo.toml violates
+      CLAUDE.md rules. Must verify if ort 2.0.0 stable exists. If not,
+      the knowledge crate has a pre-existing violation to resolve. This
+      does not block 3L directly (profiling doesn't use ONNX), but any
+      build of knowledge/ inherits the violation.
+
+  Can run in parallel with: Phase 4D onwards.
+
+  Steps:
+    3L.1  Skeleton: ProjectProfile struct, BuildSystemDetector trait, Tier 1 detection
+    3L.2  Verify: compiles, existing tests pass
+    3L.3  Tests: detection tests with fixture projects
+    3L.4  Implement: Tier 1 + build command registry
+    3L.5  Implement: Tier 2 (DKG path + regex fallback) + rule seeding
+    3L.6  Implement: Tier 3 (LLM-assisted, optional path)
+    3L.7  Implement: Context Telescope integration + prompt assembly integration
+    3L.8  Measure: profiling latency on 5+ real projects (1K/10K/50K/100K/500K LOC)
+
+  Test budget: ~45 tests (revised upward after audit):
+    22 contract: one per build system in the detection table (section 2A)
+    6 language detection: Rust, Python, TypeScript, Go, polyglot, unknown
+    5 convention extraction: naming, error handling, module org, test pattern, deps
+    5 integration: full profile generation on fixture projects
+      (Rust/Cargo, Python/FastAPI, TypeScript/Next.js, Go/Gin, polyglot monorepo)
+    7 adversarial:
+      - Corrupted/malformed config files (invalid TOML, truncated JSON)
+      - Empty project directory (no config files at all)
+      - Massive monorepo (>100 workspace members)
+      - Windows absolute paths in DKG (strip_prefix correctness)
+      - Project with only generated code (no meaningful conventions)
+      - Competing build systems (Cargo.toml + Makefile + justfile)
+      - Project with vendored dependencies (vendor/ directory)
+
+
+CHANGES TO EXISTING PHASES (already completed 0-3):
+
+  Phase 1A (DKG) — MODERATE EXTENSION (corrected from "minor")
+    Current: parses Rust-only symbols, builds dependency graph.
+    Known issues: all public methods return Box<dyn std::error::Error>
+      (should use thiserror per CLAUDE.md). Only RustGrammar registered.
+    Add: pub fn extract_conventions(&self) -> Result<ConventionStats, DkgError>
+    New types: ConventionStats, NamingConventions, Convention enum,
+      NamingHistogram. 4 SQL queries (function/type/constant/module names).
+      Regex compilation for case pattern classification.
+    Honest LOC estimate: ~250-350 LOC (types + queries + regex + tests).
+    This IS a new public API surface. The original "~100 LOC, no API changes"
+    was incorrect.
+    Error type note: introducing DkgError (thiserror) to replace
+      Box<dyn Error> is additional scope but the correct fix. Can be
+      scoped to new methods only (leave existing methods for a separate PR).
+    Separate work item (1A-MULTILANG): add LanguageGrammar impls for
+      Python, TypeScript, Go, Java, C#. Required for Tier 2 DKG-based
+      convention extraction on non-Rust projects. Not part of 3L.
+
+  Phase 3E (Context Budget Allocator) — MINOR CHANGE
+    Current: 8 fixed slots with percentage allocation.
+    Change: Slot 3 (PhaseSpec) now includes ProjectProfile-derived content
+    (project vision + build commands). Budget allocation unchanged.
+    Impact: Slot 3 assembly reads project-profile.toml via TOML
+    deserialization (no knowledge crate dependency). ~50 LOC.
+
+  Phase 3F (Rules Engine) — MODERATE EXTENSION
+    Current: ~33 seed rules, hardcoded.
+    Add: ProjectRuleSeeder that generates additional seed rules from
+    ProjectProfile.conventions + ProjectProfile.lint_tools.
+    Rules enter as SHADOW (existing lifecycle handles promotion).
+    Impact: ~150-200 LOC. New seed source, existing infrastructure.
+    Note: rule generation is deterministic (convention -> rule template).
+
+  Phase 3J.WIRE.E2E (End-to-End Pipeline) — INTEGRATION POINT
+    Current: CLI starts pipeline. DKG indexing gap noted in
+    pipeline-modes-design.txt section 1B.
+    PREREQUISITE: 3J.WIRE.E2E must be confirmed green (DKG wired into
+    pipeline) before 3L Tier 2 can use DKG data. If incomplete: regex fallback.
+    Change: on first /task, if no .elai_cc/indexes/ exists:
+      1. Run project detection (Tier 1)
+      2. Run DKG + BM25 + vector indexing
+      3. Run convention extraction (Tier 2, DKG or regex fallback)
+      4. Generate profile + seed rules
+      5. Proceed with task
+
+  Phase 1A-MULTILANG (NEW WORK ITEM, separate from 3L):
+    Add LanguageGrammar implementations for Python, TypeScript, Go, Java, C#.
+    Enables DKG-based convention extraction for non-Rust projects.
+    Can be done before or after 3L. Priority: HIGH for "any language" goal.
+
+
+CHANGES TO FUTURE PHASES (not yet built):
+
+  Phase 4D (Pipeline Factory L1 / Surgical Mode)
+    Surgical decomposer reads ProjectProfile to:
+    - Use correct build/test commands in step definitions
+    - Constrain generated code to detected conventions
+    - Include project-specific few-shot examples from DKG
+    No structural change to 4D design — just a richer input.
+
+  Phase 4E (Pipeline Factory L2 / DecompositionTree)
+    Baby step sizing uses ModelTier (token-efficiency-design.txt)
+    AND ProjectProfile.conventions to generate convention-aware templates.
+    Phase Sizing reads ProjectProfile.build_system for accurate time estimates.
+
+  Phase 4G (Autonomous Mode)
+    Auto-advance evidence checks include: "does output follow project
+    conventions?" using rules auto-seeded from ProjectProfile.
+    Convention violations = WARN (not BLOCK), but auto-advance pauses.
+
+
+========================================================================
+11. TYPES (Rust type definitions)
+========================================================================
+
+  ProjectProfile {
+    schema_version: u32,
+    generated_at: String,                // ISO 8601 timestamp
+    project_root: PathBuf,
+
+    // Tier 1
+    build_system: BuildSystemProfile,
+    languages: LanguageProfile,
+    frameworks: Vec<FrameworkDetection>,
+    test_profile: TestProfile,
+    lint_tools: Vec<LintProfile>,
+    entry_points: Vec<EntryPoint>,
+    ci: Option<CiProfile>,
+    dependencies: DependencyProfile,
+
+    // Tier 2
+    naming: NamingConventions,
+    error_handling: ErrorHandlingProfile,
+    module_organization: ModuleOrganization,
+    test_patterns: TestPatternProfile,
+
+    // Tier 3 (optional)
+    project_vision: Option<String>,      // <= 200 tokens
+    domains: Vec<DomainClassification>,
+    architecture: Option<ArchitecturePattern>,
+
+    // Commands
+    commands: BuildCommandRegistry,
+
+    // Manual overrides loaded from project-profile-overrides.toml
+    // (separate file, never auto-generated, survives regeneration)
+    overrides_applied: bool,
+  }
+
+  BuildSystemProfile {
+    system: BuildSystem,                 // enum: Cargo, Npm, Bun, PyProject, Go, etc.
+    config_path: PathBuf,
+    version: Option<String>,             // e.g., rust edition, node version
+    monorepo: bool,
+    workspaces: Vec<WorkspaceMember>,
+  }
+
+  BuildSystem {
+    Cargo, Npm, Bun, Deno, PyProject, SetupPy, GoMod, CMake,
+    Make, Gradle, Maven, Mix, Bundler, Composer, DotNet, Zig,
+    Meson, Just, Task, Custom(String),
+  }
+
+  LanguageProfile {
+    primary: Language,
+    secondary: Vec<Language>,
+    distribution: HashMap<Language, usize>,  // file count per language
+    tree_sitter_coverage: f32,               // 0.0-1.0, what % parsed OK
+  }
+
+  Language {
+    Rust, Python, TypeScript, JavaScript, Go, Java, Kotlin, CSharp,
+    Cpp, C, Ruby, Elixir, PHP, Swift, Zig, Dart, Lua, Svelte, Vue,
+    Haskell, Scala, Clojure, OCaml, Gleam, Other(String),
+  }
+
+  FrameworkDetection {
+    name: String,
+    version: Option<String>,
+    category: FrameworkCategory,         // Web, Game, ML, Desktop, Mobile, etc.
+    confidence: f32,                     // 0.0-1.0
+    detected_via: String,                // "Cargo.toml dependency" etc.
+  }
+
+  Convention { Strong(String), Moderate(String), Mixed, Unknown }
+
+  NamingConventions {
+    functions: Convention,
+    types: Convention,
+    constants: Convention,
+    modules: Convention,
+  }
+
+  ErrorPattern { ResultBased, ExceptionBased, ErrorCodeBased, Mixed, Unknown }
+  PropagationStyle { QuestionMark, TryCatch, IfErrNil, Mixed, Unknown }
+  OrgPattern { Flat, ByType, ByFeature, Layered, Monorepo, Unknown }
+  ArchitecturePattern { Layered, Hexagonal, Microservices, Monolith, EventDriven, Serverless, Unknown }
+
+  CommandScope { Full, Crate(String), WorkspaceMember(String), Directory(PathBuf) }
+
+  BuildCommand {
+    cmd: String,
+    working_dir: PathBuf,
+    env: HashMap<String, String>,
+    timeout_s: u32,
+    scope: CommandScope,
+    verified: bool,                      // dry-run passed
+  }
+
+  BuildCommandRegistry {
+    build:  Vec<BuildCommand>,
+    test:   Vec<BuildCommand>,
+    lint:   Vec<BuildCommand>,
+    format: Vec<BuildCommand>,
+    run:    Vec<BuildCommand>,
+    clean:  Vec<BuildCommand>,
+  }
+
+
+========================================================================
+12. IMPLEMENTATION NOTES (from audit findings)
+========================================================================
+
+FILESYSTEM WALKING:
+  Tier 1 scans project root for config files. Per CLAUDE.md, use
+  globset/ignore crates (NOT the glob crate, which is used in
+  orchestrator/Cargo.toml in violation of hard rules). The ignore
+  crate natively respects .gitignore, which is needed for the
+  exclusion list in section 2B of pipeline-modes-design.txt.
+
+ERROR TYPES:
+  All new public APIs in this design MUST use thiserror-derived error
+  types. Do NOT propagate Box<dyn std::error::Error> from existing
+  DKG methods. New code: Result<T, ProjectProfileError>.
+  Existing DKG methods: leave as-is for now, fix in separate PR.
+
+TOML SERIALIZATION:
+  Use toml crate for project-profile.toml. Override file
+  (project-profile-overrides.toml) is read-only by the profiler.
+  Merge strategy: deserialize both, overlay overrides field-by-field.
+
+DECISION DOC:
+  Before implementation: write workflow/reasoning/phase-3L-decisions.md
+  per CLAUDE.md requirement. This design document is the PROPOSAL.
+  The decisions doc records: what was chosen, why, and what was rejected.
+
+
+========================================================================
+13. USER EXPERIENCE FLOW (illustrative, latency numbers UNGROUNDED)
+========================================================================
+
+First time opening a project:
+
+  $ elai /path/to/my-project
+
+  [1/4] Scanning project structure...
+        Rust project (Cargo workspace, 3 crates)
+        Framework: Axum 0.7, SQLx 0.7, Tokio 1.x
+        Build: cargo build     Test: cargo test     Lint: cargo clippy
+
+  [2/4] Indexing codebase (47 source files, ~8,200 LOC)...
+        DKG: 312 symbols, 489 edges                          [2.1s]
+        BM25: 47 files indexed                                [0.8s]
+        Vectors: 94 chunks embedded                           [12.3s]
+
+  [3/4] Analyzing conventions...
+        Naming: snake_case (functions), PascalCase (types)    [OK]
+        Errors: thiserror + anyhow, ? propagation             [OK]
+        Tests: same-file #[cfg(test)] + tests/ directory      [OK]
+        Organization: by-feature (auth/, api/, db/)           [OK]
+
+  [4/4] Generating project profile...
+        Profile saved to .elai_cc/project-profile.toml
+        12 project-specific rules seeded (SHADOW mode)
+        Ready.
+
+  > add rate limiting to the API endpoints
+
+  The model receives a prompt containing:
+  - Project vision: "Rust/Axum web backend with SQLx PostgreSQL..."
+  - Build/test commands: exact cargo commands with -p flags
+  - Conventions: snake_case, thiserror errors, by-feature modules
+  - Relevant code: DKG blast radius + BM25/vector retrieval
+  - Similar example: existing middleware from this project (few-shot)
+
+  No user explanation needed. The system KNOWS the project.
+
+
+Subsequent sessions (profile cached):
+
+  $ elai /path/to/my-project
+
+  Project loaded: Rust/Axum backend (profile from 2026-04-13)
+  47 files indexed, 12 active rules, last session: 2h ago
+  Ready.
+
+  > fix the authentication bug in the /users endpoint
+
+  System already knows: where auth lives (auth/ module), what JWT
+  library is used (jsonwebtoken), what error types exist, what tests
+  cover the endpoint. Blast radius analysis starts immediately.
+
+
+========================================================================
+14. WHAT MAKES THIS "HOLY SHIT" LEVEL
+========================================================================
+
+The "holy shit" moment comes from three things:
+
+1. ZERO SETUP: user points at a directory and starts working. No config
+   files to write, no rules to explain, no "use X build system." The
+   system figures it out, visibly, in seconds.
+
+2. CONVENTION AWARENESS: the model's output matches the project's style
+   perfectly. Not because it's smart — because the system detected the
+   conventions and constrained the model's output to match. snake_case
+   in a Rust project, camelCase in a JavaScript project. Automatically.
+   The user never mentioned naming conventions.
+
+3. CORRECT COMMANDS: when the system says "running tests..." it runs
+   the RIGHT test command. Not "cargo test" in a Python project. Not
+   "npm test" when the project uses bun. It parsed the config files
+   and knows. The user sees: "my local model just figured out
+   my build system without me telling it anything."
+
+The secret: none of this requires AI. Tier 1 is pure pattern matching.
+Tier 2 is statistical analysis on parsed ASTs. Only Tier 3 uses the LLM,
+and only for a 200-token summary. The intelligence is in the code.
+The model just fills in the blanks the code can't reach.

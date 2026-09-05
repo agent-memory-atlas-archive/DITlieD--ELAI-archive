@@ -1,0 +1,96 @@
+Backtest Overfitting and Data Leakage - Technical Summary
+
+CORE PROBLEM:
+Quantitative finance faces credibility crisis due to backtest overfitting, target leakage, and lookahead bias. Models exploit temporal data flaws, creating illusion of predictability that fails in live trading.
+
+LEAKAGE TYPES:
+
+Temporal Leakage:
+- Normalizing/scaling using full historical dataset before chronological split
+- Inflates Sharpe ratios exponentially
+- Solution: Apply scaling only from trailing training window
+
+Target Leakage:
+- Features containing target-dependent information
+- Example: Using future volatility to predict current returns
+- Solution: Lag all features appropriately
+
+Validation Leakage:
+- Random K-Fold CV on time-series data introduces future information
+- Raises XGBoost Sharpe from 0.17 to 1.75 in tests
+- Solution: Use Combinatorial Purged Cross-Validation
+
+Cross-Sectional Leakage:
+- Future rankings in cross-sectional evaluation
+- End-of-month data used for beginning-of-month signals
+- Solution: Ensure temporal consistency in rankings
+
+SUBTLE LEAKAGE MECHANISMS:
+
+Batch Normalization in Deep Learning:
+- Sequential order-book data in batches passes future info to beginning
+- Model learns from batch statistics influenced by future events
+- Solution: Use Layer Normalization or proper temporal batching
+
+LLM Time Travel:
+- Pre-training data contamination with future financial information
+- Models memorize future market events
+- Solution: Strict temporal data curation in training
+
+SEVEN SINS OF QUANTITATIVE INVESTING:
+
+1. Survivorship Bias: Using only existing assets, ignores bankrupted firms
+2. Look-Ahead Bias: Using unavailable data (revised macros, unlagged indicators)
+3. Storytelling Bias: Creating narratives to justify overfit patterns
+4. Overfitting/Data Snooping: Torturing parameters until profitable
+5. Refitting Bias: Continuous parameter adjustment without validation
+6. Interpolation Bias: Assuming in-sample performance extrapolates
+7. Transaction Cost Neglect: Ignoring realistic trading costs
+
+MITIGATION FRAMEWORKS:
+
+Combinatorial Purged Cross-Validation:
+- Actively embargoes autocorrelated data
+- Neutralizes systemic memory leakage
+- Provides statistically valid performance estimates
+
+Deflated Sharpe Ratio:
+- Adjusts for multiple testing and data mining
+- Penalizes strategies relying on algorithmic memorization
+- Formula: SR_deflated = SR * sqrt((1 - skew*SR + (kurtosis-1)/4*SR^2) / (1 - skew*SR + (kurtosis-1)/4*SR^2))
+
+Agent-Based Models:
+- Generate synthetic market data with alternate realities
+- Simulate heterogeneous market participants
+- Test robustness against unprecedented events
+
+IMPLEMENTATION REQUIREMENTS:
+
+Bitemporal Data Architecture:
+- Point-in-Time data streams reflecting historical availability
+- Strict temporal quarantine in feature engineering
+- Unadjusted corporate pricing and macro indicators
+
+Statistical Validation:
+- Counterfactual perturbation testing
+- Regime-aware performance metrics
+- Monte Carlo out-of-sample validation
+
+Model Simplicity Principle:
+- Parametric simplicity outperforms high-dimensional complexity
+- Brittle complex systems require continuous recalibration
+- Focus on causal, out-of-sample inference
+
+VALIDATION METRICS:
+- Minimum Backtest Length: 20 years for daily strategies
+- Out-of-Sample Ratio: Minimum 50% of sample
+- Statistical Significance: p < 0.01 on Monte Carlo tests
+- Sharpe Ratio Deflation: Apply for multiple testing correction
+
+KEY THRESHOLDS:
+- Rolling window normalization: Fatal to backtest validity
+- Z-score scaling: Minor distortion in specific designs
+- PCA: Generally safe with proper temporal splits
+- Binary classifiers: Safer than continuous price prediction
+
+CRITICAL WARNING: Any feature providing >2x Sharpe improvement likely contains leakage.

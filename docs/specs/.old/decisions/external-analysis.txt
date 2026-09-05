@@ -1,0 +1,473 @@
+EXTERNAL ANALYSIS: ADOPTED AND REJECTED PATTERNS
+Source: design_document.txt PART 16, PART 30.2-30.7, PART 31.
+
+
+OH-MY-CLAUDECODE (OMC) — design PART 30.2
+
+  What it is: Claude Code plugin (JS/TS). 19 agents, 13 skills, Gyoshu Bridge.
+  Cloud-only, not standalone, not local-model-capable.
+
+  REJECTED:
+    - Agent catalog (19 named agents): our role-based GRC system is architecturally superior.
+    - Workflow skills (autopilot, ralph): prompt-driven modes. Our FSM+evidence is more rigorous.
+    - State management (.omc/ JSON): our SSB (SQLite WAL) is more robust.
+    - Model routing (haiku/sonnet/opus): our VRAM-aware scheduling is hardware-conscious.
+
+  ADOPTED:
+    - SWE-bench benchmark (30.3): rotation set for self-modification benchmarking.
+    - Failure taxonomy (30.4): deterministic error classification before auditor reasoning.
+    - Structured execution markers (30.5): [CALL], [FINDING], [ERROR] etc. for trace output.
+    - Parity audit pattern (30.7): migration manifest for tracking fork coverage.
+
+  DEFERRED:
+    - Gyoshu Bridge (30.6): sandboxed Python execution. Evaluate in Phase 4.
+
+
+LANGGRAPH — design PART 16.3, PART 31
+
+  ADOPTED patterns:
+    StateGraph -> elai_cc FSM (Rust deterministic, not Python TypedDict)
+    Checkpoint system -> session handoff (handoff.msgpack = checkpoint concept)
+    Human-in-the-loop -> dangerous action gating
+    CheckpointSaver -> CheckpointStore trait (msgpack/SQLite backends)
+    BSP Pregel model -> superstep-based orchestration
+    Channel types -> LastValue, Topic (BinaryOp DROPPED)
+    UntrackedValue, EphemeralValue -> added to channel taxonomy
+    Deferred nodes -> post-barrier cleanup phase
+    Dynamic fan-out (Send) -> AtomicU64 namespace disambiguation
+    RetryPolicy -> per-exception retry with failure taxonomy
+    CachePolicy -> node-level cache with TTL
+
+  ANTI-PATTERN avoided:
+    Python TypedDict mutable state -> Rust structs + serde (type-safe)
+    BinaryOp channels -> dropped (non-deterministic)
+
+
+AIDER — design PART 31.7-31.13
+
+  ADOPTED:
+    PageRank repo map (31.7): edge-weight + personalization + density guard.
+    3-tier edit matching (31.8): exact -> whitespace-normalized -> ellipsis.
+    Sampling-based token estimation (31.9): O(lines/N) approximation.
+    Fixed-slot context ordering (31.10): cache breakpoints for prompt caching.
+    Session-owned commit tracking (31.11): safe undo protocol.
+    File reading enhancement (31.12): metadata + outline for large files.
+    Assistant prefill continuation (31.13): code output only, max 3 continuations.
+
+  NOT ADOPTED:
+    Tier 4 fuzzy matching: disabled in Aider production. Not reliable enough.
+
+
+EMPIRE FACTORY-BRAIN — design PART 16.4
+
+  ADOPTED patterns:
+    HookRegistry (route, event kinds) -> hook system
+    BusRegistry with fnmatch subscriptions -> inter-agent routing
+    Bus permission bitflags -> agent permission model
+    brain.json manifest -> agent role config pattern
+    EngineMKI event dispatch -> FSM event handling
+    FactoryLine protocol -> session management pattern
+    FSB binary framing -> candidate for high-perf wire format
+
+
+EMPIRE FACTORY-STATIC — design PART 16.5
+
+  PATTERN adopted (architecture, not content):
+    SiteConfig -> PipelineSpec, Worker pool -> Agent pool,
+    SQLite lifecycle -> SSB lifecycle, Atomic symlink -> Git commit per phase.
+
+  CONTENT not adopted:
+    HTML section templates are website-specific. Our templates are project archetypes.
+
+
+DAIRA (arxiv 2603.22048v2) — design PART 16.1
+
+  Trace-first debugging. 80.8% resolution on medium bugs (SOTA).
+  Ablation: -11.3% without TLSA, -8.1% without DAT, -5.4% without FSM workflow.
+  Adopted: trace_execution() tool, GRC observe dynamic trace, adaptive scope reduction.
+  Generalized: AdaptiveTool<T> wrapper for any variable-output tool.
+
+
+SHORTCODER (arxiv 2601.09703v1) — design PART 16.2
+
+  10 AST-preserving rules, 18-38% token reduction.
+  Adopted: code_simplify() as post-processing on executor output.
+  Rules R4/R6 configurable (readability vs conciseness tradeoff).
+
+
+TURBOQUANT-WASM — design session 8
+
+  What it is: Zig compiled to WASM, two-stage vector compression (polar + QJL residual).
+  ~3-5 bits/dim, 8-10x compression vs f32, <0.15 mean dot-product error.
+  Demo: full client-side semantic search with Transformers.js embeddings.
+
+  REJECTED:
+    - WASM wrapper (we are a native Rust binary, not browser-based)
+    - Zig FFI (rewrite algorithm in Rust, not FFI bridge)
+    - Brute-force search (scan all vectors — no sub-linear, HNSW needed)
+
+  ADOPTED (algorithm only, deferred to Phase 1C):
+    - Polar + QJL quantization algorithm for compressed vector storage in knowledge/ crate.
+    - Dot-product-on-compressed-bytes trick (similarity without decompressing).
+    - Combine: HNSW for sub-linear search + TurboQuant algorithm for stored vectors.
+    - Same pattern as FAISS Product Quantization.
+
+  DEFERRED: evaluate during Phase 1C (vector search implementation).
+
+
+FLASHRESEARCH (arxiv 2510.05145) — Efficient Tree-Structured Deep Research
+
+  ADOPTED:
+    - Tree-structured research expansion: replaces flat ResearchLoop with ResearchTree.
+      Each node can spawn child sub-queries up to breadth_factor * depth_limit.
+    - Speculative execution: begin child queries before parent converges (cloud API only).
+    - Dual-threshold convergence: phi (goal satisfaction) + psi (quality) replace single
+      convergence_threshold. Separates "answered?" from "well-sourced?"
+    - Adaptive breadth/depth per query complexity.
+
+  NOT ADOPTED:
+    - Runtime orchestration monitoring (elai_cc already has SSB-based tracking).
+
+  Applied in: pipeline-factory.txt section 5-6, implementation-plan.txt Phase 4D.
+
+
+CMV (arxiv 2602.22402) — Contextual Memory Virtualisation
+
+  ADOPTED:
+    - DAG-based session state: replaces flat handoff.msgpack with SessionDag (SQLite).
+      Snapshots form acyclic lineage. Supports branching and merging.
+    - Structurally lossless trimming: 3-pass streaming algorithm preserves all user/assistant
+      messages, stubs large tool results (>500 tokens) with recoverable references.
+    - Branch-and-explore: snapshot + try approach A + revert + try approach B.
+    - Prompt cache awareness: trimming preserves prefix tokens in cache breakpoints.
+
+  NOT ADOPTED:
+    - In-place session modification (elai_cc uses append-only SSB, never modifies).
+
+  Applied in: orchestrator.txt section 10, implementation-plan.txt Phase 3H.
+
+
+MURAKKAB (arxiv 2508.18298) — Resource-Efficient Agentic Workflow Orchestration
+
+  ADOPTED:
+    - SLO quality tiers: BEST/GOOD/FAIR/BASIC per agent role. Controls model selection
+      and VRAM allocation. Maps to agent role system (auditor=BEST, memory-writer=BASIC).
+    - GPU multiplexing: small models (<4GB) colocate on same GPU with headroom check.
+    - Workload profiling: track tokens/latency/VRAM per agent per phase in SSB.
+
+  DEFERRED (EVALUATE in Phase 2+):
+    - MILP-based model placement optimization. Current heuristic scheduling may suffice.
+      Only implement if Phase 2 metrics show heuristic is suboptimal.
+
+  NOT ADOPTED:
+    - Cloud-specific autoscaling (elai_cc is local-first, fixed hardware).
+    - Multi-workload coordination (single-user system, not cloud platform).
+
+  Applied in: providers.txt section 4, implementation-plan.txt Phase 2+.
+
+
+AUTOB2G (arxiv 2603.26005) �� LLM-Driven Agentic Framework for Co-Simulation
+
+  ADOPTED:
+    - Bounded DAG repair loop: T_DAG=10 maximum repair rounds for invalid PipelineSpec
+      dependency graphs. On cycle or missing dependency, attempt auto-repair (reorder,
+      substitute) before escalation. Replaces binary accept/reject in L2 validation.
+
+  NOT ADOPTED:
+    - SOCIA iterative optimization (elai_cc already has anti-spiral + TESTING_FIRST loop).
+    - Co-simulation domain specifics (building/grid parameters).
+
+  Applied in: pipeline-factory.txt L2 section, implementation-plan.txt Phase 4E.
+
+
+DARWINNET (arxiv 2604.01236) — Evolutionary Network Architecture
+
+  ADOPTED:
+    - Modification Solidification Index (MSI): adapted from Protocol Solidification Index
+      (PSI). Single convergence metric for self-modification process. Classifies state as
+      IMPROVING/STABILIZING/DIVERGING. Controls self-mod frequency adaptively.
+
+  NOT ADOPTED:
+    - WASM-based protocol synthesis (domain-specific, not applicable).
+    - Crow-AMSAA reliability growth model (MSI is simpler and sufficient).
+    - Policy-aligned templates (elai_cc already has rule templates with 3-tier enforcement).
+
+  Applied in: self-modification.txt section 3, implementation-plan.txt Phase 4G.
+
+
+RAPID (Go PBT library) — source analysis
+
+  ADOPTED:
+    - StateMachine.Check() + Repeat() pattern: maps to proptest state-machine tests
+      for rules crate contract tests. Random code mutations test predicate invariants.
+    - Shrinking: minimum failing input becomes EDGE test case (source=GENERATED).
+
+  Applied in: rules.txt section 9A, implementation-plan.txt Phase 3F.
+
+
+NEXTEST (cargo-nextest) — source analysis
+
+  ADOPTED:
+    - proptest_helpers.rs ParsedExpr::strategy(): recursive proptest strategy for
+      boolean expression trees. Template for COMPOSITE predicate testing.
+    - NameMatcher Unicode edge case strategies: feeds GREP_PATTERN regex boundary tests.
+
+  Applied in: rules.txt section 9A.
+
+
+INSPECT_AI (AI safety evaluation framework) — source analysis
+
+  ADOPTED:
+    - ApprovalPolicy escalation chain: 5-decision protocol (approve/modify/reject/
+      terminate/escalate). Chained evaluators with escalation on ambiguity.
+      Maps to Verdict ESCALATE variant for SHADOW rules, Tier 3 routing,
+      and Tier 1->2 chained evaluation.
+    - Scorer Protocol composability: multiple scorers per task with metadata.
+      Informs COMPOSITE predicate sub-scores.
+
+  NOT ADOPTED:
+    - Full approval pipeline (too heavyweight for <1ms Tier 1 enforcement).
+
+  Applied in: rules.txt section 3 (Verdict type).
+
+
+AGENTIC-PBT (LLM-driven PBT bug hunting) — source analysis
+
+  ADOPTED:
+    - 3-axis scoring rubric (Obviousness/Input Reasonableness/Maintainer Defensibility):
+      mapped to violation_patterns scoring (score_clarity/score_frequency/score_precision).
+      Composite score [0,15] prioritizes PROPOSED rules for human review.
+
+  NOT ADOPTED:
+    - LLM-driven test generation (elai_cc uses proptest, not LLM, for PBT).
+
+  Applied in: rules.txt section 2 (violation_patterns schema).
+
+
+SWARM (OpenAI agent framework) — source analysis (additional)
+
+  ADOPTED (additional):
+    - __CTX_VARS_NAME__ stripping: internal context_variables removed from tool schemas
+      before model sees them. Maps to tool schema sanitization in tools crate.
+      Closes information leakage path for agent isolation Tier A.
+
+  Applied in: tools.txt section 8 (tool schema sanitization).
+
+
+SWE-BENCH (code evaluation harness) — source analysis (additional)
+
+  ADOPTED (additional):
+    - FAIL_TO_PASS / PASS_TO_PASS / FAIL_TO_FAIL / PASS_TO_FAIL grading vocabulary:
+      4-category test outcome report for self-modification gate. Variant with any
+      PASS_TO_FAIL regressions rejected even with positive FAIL_TO_PASS improvements.
+      Stricter than false_positive_rate alone.
+
+  Applied in: self-modification.txt section 3 (TestOutcomeReport).
+
+
+DETERMINISTIC SIMULATION TESTING (DST) — new research, Advanced Testing Report
+
+  ADOPTED:
+    - Entropy quarantine pattern (FoundationDB/TigerBeetle/RisingWave):
+      All time/randomness access through injectable traits (ClockProvider, EntropySource).
+      Clippy deny rules ban raw std::time::Instant::now() and rand::thread_rng().
+      Applied at fork time (Phase 0.8) because retrofitting is 10x harder.
+    - Digital sibling reference model (ICSE 2024/2025):
+      Simplified in-memory FSM model as infallible oracle for stateful PBT.
+      FSM + SSB + BSP is already a state machine F(State, Event) -> State.
+      Test: 10,000 random operation sequences, assert terminal states match.
+    - madsim integration for IPC layer testing:
+      Deterministic network simulator replaces tokio for IPC tests.
+      Inject: packet loss, jitter, disconnects, agent crashes. All reproducible via seed.
+      Validates Phase 4A IPC design before building real process isolation.
+    - Stateful PBT + DST convergence:
+      proptest generates random operation sequences (phase transitions, agent spawns,
+      tool calls, crash injections). Executed inside madsim deterministic runtime.
+      Shrinker isolates minimal failing sequence. Shrunk cases become permanent regression tests.
+    - Adversarial state space exploration:
+      Model demonic non-determinism (worst-case interleavings). Not angelic (happy path).
+      Anti-spiral, evidence gates, context budget all tested under adversarial scheduling.
+
+  DEFERRED (EVALUATE):
+    - Antithesis hypervisor-level DST: closed-source, high cost. Evaluate if madsim
+      proves insufficient for catching FFI leakage in ort ONNX bindings.
+    - Coyote Q-learning exploration: .NET only, but the exploration heuristic
+      (reinforcement learning for state space coverage) could inspire custom scheduling
+      strategies in our madsim test harness. Low priority.
+
+  NOT ADOPTED:
+    - TigerStyle strict static memory allocation: too restrictive for a general-purpose
+      tool. TigerBeetle can do this because it is a single-purpose database. elai_cc
+      needs dynamic allocation for variable-size code contexts, vector embeddings, etc.
+    - Full VOPR-style 24/7 fuzzing cluster: cost-prohibitive for personal-use tool.
+      DST runs in CI and on developer machine. Not dedicated hardware.
+
+  Applied in: core.txt section 4 (entropy traits), implementation-plan.txt Phase 0.8 + 3I.
+
+
+SPECULATIVE DECODING (EAGLE-3 / TIDE) — Local LLM Performance research
+
+  ADOPTED:
+    - Speculative decoding evaluation in Phase 1F: draft model (same family, smaller)
+      generates candidate tokens, main model verifies. EAGLE-3: 2x-6.5x on large models
+      (arxiv 2503.01840, NeurIPS'25; lower on small models). Adopt if >1.3x on target hardware (RTX 3060).
+    - TIDE temporal incremental draft: solves stale draft problem where draft model
+      predictions diverge from target. 1.15x improvement over static speculative decoding.
+
+  NOT ADOPTED:
+    - OpenVINO optimization: Intel-specific, our target is NVIDIA GPUs.
+
+  Applied in: providers.txt section 3, implementation-plan.txt Phase 1F.
+
+
+OBSERVABLE INFERENCE / AUDIT TRAIL — Verifiable Audit Trail research
+
+  ADOPTED:
+    - Structured reasoning traces: every GRC step + tool call + grounding check
+      stored as ReasoningTraceEntry in SSB. Machine-readable, not prose.
+      Enables post-mortem debugging, compliance audit, and richer self-modification
+      log-driven proposals.
+    - Cognitive isolation metric: quantifies context savings from agent process
+      isolation. On 8k local model, isolation may save >100% of context window
+      (agents generate more reasoning tokens than the model's full context).
+
+  NOT ADOPTED:
+    - ReAct scratchpad pattern: elai_cc already has GRC which is structurally superior
+      (grounded reasoning with verification, not free-form thought/action/observation).
+    - External telemetry platforms (LangSmith, Arize Phoenix): elai_cc is local-first,
+      all traces stored in SSB. No external service dependency.
+
+  Applied in: orchestrator.txt section 7A, implementation-plan.txt Phase 3C.
+
+
+INCREMENTAL COMPILATION FEEDBACK — Functional Determinism research
+
+  ADOPTED:
+    - Compilation-in-the-loop during EXECUTING: after each file write by executor,
+      run cargo check / ruff / tsc / go vet. Feed errors back immediately via IPC.
+      Expected: ~30% reduction in auditor BLOCK findings for syntax/type errors.
+    - Max 3 retries per file to prevent infinite loops.
+
+  NOT ADOPTED:
+    - Monte Carlo Tree Search for code generation: requires process reward model
+      training infrastructure. Too expensive for local inference.
+    - Hardware-level DVR (Decode-Verify-Rollback): requires custom GPU kernels.
+      Out of scope for Phase 0-4.
+
+  Applied in: tools.txt section 10, implementation-plan.txt Phase 4B.
+
+
+COGNITIVE ISOLATION AS CONTEXT EFFICIENCY — Post-DAG Orchestration research
+
+  ADOPTED:
+    - IPC as cognitive isolation mechanism: agent reasoning chains (potentially
+      thousands of GRC tokens) never enter the orchestrator's context window.
+      This is not just security — it is a context budget efficiency mechanism.
+      On 8k local models, this may determine whether a task fits at all.
+    - Supervision tree pattern for agent lifecycle: formalized restart policy
+      (max 3 restarts per phase, then escalate or substitute model).
+
+  NOT ADOPTED:
+    - CRIU checkpoint/restore: too heavyweight for agent process restart.
+      Our msgpack checkpointing is lighter and sufficient.
+    - 9P filesystem semantics: interesting for capability-based access but
+      adds significant complexity over visibility filter + mount namespace.
+
+  Applied in: orchestrator.txt sections 7, 7A.
+
+
+VECTOR CACHE INVALIDATION — Codebase Memory Engine research
+
+  ADOPTED:
+    - Immediate vector cache invalidation on SSB file_write event.
+      Prevents stale embeddings being served for files edited in the current phase.
+      Cost: 1 SQLite DELETE per file_write. Negligible.
+
+  NOT ADOPTED:
+    - TOON (Token-Oriented Object Notation): claims 40-60% token reduction over JSON.
+      msgpack already provides comparable compression. EVALUATE if context budget
+      analysis in Phase 1 shows serialization overhead is a bottleneck.
+
+  Applied in: knowledge.txt section 3 (Layer 3).
+
+
+SWE-WORLD (arxiv 2602.03419) — Docker-Free SWE Agent Training and Evaluation
+
+  What it is: framework replacing Docker execution environments with a learned world model
+  (LLM-based transition model) for predicting execution outcomes. Hybrid execution:
+  deterministic sandbox for lightweight ops (file nav, grep, edits) + LLM transition model
+  for execution-oriented commands (pytest, compile). Enables test-time scaling (TTS) by
+  simulating evaluation outcomes without real submission. Qwen2.5-Coder-32B: 6.2% -> 52.0%
+  resolve rate on SWE-bench Verified via Docker-free SFT, 68.2% with TTS.
+
+  DEFERRED (EVALUATE in Phase 4G+):
+    - Learned reward model for self-modification variant pre-screening:
+      Train lightweight predictor on accumulated PipelineOutcome data (SSB logs).
+      Score candidate config variants before committing to real staged evaluation.
+      Could screen 100 variants in the time of 10 real runs.
+      Precondition: >50 pipelines with outcome data.
+      Only implement if MSI tracking shows variant selection is a bottleneck.
+    - Learned transition model for FEASIBILITY_PROBE acceleration:
+      Predict test outcomes for stub alternatives without running them.
+      Conditional on having enough execution traces to train on.
+
+  NOT ADOPTED:
+    - CoT backfilling / distillation: GRC engine already provides structured grounded
+      reasoning, architecturally superior to CoT distillation.
+    - Replacing real test execution during AUDITING: safety model depends on deterministic
+      validation. SWE-World is for training/screening, not production enforcement.
+    - Docker-free SFT for local model fine-tuning: out of scope for Phase 0-4.
+      Revisit if fine-tuning a local model becomes a goal.
+
+  Applied in: implementation-plan.txt Phase 4G EVALUATE, risk-register.txt R53.
+
+
+PAPERS REFERENCED
+
+  FunSearch (DeepMind, Nature 2024): evolutionary self-improvement with deterministic eval.
+  Darwin Godel Machine (arxiv 2505.22954): population-based evolutionary self-improvement
+    for coding agents. SWE-bench 20%->50%, Polyglot 14.2%->30.7%. Key tested mechanisms
+    adopted by elai_cc: config archive with UCB parent selection, log-driven feature
+    proposals, staged evaluation (10->50->200 tasks), cross-model transfer validation,
+    self-referential alignment (task performance feeds self-improvement quality).
+    Also informed: reward hacking risk (R14), rule counterfactual testing (rules.txt 5A).
+    NOT adopted: agent self-modification of tools/eval strategy (conflicts with safety model).
+  DAIRA (arxiv 2603.22048v2): dynamic analysis-enhanced issue resolution.
+  ShortCoder (arxiv 2601.09703v1): AST-preserving code simplification.
+  FlashResearch (arxiv 2510.05145): tree-structured deep research with adaptive allocation.
+  CMV (arxiv 2602.22402): DAG-based session state management and lossless trimming.
+  Murakkab (arxiv 2508.18298): resource-efficient agentic workflow orchestration.
+  AutoB2G (arxiv 2603.26005): LLM-driven agentic framework with DAG repair loops.
+  DarwinNet (arxiv 2604.01236): evolutionary architecture with solidification index.
+  Deep Research surveys (arxiv 2508.12752, 2506.18096, 2508.05668): iterative search agents.
+  CEL / Causal Emergence Learning: counterfactual causal testing applied to rule lifecycle.
+    "Does A actually cause B, or is it correlated?" Applied in rules.txt section 5A
+    as counterfactual SHADOW testing. Not from a single paper — grounded in Granger
+    causality and counterfactual reasoning literature.
+  FoundationDB Simulation Testing: pioneered deterministic simulation for distributed databases.
+    Deterministic event loop, seed-based reproducibility. Pattern adopted for Phase 3I.
+  TigerBeetle VOPR: application-level determinism with strict static allocation and
+    single-threaded state machine. VOPR pattern (infallible oracle) adopted for DST.
+  RisingWave/Madsim: runtime-level deterministic simulation for Rust/Tokio ecosystem.
+    Drop-in replacement for tokio with seeded PRNG scheduler. Adopted for IPC testing.
+  Antithesis: hypervisor-level deterministic testing platform. Evaluated, deferred
+    (closed-source, high cost). Pattern of coverage-driven branching informing our
+    adversarial state space exploration design.
+  EAGLE-3 speculative decoding: draft model + verification, 2x-6.5x throughput on large
+    models (arxiv 2503.01840, NeurIPS'25; lower on small models). Evaluated for Phase 1F adoption.
+  TIDE (Temporal Incremental Draft Engine): adaptive speculative decoding using
+    target model hidden states. 1.15x improvement over static speculation.
+  ICSE 2024/2025 DST literature: digital sibling methodology, oracle problem formalization,
+    non-determinism in LLM evaluation systems.
+  SWE-World (arxiv 2602.03419): Docker-free SWE agent environments with learned world model.
+    Hybrid execution (deterministic sandbox + LLM transition model). TTS for evaluation.
+    6.2% -> 52.0% -> 68.2% on SWE-bench Verified. Evaluated for reward model screening.
+
+SOURCE CODE REFERENCED (from docs/.source/)
+
+  rapid-master: Go property-based testing. StateMachine + shrinking patterns.
+  nextest-main: Rust test runner. proptest_helpers.rs ParsedExpr strategies.
+  inspect_ai-main: AI safety evaluation. ApprovalPolicy escalation protocol.
+  agentic-pbt-main: LLM-driven PBT. 3-axis bug scoring rubric.
+  swarm-main: OpenAI agent framework. Context variable stripping pattern.
+  SWE-bench-main: Code evaluation harness. 4-category test grading vocabulary.

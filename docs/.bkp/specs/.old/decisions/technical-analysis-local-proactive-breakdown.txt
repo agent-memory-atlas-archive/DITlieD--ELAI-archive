@@ -1,0 +1,545 @@
+TECHNICAL ANALYSIS: LOCAL INFRASTRUCTURE, PROACTIVE THINKING, AUTOMATIC TASK BREAKDOWN
+Date: 2026-04-06
+Status: AUDITED — 8 BLOCKs, 6 WARNs, 3 INFOs. Resolutions proposed.
+Auditor: adversarial-auditor agent (hostile review of all three proposals)
+
+Context: user requirements for elai_cc that cut across multiple spec files.
+Three concerns raised, each analyzed against the full spec suite, then
+submitted to adversarial audit. This document captures the complete chain:
+concern -> analysis -> proposal -> audit findings -> resolution path.
+
+
+================================================================================
+CONCERN 1: EVERYTHING MUST BE LOCAL
+================================================================================
+
+User requirement: all RAG servers, model storage, indexes, state — everything
+installed locally in the project directory. No external service dependencies
+during normal operation.
+
+Spec files consulted:
+  architecture-overview.txt L29 (per-project property)
+  knowledge.txt (full — DKG, BM25, vectors, ONNX, SQLite)
+  orchestrator.txt S3 (SSB local SQLite WAL)
+  providers.txt S4 (ModelPool, ollama localhost)
+  prompt-architecture.txt S2 (code is the orchestrator)
+  tools.txt S8 (visibility filter)
+
+
+1.1 ANALYSIS
+
+The spec already mandates a fully local architecture for execution:
+
+  Knowledge engine: embedded Rust library crate. DKG (tree-sitter -> SQLite),
+    BM25 (tantivy), vectors (ONNX via ort in-process), CatRAG, A-RAG.
+    No external RAG server. No MCP bridge for knowledge queries.
+    The orchestrator calls KnowledgeEngine::query() directly.
+
+  Storage: SQLite for SSB, DKG graph, vector cache, rules.db, session DAG.
+    tantivy for BM25 index. All under .elai_cc/projects/{id}/.
+
+  LLM inference: ollama on localhost (Phase 0-1), vLLM local (Phase 2+).
+    Cloud APIs are fallback only — configurable, not required.
+
+  Orchestrator: Rust binary. Zero VRAM consumption. Persists state in
+    RAM (FSM, channels, agent handles) and SQLite (SSB, checkpoints).
+    Never unloads. Survives model swaps on GPU.
+
+  Context preservation: since the orchestrator is Rust code (not an LLM),
+    it never loses context when models swap on GPU. FSM state, SSB rows,
+    channel values, agent checkpoints — all persist in RAM/disk while
+    different LLM models load for different agent roles.
+
+Gap identified: ONNX model storage path not specified. Models needed:
+    GraphCodeBERT (~440MB), Granite (~150MB), cross-encoder (~120MB),
+    optionally SPLADE (~500MB). No canonical storage location in spec.
+
+
+1.2 ORIGINAL PROPOSAL
+
+  - Add .elai_cc/models/onnx/ as explicit ONNX model storage path.
+  - Add first-run download mechanism to fetch from HuggingFace.
+  - Claim: spec is fully local, zero external dependencies.
+  - Claim: orchestrator context preservation solved by design.
+
+
+1.3 AUDIT FINDINGS
+
+  BLOCK P1-1: "Zero external dependencies" is false.
+    Evidence: architecture-overview.txt L282 states researcher agent uses
+    cloud API preferred. pipeline-factory.txt L50 repeats this. The Research
+    Agent in Plan Elaboration Stage 1 prefers external cloud APIs.
+    First-run ONNX download also requires network.
+    Resolution: scope claim to "during EXECUTING/AUDITING phases for
+    non-researcher agents." Researcher's cloud preference is by design.
+    State explicitly: "local-first with optional cloud for research."
+
+  BLOCK P1-2: First-run download contradicts Phase 1H pre-gate.
+    Evidence: Phase 1H step file requires "all model files must be
+    pre-staged locally before this step." Spec rejects in-session downloads.
+    Proposal has no hash verification, retry policy, partial download
+    handling, proxy/air-gap behavior, or degraded-mode fallback.
+    Resolution: replace "first-run download" with "pre-staged models."
+    Add to implementation guide: a setup step (outside session) that
+    downloads + verifies ONNX models. In-session startup assumes models
+    present. knowledge.txt section 7 startup sequence runs canary on
+    pre-staged models. Download failures are setup-time errors, not
+    runtime errors.
+
+  BLOCK P1-3: .elai_cc/models/onnx/ path needs coherence audit.
+    Evidence: tools.txt L128 hides .elai_cc/** from agents. knowledge.txt
+    section 7 startup references model paths. index_version.toml tracks
+    vector_dimensions. Phase 1C references "models downloaded to [path]"
+    but leaves path implicit. Adding explicit path requires updating all
+    references that currently leave it implicit.
+    Resolution: define canonical path in core.txt (it manages paths).
+    Audit all references in knowledge.txt, providers.txt, Phase 1C step
+    file. Add to index_version.toml: onnx_model_path field. Verify
+    visibility filter already covers .elai_cc/models/**.
+
+  WARN P1-4: "Context preservation solved by design" conflates two things.
+    Orchestrator RAM state != LLM context window. The orchestrator preserves
+    FSM/SSB/channels, yes. But the LLM agent's context window is managed
+    by SessionDag (orchestrator.txt S10) with structurally lossless trimming.
+    "Never-compact" (architecture-overview.txt L36) means no summarization,
+    not no management. The proposal's phrasing could mislead implementers
+    into skipping context budget work.
+    Resolution: rephrase to "orchestrator state persists across model swaps.
+    LLM context managed separately by SessionDag and context budget allocator."
+
+  WARN P1-5: SPLADE storage should be conditional on Phase 1G decision.
+    Evidence: risk-register.txt R24 defers SPLADE. Phase 1H has DROP
+    criterion of <5% recall gain. Listing SPLADE in infrastructure
+    additions creates dead storage if dropped.
+    Resolution: list SPLADE storage as conditional. "If Phase 1G/1H
+    KEEP decision: add SPLADE model to .elai_cc/models/onnx/."
+
+
+1.4 RESOLVED PROPOSAL
+
+  - Add .elai_cc/models/onnx/ to core.txt as canonical ONNX model path.
+  - Models pre-staged via setup script (outside session), not first-run download.
+  - Setup script: download + blake2 hash verify + write index_version.toml.
+  - Startup sequence (knowledge.txt S7) assumes models present. Canary checks.
+  - Missing models at startup -> DEGRADED mode (BM25_ONLY), not crash.
+  - Claim corrected: "local-first during execution. Cloud optional for research.
+    ONNX models pre-staged, not auto-downloaded."
+  - SPLADE storage conditional on Phase 1G/1H decision gate.
+  - Coherence: update knowledge.txt, providers.txt, Phase 1C, index_version.toml.
+
+
+================================================================================
+CONCERN 2: PROACTIVE THINKING (COMPLETENESS SYSTEM)
+================================================================================
+
+User requirement: the system must think like a human before acting. Not just
+"is this grounded?" (GRC) or "what if wrong?" (CSQ), but "did I think of
+everything this task needs?" Example: web page fetch should also consider
+images, tables, metadata — not just text. This should be general, not
+per-tool rules.
+
+Spec files consulted:
+  reasoning.txt (full — GRC engine, state machine, grounding, CSQ)
+  pipeline-factory.txt S5 (Research Agent REFLECT step)
+  tools.txt S1-S8 (tool execution, visibility filter)
+  rules.txt S3-S4 (predicate DSL, three-tier enforcement)
+  orchestrator.txt S6,S12 (context budget, agent isolation)
+  prompt-architecture.txt S2-S3 (prompt construction)
+
+
+2.1 ANALYSIS
+
+Existing mechanisms that partially address this:
+
+  GRC protocol: observe(grounding) -> hypothesize(grounding) -> plan_action
+    -> act -> verify(grounding). Forces the model to ground every step.
+    But grounding != completeness. A grounded plan can still miss modalities.
+
+  CSQ: "if [assumption X] wrong, code will [consequence Y]." Forces risk
+    analysis on sensitive operations. But CSQ is about RISK, not SCOPE.
+    Missing an image is not a risk — it's an omission.
+
+  Research Agent REFLECT: evaluates "contradictions? new sub-questions?
+    information gain?" during research. This IS completeness checking,
+    but only for research tasks, not general tool execution.
+
+  ground_plan(): already decomposes plans into claims and verifies each.
+    This is CLAIM verification, not SCOPE verification. A plan can have
+    all claims grounded but still miss an entire dimension of the task.
+
+Gap: no general mechanism that asks "what does this task CONTAIN?" before
+  deciding what to extract/produce. The model currently decides scope
+  based on its training, which is unreliable under context pressure.
+
+
+2.2 ORIGINAL PROPOSAL
+
+  Layer 1 — GRC Decompose step: new GrcState between Observe and Hypothesize.
+    Model enumerates all sub-components/modalities of the task.
+    Orchestrator validates plan covers each component.
+
+  Layer 2 — Tool pre-analysis hooks: deterministic content detection per
+    tool type (HTTP HEAD + HTML tag scan before web fetch, directory
+    listing before file ops).
+
+  Layer 3 — QualitySpec completeness_criteria: measurable completeness
+    per output type.
+
+
+2.3 AUDIT FINDINGS
+
+  BLOCK P2-1: GrcState::Decompose is a BREAKING CHANGE to Phase 2A.
+    Evidence: reasoning.txt L158 defines GrcState enum. Phase 2A tests
+    verify Observe.allowed_next() = [Hypothesize]. Inserting Decompose
+    between them breaks: (a) allowed_next() transition table, (b) all
+    existing tests calling Observe -> Hypothesize, (c) every per-agent
+    required_steps config. No migration path defined. Also: orchestrator-
+    side validation of "plan covers each component" is completely unspecified
+    — no data structure, no check method, no error type.
+    Resolution: DO NOT add new GrcState. Instead, extend the existing
+    Observe step with a STRUCTURED TEMPLATE that includes component
+    enumeration as a required field. The Observe step already requires
+    grounding — add a "scope" field to ThinkStep that lists enumerated
+    components. Orchestrator checks scope field completeness as part of
+    existing grounding validation. No state machine change. No migration.
+    Backward compatible: scope field is Option<Vec<String>>, only required
+    when AgentGrcConfig.require_scope_enumeration = true.
+
+  BLOCK P2-2: Tool pre-analysis hooks are non-deterministic and unlocated.
+    Evidence: HTTP HEAD responses vary across calls. Directory listings
+    change during execution. These are not deterministic in the spec's
+    sense (same input = same output). No defined hook architecture location.
+    tools.txt S8 visibility filter runs in <0.1ms with no I/O. A pre-fetch
+    HTTP HEAD adds unconstrained latency. No latency budget defined.
+    Resolution: move from PRE-analysis to POST-analysis. After a tool
+    returns results, a Tier 1 rule (rules.txt S3 GREP_PATTERN) scans the
+    tool result for indicators of additional content. Example: web_fetch
+    result contains <img> tags -> WARN: "Page contains N images not
+    extracted." This is deterministic (same tool result -> same WARN),
+    runs in <1ms (regex on returned HTML), and fits the existing rules
+    architecture. The WARN feeds back to the agent via the normal
+    PostToolUse hook path. No new hook type needed.
+
+  WARN P2-3: "Mirrors three-tier enforcement" is a false analogy.
+    The three layers proposed (GRC state, tool hooks, QualitySpec) are
+    structurally different from the three enforcement tiers (deterministic
+    code, constrained decoding, prompt guidance). Using this as
+    justification is misleading.
+    Resolution: drop the analogy. Describe each mechanism on its own merits.
+
+  WARN P2-4: completeness_criteria has no Rust type or check method.
+    Evidence: QualitySpec invariant requires "L2 validates every metric
+    has automated check method. Unmeasurable -> REJECT." completeness_criteria
+    with no automated check breaks this invariant.
+    Resolution: define completeness as a QualityMetric with method =
+    "grep_output" or "count_modalities." Example: QualityMetric {
+    name: "image_coverage", target: 1.0, unit: "ratio", method:
+    "grep_output:<img>", phase: "research", hard_fail: false }.
+    This fits the existing QualityMetric type. No new type needed.
+
+  INFO P2-5: ground_plan() already decomposes plans.
+    Existing decomposition is CLAIM-level (is each claim true?). The
+    proposed decomposition is SCOPE-level (does the plan cover all
+    dimensions?). These are complementary, not redundant. But the
+    proposal should explicitly state this distinction.
+
+
+2.4 RESOLVED PROPOSAL
+
+  Mechanism 1 — Scope enumeration in Observe step (no new GrcState):
+    Add scope: Option<Vec<String>> field to ThinkStep.
+    When AgentGrcConfig.require_scope_enumeration = true (default: true
+    for executor, false for memory-writer), the Observe step must include
+    a scope list enumerating task components/modalities.
+    Orchestrator validates: every scope item appears in subsequent
+    plan_action step. Unaddressed items -> WARN injected into agent context.
+    No state machine change. Backward compatible. Existing tests unaffected.
+
+  Mechanism 2 — Post-tool completeness rules (Tier 1 in rules.txt):
+    Add GREP_PATTERN rules to engineering domain that scan tool results
+    for indicators of unextracted content:
+      web_fetch result contains <img> without image extraction -> WARN
+      web_fetch result contains <table> without table extraction -> WARN
+      file_read result contains TODO/FIXME without acknowledgment -> INFO
+    These fire in PostToolUse hook, <1ms, deterministic. Agent sees
+    "Output may be incomplete: page contains N images not extracted."
+    No pre-execution I/O. No latency added to tool calls.
+
+  Mechanism 3 — Completeness as QualityMetric (existing type):
+    Define completeness metrics using existing QualityMetric type.
+    method field supports grep_output, count_modalities, coverage_ratio.
+    L2 validates automated check method exists. hard_fail configurable.
+    No new type. No break to L2 validation invariant.
+
+
+================================================================================
+CONCERN 3: AUTOMATIC TASK BREAKDOWN
+================================================================================
+
+User requirement: the system should automatically break large tasks into
+phases that fit the model's context window. Currently: user manually split
+a 350k-token plan into phases. The system should do this itself during
+planning, without user intervention.
+
+Spec files consulted:
+  orchestrator.txt S6 (context budget allocator), S9 (hierarchical plan)
+  pipeline-factory.txt S2-4 (L1/L2/L3 pipeline, 4-stage elaboration)
+  phase-4G.txt (SPLIT_TASK mechanism)
+  implementation-guide.txt (phase map, dependency graph)
+  architecture-overview.txt S5 (data flow)
+
+
+3.1 ANALYSIS
+
+Existing mechanisms:
+
+  Hierarchical plan management (orchestrator.txt S9): skeleton (2-4k tokens,
+    always loaded) + per-phase elaboration (5-15k, on demand). Skeleton fits
+    any context window. Only one phase detail loaded at a time.
+
+  Pipeline Factory L1 (pipeline-factory.txt S2): designer decomposes task
+    into PipelineSpec with phases. L2 validates structure.
+
+  Context budget allocator (orchestrator.txt S6): 8 fixed slots, percentage
+    distribution, floors, adaptive reduction. Ensures model never overflows.
+
+  SPLIT_TASK (Phase 4G): runtime splitting when context budget hits terminal
+    condition. Max 4 sub-tasks, max depth 2, sequential merge.
+
+  Contract extraction (orchestrator.txt S9): before elaborating Phase X,
+    extract input/output contracts from skeleton. Elaboration works against
+    contracts, not full plan text.
+
+Gap: no mechanism at PLANNING time that automatically sizes phases to fit
+  the model's context window. L1 creates phases by task decomposition logic,
+  not by context budget awareness. A phase could require 50k tokens of code
+  context on an 8k model.
+
+
+3.2 ORIGINAL PROPOSAL
+
+  - Add PHASE SIZING stage between L2 structural validation and grounding sweep.
+  - L2 estimates tokens per phase: code_context_needed + test_tokens + phase_detail_tokens.
+  - Auto-split if phase_tokens > available_for_work * 0.6.
+  - Auto-merge if phase_tokens < 500.
+  - Split via Kahn's algorithm on internal dependency graph.
+  - Max split depth: 3. Elaboration cap: 30%.
+  - All deterministic.
+
+
+3.3 AUDIT FINDINGS
+
+  BLOCK P3-1: Token estimation formula is undefined.
+    Evidence: code_context_needed requires knowledge engine retrieval results
+    that don't exist at L2 time. Knowledge engine returns actual chunks during
+    EXECUTING, not during PLANNING. L2 is a deterministic structural validator
+    with no access to knowledge engine retrieval. The 0.6 threshold has no
+    grounding source.
+    Resolution: replace token estimation with STRUCTURAL PROXIES available
+    at L2 time. L2 has access to PipelineSpec which contains:
+    (a) files_touched: Vec<String> — count of files the phase modifies.
+    (b) test_count: usize — number of tests specified.
+    (c) contract_count: usize — input/output contracts.
+    (d) tool_count: usize — tools the phase uses.
+    Sizing heuristic: phase_complexity = files_touched * AVG_FILE_TOKENS
+    + test_count * AVG_TEST_TOKENS + contract_count * CONTRACT_OVERHEAD.
+    AVG_FILE_TOKENS and AVG_TEST_TOKENS are configurable in elai_cc.toml
+    with defaults derived from the project's own codebase statistics
+    (computed during knowledge engine indexing in Phase 1A: average
+    file size in tokens, average test file size in tokens). This is
+    AVAILABLE at L2 time because the knowledge engine is already indexed
+    by then. The heuristic is approximate — exact sizing happens at
+    runtime via the context budget allocator.
+
+  BLOCK P3-2: available_for_work = max_context - 4000 is wrong.
+    Evidence: fixed overhead varies by role, phase, and project. System
+    prompt ~330 tokens (prompt-architecture.txt), rules vary by domain
+    and phase, phase_spec varies by complexity. Hardcoded 4000 propagates
+    errors to every split decision.
+    Resolution: compute available_for_work using the ACTUAL context budget
+    allocator formula. At L2 time, the allocator can compute fixed slot
+    sizes for the PLANNING phase (known: role=executor, phase=EXECUTING,
+    domain=detected). available_for_work = model.max_context
+    - slot_1_estimate(role) - slot_2_estimate(phase, domains)
+    - slot_3_estimate(skeleton_size + phase_detail_estimate)
+    - output_reserve(2000). This uses the real formula, not a flat number.
+    Still an estimate (slot 2 depends on runtime rule evaluation), but
+    much closer than a hardcoded 4000.
+
+  BLOCK P3-3: Intra-phase dependency graph doesn't exist. Contradicts 4G depth.
+    Evidence: Kahn's algorithm in spec applies to INTER-phase deps (skeleton
+    depends_on/depended_by). A single phase has no defined internal dependency
+    graph. Phase 4G SPLIT_TASK has max_depth=2, not 3 as proposed.
+    Resolution: unify with Phase 4G parameters. Max split depth = 2.
+    For intra-phase splitting, use the phase's CONTRACT BOUNDARIES as
+    natural split points: each output contract becomes a sub-phase boundary.
+    A phase with 3 output contracts (providing different interfaces to
+    different dependents) naturally splits into 3 sub-phases. This uses
+    existing contract infrastructure — no new artifact needed.
+    When a phase has no contract boundaries (single input, single output),
+    split by file groups: cluster files_touched by directory proximity,
+    each cluster becomes a sub-phase. This is a simple heuristic, not
+    Kahn's algorithm.
+
+  WARN P3-4: Auto-merge breaks contract isolation.
+    Evidence: merging two phases with clean contracts produces composite
+    interfaces. Dependents referencing original boundaries break.
+    Resolution: restrict auto-merge to ADJACENT phases with NO external
+    dependents between them. Phase A -> Phase B where B has no dependents
+    other than A's dependents can merge. If B has its own dependents that
+    reference B's output contracts, merge is blocked.
+
+  WARN P3-5: 30% elaboration cap conflicts with Slot 3.
+    Evidence: no existing cap on elaboration. Adding one creates ambiguous
+    interaction with adaptive reduction mechanism.
+    Resolution: drop the elaboration cap. The context budget allocator
+    already handles oversized phase details via adaptive reduction
+    (orchestrator.txt S6: 3 attempts, then terminal). Adding a separate
+    cap creates a second control loop that may conflict. Let the existing
+    mechanism handle it.
+
+  INFO P3-6: Skeleton regeneration after split triggers re-review cascade.
+    Acknowledged. The version increment + dependency propagation is by design
+    (orchestrator.txt S9 L274). This is a feature, not a bug — if a phase
+    splits, its dependents SHOULD re-review their contracts. But the system
+    should distinguish between contract-preserving splits (sub-phases
+    collectively produce the same outputs) and contract-changing splits.
+    Contract-preserving: no re-review needed. Contract-changing: re-review
+    triggered. Add a preserve_contracts: bool flag to the split operation.
+
+  INFO P3-7: Two splitting mechanisms (Phase Sizing at PLANNING vs SPLIT_TASK
+    at runtime) have overlapping parameters.
+    Resolution: define clear scopes. Phase Sizing = static, at PLANNING time,
+    based on structural proxies, prevents obviously-too-large phases from
+    being created. SPLIT_TASK = dynamic, at runtime, when context budget
+    actually exhausts during EXECUTING. They do not cascade: if Phase Sizing
+    creates a correctly-sized phase that still exhausts context at runtime
+    (because actual code was larger than proxy estimate), SPLIT_TASK handles
+    it. Phase Sizing reduces the frequency of SPLIT_TASK triggers.
+
+
+3.4 RESOLVED PROPOSAL
+
+  Add PHASE SIZING to L2 builder (pipeline-factory.txt), after structural
+  validation, before grounding sweep. Deterministic, no LLM.
+
+  Token estimation via structural proxies:
+    phase_complexity = files_touched * avg_file_tokens
+                     + test_count * avg_test_tokens
+                     + contract_count * CONTRACT_OVERHEAD
+    avg_file_tokens: from knowledge engine index statistics (project-specific).
+    avg_test_tokens: from knowledge engine index statistics.
+    CONTRACT_OVERHEAD: fixed constant (default 200 tokens per contract).
+    Configurable in elai_cc.toml [planning.sizing].
+
+  Available budget computation:
+    available_for_work = model.max_context
+      - slot_1_estimate(role=executor)
+      - slot_2_estimate(phase=EXECUTING, domains=detected)
+      - slot_3_estimate(skeleton_tokens + phase_detail_estimate)
+      - output_reserve(2000)
+    Uses actual context budget allocator formula, not flat constant.
+
+  Split trigger: phase_complexity > available_for_work * SPLIT_RATIO.
+    SPLIT_RATIO: configurable, default 0.6.
+
+  Split strategy:
+    1. Try contract boundaries: each output contract -> sub-phase boundary.
+    2. If single contract: cluster files_touched by directory proximity.
+    3. Each sub-phase gets: subset of files, subset of tests, inherited contracts.
+    4. Max split depth: 2 (matches Phase 4G SPLIT_TASK).
+
+  Merge trigger: phase_complexity < MIN_PHASE_TOKENS (default 500).
+    Only merge ADJACENT phases with no external dependents between them.
+    Contract isolation preserved: merged phase inherits union of contracts.
+
+  Skeleton regeneration:
+    After split: skeleton updated with new sub-phases, version incremented.
+    Contract-preserving splits: preserve_contracts=true, no re-review cascade.
+    Contract-changing splits: preserve_contracts=false, dependents flagged.
+
+  Interaction with SPLIT_TASK (Phase 4G):
+    Phase Sizing = static prevention (PLANNING time, structural proxies).
+    SPLIT_TASK = dynamic recovery (runtime, actual context exhaustion).
+    Phase Sizing reduces SPLIT_TASK frequency. They do not cascade.
+
+
+================================================================================
+TESTABLE INVARIANTS (all proposals combined)
+================================================================================
+
+  Local infrastructure:
+  - ONNX models present at .elai_cc/models/onnx/ before startup sequence
+  - Startup canary runs on pre-staged models (no download during session)
+  - Missing ONNX model -> DEGRADED mode, not crash
+  - .elai_cc/models/** hidden from agents (visibility filter)
+  - index_version.toml contains onnx_model_path field
+  - SPLADE model stored only if Phase 1G/1H KEEP decision
+
+  Proactive thinking:
+  - ThinkStep.scope field present when require_scope_enumeration=true
+  - Every scope item addressed in subsequent plan_action (WARN if not)
+  - Scope enumeration does not change GrcState transition table
+  - Post-tool GREP_PATTERN rules fire in <1ms on tool results
+  - Post-tool WARN visible to agent via normal PostToolUse path
+  - completeness QualityMetrics validate via existing L2 check method
+  - No pre-execution I/O added to tool calls (zero latency increase)
+
+  Automatic task breakdown:
+  - Phase Sizing runs after L2 structural validation, before grounding sweep
+  - phase_complexity uses project-specific avg_file_tokens from knowledge index
+  - available_for_work computed from actual context budget allocator formula
+  - Split depth <= 2 (matches Phase 4G SPLIT_TASK max_depth)
+  - Contract-preserving splits do not trigger re-review cascade
+  - Auto-merge only on adjacent phases with no external dependents between them
+  - Phase Sizing + SPLIT_TASK do not cascade (different scopes)
+  - Sizing heuristic is approximate — exact fit handled by context budget allocator
+
+
+================================================================================
+SPEC FILES REQUIRING UPDATES (if proposals accepted)
+================================================================================
+
+  core.txt:
+    - Add .elai_cc/models/onnx/ canonical path definition
+    - Add setup script specification (download + blake2 verify)
+
+  reasoning.txt:
+    - Add scope: Option<Vec<String>> to ThinkStep struct (section 10)
+    - Add require_scope_enumeration to AgentGrcConfig (section 7)
+    - Add scope validation logic to GrcEngine::think() (section 2)
+
+  rules.txt:
+    - Add engineering domain GREP_PATTERN rules for post-tool completeness
+      (web_fetch <img> detection, <table> detection, etc.)
+
+  pipeline-factory.txt:
+    - Add Phase Sizing stage to section 3 (4-stage -> 5-stage elaboration)
+    - Add sizing heuristic types and configurable parameters
+    - Add completeness QualityMetric examples to section 10
+
+  orchestrator.txt:
+    - Add scope validation to agent prompt assembly (section 6/7)
+    - Add preserve_contracts flag to skeleton split operation (section 9)
+
+  knowledge.txt:
+    - Add onnx_model_path to index_version.toml schema (section 10)
+    - Add avg_file_tokens / avg_test_tokens statistics export
+
+  providers.txt:
+    - Add ONNX model path reference to section 9
+
+  implementation-guide.txt:
+    - Add setup step for ONNX model pre-staging
+    - Update 5-stage elaboration pipeline description
+
+  implementation-plan.txt:
+    - Update Phase 1C to reference canonical ONNX path
+    - Update Phase 2A to include scope field in ThinkStep tests
+    - Add Phase Sizing tests to Phase 4E (L2 builder)
+
+  risk-register.txt:
+    - Add R54: Phase Sizing heuristic may over/under-estimate, mitigated
+      by SPLIT_TASK runtime fallback
+    - Add R55: Scope enumeration may produce incomplete lists, mitigated
+      by post-tool completeness rules as second layer

@@ -1,0 +1,483 @@
+TECHNICAL ANALYSIS V2: LOCAL INFRASTRUCTURE, PROACTIVE THINKING, AUTOMATIC TASK BREAKDOWN, DETERMINISTIC DISPATCH, CONTEXT PRESERVATION
+Date: 2026-04-06
+Status: DRAFT — pending adversarial audit
+Supersedes: technical-analysis-local-proactive-breakdown.txt (v1 — partially flawed)
+
+Context: five user concerns about elai_cc's technical design, analyzed against the
+full spec suite (architecture-overview.txt, all 9 crate specs, all 5 integration specs,
+phase-index-pre0-2D.txt, phase-index-3A-4I.txt, phase-3C.txt, phase-4A.txt, phase-4D.txt).
+Pre-attempt (v1) addressed concerns 1,3,4 but missed 2 and 5. V2 retains v1's resolved
+proposals and adds the missing analysis.
+
+
+================================================================================
+CONCERN 1: EVERYTHING MUST BE LOCAL (PROJECT-SCOPED)
+================================================================================
+
+Status: RESOLVED in v1 (with audit corrections accepted). Summary below.
+
+User requirement: all state, indexes, RAG, models inside the project directory.
+No external service dependencies during execution. No global user folder pollution.
+
+Spec alignment: elai_cc is already fully local by design.
+  - Knowledge engine: embedded Rust library (not external RAG server).
+    DKG (SQLite), BM25 (tantivy), vectors (ONNX in-process via ort).
+    Orchestrator calls KnowledgeEngine::query() directly.
+    [knowledge.txt full spec, prompt-architecture.txt S2,S7]
+  - Storage: all under .elai_cc/projects/{id}/
+    SSB (SQLite WAL), DKG graph (SQLite), vector cache (SQLite),
+    rules.db (SQLite), session DAG (SQLite), BM25 index (tantivy).
+    [orchestrator.txt S3, S11]
+  - LLM inference: ollama on localhost (Phase 0-1), vLLM local (Phase 2+).
+    Cloud APIs are fallback/optional — configurable, not required.
+    [architecture-overview.txt L28-29, providers.txt S3-S4]
+  - Orchestrator: Rust binary. Zero VRAM. Persists in RAM + SQLite.
+    Survives all model swaps. Never unloaded.
+    [prompt-architecture.txt S2]
+
+Gap resolved (v1): ONNX model storage path.
+  - Canonical path: .elai_cc/models/onnx/
+  - Models pre-staged via setup script (outside session), not auto-downloaded.
+  - Setup: download + blake2 hash verify + write index_version.toml.
+  - Missing models at startup -> DEGRADED mode (BM25_ONLY), not crash.
+  - SPLADE storage conditional on Phase 1G/1H KEEP decision.
+  [v1 resolved proposal, accepted after 3 BLOCKs + 2 WARNs]
+
+Claim scope: "local-first during execution. Cloud optional for research agent.
+ONNX models pre-staged, not auto-downloaded."
+
+Spec files to update: core.txt, knowledge.txt, providers.txt, Phase 1C step file,
+index_version.toml schema, implementation-guide.txt (setup step).
+
+
+================================================================================
+CONCERN 2: CONTEXT PRESERVATION ACROSS AGENT SPAWNS
+================================================================================
+
+Status: NEW in v2 (not in v1). Analyzed below.
+
+User requirement: when the main model spawns a sub-agent, the main model's context
+must be preserved even if the main model is unloaded from VRAM to free GPU memory
+for the agent's model.
+
+Current workflow problem: in Claude Code, spawning an agent means the main LLM
+is still loaded and waiting. If you need to swap models (e.g., main executor ->
+auditor on different model), the main LLM's context window is lost or compressed.
+
+elai_cc solution: THIS IS NOT A PROBLEM BY DESIGN.
+
+The orchestrator is a Rust binary, not an LLM. It has zero VRAM footprint and
+runs in CPU RAM. It never "unloads" because it was never loaded onto a GPU.
+
+Architecture:
+  1. Orchestrator (Rust binary, ~20MB RAM, always running):
+     - Owns: FSM state, SSB (SQLite), channel state, agent checkpoints,
+       knowledge engine indexes, rules.db, plan skeleton, session DAG.
+     - All state persists in RAM (hot) + disk (durable). Zero GPU dependency.
+     - Prompt assembly, evidence gate checks, tool dispatch, rule evaluation —
+       all deterministic Rust code running on CPU.
+
+  2. Agent processes (spawned per role, use GPU):
+     - Each agent is an isolated OS process (Phase 4A Tier C).
+     - Agent receives assembled prompt via IPC AgentRequest.
+     - Agent calls LLM via IPC (InferRequest -> orchestrator -> provider -> InferResponse).
+     - Agent's internal GRC reasoning chain checkpointed to disk after each step.
+     - Agent finishes, returns AgentResponse via IPC, process exits.
+
+  3. Model swap protocol (at phase boundaries):
+     a. Current agent finishes (AgentResponse received).
+     b. Orchestrator writes phase checkpoint to SSB + disk.
+     c. ModelPool unloads current model from GPU (ollama DELETE or vLLM release).
+     d. ModelPool loads next model (e.g., executor -> auditor).
+     e. Orchestrator spawns new agent process with next phase's AgentRequest.
+     f. New agent connects via IPC, begins work.
+     - Swap cost: ~15-30 seconds (measured on target hardware).
+     [providers.txt S4, architecture-overview.txt S7 L248-249]
+
+  4. What is preserved across swaps:
+     - FSM state: in orchestrator RAM + .elai_cc/sessions/{id}/.fsm-state.json
+     - SSB: all rows from all agents, all phases (SQLite on disk)
+     - Channel values: LastValue/Topic persisted in checkpoints (msgpack)
+     - Plan: skeleton + phase details in .elai_cc/pipelines/{id}/
+     - Knowledge engine: DKG graph, BM25 index, vector cache (all on disk)
+     - Agent checkpoints: per-agent state.msgpack, grc_history.msgpack
+     - Reasoning traces: in SSB as action_type='reasoning_trace'
+     [orchestrator.txt S3,S5,S7,S7A,S10]
+
+  5. What is NOT preserved (intentionally):
+     - UntrackedValue channels: in-memory only, never checkpointed.
+       Used for transient data (e.g., streaming progress). Lost on crash.
+     - LLM KV cache: model-internal, lost on unload. Not our state.
+       Mitigated by prompt prefix caching (cache breakpoints in Slot 1-3).
+     [orchestrator.txt S5 L117-120, S6 L141-143]
+
+Branch-and-explore for sub-agents (SessionDag, orchestrator.txt S10):
+  - Before spawning an alternative approach, create snapshot with tag="branch:{name}".
+  - Agent A runs on branch A. Agent B runs on branch B (from same checkpoint).
+  - Max 3 active branches per session.
+  - Winner picked, loser branches abandoned (tagged, not deleted).
+  - Use case: FEASIBILITY_PROBE tries 3 stub alternatives from same checkpoint.
+  [orchestrator.txt S10 L310-314]
+
+Key invariant: the orchestrator never forgets anything because it was never
+an LLM with a context window. It's a state machine backed by SQLite and msgpack.
+Model swaps affect GPU memory only — orchestrator state is CPU-side.
+
+No spec changes needed. This is inherent to the architecture.
+
+
+================================================================================
+CONCERN 3: PROACTIVE THINKING (COMPLETENESS SYSTEM)
+================================================================================
+
+Status: RESOLVED in v1 (with audit corrections accepted). Summary below.
+
+User requirement: the system must think about what could go wrong or be missing
+BEFORE acting. Not per-tool rules, but a general system that ensures completeness
+regardless of task type.
+
+Three-mechanism solution (from v1 resolved proposal):
+
+Mechanism 1 — Scope enumeration in GRC Observe step:
+  - Add scope: Option<Vec<String>> field to ThinkStep.
+  - When AgentGrcConfig.require_scope_enumeration = true (default: true for
+    executor, false for memory-writer), the Observe step must enumerate all
+    task components/modalities before proceeding.
+  - Orchestrator validates: every scope item appears in subsequent plan_action.
+  - Unaddressed items -> WARN injected into agent context.
+  - No new GrcState. No state machine change. Backward compatible.
+  [reasoning.txt S2,S7,S10 — ThinkStep struct, AgentGrcConfig]
+
+Mechanism 2 — Post-tool completeness rules (Tier 1 GREP_PATTERN):
+  - Rules that scan tool RESULTS for indicators of unextracted content:
+    web_fetch result contains <img> tags -> WARN: "N images not extracted"
+    web_fetch result contains <table> tags -> WARN: "N tables not extracted"
+    file_read result contains TODO/FIXME -> INFO: "N TODOs found"
+  - Fires in PostToolUse hook, <1ms, deterministic (same result -> same WARN).
+  - No pre-execution I/O. No latency added to tool calls.
+  - Agent sees warning via normal PostToolUse path.
+  [rules.txt S3 GREP_PATTERN, plugins.txt S2-S3]
+
+Mechanism 3 — Completeness as QualityMetric:
+  - Uses existing QualityMetric type (no new types).
+  - method field: grep_output, count_modalities, coverage_ratio.
+  - L2 validates automated check method exists (existing invariant).
+  - Example: { name: "image_coverage", target: 1.0, method: "grep_output:<img>" }
+  [pipeline-factory.txt S10 QualitySpec]
+
+Spec files to update: reasoning.txt (ThinkStep scope field, AgentGrcConfig),
+rules.txt (engineering GREP_PATTERN rules), pipeline-factory.txt (completeness metrics).
+
+
+================================================================================
+CONCERN 4: AUTOMATIC TASK BREAKDOWN
+================================================================================
+
+Status: PARTIALLY RESOLVED in v1. V2 adds L1 budget-aware decomposition.
+
+User requirement: the system should automatically break large tasks into phases
+that fit the model's context window. Currently: user manually split a 350k-token
+plan into phases. The system should do this itself.
+
+V1 resolved proposal (Phase Sizing in L2, retained):
+  - L2 estimates phase_complexity from structural proxies (files_touched, test_count).
+  - Split trigger: phase_complexity > available_for_work * SPLIT_RATIO (default 0.6).
+  - Split by contract boundaries, then by directory proximity.
+  - Max split depth: 2 (matches Phase 4G SPLIT_TASK).
+  - Merge only adjacent phases with no external dependents.
+  [v1 resolved proposal, accepted after 3 BLOCKs + 2 WARNs]
+
+NEW in v2 — L1 Budget-Aware Decomposition:
+
+Problem: v1's Phase Sizing runs at L2, AFTER the L1 designer has already created
+the plan structure. This means L1 creates phases by task logic alone, then L2
+retroactively splits oversized phases. This is reactive, not proactive.
+
+Solution: L1 designer receives model context constraints as input during planning.
+
+  L1 receives SystemConstraints (already defined in orchestrator.txt S13A):
+    SystemConstraints {
+      min_vram_bytes, min_ram_bytes, min_disk_bytes, required_gpu_count,
+      // NEW:
+      model_max_context: usize,      // e.g., 8192 for local, 200000 for cloud
+      available_for_work: usize,     // max_context - fixed_slots - output_reserve
+      avg_file_tokens: usize,        // from knowledge engine index stats
+      avg_test_tokens: usize,        // from knowledge engine index stats
+    }
+
+  During GRC-grounded plan decomposition (pipeline-factory.txt S3 Stage 2):
+    L1 designer's Observe step includes: "Context budget: {available_for_work} tokens.
+    Each file averages {avg_file_tokens} tokens. Phase must touch at most
+    {available_for_work / avg_file_tokens * 0.4} files (40% budget for code context)."
+
+  This is injected as a PLANNING CONSTRAINT in the role_prompt, not as a rule.
+  The designer decomposes with awareness of context limits from the start.
+
+  L2 Phase Sizing becomes VALIDATION:
+    - Still runs after L2 structural validation.
+    - Now rarely triggers splits (L1 already sized phases correctly).
+    - Catches cases where L1 underestimated (structural proxy misalignment).
+    - Acts as safety net, not primary mechanism.
+
+  SPLIT_TASK (Phase 4G) remains as RUNTIME recovery:
+    - Catches cases where actual code was larger than proxy estimates.
+    - Three layers: L1 proactive sizing -> L2 validation sizing -> 4G runtime recovery.
+
+  Interaction: L1 (proactive) -> L2 (validation) -> 4G (runtime). No cascading.
+  Each layer reduces the frequency of the next. Most tasks never reach L2 splitting.
+
+Spec files to update (in addition to v1 list):
+  - pipeline-factory.txt: add model context constraints to L1 designer input
+  - orchestrator.txt S13A: add model_max_context, available_for_work, avg_file_tokens
+    to SystemConstraints
+
+
+================================================================================
+CONCERN 5: DETERMINISTIC AGENT DISPATCH (NO MAIN LLM ORCHESTRATING)
+================================================================================
+
+Status: NEW in v2. This is the most architecturally significant concern.
+
+User requirement: agents should be activated deterministically from plan data.
+The main LLM should NOT spawn agents or write their tasks. Save the plan somewhere,
+agents automatically know what to do based on session_id + task_id.
+
+Analysis: in elai_cc, this IS the core design. The orchestrator is Rust code,
+not an LLM. There is no "main LLM" that decides to spawn agents or writes
+their tasks. But this protocol is implicit across multiple spec files.
+
+Making it explicit — the DETERMINISTIC DISPATCH PROTOCOL:
+
+  DISPATCH TABLE (deterministic, no LLM involvement):
+
+    FSM State          Agent Role          Tool Access                Rule Domains
+    ---------------------------------------------------------------------------------
+    PLANNING           researcher          web_search only (IPC)      all (Tier 3)
+    PLANNING           prompt_engineer     none (receives via prompt) all (Tier 3)
+    FEASIBILITY_PROBE  executor (probe)    stub_write, bash           engineering
+    TESTING_FIRST      executor            test framework, plan       detected + engineering
+    EXECUTING          executor            edit, bash, git            detected + all
+    AUDITING           auditor             validation, test runner    detected + all
+    MEMORIZING         memory_writer       memory write only          none
+    CONFIGURING        executor            config paths only          workflow
+
+    This table is deterministic. Given FSM state, agent role is fixed.
+    No LLM decides "I should spawn the auditor now." The FSM state IS the decision.
+
+  DISPATCH SEQUENCE (per phase, fully deterministic):
+
+    1. FSM determines current state (e.g., EXECUTING).
+       Source: Fsm::get_state() -> FsmState::Executing
+       [orchestrator.txt S2]
+
+    2. Dispatch table maps state -> agent role (e.g., executor).
+       Source: dispatch_table[Executing] -> AgentRole::Executor
+       Stored in: elai_cc.toml [fsm.dispatch] or hardcoded in orchestrator.
+
+    3. Plan management extracts task spec for current phase.
+       Source: PlanSkeleton.phases[current_phase] -> PhaseDetail
+       The plan file IS the task specification. No LLM reformulates it.
+       [orchestrator.txt S9]
+
+    4. Knowledge engine provides code context.
+       Source: KnowledgeEngine::query(task_description, files_from_phase) -> CodeChunks
+       Deterministic query, fitted to context budget.
+       [knowledge.txt S3, orchestrator.txt S6]
+
+    5. Rules engine provides active Tier 3 rules.
+       Source: RuleEngine::get_active_rules(fsm_state, detected_domains) -> Vec<Rule>
+       Only Tier 3 descriptions injected into prompt. Tier 1/2 invisible.
+       [rules.txt S7, prompt-architecture.txt S3]
+
+    6. Prompt assembled from 4 sources (prompt-architecture.txt S3):
+       [role_prompt]        ~80 tokens   from elai_cc.toml
+       [tier_3_rules]       ~200 tokens  from rules.db
+       [code_context]       ~6000 tokens from knowledge engine
+       [task_spec]          ~500 tokens  from phase detail
+       Total: ~7000 tokens. No orchestration instructions. Just the job.
+
+    7. Agent process spawned (Tier C, Phase 4A):
+       Orchestrator creates IPC socket, spawns elai_cc_agent binary,
+       sends AgentRequest (assembled prompt) over IPC.
+       [orchestrator.txt S12]
+
+    8. Agent works autonomously:
+       - GRC reasoning chain (internal to agent process)
+       - Tool calls via IPC (ToolRequest -> orchestrator -> ToolResult)
+       - LLM inference via IPC (InferRequest -> orchestrator -> InferResponse)
+       - Grounding checks via IPC (GroundingRequest -> orchestrator -> GroundingResult)
+
+    9. Agent returns AgentResponse via IPC.
+       Orchestrator validates against evidence gate.
+       Gate passes -> FSM transitions to next state -> goto step 1.
+       Gate fails -> retry (anti-spiral bounded) or escalate.
+       [orchestrator.txt S13]
+
+  KEY PROPERTIES:
+
+    a. No LLM in the dispatch loop. Steps 1-7 are pure Rust code.
+       The LLM only runs inside step 8 (agent's own reasoning).
+
+    b. The plan IS the dispatch table. PipelineSpec phases map 1:1 to FSM cycles.
+       Phase order determined by dependency graph (Kahn's algorithm).
+       No LLM interprets the plan to decide "what to do next."
+
+    c. Agent process has zero knowledge of the dispatch system.
+       It receives a prompt and produces output. It doesn't know:
+       - What FSM state it's in
+       - What other agents exist
+       - What rules enforce its output
+       - What the full plan looks like (only its phase)
+       [prompt-architecture.txt S2, orchestrator.txt S12 "cannot even form the hypothesis"]
+
+    d. Session_id + pipeline_id + phase_id uniquely identify what to do.
+       session_id: identifies the runtime session (file locks, SSB partition).
+       pipeline_id: identifies which plan to execute (skeleton + phases).
+       phase_id: identifies which phase is current (task spec + contracts).
+       Together they deterministically produce: agent role + prompt + tool access.
+
+    e. Multi-agent per phase: some phases need multiple agents.
+       PLANNING: researcher THEN prompt_engineer (sequential, ordered).
+       AUDITING: auditor (single). Future: parallel auditors on sub-tasks.
+       This is encoded in the dispatch table as Vec<AgentDispatchConfig> per state.
+       Ordering is deterministic (defined in config, not decided by LLM).
+
+  IMPLEMENTATION TYPE (for spec update):
+
+    AgentDispatchConfig {
+      role: AgentRole,
+      model_preference: ModelPreference,     // from elai_cc.toml [agents.{role}]
+      tool_filter: ToolFilter,               // phase-aware from FSM (S2)
+      rule_domains: Vec<Domain>,             // detected from file paths
+      grc_config: AgentGrcConfig,            // per-role from reasoning.txt S7
+      sandbox_config: SandboxConfig,         // per-role from core.txt S4
+    }
+
+    DispatchTable {
+      entries: HashMap<FsmState, Vec<AgentDispatchConfig>>,
+    }
+
+    // Built once at pipeline start from PipelineSpec + elai_cc.toml.
+    // Queried deterministically at each phase boundary.
+    // No LLM involved in construction or query.
+
+Spec files to update:
+  - orchestrator.txt: add DispatchTable and AgentDispatchConfig types to S2 or new S15
+  - prompt-architecture.txt: add Dispatch Protocol section (S10)
+  - pipeline-factory.txt: L2 builder constructs DispatchTable from PipelineSpec
+
+
+================================================================================
+INTERACTION BETWEEN ALL FIVE CONCERNS
+================================================================================
+
+The five concerns form a coherent whole:
+
+  LOCAL-FIRST (C1) means the dispatch table, plan files, knowledge indexes, rules.db
+  all live in .elai_cc/. No external service needed to dispatch agents.
+
+  CONTEXT PRESERVATION (C2) means the orchestrator (which holds the dispatch table,
+  FSM state, SSB, plan) never loses state. Model swaps only affect GPU memory.
+
+  PROACTIVE COMPLETENESS (C3) means scope enumeration happens inside the agent's
+  GRC Observe step. The orchestrator validates scope coverage. Post-tool rules
+  catch unextracted content. All within the local dispatch framework.
+
+  AUTOMATIC BREAKDOWN (C4) means L1 creates correctly-sized phases from the start
+  (budget-aware), L2 validates sizing, 4G recovers at runtime. The dispatch table
+  works with any number of phases — more phases just means more dispatch cycles.
+
+  DETERMINISTIC DISPATCH (C5) means the entire loop runs without any LLM deciding
+  "what to do next." FSM state + plan + knowledge engine + rules = deterministic
+  prompt assembly. The LLM only runs inside agent processes doing actual work.
+
+
+================================================================================
+TESTABLE INVARIANTS (all concerns combined, including v1)
+================================================================================
+
+  Local infrastructure (from v1):
+  - ONNX models at .elai_cc/models/onnx/ before startup sequence
+  - Startup canary on pre-staged models (no download during session)
+  - Missing ONNX model -> DEGRADED, not crash
+  - .elai_cc/models/** hidden from agents
+
+  Context preservation (new v2):
+  - Orchestrator RAM state survives model swap (FSM, channels, plan)
+  - SSB rows persist across model swaps (SQLite on disk)
+  - Agent checkpoint written BEFORE model unload (orchestrator.txt S7 triggers)
+  - SessionDag snapshot created at token budget threshold (85%)
+  - UntrackedValue channels explicitly NOT preserved (documented intentional)
+
+  Proactive thinking (from v1):
+  - ThinkStep.scope field present when require_scope_enumeration=true
+  - Every scope item addressed in plan_action (WARN if not)
+  - Post-tool GREP rules fire in <1ms
+  - No pre-execution I/O added to tool calls
+
+  Automatic task breakdown (v1 + v2):
+  - L1 designer receives model_max_context in SystemConstraints
+  - L1 phases sized to fit available_for_work
+  - L2 Phase Sizing validates, rarely splits (L1 already sized correctly)
+  - Phase Sizing + SPLIT_TASK do not cascade
+
+  Deterministic dispatch (new v2):
+  - Dispatch table constructed once per pipeline (no LLM)
+  - FSM state -> agent role mapping is deterministic (same state = same role)
+  - Prompt assembly completes in <5ms (no LLM, all from RAM/SQLite)
+  - Agent process receives complete prompt via IPC (no file reading by agent)
+  - Agent has zero knowledge of dispatch system (cannot see FSM, rules.db, plan)
+  - session_id + pipeline_id + phase_id uniquely determine dispatch
+
+
+================================================================================
+SPEC FILES REQUIRING UPDATES (complete list, v1 + v2)
+================================================================================
+
+  core.txt:
+    - Add .elai_cc/models/onnx/ canonical path
+    - Add setup script specification
+
+  reasoning.txt:
+    - Add scope: Option<Vec<String>> to ThinkStep
+    - Add require_scope_enumeration to AgentGrcConfig
+
+  rules.txt:
+    - Add engineering GREP_PATTERN rules for post-tool completeness
+
+  pipeline-factory.txt:
+    - Add model context constraints to L1 designer input (SystemConstraints)
+    - Add Phase Sizing stage to L2 (5-stage elaboration)
+    - Add completeness QualityMetric examples
+
+  orchestrator.txt:
+    - Add DispatchTable and AgentDispatchConfig types
+    - Add Deterministic Dispatch Protocol section
+    - Add model_max_context, available_for_work to SystemConstraints
+    - Add scope validation to agent prompt assembly
+    - Add preserve_contracts flag to skeleton split operation
+
+  prompt-architecture.txt:
+    - Add Dispatch Protocol section showing end-to-end flow
+
+  knowledge.txt:
+    - Add onnx_model_path to index_version.toml
+    - Add avg_file_tokens / avg_test_tokens statistics export
+
+  providers.txt:
+    - Add ONNX model path reference
+
+  implementation-guide.txt:
+    - Add setup step for ONNX model pre-staging
+    - Update elaboration pipeline (5-stage)
+
+  implementation-plan.txt:
+    - Update Phase 1C (canonical ONNX path)
+    - Update Phase 2A (ThinkStep scope field)
+    - Add Phase Sizing tests to Phase 4E
+
+  risk-register.txt:
+    - R54: Phase Sizing heuristic accuracy (mitigated by SPLIT_TASK)
+    - R55: Scope enumeration completeness (mitigated by post-tool rules)
+    - R56: L1 budget-aware decomposition may over-constrain phase boundaries
+      (mitigated by L2 merge for undersized phases)

@@ -1,0 +1,1 @@
+we will use specialized local llm models to replace each agent, context aggregator local models etc, we will leverage the 48gb of vram to be as time efficient as possible

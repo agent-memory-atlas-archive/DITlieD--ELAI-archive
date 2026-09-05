@@ -1,0 +1,394 @@
+ADVERSARIAL AUDIT RESULTS — PHASE 4I (MEDIA VALIDATOR) PLAN AUDIT
+Auditor: claude-sonnet-4-6
+Date: 2026-04-06
+Scope: phase-4I.txt (improved) + media-validator.txt + architecture-overview.txt S9
+Mode: plan audit (no tests run — no implementation exists yet)
+Verification script: workflow/audit-scratch/verify_phase4I_invariants.py (10 pass, 3 fail)
+
+PROGRESS SUMMARY: Tests: 0/0 passing | Tiers: N/A (plan-mode) | TestQuality: N/A |
+  Regression: none | BLOCKs: 5 | Score: N/A (plan audit)
+
+
+CoVe VERIFICATION
+=================
+
+Baseline: phase-4I.txt is structurally well-formed. It adds 4 new risks (R-NEW-1 through
+  R-NEW-4), specifies constrained decoding differentiation (SGLang vs ollama), and
+  calls out the architecture-overview.txt L283 stale reference. VRAM figures and
+  model architecture claims need independent verification.
+
+Q1: Is the Mode A VRAM claim "~3GB active params * 1 byte ~= 3GB" accurate?
+  Answer: NO. This conflates active compute parameters with stored VRAM.
+  Qwen3.5-VL-30B-A3B is a MoE model. ALL ~30B parameters must be stored in VRAM
+  regardless of MoE routing. Only ~3.3B are activated per forward pass (compute cost).
+  Web search confirms: Q4 quantization alone requires ~17GB; 8-bit requires ~25-30GB.
+  Implementors reading "~3GB" will conclude Mode A fits on any modest GPU. It does not.
+  On the Phase 0 hardware (RTX 3060 12GB), Mode A is impossible at any quantization
+  level. On Production hardware (2x RTX 3090 24GB each), Mode A at 8-bit requires
+  ~25-30GB, consuming most of one GPU, leaving no room for "alongside embedding" claim.
+  Verified by: workflow/audit-scratch/verify_phase4I_invariants.py (INVARIANTS 1-2).
+
+Q2: Is the CLAP VRAM figure consistent between phase-4I.txt and media-validator.txt?
+  Answer: NO. Contradiction:
+    phase-4I.txt L77: "~200M params, ~0.2GB VRAM"
+    media-validator.txt L53: "CLAP model ~1GB"
+  HuggingFace card confirms 0.2B (200M) params. At FP32 (4 bytes/param): 0.8GB params
+  alone, ~1GB total with activations/overhead. The media-validator.txt figure (~1GB) is
+  more accurate for a realistic deployment. The phase-4I.txt figure (~0.2GB) assumes
+  FP16 weights with zero activation overhead -- an optimistic lower bound.
+  Additionally: no official ONNX export exists for laion/clap-htsat-fused (only the
+  unfused variant has a Xenova ONNX conversion). The grounding claim "CLAP via ONNX
+  Runtime" is unverified for the fused variant specifically.
+  Verified by: workflow/audit-scratch/verify_phase4I_invariants.py (INVARIANT 4).
+
+Q3: Is the "SSIM via fixed-point or f64 with exact comparison" determinism claim sound?
+  Answer: NO. "fixed-point or f64" presents two non-equivalent options as interchangeable.
+  Fixed-point (integer arithmetic): bit-exact on all platforms and SIMD paths.
+  f64 (IEEE 754 double): subject to non-deterministic SIMD behavior when FMA
+  (fused multiply-add) or AVX instructions are used. Reordering of floating-point
+  operations under SIMD can produce ULP-level differences. "exact comparison" of f64
+  values from two runs may fail even on the same machine if the compiler chooses a
+  different SIMD path. The determinism test "100 runs, assert bit-identical" may pass
+  on one build configuration and fail on another (e.g., release vs debug, or cross-
+  compilation). For LPIPS via ONNX Runtime: GitHub issues #4611 and #22818 confirm GPU
+  non-determinism even with ORT_DISABLE_ALL. ORT_DISABLE_ALL disables graph-level
+  optimizations but NOT cuDNN kernel non-determinism (different algorithm selection
+  per run). On GPU, LPIPS results are NOT bit-exact across runs without setting
+  torch.use_deterministic_algorithms(True) and CUBLAS_WORKSPACE_CONFIG=:4096:8.
+  These environment variables are not mentioned anywhere in phase-4I.txt.
+  Verified by: workflow/audit-scratch/verify_phase4I_invariants.py (INVARIANT 7).
+
+Q4: Is the verdict logic complete for all Tier 2 failure modes (Mode A)?
+  Answer: NO. phase-4I.txt L234-238 defines 5 verdict branches. Missing branch:
+  "Tier 1 pass + Tier 2 schema violation after retry." Mode A uses ollama format=json
+  with post-validation and 1 retry (L223-224). If the retry also fails schema validation,
+  no verdict is specified. Likely behavior: falls through to Verdict::Pass (dangerous --
+  a VLM that cannot produce structured output is silently ignored, and the advisory check
+  provides no protection). The retry strategy is also underspecified: retrying with the
+  same prompt and default temperature is likely to produce the same malformed output.
+  Verified by: workflow/audit-scratch/verify_phase4I_invariants.py (INVARIANTS 5-6).
+
+Q5: Is the constrained decoding strength parity between modes correctly documented?
+  Answer: PARTIALLY. phase-4I.txt L82 correctly notes "ollama format=json + post-
+  validation (Mode A)" is weaker than "SGLang JSON schema constraint (Mode B)." The
+  NOTE in RISKS (R-NEW-3) explains SGLang requirement for Mode B. However, the parity
+  gap is not fully addressed:
+  - ollama format=json (v0.5+) with a JSON schema passed via the `format` parameter
+    uses llama.cpp GBNF grammar to enforce structural validity (valid JSON matching the
+    schema structure). Web search confirms this is grammar-based, not value-constrained.
+    It enforces field presence and type but NOT enum values, f32 range [0.0, 1.0], or
+    Severity enum variants. Post-validation is necessary AND the specific fields
+    requiring range/enum validation are not specified in the retry contract.
+  Verified by: web search (ollama structured outputs docs) + INVARIANT 6.
+
+Reconciliation:
+  Q1 (VRAM arithmetic) -> BLOCK: implementing from this spec causes VRAM planning failure.
+  Q2 (CLAP contradiction) -> BLOCK: contradictory numbers in two authoritative docs.
+  Q3 (SSIM/LPIPS determinism) -> BLOCK: "deterministic" claim will fail in practice on GPU.
+  Q4 (verdict incompleteness) -> BLOCK: security-relevant undefined behavior.
+  Q5 (constrained decoding gap) -> WARN: partially documented, retry contract incomplete.
+
+
+================================================================================
+BLOCK FINDINGS (must fix before Phase 4I implementation begins)
+================================================================================
+
+BLOCK-1: Mode A VRAM claim "~3B params * 1 byte ~= 3GB" is factually wrong
+  File: phase-4I.txt L287, L75; media-validator.txt L59-60
+  Qwen3.5-VL-30B-A3B is a MoE model with 30B total parameters. MoE routing means only
+  ~3.3B parameters activate per token (compute cost), but ALL 30B parameters must be
+  resident in VRAM at all times (the router selects from all experts). This is a
+  fundamental property of sparse MoE inference -- you cannot partially load experts
+  without defeating the architecture.
+  At 8-bit quantization (1 byte/param): minimum stored VRAM = ~30GB.
+  Web search confirmed: Q4 quantization requires ~17GB; 8-bit requires ~25-30GB.
+  Impact on hardware:
+    Phase 0 (RTX 3060 12GB): Mode A is IMPOSSIBLE. The spec says nothing about this.
+    Production (2x RTX 3090 24GB each): Mode A requires tensor parallelism across both
+    GPUs just for model weights, leaving minimal room for KV cache and the embedding model.
+    "Fits alongside embedding" is false for any realistic configuration.
+  The confusion originates in media-validator.txt L60: "Active params ~3B (MoE routing).
+  Fits on single GPU alongside embedding." This conflates compute-active params with
+  stored params. Both files propagate this error.
+  Fix: replace "~3B params * 1 byte ~= 3GB" with "~30B total stored at 8-bit ~= 30GB
+    (MoE: all experts stored in VRAM, only ~3B activated per token). Requires dedicated
+    GPU or tensor parallel across both RTX 3090s in production. NOT compatible with
+    Phase 0 hardware (RTX 3060 12GB). Update GPU scheduling section to reflect
+    this." Update media-validator.txt L59-60 with the same correction.
+
+BLOCK-2: CLAP VRAM contradiction between phase-4I.txt and media-validator.txt
+  File: phase-4I.txt L77 vs media-validator.txt L53
+  phase-4I.txt L77: "~200M params, ~0.2GB VRAM"
+  media-validator.txt L53: "CLAP model ~1GB"
+  Arithmetic: 200M params at FP32 = 0.8GB params alone; with activations and runtime
+  overhead ~1GB is accurate. The ~0.2GB figure assumes FP16 weights with zero overhead,
+  which is a lower bound not achievable in practice without explicit quantization.
+  No official ONNX export exists for laion/clap-htsat-fused (only the unfused variant
+  has Xenova ONNX). The grounding claim at phase-4I.txt L266 ("CLAP via ONNX Runtime
+  -> VERIFIED: laion/clap-htsat-fused available as ONNX export") is wrong. The fused
+  variant requires custom ONNX conversion using HuggingFace Optimum. This is not a
+  pre-existing artifact the implementor can simply download and use.
+  Fix: correct phase-4I.txt L77 to "~0.8-1GB VRAM (FP32), ~0.4GB (FP16 quantized)".
+    Correct grounding claim: "CLAP ONNX export: NOT pre-existing for laion/clap-htsat-fused.
+    Requires conversion via HuggingFace Optimum. UNGROUNDED for drop-in use. Verify
+    Xenova/clap-htsat-unfused as alternative or document conversion step explicitly."
+
+BLOCK-3: SSIM "f64 with exact comparison" does not guarantee determinism
+  File: phase-4I.txt L215, L254-255; contract test invariant #6 (L139)
+  The phrase "fixed-point or f64 with exact comparison" is not a sound specification.
+  f64 arithmetic under SIMD (FMA, AVX2, AVX-512) produces non-identical results across
+  platforms and build configurations when floating-point operations are reordered.
+  "Exact comparison" of f64 SSIM scores from two runs will fail if the compiler/CPU
+  selects a different SIMD path (e.g., debug vs release build, cross-compiled binary,
+  different CPU microarchitecture between Phase 0 and production hardware).
+  The adversarial test at L158 ("run SSIM on same pair 100 times, assert all results
+  bit-identical") WILL pass in developer testing (same binary on same machine) but FAIL
+  in CI or across machines unless integer/fixed-point is used exclusively.
+  For LPIPS via ONNX Runtime (L216): ORT GPU inference is non-deterministic regardless
+  of ORT_DISABLE_ALL. To achieve determinism on GPU, the spec must require:
+    - Use CPU execution provider only for LPIPS (ONNX Runtime CPU EP is deterministic)
+    - OR accept a tolerance (e.g., |score1 - score2| < 1e-6) and document it
+  The current spec makes a determinism guarantee that the implementation cannot satisfy
+  without additional constraints not mentioned in the spec.
+  Fix: change L215 to "SSIM via image crate using INTEGER arithmetic only (not f64 --
+    f64 SIMD paths are not bit-exact across platforms). OR use f64 with SIMD disabled
+    at compile time (no_std or explicit no_vectorize) and document this requirement."
+    Change L216: "LPIPS via ONNX Runtime CPU execution provider only (GPU EP is
+    non-deterministic per ORT issues #4611, #22818). Set ORT CPU EP explicitly."
+    Update contract test invariant #6 to specify tolerance if determinism is relaxed.
+
+BLOCK-4: Verdict logic has undefined case when Mode A post-validation retry exhausted
+  File: phase-4I.txt L223-224 (retry once), L233-238 (veto logic), L80-82 (VLM output)
+  The veto logic (L233-238) defines 5 verdict branches. None handle the case where:
+    Tier 1 passes + Tier 2 (Mode A) invoked + ollama produces invalid schema twice.
+  The retry at L223-224 says "retry once on schema violation." After the retry, if the
+  output is still schema-invalid, no code path returns a verdict. The most likely
+  implementation behavior is: the Tier2Result is None or schema-invalid, causing an
+  implicit Verdict::Pass (VLM advisory silent failure). This means a VLM that cannot
+  produce structured output silently provides no advisory signal -- indistinguishable
+  from a VLM that assessed quality and found no issues.
+  Additionally, retrying with the same prompt and default temperature under the same
+  ollama call is deterministic -- the retry will produce the same output if the failure
+  is prompt-structural (the image content causes the VLM to generate a non-schema
+  response). A retry should specify temperature perturbation or a reformulated prompt.
+  Fix: add explicit verdict branch: "Tier 1 pass + Tier 2 schema violation (both
+    attempts) -> Verdict::HumanReview (VLM failed to provide assessment)."
+    Add to veto logic documentation. Add contract test invariant #8.
+    Specify retry strategy: "retry with temperature += 0.1 and explicit system prompt
+    re-enforcement." Document that same-temperature retry is likely idempotent.
+
+BLOCK-5: Phase 0 hardware incompatibility not called out in the phase file
+  File: phase-4I.txt L75, L281-289; architecture-overview.txt (Phase 0 hw spec)
+  The spec states Mode A "fits on single GPU alongside embedding" (L75) and Mode A
+  GPU swap target "<15s" (L284). Neither statement is conditioned on hardware tier.
+  Phase 0 hardware is 1x RTX 3060 12GB. At any quantization level, Qwen3.5-VL-30B-A3B
+  does not fit in 12GB (minimum ~17GB at Q4). Mode A is architecturally impossible on
+  Phase 0 hardware. The phase file does not mention this, creating a false expectation
+  that 4I can be fully exercised in Phase 0 conditions.
+  The CONDITION at L3 ("only implement if pipeline tasks produce media outputs") does
+  not help -- if implemented unconditionally, any attempt to run Mode A in Phase 0
+  will crash with OOM, not produce a graceful degradation.
+  Fix: add hardware-conditional note to RISKS: "R-NEW-5: Mode A impossible on Phase 0
+    hardware (RTX 3060 12GB). Mode A VLM tests must use mock VLM in Phase 0. Only
+    testable on Production hardware (2x RTX 3090). Phase-conditional: if VRAM < 20GB,
+    Mode A is disabled and Tier 2 runs as Mode B or is skipped entirely."
+    Add PRE_GATE check: "detect available VRAM via nvml-wrapper; if < 20GB, disable
+    Mode A and document in ToolCapabilityFlags."
+
+
+================================================================================
+WARN FINDINGS (should fix, document justification if skipped)
+================================================================================
+
+WARN-1: Mode A constrained decoding retry contract is incomplete
+  File: phase-4I.txt L223-224, L82
+  ollama format=json with a JSON schema enforces structural JSON validity (field presence,
+  type) via llama.cpp GBNF grammar but does NOT enforce enum values, numeric ranges, or
+  string content. Specifically: VlmValidationOutput.overall_quality is typed f32 [0.0-1.0];
+  ollama's grammar cannot enforce the [0.0-1.0] range (grammar generates valid f32 but
+  cannot range-restrict). Similarly Severity enum values and confidence ranges.
+  The post-validation step must explicitly check: range validity, enum membership, and
+  required field completeness. The current spec says "post-validate against VlmValidation-
+  Output schema" but does not enumerate what "validate" means -- a naive implementation
+  might only check JSON parse success, not field constraints.
+  Fix: enumerate post-validation checks: "verify overall_quality in [0.0, 1.0]; verify
+    confidence in [0.0, 1.0]; verify each Issue.severity is a valid Severity enum variant;
+    verify issues is a non-null Vec (may be empty). Reject and retry if any check fails."
+
+WARN-2: Lazy loading specification is insufficient for implementation
+  File: phase-4I.txt L239-246 (lazy loading section)
+  The spec says "MediaValidatorPlugin registered but not loaded at startup" and "On first
+  MediaValidationRequest: check ToolCapabilityFlags, spawn VLM process if needed."
+  This is underspecified:
+    - What is the plugin registry mechanism? The projectIndex.md shows a plugins crate with
+      hooks (PreToolUse/PostToolUse/Stop) but no plugin registry for conditional loading.
+    - How does the plugin register itself without executing? Static link registration vs
+      dynamic library vs factory pattern?
+    - "Spawn VLM process if needed" -- what is the IPC handshake for VLM? The standard
+      IPC uses AgentRequest/AgentResponse; does the VLM use the same protocol or a
+      separate HTTP/socket? The spec says "IPC-proxied" but the VlmProcessConfig has no
+      socket path or port field.
+  Fix: specify the plugin registration mechanism (reference the plugins crate architecture).
+    Add VlmProcessConfig fields: socket_path: PathBuf, startup_timeout: Duration.
+    Specify IPC protocol for VLM (same 15-message protocol as agents, or separate REST?).
+
+WARN-3: architecture-overview.txt L283 stale reference acknowledged but no fix path
+  File: phase-4I.txt L31-35 (NOTE section)
+  The phase correctly identifies architecture-overview.txt L283 as stale ("LLaVA-7B or
+  InternVL-2B" should be "Qwen3.5-VL-30B-A3B / InternVL3.5-38B"). It defers the fix
+  to "when lock released (currently held by another session)."
+  Without a concrete fix mechanism, this stale reference will persist indefinitely.
+  The UPDATE note is informal (no task entry, no DETERMINISTIC_CHECK, no evidence gate).
+  Fix: add explicit step in 4I.1 TASK or EXIT CRITERIA: "Before exiting phase 4I,
+    update architecture-overview.txt L283 to match media-validator.txt model names.
+    DETERMINISTIC_CHECK: grep architecture-overview.txt for 'LLaVA-7B' returns no match."
+
+WARN-4: External tool availability check inadequate for Windows (winget/choco vs which)
+  File: phase-4I.txt L47-51 (PRE_GATE)
+  The PRE_GATE uses Unix `which` to check for ImageMagick/FFmpeg/Tesseract/Blender.
+  On Windows (development platform per env vars: win32), `which` is not available by
+  default; `where` is the equivalent. The project targets Windows development per the
+  environment (shell: bash, platform: win32). The check `which identify || magick
+  --version` will fail silently on Windows bash (git-bash does not have `which` mapped
+  to `where` by default). This means the PRE_GATE passes vacuously on Windows,
+  missing tool availability.
+  Fix: replace with a cross-platform check:
+    "which identify || magick --version || where magick (Windows)"
+    OR: move availability checks into Rust code (ExternalToolWrapper::check_available()
+    uses std::process::Command which is cross-platform).
+
+WARN-5: No test for CLAP score determinism across different audio codec paths
+  File: phase-4I.txt L189-190 (CLAP adversarial test)
+  The adversarial test at L189-190 tests "white noise labeled as symphony orchestra"
+  for CLAP similarity and says "Assert: score is deterministic across runs." But CLAP
+  processes audio through a mel-spectrogram pipeline. The mel-spectrogram computation
+  uses FFT, which has known floating-point non-determinism on CPU under certain BLAS
+  implementations. If the audio is decoded via FFmpeg (external process), the decoded
+  PCM may differ by sample between codec versions. Neither the mel-spectrogram
+  implementation nor the FFmpeg version is pinned in the spec.
+  Fix: add test specification: "CLAP determinism test uses pre-decoded raw PCM (bypass
+    FFmpeg) to isolate audio decoding non-determinism from model non-determinism."
+
+WARN-6: 4I.4 adversarial test "1000 simultaneous requests" is not a unit test
+  File: phase-4I.txt L184-186 (resource exhaustion test)
+  The spec requires "submit 1000 validation requests simultaneously" and assert bounded
+  concurrency + queue overflow returns Error::QueueFull. This is a load/stress test, not
+  a unit test. Running it with --test-threads=1 (required by all deterministic checks in
+  the phase) means 1000 concurrent Tokio tasks from one test thread, which tests the
+  async runtime behavior but not actual concurrent validation. Additionally, "queue
+  depth: 64" (L246) means request 65+ should return QueueFull; this test should be
+  "submit 65 validation requests, assert 64th returns Ok, 65th returns Err::QueueFull"
+  not 1000 (which only confirms the queue is bounded, not the exact boundary).
+  Fix: change "1000 simultaneous requests" to "submit queue_depth + 1 requests
+    (65 for default config=64), assert first 64 enqueue, 65th returns Err::QueueFull."
+    Add separate stress test labeled as non-CI (ignored in unit test run).
+
+WARN-7: VLM process isolation tests reference L147-149 are untestable without Phase 4A
+  File: phase-4I.txt L147-149
+  Tests: "VLM process cannot read files outside allowed_paths; cannot write any files;
+  has no network access." These are process isolation tests that depend entirely on Phase
+  4A's Tier C isolation infrastructure (PID/mount/network namespaces, seccomp, rlimits).
+  The PRE_GATE at L170 ("4I.3 DETERMINISTIC_CHECK passes") does not require Phase 4A
+  to be complete. If 4A isolation is incomplete (see audit-results-phase4-improvement.txt
+  BLOCKs 1-2: RLIMIT_FSIZE and /proc masking missing from 4A spec), these 4I isolation
+  tests will pass against a weaker isolation than intended.
+  Fix: add PRE_GATE in 4I.3: "Phase 4A EXIT CRITERIA met (all isolation invariants pass
+    including RLIMIT_FSIZE, RLIMIT_AS, /proc masking per orchestrator.txt L521-524)."
+
+
+================================================================================
+INFO FINDINGS (noted, no action required)
+================================================================================
+
+INFO-1: architecture-overview.txt L283 stale reference correctly identified
+  phase-4I.txt explicitly notes L283 is stale and states the correct model names.
+  The fix is deferred to when the file lock is released. This is a known pending item.
+
+INFO-2: SGLang JSON schema constrained decoding for Mode B is correctly grounded
+  SGLang compressed FSM (lmsys.org 2024-02-05) and RadixAttention (NeurIPS 2024) are
+  real, verified capabilities. Multi-image support for InternVL3.5-38B via SGLang is
+  confirmed by sgl-project/sglang issue #9666 and InternVL3.5 blog (2025-08-26).
+  Mode B constrained decoding guarantee is stronger than Mode A. This asymmetry is
+  correctly flagged in the spec.
+
+INFO-3: Path traversal adversarial test (4I.4 L180-181) is well-specified
+  "file_path = ../../.elai_cc/config.toml" + "canonicalize() check" is consistent with
+  prior BLOCK-8 from phase-4A (canonical realpath comparison). The fix from
+  audit-results-phase4-improvement.txt BLOCK-3 (ShortCoder placement) is now resolved
+  in 4C; this 4I test correctly relies on the isolation layer established in 4A.
+
+INFO-4: ComfyUI timeout test (4I.4 L187-188) is grounded
+  600s timeout is consistent with media-validator.txt L79. "Assert cleanup runs (no
+  zombie process)" is a valid test for the process lifecycle invariant. Well-formed.
+
+INFO-5: Decision doc (workflow/reasoning/phase-4I-decisions.md) does not exist
+  Expected: decision docs are pre-EXECUTING requirements, not pre-planning requirements.
+  This is a WARN per CLAUDE.md ("Soft enforcement -- auditor checks for it") but is not
+  a BLOCK at the planning stage. Document must exist before 4I.1 implementation begins.
+
+INFO-6: InternVL3.5-38B confirmed released (2025-08-26)
+  HuggingFace model card OpenGVLab/InternVL3_5-38B exists. SGLang issue #9666 requests
+  InternVL3.5 family support. The model is real and post-cutoff (August 2025 release),
+  consistent with the plan's context date (2026-04-06). This is correctly noted.
+
+INFO-7: Qwen3.5-VL model naming note
+  Web search shows "qwen3.5:35b-a3b" on ollama.com. The spec uses "Qwen3.5-VL-30B-A3B".
+  The Qwen3.5-VL vision-language model naming is distinct from the Qwen3-30B-A3B
+  language-only model. The vision variant may have different parameter counts or
+  VRAM requirements than the base LLM. The "VL" variant availability in ollama was
+  noted as requiring ollama v0.12.7+ and there were compatibility issues. The spec
+  should verify ollama version requirements for the VL variant specifically.
+
+
+================================================================================
+CROSS-SPEC CONTRADICTIONS
+================================================================================
+
+1. phase-4I.txt L287 vs media-validator.txt L60:
+   Both say "~3B active params" but draw different conclusions. Neither correctly
+   states the total VRAM requirement. -> BLOCK-1.
+
+2. phase-4I.txt L77 vs media-validator.txt L53:
+   "~0.2GB VRAM" vs "~1GB". -> BLOCK-2.
+
+3. phase-4I.txt L75 ("fits alongside embedding") vs hardware constraint (Phase 0: 12GB):
+   Mode A requires ~17-30GB depending on quantization. -> BLOCK-5.
+
+4. phase-4I.txt L215 ("fixed-point or f64") vs contract test invariant #6 ("bit-exact"):
+   f64 SIMD is not bit-exact. The test will fail on cross-platform or cross-build
+   configurations. -> BLOCK-3.
+
+
+================================================================================
+DEAD END ASSESSMENT
+================================================================================
+
+No dead end. The BLOCK findings are spec omissions and incorrect claims -- all additive
+fixes or corrections. The two-tier architecture (deterministic Tier 1 + advisory Tier 2)
+is sound. The SGLang/InternVL Mode B approach is correctly specified. The five BLOCKs
+require targeted spec edits but do not require architectural redesign.
+
+
+================================================================================
+RESOLUTION CHECKLIST
+================================================================================
+
+BLOCK-1: Fix Mode A VRAM claim from "~3GB" to "~30GB total stored". Update "fits
+  alongside embedding" to hardware-conditional. Update media-validator.txt L60.
+BLOCK-2: Fix CLAP VRAM to "~0.8-1GB". Document ONNX conversion requirement.
+  Remove false grounding claim in 4I.5 GROUNDING section.
+BLOCK-3: Change SSIM to integer/fixed-point only OR specify acceptable tolerance.
+  Change LPIPS to CPU execution provider only. Update determinism test to specify
+  cross-platform requirements.
+BLOCK-4: Add verdict branch for Tier2 schema exhaustion: -> HumanReview. Specify
+  retry temperature perturbation. Add contract test invariant #8.
+BLOCK-5: Add R-NEW-5 (Mode A impossible on Phase 0 hardware). Add VRAM-conditional
+  PRE_GATE check. Add mock VLM path for Phase 0 CI.
+
+WARN-1: Enumerate ollama post-validation checks (range, enum, required fields).
+WARN-2: Specify VLM plugin registration mechanism and IPC socket protocol.
+WARN-3: Add EXIT CRITERIA entry for updating architecture-overview.txt L283.
+WARN-4: Fix PRE_GATE external tool check for Windows compatibility.
+WARN-5: CLAP determinism test: use pre-decoded PCM to isolate FFmpeg variability.
+WARN-6: Replace "1000 requests" with "queue_depth + 1" boundary test.
+WARN-7: Add Phase 4A EXIT CRITERIA dependency to 4I.3 PRE_GATE.

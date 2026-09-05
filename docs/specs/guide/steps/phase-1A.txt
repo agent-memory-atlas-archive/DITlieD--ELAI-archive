@@ -1,0 +1,513 @@
+PHASE 1A: DKG (tree-sitter -> SQLite graph)
+Prerequisites: Phase 0 complete (9-crate layout exists, cargo check passes)
+Canonical path: determined by Phase 0. Expected: .elai_cc/crates/knowledge/
+  PRE_GATE resolves dynamically: KNOW_PATH=$(find .elai_cc -path "*/knowledge/Cargo.toml" | head -1 | xargs dirname)
+  NOTE: Phase 1D, 1G, 1I paths updated to .elai_cc/crates/knowledge/ (2026-04-06).
+  Phase 0 references .elai_cc/rust/crates/ correctly (pre-restructure layout).
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Parse source code into a dependency knowledge graph stored in SQLite.
+First layer of the knowledge pipeline (see knowledge.txt Layer 1).
+Downstream consumers: Phase 1D (PageRank) reads DKG edges for adjacency matrix.
+  Phase 1E (CatRAG) traverses DKG graph for evidence chains.
+  Phase 1B (BM25) runs independently but shares the readiness gate.
+
+NOTE: knowledge.txt header said "FIVE LAYERS" — corrected to "5 major + 2 sub-layers".
+  Architecture-overview.txt says "7 layers" (L100) counting sub-layers 3.25 and 3.5.
+  Both now consistent. DKG is Layer 1.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/knowledge.txt             Section 1 (responsibilities), Section 2 (Layer 1 DKG),
+                                              Section 8 (parse failure fallback), Section 10 (index versioning)
+  docs/specs/architecture-overview.txt        Section 4 TRAIT BOUNDARIES (~L80), knowledge::KnowledgeEngine (~L94)
+
+RISKS TO WATCH
+  R7 (LOW): tree-sitter grammar gaps. Start with Rust, Python, TypeScript, Go.
+  R-1A-1: SQLite schema design not specified in specs. Must define schema explicitly in this phase.
+  R-1A-2: No build time baseline exists. <15s claim from knowledge.txt L20 is UNGROUNDED.
+  R-1A-3: Phase 1D PRE_GATE (phase-1D.txt L29) requires edge/adjacency iteration API from DkgEngine.
+    If Phase 1A does not expose this, Phase 1D is blocked at entry.
+  R-1A-4: knowledge.txt Sec 8 mandates parse failure fallback (log+skip, no crash).
+    Phase 1A implements DKG-layer fallback ONLY. BM25/vector fallback (Sec 8 items 2-4) deferred
+    to Phases 1B/1C since those layers do not exist yet. See COMPLIANCE SCOPE below.
+  R-1A-5: LanguageGrammar trait must be object-safe for dyn dispatch. All methods need &self receiver.
+  R-1A-6: DkgNodeInfo must include signature field and SymbolKind enum to match Phase 1D contract
+    (phase-1D.txt L36: DkgNodeInfo { node_id, symbol_name, file_path, signature, kind: SymbolKind }).
+
+COMPLIANCE SCOPE (what this phase does and does NOT implement)
+  knowledge.txt Sec 8 "TREE-SITTER PARSE FAILURE FALLBACK" has 5 items:
+    1. File excluded from DKG graph (no AST nodes)         -> IMPLEMENTED in Phase 1A
+    2. File STILL indexed by BM25                          -> DEFERRED to Phase 1B (BM25 layer)
+    3. File STILL embedded by vector models                -> DEFERRED to Phase 1C (vector layer)
+    4. PageRank treats file as leaf node                   -> DEFERRED to Phase 1D (PageRank)
+    5. Parse failure logged. Retried on next file change.  -> IMPLEMENTED in Phase 1A
+  Invariant "every file in project appears in at least BM25 index" (L177) is NOT achievable
+  until Phase 1B. Phase 1A tracks parse-failed files so Phase 1B can index them.
+
+
+STEPS
+
+  1A.1 SKELETON
+    PRE_GATE:
+      - Phase 0 crate layout exists: find .elai_cc -path "*/knowledge/Cargo.toml" | wc -l == 1
+      - Phase 0 compiles clean: cd .elai_cc && cargo check 2>&1 | tail -1 contains "Finished"
+      - No prior DKG code exists: grep -r "tree.sitter\|tree_sitter" $(find .elai_cc -path "*/knowledge" -type d | head -1)/ returns empty
+    TASK:
+      - Resolve canonical crate path: KNOW_PATH=$(find .elai_cc -path "*/knowledge/Cargo.toml" | head -1 | xargs dirname)
+        All subsequent file references in this phase use $KNOW_PATH.
+      - Add dependencies to $KNOW_PATH/Cargo.toml (verified on crates.io 2026-04-06):
+        tree-sitter = "0.26"  (0.26.8 latest, active)
+        tree-sitter-rust = "0.24"  (0.24.2 latest, active)
+        rusqlite = { version = "0.39", features = ["bundled"] }  (0.39.0 latest, active)
+        blake2 = "0.10"  (for file content hashing)
+        [dev-dependencies]
+        proptest = "1"  (for property-based tests in step 1A.3)
+        Future phases add: tree-sitter-python "0.25", tree-sitter-go "0.25",
+          tree-sitter-typescript "0.23" (aging, last update 2024-11 — verify before use).
+      - Define KnowledgeEngine trait in $KNOW_PATH/src/lib.rs
+        matching architecture-overview.txt L94-104:
+          fn build_graph(&mut self, project_root: &Path) -> Result<DependencyGraph>
+          fn query(&self, query: &str, strategy: QueryStrategy) -> Result<Vec<CodeChunk>>
+          fn rerank(&self, query: &str, candidates: Vec<CodeChunk>) -> Result<Vec<CodeChunk>>
+          fn update(&mut self, file_changed: &Path) -> Result<()>
+          fn readiness_check(&self) -> ReadinessStatus
+        Define DependencyGraph struct (returned by build_graph):
+          pub struct DependencyGraph { pub node_count: usize, pub edge_count: usize, pub files_parsed: usize }
+        ReadinessStatus enum: READY, DEGRADED, UNAVAILABLE (per knowledge.txt Sec 7).
+        NOTE: KnowledgeEngine.readiness_check() is the FULL ENGINE aggregate readiness.
+          Phase 1A implements DKG-layer readiness ONLY. The KnowledgeEngine impl that
+          aggregates all layers (DKG + BM25 + vectors + ...) is built in Phase 1I (resilience).
+          Phase 1A's DkgEngine has its own dkg_readiness() -> DkgReadiness method, NOT
+          the trait's readiness_check(). This prevents false READY signals to the orchestrator.
+      - Define LanguageGrammar trait for multi-language parser dispatch (object-safe):
+          fn language_id(&self) -> &'static str
+          fn tree_sitter_language(&self) -> tree_sitter::Language
+          fn extract_nodes(&self, tree: &Tree, source: &[u8]) -> Vec<DkgNode>
+        All methods take &self — required for Box<dyn LanguageGrammar> dispatch.
+        Reason: knowledge.txt L20-21 says "100% coverage of supported languages" and lists 4.
+          Without trait dispatch, adding Python/TS/Go requires refactoring the parser core.
+          Start with RustGrammar only.
+      - Define SymbolKind enum: Function, Struct, Impl, Trait, Enum, Module, Use, TypeAlias, Other
+        Reason: Phase 1D contract requires SymbolKind in DkgNodeInfo (phase-1D.txt L36).
+      - Define DkgNodeInfo struct matching Phase 1D contract (phase-1D.txt L36):
+          pub struct DkgNodeInfo {
+            pub node_id: i64,
+            pub symbol_name: String,
+            pub file_path: PathBuf,
+            pub signature: String,     -- reconstructed from AST: "fn name(param: Type) -> Ret"
+            pub kind: SymbolKind,
+            pub start_line: u32,
+            pub end_line: u32,
+          }
+        The signature field is reconstructed from the tree-sitter AST during parsing:
+          For function_item: "fn name(params) -> return_type"
+          For struct_item: "struct Name { fields... }" (abbreviated)
+          For trait_item: "trait Name" etc.
+        Reason: Phase 1D uses signature in RepoMap output (phase-1D.txt L46).
+          Without it, Phase 1D cannot display function signatures in the repo map.
+      - Create DKG module: $KNOW_PATH/src/dkg/mod.rs with DkgEngine struct
+        DkgEngine::new(db_path: &Path) — takes explicit path for project-scoped isolation.
+        Reason: knowledge.txt L274-278 requires per-project physical file isolation.
+          db_path should be .elai_cc/projects/{project_id}/knowledge.db (caller provides).
+      - Design SQLite schema for DKG graph:
+        Table: dkg_nodes (
+          id INTEGER PK,
+          file_path TEXT NOT NULL,
+          name TEXT NOT NULL,
+          kind TEXT NOT NULL,          -- maps to SymbolKind enum
+          signature TEXT NOT NULL DEFAULT '',  -- reconstructed from AST for Phase 1D
+          start_line INTEGER NOT NULL,
+          end_line INTEGER NOT NULL,
+          parent_id INTEGER REFERENCES dkg_nodes(id),
+          concept TEXT DEFAULT NULL,   -- populated by context-compiler in MEMORIZING (knowledge.txt L25)
+          concept_stale INTEGER NOT NULL DEFAULT 1,  -- 1=stale/unset, 0=current (knowledge.txt L31-32)
+          file_hash BLOB NOT NULL      -- blake2s of file content, for incremental staleness (knowledge.txt L31)
+        )
+        Table: dkg_edges (
+          source_id INTEGER REFERENCES dkg_nodes(id) ON DELETE CASCADE,
+          target_id INTEGER REFERENCES dkg_nodes(id) ON DELETE CASCADE,
+          edge_type TEXT NOT NULL,     -- one of: "imports", "contains", "implements"
+          PRIMARY KEY (source_id, target_id, edge_type)
+        )
+        Edge type semantics (directed graph — edge direction matters):
+          "imports"    — source module/file -[imports]-> target symbol (use_declaration resolution)
+          "contains"   — parent -[contains]-> child (module->fn, impl->method, struct->field)
+          "implements" — impl block -[implements]-> trait (when trait is in the same codebase)
+        Reason: Phase 1D (PageRank) needs typed directed edges for weight boosting (knowledge.txt L67).
+          Phase 1E (CatRAG) traverses directed edges for evidence chains (knowledge.txt L79).
+        Table: dkg_files (
+          file_path TEXT PK,
+          file_hash BLOB NOT NULL,     -- for quick per-file staleness check without scanning dkg_nodes
+          parse_status TEXT NOT NULL DEFAULT 'pending',  -- 'ok', 'failed', 'pending'
+          parse_error TEXT DEFAULT NULL,
+          last_indexed INTEGER NOT NULL  -- unix timestamp
+        )
+        Reason: tracks parse failures for Phase 1B (BM25 must index parse-failed files).
+          Also enables O(1) file-level staleness check without scanning dkg_nodes.
+        Table: dkg_meta (key TEXT PK, value TEXT)
+          Initial rows: ('schema_version', '1'), ('created_at', unix_timestamp)
+        Index: idx_nodes_name ON dkg_nodes(name)
+        Index: idx_nodes_file ON dkg_nodes(file_path)
+        Index: idx_nodes_kind ON dkg_nodes(kind)
+        Index: idx_files_status ON dkg_files(parse_status)  -- for Phase 1B to query failed files
+        ON DELETE CASCADE on dkg_edges ensures node deletion cascades correctly during incremental update.
+      - Create index_version.toml at project-scoped path (provided by caller):
+          [index]
+          version = 1
+          dkg_schema_version = 1
+          vector_dimensions = { code = 0, text = 0 }  -- placeholder, set by Phase 1C
+          bm25_format = ""                              -- placeholder, set by Phase 1B
+          created_at = <unix_timestamp>
+        All 5 fields present per knowledge.txt L195-201. Placeholder values for fields
+        not yet active prevent migration logic from panicking on missing keys.
+      - Expose public API on DkgEngine for downstream phases:
+          pub fn nodes(&self) -> Result<Vec<DkgNodeInfo>>
+          pub fn edges(&self) -> Result<Vec<(i64, i64, String)>>  -- (source_id, target_id, edge_type)
+          pub fn node_by_id(&self, id: i64) -> Result<Option<DkgNodeInfo>>
+          pub fn outbound_edges(&self, node_id: i64) -> Result<Vec<(i64, String)>>  -- (target_id, edge_type)
+          pub fn inbound_edges(&self, node_id: i64) -> Result<Vec<(i64, String)>>   -- (source_id, edge_type)
+          pub fn failed_files(&self) -> Result<Vec<String>>  -- files with parse_status='failed'
+          pub fn dkg_readiness(&self) -> DkgReadiness  -- DKG-layer only, NOT KnowledgeEngine trait
+        Directed edge queries: outbound_edges and inbound_edges replace the ambiguous neighbors().
+        Reason: Phase 1D builds directed adjacency matrix (phase-1D.txt L130-131).
+          Mixed-direction neighbors() is useless for directed PageRank computation.
+        failed_files(): Phase 1B needs to know which files lack DKG nodes so it can still BM25-index them.
+        DkgReadiness enum: Ready, Empty (0 nodes), Unavailable (not yet built)
+    DETERMINISTIC_CHECK:
+      - cargo check -p knowledge exits 0: cd .elai_cc && cargo check -p knowledge 2>&1 | grep "Finished"
+      - KnowledgeEngine trait: grep -r "trait KnowledgeEngine" $KNOW_PATH/ returns 1 hit
+      - ReadinessStatus enum: grep -r "enum ReadinessStatus" $KNOW_PATH/ returns 1 hit
+      - DkgReadiness enum: grep -r "enum DkgReadiness" $KNOW_PATH/ returns 1 hit
+      - LanguageGrammar trait (object-safe): grep -r "fn language_id(&self)" $KNOW_PATH/ returns 1 hit
+      - SymbolKind enum: grep -r "enum SymbolKind" $KNOW_PATH/ returns 1 hit
+      - DkgNodeInfo with signature: grep -r "pub signature: String" $KNOW_PATH/ returns 1 hit
+      - DkgEngine struct: grep -r "struct DkgEngine" $KNOW_PATH/ returns 1 hit
+      - DkgEngine takes db_path: grep -r "fn new.*db_path\|fn new.*Path" $KNOW_PATH/src/dkg/ returns 1 hit
+      - Directed edge API: grep -r "pub fn outbound_edges\|pub fn inbound_edges" $KNOW_PATH/ returns 2 hits
+      - failed_files API: grep -r "pub fn failed_files" $KNOW_PATH/ returns 1 hit
+      - dkg_files table: grep -r "CREATE TABLE.*dkg_files" $KNOW_PATH/ returns 1 hit
+      - concept_stale column: grep -r "concept_stale" $KNOW_PATH/ returns >= 1 hit
+      - ON DELETE CASCADE: grep -r "ON DELETE CASCADE" $KNOW_PATH/ returns >= 1 hit
+      - proptest in dev-deps: grep "proptest" $KNOW_PATH/Cargo.toml returns 1 hit
+      - index_version.toml has 5 fields: grep -c "version\|dkg_schema_version\|vector_dimensions\|bm25_format\|created_at" in the write logic >= 5
+    ADVERSARIAL:
+      - If tree-sitter crate name is wrong (typosquatting), cargo check fails with unresolved import.
+        Test: cargo check -p knowledge 2>&1 | grep -c "error" == 0.
+      - If KnowledgeEngine trait signature diverges from architecture-overview.txt L94-99,
+        downstream crates get compile errors. Test: diff trait methods against spec during review.
+      - If LanguageGrammar trait has associated functions without &self (not object-safe),
+        HashMap<&str, Box<dyn LanguageGrammar>> will not compile.
+        Test: cargo check -p knowledge must pass with Box<dyn LanguageGrammar> in the code.
+      - If DkgNodeInfo lacks signature or SymbolKind, Phase 1D's DkgSnapshot::from_engine
+        will not compile (phase-1D.txt L35-37).
+        Test: grep for both fields in struct definition.
+    ACCEPTANCE:
+      - cargo check -p knowledge exits 0
+      - All DETERMINISTIC_CHECK greps return expected hit counts
+      - Box<dyn LanguageGrammar> compiles (object safety verified)
+
+  1A.2 VERIFY
+    PRE_GATE:
+      - Step 1A.1 DETERMINISTIC_CHECK all pass
+      - Full workspace compiles: cd .elai_cc && cargo check exits 0
+    TASK:
+      - Run cargo check on full workspace. Phase 0 tests still pass.
+      - Verify no regressions: cd .elai_cc && cargo test --workspace 2>&1 | grep "test result"
+    DETERMINISTIC_CHECK:
+      - cargo check (workspace) exits 0
+      - cargo test --workspace: 0 failures (test result line shows "0 failed")
+    ADVERSARIAL:
+      - If knowledge/ introduces a dependency version conflict with existing crates, cargo check fails.
+        Test: cargo check 2>&1 | grep -c "error\[E" == 0.
+      - If rusqlite "bundled" feature pulls in a C compiler dependency not available on CI,
+        the build fails only in CI. Test: verify cc crate is in the dependency tree and builds locally.
+    ACCEPTANCE:
+      - Full workspace compiles and all pre-existing tests pass
+
+  1A.3 TEST (TDD — tests written before implementation)
+    PRE_GATE:
+      - Step 1A.2 passes (workspace compiles, no regressions)
+      - SQLite schema defined (from step 1A.1)
+      - proptest in dev-dependencies (from step 1A.1)
+    TASK:
+      Functional tests:
+      - Write test: parse a Rust file -> extract function_item, struct_item, impl_item,
+        use_declaration nodes -> store in SQLite -> verify node count > 0
+      - Write test: query by function name -> returns correct file_path + start_line
+      - Write test: query by struct name -> returns correct file_path + start_line
+      - Write test: signature field populated correctly (e.g., "fn foo(x: i32) -> bool")
+      - Write test: incremental update — modify file, re-index, verify updated line numbers
+        AND verify file_hash column changes AND verify concept_stale is reset to 1
+      - Write test: concept column exists and is NULL by default (schema correctness)
+      - Write test: file_hash matches blake2s of actual file content (round-trip through SQLite BLOB)
+      Edge type tests:
+      - Write test: impl block for a struct -> "contains" edge from impl to each method
+      - Write test: use declaration -> "imports" edge from source module to target symbol
+      - Write test: impl Trait for Struct -> "implements" edge from impl to trait
+      - Write test: edge direction — outbound_edges(impl_node) returns methods, not the reverse
+      Downstream API tests:
+      - Write test: DkgEngine.edges() returns all edges with correct types
+      - Write test: DkgEngine.outbound_edges(node_id) returns only outbound edges
+      - Write test: DkgEngine.inbound_edges(node_id) returns only inbound edges
+      - Write test: DkgEngine.nodes() iteration covers all inserted nodes with DkgNodeInfo fields
+      - Write test: DkgEngine.failed_files() returns empty when all files parse OK
+      Parse failure tests (knowledge.txt Sec 8, DKG-layer only):
+      - Write test: parse empty file -> zero nodes, no error, no panic
+      - Write test: parse file with syntax errors -> partial extraction, no crash,
+        log message emitted, dkg_files.parse_status = 'failed'
+      - Write test: parse binary/non-text file -> zero nodes, graceful skip,
+        dkg_files.parse_status = 'failed', file appears in failed_files()
+      Readiness tests:
+      - Write test: dkg_readiness() returns Unavailable before build_graph() called
+      - Write test: dkg_readiness() returns Ready after successful build_graph() with >0 nodes
+      - Write test: dkg_readiness() returns Empty after build_graph() on empty directory
+      Project isolation test:
+      - Write test: two DkgEngine instances with different db_path do not share state
+      Property-based test:
+      - Write proptest: random valid Rust snippets -> DKG node count >= 0,
+        all line numbers > 0, all names non-empty, all file_hashes non-empty,
+        all signatures non-empty for function_item/struct_item nodes
+      All tests: #[test] for unit, #[ignore] for operational
+    DETERMINISTIC_CHECK:
+      - Test files exist: find $KNOW_PATH -name "*test*" -o -name "*_test*" | wc -l >= 1
+      - Tests compile: cd .elai_cc && cargo test -p knowledge --no-run exits 0
+      - Tests FAIL (TDD red): cargo test -p knowledge 2>&1 | grep -c "FAILED" >= 10
+        (at least 10 of ~22 tests must fail — stubs returning empty vecs will pass at most
+        empty-file test, concept-null test, and dkg_readiness-unavailable test = 3 trivial passes)
+      - Test count: grep -r "#\[test\]" $KNOW_PATH | wc -l >= 20
+    ADVERSARIAL:
+      - If tests accidentally pass with stubs (false green), TDD is violated.
+        Test: count FAILED >= 10. Stubs can trivially pass at most 3 tests (empty file,
+        concept NULL, readiness unavailable). Remaining 17+ must fail.
+      - If test imports wrong module path, compilation fails silently.
+        Test: cargo test -p knowledge --no-run exits 0.
+      - If edge type tests use hardcoded strings that differ from implementation ("import" vs "imports"),
+        tests pass on wrong data. Test: edge_type constants defined once, shared between impl and tests.
+      - If file_hash BLOB round-trip silently corrupts (Rust [u8;32] vs Vec<u8> comparison),
+        incremental update re-indexes every file every time.
+        Test: explicit test that inserted hash == retrieved hash byte-for-byte.
+    ACCEPTANCE:
+      - At least 20 test functions exist
+      - Tests compile but at least 10 fail (TDD red phase)
+      - cargo test -p knowledge --no-run exits 0
+
+  1A.4 IMPLEMENT
+    PRE_GATE:
+      - Step 1A.3 passes (tests exist, compile, and >= 10 fail)
+      - tree-sitter grammars verified available: cargo check -p knowledge exits 0
+    TASK:
+      Core parsing:
+      - Implement RustGrammar (impl LanguageGrammar for RustGrammar — all methods take &self):
+        Walk AST, extract function_item, struct_item, impl_item, use_declaration, mod_item,
+        trait_item, enum_item, type_item nodes.
+        Reconstruct signature string from AST for each node:
+          function_item: "fn {name}({params}) -> {return_type}" (omit body)
+          struct_item: "struct {name}" + field list abbreviated if >3 fields
+          impl_item: "impl {type}" or "impl {trait} for {type}"
+          trait_item: "trait {name}"
+          enum_item: "enum {name}"
+          Others: kind + name
+      - Implement parser dispatch: HashMap<&str, Box<dyn LanguageGrammar>>.
+        Only ".rs" -> RustGrammar for now. Extensible by inserting new grammar impls.
+      SQLite layer:
+      - Implement schema creation (CREATE TABLE IF NOT EXISTS for all tables + indexes)
+      - Use WAL mode: PRAGMA journal_mode=WAL (per architecture spec "SQLite WAL")
+      - Implement node insertion: all DkgNodeInfo fields + concept_stale=1 + file_hash
+      - Implement edge insertion with typed directed edges:
+        "contains": parent node -[contains]-> child node (impl->method, module->fn)
+        "imports": use_declaration source -[imports]-> resolved target (best-effort, log unresolved)
+        "implements": impl block -[implements]-> trait (if trait is in the graph)
+      - Implement dkg_files tracking: insert/update parse status per file
+      - Implement query-by-name: SELECT with name match, return DkgNodeInfo
+      Directed query API:
+      - Implement DkgEngine.nodes() -> query all dkg_nodes, return Vec<DkgNodeInfo>
+      - Implement DkgEngine.edges() -> query all dkg_edges, return Vec<(i64, i64, String)>
+      - Implement DkgEngine.outbound_edges(node_id) -> SELECT WHERE source_id = ?
+      - Implement DkgEngine.inbound_edges(node_id) -> SELECT WHERE target_id = ?
+      - Implement DkgEngine.node_by_id(id) -> single row lookup
+      - Implement DkgEngine.failed_files() -> SELECT file_path FROM dkg_files WHERE parse_status='failed'
+      Incremental update:
+      - Compute blake2s hash of file content. Compare with dkg_files.file_hash.
+        If unchanged: skip. If changed: DELETE all dkg_nodes WHERE file_path=?, re-parse, re-insert.
+        CASCADE deletes edges automatically. Update dkg_files row.
+        Set concept_stale=1 for all re-inserted nodes (content changed, concepts invalid).
+      - Implement build_graph: walk project directory, parse each supported file, populate SQLite.
+        Return DependencyGraph { node_count, edge_count, files_parsed }.
+      Parse failure handling (DKG-layer, knowledge.txt Sec 8 item 1+5):
+      - On parse failure (unsupported extension, tree-sitter error, binary file):
+        log::warn with file path and reason. Insert row in dkg_files with parse_status='failed'.
+        Do not insert any dkg_nodes. Do not panic or abort.
+        Parse-failed files are available via failed_files() for Phase 1B to BM25-index.
+      DKG-layer readiness:
+      - Implement dkg_readiness() -> DkgReadiness:
+        Before build_graph: Unavailable
+        After successful build_graph with >0 nodes: Ready
+        After build_graph with 0 nodes (empty/all-failed): Empty
+        This is NOT KnowledgeEngine.readiness_check(). That aggregates all layers (Phase 1I).
+      Index versioning:
+      - Write index_version.toml after successful build_graph (all 5 fields per knowledge.txt L195-201).
+      File I/O:
+      - DkgEngine::new(db_path) takes explicit Path. Caller provides project-scoped path.
+      - All file I/O through core/ abstractions if available from Phase 0.
+    DETERMINISTIC_CHECK:
+      - All tests from 1A.3 pass: cd .elai_cc && cargo test -p knowledge 2>&1 | grep "0 failed"
+      - No warnings: cargo check -p knowledge 2>&1 | grep -c "warning" (record count, target 0)
+      - WAL mode set: grep -r "PRAGMA journal_mode" $KNOW_PATH/ returns >= 1 hit
+      - Parse failure handling: grep -r "log::warn\|tracing::warn" $KNOW_PATH/src/dkg/ returns >= 1 hit
+      - DkgReadiness (not ReadinessStatus): grep -r "DkgReadiness::" $KNOW_PATH/src/ returns >= 3 hits
+      - Edge types used: grep -r "\"imports\"\|\"contains\"\|\"implements\"" $KNOW_PATH/src/ returns >= 3 hits
+      - blake2 hash: grep -r "blake2\|Blake2s" $KNOW_PATH/ returns >= 1 hit
+      - concept_stale set: grep -r "concept_stale" $KNOW_PATH/src/ returns >= 2 hits (schema + update)
+      - index_version.toml 5 fields: grep -r "vector_dimensions\|bm25_format\|dkg_schema_version\|created_at" $KNOW_PATH/src/ returns >= 4 hits
+      - Project-scoped db_path: grep -r "fn new.*db_path\|fn new.*Path" $KNOW_PATH/src/dkg/ returns 1 hit
+      - Signature reconstruction: grep -r "signature" $KNOW_PATH/src/dkg/ returns >= 2 hits
+    ADVERSARIAL:
+      - If tree-sitter grammar returns unexpected node types, extraction silently drops symbols.
+        Test: parse $KNOW_PATH/src/lib.rs (known file), verify extracted function count matches
+        grep -c "fn " count (within tolerance of 2 for closures/macros).
+      - If SQLite WAL mode fails (read-only filesystem), initialization crashes.
+        Test: attempt open on read-only path, verify graceful error (not panic).
+      - If a file has 10,000+ AST nodes (generated code), indexing takes >15s.
+        Test: measure index time on .elai_cc/ codebase, record in metrics.
+      - If use_declaration resolution fails for all imports (external crates not in graph),
+        DKG has zero "imports" edges, making PageRank weight boosting useless.
+        Test: after indexing .elai_cc/, count "imports" edges > 0. If 0, log WARNING
+        and document as known limitation.
+      - If dkg_readiness() returns Ready before build_graph completes (initialization ordering),
+        caller proceeds with empty graph.
+        Test: call dkg_readiness() after DkgEngine::new() -> must return Unavailable.
+        NOTE: this tests synchronous ordering, not async race conditions.
+      - If signature reconstruction produces empty string for some node types,
+        Phase 1D repo map has blank entries.
+        Test: after indexing, query nodes WHERE signature = '' -> count should be 0
+        for function_item and struct_item kinds.
+    ACCEPTANCE:
+      - cargo test -p knowledge: 0 failures
+      - DKG builds from .elai_cc/ source without errors
+      - Query for any known function name returns correct file + line + signature
+      - Edge count > 0 (at least "contains" edges from impl blocks)
+      - Directed edge queries work (outbound != inbound for non-symmetric relationships)
+      - dkg_readiness() returns Ready after build_graph
+      - Parse failure on non-.rs file: no panic, appears in failed_files()
+      - Two DkgEngine instances with different paths do not share state
+
+  1A.5 MEASURE
+    PRE_GATE:
+      - Step 1A.4 passes (all tests green)
+      - DKG can index .elai_cc/ codebase successfully
+    TASK:
+      - Measure index build time on .elai_cc/ codebase (record in phase_1A.toml)
+      - Measure query latency (10 random symbol lookups, record p50/p99)
+      - Measure SQLite database size after full index
+      - Count: total nodes, total edges by type (imports/contains/implements),
+        files parsed, files skipped (parse failure), signatures populated
+      - Record in .elai_cc/metrics/phase_1A.toml
+      - Compare build time against knowledge.txt L20 "<15s" target. Record delta.
+        This is the first measurement — it establishes whether the target is realistic.
+    DETERMINISTIC_CHECK:
+      - Metrics file exists: ls .elai_cc/metrics/phase_1A.toml returns 0
+      - Metrics file contains required keys:
+        grep -c "build_time_ms\|query_p50_ms\|query_p99_ms\|db_size_bytes\|total_nodes\|total_edges\|files_parsed\|files_skipped\|edges_imports\|edges_contains\|edges_implements\|signatures_populated" .elai_cc/metrics/phase_1A.toml >= 12
+    ADVERSARIAL:
+      - If metrics collection crashes mid-measurement, partial toml is written.
+        Test: validate toml parses (python -c "import tomllib; tomllib.load(open(...))" or equivalent).
+    ACCEPTANCE:
+      - phase_1A.toml exists with all 12 required metrics populated
+      - Build time recorded (establishes baseline for knowledge.txt "<15s" claim)
+      - Edge counts by type recorded (validates edge extraction works)
+      - Signature population count recorded (validates reconstruction works)
+
+
+EXIT CRITERIA
+  DKG builds from source, queries return correct file+line+signature for any symbol.
+  All tests pass (unit + edge-type + downstream-API + parse-failure + readiness + isolation + property-based).
+  Directed edge/adjacency API exposed with outbound/inbound separation (Phase 1D unblocked).
+  Parse failure handling: DKG-layer items 1+5 of knowledge.txt Sec 8. Items 2-4 deferred to Phases 1B-1D.
+  failed_files() API available for Phase 1B to query parse-failed files.
+  dkg_readiness() returns correct DKG-layer status (NOT full-engine ReadinessStatus).
+  index_version.toml created with all 5 fields (knowledge.txt Sec 10 compliant).
+  DkgNodeInfo includes signature + SymbolKind (Phase 1D contract satisfied).
+  concept_stale column tracks staleness (knowledge.txt L31 compliant).
+  Project-scoped database path (knowledge.txt L274-278 compliant).
+  Metrics baseline recorded.
+  No regressions in Phase 0 tests.
+
+
+GROUNDING
+  "First layer of knowledge pipeline"    -> VERIFIED: knowledge.txt L18-19 "Layer 1 - DKG"
+  "tree-sitter -> SQLite graph"          -> VERIFIED: knowledge.txt L19-20
+  "Rust, Python, TypeScript, Go"         -> VERIFIED: knowledge.txt L21, risk-register.txt L45-46
+  "concept TEXT column"                   -> VERIFIED: knowledge.txt L24-25
+  "concept staleness tracking"           -> VERIFIED: knowledge.txt L31-32 "file content hash changes -> concept marked stale"
+  "file content hash for staleness"      -> VERIFIED: knowledge.txt L31
+  "KnowledgeEngine trait"                -> VERIFIED: architecture-overview.txt L94-99
+  "ReadinessStatus (READY|DEGRADED|UNAVAILABLE)" -> VERIFIED: architecture-overview.txt L99, knowledge.txt L154-164
+  "Incremental updates"                  -> VERIFIED: knowledge.txt L20
+  "Parse failure fallback"               -> VERIFIED: knowledge.txt L168-177 (Sec 8). Phase 1A implements items 1+5 only.
+  "Orphan file invariant"                -> VERIFIED: knowledge.txt L177. NOT achievable until Phase 1B.
+  "index_version.toml 5 fields"          -> VERIFIED: knowledge.txt L195-201
+  "Per-project physical file isolation"  -> VERIFIED: knowledge.txt L274-278
+  "Edge/adjacency API for Phase 1D"      -> VERIFIED: phase-1D.txt L29-30 PRE_GATE
+  "DkgNodeInfo with signature+SymbolKind" -> VERIFIED: phase-1D.txt L36 contract
+  "DkgSnapshot built from DkgEngine"     -> VERIFIED: phase-1D.txt L35-37
+  "Directed adjacency for PageRank"      -> VERIFIED: phase-1D.txt L130-131 builds directed matrix
+  "tree-sitter crate 0.26.8"            -> VERIFIED: crates.io 2026-04-06
+  "tree-sitter-rust 0.24.2"             -> VERIFIED: crates.io 2026-04-06
+  "rusqlite 0.39.0"                      -> VERIFIED: crates.io 2026-04-06
+  "tree-sitter-rust node types"          -> VERIFIED: node-types.json on GitHub (all 7 confirmed)
+  "LanguageGrammar object safety"        -> VERIFIED: Rust trait object rules require &self on all methods.
+      Auditor caught original design had associated functions without &self. Fixed.
+  "Edge types: imports/contains/implements" -> DERIVED: from knowledge.txt L67 (edge-weight boost),
+      L79 (CatRAG traversal), phase-1D.txt L35-37. Design decision, not in specs.
+  "LanguageGrammar trait"                -> DERIVED: from knowledge.txt L20-21. Design decision.
+  "Signature reconstruction"             -> DERIVED: from phase-1D.txt L36 (signature field in DkgNodeInfo)
+      and L46 (signatures in RepoMap output). Without it, repo map is incomplete.
+  "<15s build"                           -> UNGROUNDED: knowledge.txt L20. Phase 1A.5 establishes baseline.
+  "Query latency"                        -> UNGROUNDED: no target in specs. Phase 1A.5 records baseline.
+  "SQLite schema"                        -> DESIGNED: not in specs. Schema in step 1A.1.
+  "7-layer pipeline vs FIVE LAYERS"      -> RESOLVED: knowledge.txt L16 header corrected to "5 major + 2 sub-layers". Both specs now consistent.
+  "Section 4 of architecture-overview"   -> VERIFIED: Section "4. TRAIT BOUNDARIES" exists at L80. Original reference was correct.
+
+
+AUDIT FINDINGS ADDRESSED (v3)
+  BLOCK 1 (path inconsistency): Dynamic path resolution added. Phase 1D path mismatch documented as tracked issue.
+  BLOCK 2 (DkgNodeInfo contract): signature field + SymbolKind enum added matching phase-1D.txt L36.
+  BLOCK 3 (readiness scope): Split into dkg_readiness() (DKG-layer) vs readiness_check() (full engine, Phase 1I).
+  BLOCK 4 (index_version.toml): All 5 fields included with placeholders for Phase 1B/1C fields.
+  BLOCK 5 (false compliance): COMPLIANCE SCOPE section added. Items 2-4 explicitly deferred. failed_files() API bridges to Phase 1B.
+  BLOCK 6 (object safety): All LanguageGrammar methods now take &self. Verified Box<dyn> compiles.
+  WARN 1 (concept_stale): Added concept_stale INTEGER column to schema.
+  WARN 2 (project isolation): DkgEngine::new(db_path) takes explicit path. Test added.
+  WARN 3 (proptest dep): Added to Cargo.toml task in step 1A.1.
+  WARN 4 (neighbors direction): Replaced neighbors() with outbound_edges() + inbound_edges().
+  WARN 5 (build_graph return): DependencyGraph struct defined with node_count, edge_count, files_parsed.
+  WARN 6 (file_hash round-trip): Explicit test added in step 1A.3.
+  WARN 7 (dkg_files table): Added for parse status tracking and Phase 1B bridge.
+
+
+## WIRING_CONTRACT
+
+produces_symbols:
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine::new
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine::build_graph
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine::nodes
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine::edges
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine::outbound_edges
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine::inbound_edges
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine::failed_files
+  - crates/knowledge/src/dkg/mod.rs::DkgEngine::dkg_readiness
+  - crates/knowledge/src/lib.rs::DependencyGraph
+  - crates/knowledge/src/lib.rs::DkgNodeInfo
+  - crates/knowledge/src/lib.rs::SymbolKind
+  - crates/knowledge/src/lib.rs::DkgReadiness
+  - crates/knowledge/src/lib.rs::LanguageGrammar
+  - crates/knowledge/src/lib.rs::ReadinessStatus
+reachable_from:
+  - crates/cli/src/index_cmd.rs::run_index_build
+  - crates/orchestrator/src/indexing_service.rs::IndexingService::run_full_index
+observable_effect:
+  trigger: "cd /d F:\\.ELAI_workflow\\.elai_cc && C:\\Users\\user\\.cargo\\bin\\cargo.exe run --quiet -p elai-cli -- index build --project-root F:\\.ELAI_workflow"
+  expect_ssb: "symbol_graph_updated"

@@ -1,0 +1,465 @@
+PHASE 3I: DETERMINISTIC SIMULATION TESTING (DST)
+Prerequisites: Phase 0.8 (entropy quarantine) + Phase 3A-3D (FSM, SSB, agents, BSP)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Prove FSM+SSB+BSP correctness via deterministic simulation.
+Reference model (digital sibling) serves as infallible oracle.
+Same seed = same output, guaranteed.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          BSP supersteps (section 4), channel types (section 5), testable invariants (section 15)
+  docs/specs/crates/core.txt                  KEY TYPES (section 4) + Deterministic entropy traits subsection (lines 67-92)
+  docs/specs/decisions/external-analysis.txt  DST section (lines 268-305) + source references (lines 447-461)
+
+NOTE: this sub-phase is NOT optional. The FSM+SSB+BSP architecture IS a deterministic
+state machine. Testing with non-deterministic tools misses entire classes of bugs.
+
+
+DST INFRASTRUCTURE REQUIREMENTS
+
+  VCR (Video Cassette Recorder) pattern for LLM determinism:
+    Problem: temperature=0 + fixed seed does NOT guarantee LLM determinism (GPU
+    float divergence, MoE routing, ollama caching anomalies). madsim alone cannot
+    make LLM inference deterministic.
+    Source: deterministic-simulation-testing.md section 7
+
+    During initial non-DST run against live ollama:
+      1. Intercept all HTTP requests/responses at transport layer.
+      2. Compute blake2s hash of full HTTP request body (prompt + config + model).
+      3. Store (hash, response) pairs as cassette file (msgpack).
+
+    During DST runs:
+      1. HTTP transport layer intercepted (reqwest middleware or madsim
+         network mock), NOT at LlmProvider trait level. This captures
+         ollama-specific caching behavior and HTTP-level anomalies.
+      2. Compute blake2s hash of full HTTP request body (prompt + config + model).
+      3. Look up in cassette. Return recorded HTTP response with
+         deterministic simulated latency from madsim timer.
+      4. If hash not in cassette: test fails (flags prompt drift).
+
+    Note: trait-level interception (mocking LlmProvider::complete()) is
+    a separate, complementary pattern for unit testing the orchestrator
+    without any transport concerns. VCR operates at transport level to
+    catch ollama caching anomalies that trait mocking would miss.
+
+    TraceOps layer (for complex multi-step agent interactions):
+      Record entire agent execution trajectory (GRC steps, tool calls,
+      branching decisions) as structured trace. During DST, feed
+      deterministic trajectory instead of live LLM. Tests FSM/SSB logic
+      without any LLM inference.
+
+    Evidence:
+      "Live LLM inference in a 10,000-step DST sequence will inevitably
+       cause state divergence." (DST section 7.1)
+      "VCR cassettes transform probabilistic AI responses into pure
+       deterministic data payloads mapped to prompt hashes." (DST section 7.2)
+
+  Custom SQLite VFS (Virtual File System) for DST:
+    Trap write()/fsync() syscalls, redirect to in-memory byte buffer
+    managed by simulation. Simulator's deterministic PRNG dictates
+    exact latency of read/write operations. When SQLite requests flush,
+    VFS yields to simulation's timer queue.
+
+    Enables:
+      - Torn write simulation (truncate WAL at arbitrary byte boundary)
+      - Deterministic I/O latency (no OS jitter)
+      - WAL recovery testing (simulated crash + reboot + recovery)
+
+    Implementation: ~200-400 LOC Rust implementing sqlite3_vfs struct.
+    Requires unsafe Rust for C FFI (sqlite3_vfs callback interface).
+    Coordination with madsim: madsim patches libc time syscalls. Custom VFS
+    must use madsim's timer queue for I/O latency, not its own independent
+    source. Single deterministic time source required.
+    Reference: Limbo project (async SQLite rewrite, NOT a VFS plugin —
+    reference for API patterns only, not architecture).
+    Source: deterministic-simulation-testing.md section 6.1
+
+    SPIKE REQUIRED: evaluate whether madsim's existing libc I/O hooks
+    are sufficient for SQLite determinism before implementing custom VFS.
+    If madsim hooks cover write/fsync interception: VFS may be unnecessary.
+
+
+RISKS
+  R1: madsim Windows compatibility is UNVERIFIED. No platform-specific code in madsim
+      (pure userspace network simulation), but no confirmed Windows CI either.
+      Mitigation: spike test in step 3I.1 before any madsim-dependent work.
+  R2: madsim is NOT a drop-in tokio replacement. Requires cfg(madsim) compile flag
+      and Cargo.toml dependency swaps (madsim-tokio instead of tokio).
+      Mitigation: conditional compilation setup in step 3I.2.
+  R3: proptest-state-machine crate (v0.8.0, same repo as proptest) is the correct tool
+      for stateful PBT with auto-shrinking. Phase must use its ReferenceStateMachine
+      and StateMachineTest traits, not hand-rolled Vec<FsmEvent> generation.
+  R4: RUSTFLAGS="--cfg madsim" triggers full workspace rebuild, invalidating normal
+      cargo cache. IPC tests should be isolated (separate test binary or documented
+      recompile expectation) to avoid surprising compile-time deltas in multi-session CI.
+  R5: PROPTEST_CASES=10000 with up to 200 transitions/case can generate 2M+ apply() calls.
+      Requires timeout budget (10 min hard limit) or reduced local case count.
+
+
+STEPS
+
+  3I.1 MADSIM WINDOWS SPIKE
+    PRE_GATE:
+      - cargo check succeeds on current workspace (Phase 0-3H baseline intact)
+    TASK:
+      - Add madsim v0.2.34 as dev-dependency with cfg(madsim) feature gate
+      - Write a minimal test: spawn two madsim nodes, send message, assert receipt
+      - Run on Windows with RUSTFLAGS="--cfg madsim" cargo test
+      - If madsim fails on Windows: document failure, evaluate alternatives
+        (manual deterministic scheduler wrapping SeededClock+SeededRng), update this phase
+    DETERMINISTIC_CHECK:
+      - RUSTFLAGS="--cfg madsim" cargo test madsim_spike -- exits 0
+      - Test output contains "madsim" in test name
+    ADVERSARIAL:
+      - If madsim does not compile on Windows, all IPC simulation tests are blocked.
+        Test: the spike test either passes or we have a documented alternative before step 3I.3.
+    ACCEPTANCE:
+      - madsim spike test passes on Windows OR alternative documented with equivalent fault injection capability
+
+  3I.2 SKELETON (types and trait setup)
+    PRE_GATE:
+      - Step 3I.1 passed (madsim confirmed working OR alternative chosen)
+      - Phase 0-3H tests still pass: cargo test --workspace exits 0
+    TASK:
+      - SimulatorRuntime struct: wraps SeededClock + SeededRng + madsim runtime (or alternative)
+        Provides: sim.advance_time(duration), sim.inject_fault(fault), sim.snapshot_state() -> StateSnapshot
+      - FsmReferenceModel: implements proptest-state-machine ReferenceStateMachine trait
+        type State = ReferenceState (FSM state + SSB row counts + agent lifecycle + channel state)
+        type Transition = FsmEvent enum
+        fn init_state() -> BoxedStrategy<ReferenceState>
+        fn transitions(state: &ReferenceState) -> BoxedStrategy<FsmEvent>
+        fn preconditions(state: &ReferenceState, transition: &FsmEvent) -> bool
+        fn apply(state: ReferenceState, transition: &FsmEvent) -> ReferenceState
+        Deliberately simplified: the oracle must be simpler than the real system.
+      - FsmEvent enum variants:
+        PhaseTransition, AgentSpawn, AgentCrash, AgentCleanup, ToolCall,
+        FileWrite, GrcStep, SSBWrite, ConfigChange, SuperstepBoundary
+        Note: SuperstepBoundary is a composite event modeling the BSP loop boundary:
+          clear_non_accumulating_topics + execute + clear_ephemeral + evidence_gate_check.
+          The reference model applies these atomically (one event = one superstep boundary).
+          This keeps the oracle simpler than the real system while still modeling BSP semantics.
+        Note: AgentCleanup models recovery after AgentCrash (spawn->running->crashed->cleaned).
+          Without it, reference model diverges from real system after first crash.
+      - StateMachineTest impl: SystemUnderTest = actual FSM+SSB, Reference = FsmReferenceModel
+        fn init_test(ref_state: &ReferenceState) -> ActualSystem
+        fn apply(sut: ActualSystem, ref_state: &ReferenceState, transition: FsmEvent) -> ActualSystem
+          NOTE: apply() returns the SUT by value (proptest-state-machine ownership model).
+          The real system is threaded through test cases via return, not mutation.
+        fn check_invariants(sut: &ActualSystem, ref_state: &ReferenceState)
+          Checks: FSM state match, SSB row counts match, active agent set match,
+          channel state match (LastValue current, Topic vec contents, Ephemeral presence).
+      - Cargo.toml: add dev-dependencies proptest (v1.11+), proptest-state-machine (v0.8+),
+        madsim (v0.2.34) with cfg(madsim) gate
+      - Conditional compilation: #[cfg(madsim)] modules for IPC tests,
+        #[cfg(not(madsim))] stubs that skip IPC simulation gracefully
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace exits 0
+      - grep -r "ReferenceStateMachine" .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - grep -r "SimulatorRuntime" .elai_cc/rust/crates/orchestrator/ returns hits
+      - grep -r "StateMachineTest" .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - grep -r "SuperstepBoundary" .elai_cc/rust/crates/orchestrator/ returns hits
+      - grep -r "AgentCleanup" .elai_cc/rust/crates/orchestrator/ returns hits
+    ADVERSARIAL:
+      - If FsmReferenceModel is as complex as the real FSM, it is no longer an oracle
+        (same bugs in both). Test: reference model LOC < 30% of real FSM LOC.
+      - If FsmEvent enum is incomplete, simulation misses state transitions.
+        Test: every FsmState variant is reachable via at least one FsmEvent sequence
+        in the reference model (enumerate with BFS on reference model state space).
+      - If SuperstepBoundary does not model two-phase Topic reset (snapshot-then-clear),
+        reference model misses ordering bugs. Test: create Topic channel, write values,
+        apply SuperstepBoundary, verify non-accumulating topics cleared and accumulating preserved.
+    ACCEPTANCE:
+      - All 6 types (SimulatorRuntime, FsmReferenceModel, FsmEvent with 10 variants,
+        StateMachineTest impl, SuperstepBoundary, AgentCleanup) exist and compile
+      - proptest-state-machine and proptest listed in dev-dependencies
+
+  3I.3 VERIFY
+    PRE_GATE:
+      - Step 3I.2 skeleton compiles: cargo check --workspace exits 0
+    TASK:
+      - Full workspace compile and test check
+      - All Phase 0-3H tests still pass
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace exits 0
+      - No new warnings introduced: cargo check --workspace 2>&1 | grep -c "warning" <= baseline
+    ACCEPTANCE:
+      - Zero regressions from skeleton additions
+
+  3I.4 TEST-WRITE: REFERENCE MODEL (digital sibling)
+    PRE_GATE:
+      - Step 3I.3 passed (clean compile, no regressions)
+      - proptest-state-machine crate importable: grep "proptest-state-machine" in Cargo.toml
+    TASK:
+      - Write stateful PBT test using prop_state_machine! macro:
+        prop_state_machine! {
+            #[test]
+            fn fsm_reference_model_matches(sequential 1..200 => FsmStateMachineTest);
+        }
+        This generates up to 200 transitions per test case, with 3-phase auto-shrinking:
+        (1) delete transitions from end, (2) shrink individual transitions, (3) shrink initial state.
+      - Configure proptest: PROPTEST_CASES=10000 (env var) for CI with 10 min hard timeout,
+        256 for local dev. Add #[timeout(600_000)] or CI job timeout of 10 minutes.
+      - check_invariants verifies: FSM state matches, SSB row counts match,
+        active agent set matches, channel state matches (LastValue, Topic values, Ephemeral presence)
+      - Determinism test: run same seed twice, assert identical final state.
+        Use madsim static function pattern (NOT instance method):
+          madsim::runtime::Runtime::check_determinism(seed, config, || async { ... })
+        Note: check_determinism takes a bare function pointer, not a closure.
+        Test state must be initialized INSIDE the function, not captured from outer scope.
+        If madsim unavailable: manual seed replay (run test twice with same SeededClock+SeededRng).
+      - Synthetic regression test: write one test that injects a known invariant violation
+        (mutate reference state, do not apply to real system), run it to generate a
+        proptest-regressions/ file, then revert the mutation. This proves shrinking works
+        and the regression file is created. Check regression file into git.
+      - These tests are WRITTEN but expected to FAIL (TDD red phase).
+        They will pass after step 3I.8 (IMPLEMENT) provides the actual implementations.
+    DETERMINISTIC_CHECK:
+      - grep -r "prop_state_machine!" .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - grep -r "check_determinism" .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - Test files exist and cargo check --tests exits 0 (compiles but tests may fail)
+    ADVERSARIAL:
+      - If preconditions() is too permissive, proptest generates invalid transitions that
+        pass trivially. Test: inject an always-true preconditions, verify at least one
+        check_invariants failure (proves invariants are actually checked, not vacuously true).
+      - If check_invariants only checks FSM state and ignores SSB/channels, bugs hide.
+        Test: mutate one SSB row count in reference state, assert check_invariants catches it.
+    ACCEPTANCE:
+      - Test code compiles (cargo check --tests exits 0)
+      - Tests exist for: reference model matching, determinism same-seed, synthetic regression
+
+  3I.5 TEST-WRITE: BSP DETERMINISM
+    PRE_GATE:
+      - Step 3I.4 test code written and compiles
+      - BSP superstep code exists: grep "superstep" .elai_cc/rust/crates/orchestrator/src/ returns hits
+      - Entropy quarantine verified: grep -rn "Instant::now\|thread_rng\|SystemTime::now"
+        .elai_cc/rust/crates/orchestrator/src/ returns zero hits (excluding comments).
+        If any hits found: BLOCK. Fix entropy quarantine violation before proceeding.
+        Rationale: determinism tests on non-deterministic code produce flaky results
+        with no actionable failure message.
+    TASK:
+      - BSP superstep with same seed + same channel state + same writes
+        -> identical checkpoint state on every run (test with 100 repetitions)
+      - UntrackedValue cleared correctly under simulated concurrent access:
+        verify UntrackedValue is NEVER in checkpoint data (grep checkpoint serialization)
+      - EphemeralValue behavior: zero-write superstep clears to MISSING,
+        write_count resets at superstep start (per orchestrator.txt section 5)
+      - Channel ordering: Topic appends follow SSB seq within superstep (deterministic)
+      - SuperstepBoundary event models two-phase Topic reset correctly:
+        snapshot -> clear_non_accumulating -> execute -> clear_ephemeral -> evidence_gate
+      - These tests are WRITTEN but expected to FAIL (TDD red phase).
+    DETERMINISTIC_CHECK:
+      - grep -r "bsp_determinism" .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - grep -r "untracked_never_checkpointed" .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - grep -r "ephemeral_clears" .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - Test files compile: cargo check --tests exits 0
+    ADVERSARIAL:
+      - If checkpoint includes UntrackedValue, crash recovery replays diverge from live state.
+        Test: serialize checkpoint, grep for UntrackedValue marker, assert absent.
+      - If EphemeralValue clearing is not recorded in SSB, crash recovery misses the clear.
+        Test: simulate crash after ephemeral clear, replay from SSB, assert EphemeralValue=MISSING.
+    ACCEPTANCE:
+      - Test code compiles (cargo check --tests exits 0)
+      - Tests exist for: BSP determinism, UntrackedValue exclusion, EphemeralValue clearing,
+        Topic ordering, SuperstepBoundary two-phase reset
+
+  3I.6 TEST-WRITE: MADSIM IPC SIMULATION (preparation for Phase 4A)
+    PRE_GATE:
+      - Step 3I.1 confirmed madsim works (or alternative available)
+      - Agent IPC types exist: grep "IpcGateway\|IpcMessage" in orchestrator crate
+      - If madsim unavailable on Windows: SKIP this step, document in grounding log
+    TASK:
+      - Simulated agent process sends messages over madsim deterministic runtime
+      - Inject faults via madsim net::Config:
+        packet_loss_rate: 0.3 (30% packet loss)
+        send_latency: Duration::from_millis(0)..Duration::from_millis(500) (uniform jitter)
+        Note: Range<Duration> requires explicit Duration construction, not integer shorthand.
+      - Inject asymmetric disconnect via NetSim::clog_link(src, dst) (one direction only)
+      - Verify: orchestrator IPC gateway detects fault, retries or reports error correctly
+      - Inject: agent SIGKILL simulation (madsim node kill) during mid-message
+        -> orchestrator detects agent absence, cleans up resources (no orphaned SSB rows)
+      - Inject: burst loss pattern (100% loss for 5 consecutive messages then 0%)
+        -> verify recovery after burst (tests correlated failures, not just random loss)
+      - All fault scenarios reproducible via seed replay
+      - These tests are WRITTEN but expected to FAIL (TDD red phase).
+      - Note: RUSTFLAGS="--cfg madsim" triggers full workspace rebuild. This is expected.
+        Account for this in compile_time_delta_sec metric (step 3I.9).
+    DETERMINISTIC_CHECK:
+      - grep -r "ipc_packet_loss\|ipc_asymmetric\|ipc_agent_crash\|ipc_burst_loss"
+        .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - Test files compile under madsim: RUSTFLAGS="--cfg madsim" cargo check --tests exits 0
+    ADVERSARIAL:
+      - If madsim jitter range is uniform but real network is bursty, simulation misses
+        burst-correlated failures. Test: inject 100% loss for 5 consecutive messages then 0%,
+        verify recovery (tests burst pattern, not just random loss).
+      - If agent crash cleanup has a race with pending writes, orphaned SSB rows accumulate.
+        Test: crash agent mid-SSB-write, verify no orphaned rows after cleanup.
+    ACCEPTANCE:
+      - Test code compiles under cfg(madsim) (cargo check --tests exits 0)
+      - Tests exist for: packet loss, asymmetric disconnect, agent crash, burst loss
+
+  3I.7 TEST-WRITE: ADVERSARIAL STATE SPACE EXPLORATION
+    PRE_GATE:
+      - Steps 3I.4-3I.5 test code written and compiles
+    TASK:
+      - Anti-spiral: 3x same GRC step sequences -> verify escalation triggers
+        (per CLAUDE.md Anti-Spiral rule: same file edited >3 times = STOP)
+      - Evidence gate: FSM transitions without required artifacts -> verify BLOCK
+        (evidence_gate_passes returns false, superstep retries per orchestrator.txt BSP loop)
+      - Context budget: oversized context submitted to agent -> verify adaptive reduction
+        (context budget allocator from Phase 3E truncates, does not crash)
+      - SSB conflict: concurrent file writes to same path in same superstep
+        -> verify SSB single-writer channel serializes correctly (no data loss, deterministic winner)
+      - Demonic scheduling: use proptest to generate worst-case event interleavings
+        (per external-analysis.txt: "Model demonic non-determinism, not angelic")
+      - These tests are WRITTEN but expected to FAIL (TDD red phase).
+    DETERMINISTIC_CHECK:
+      - grep -r "anti_spiral\|evidence_gate\|context_budget\|ssb_concurrent"
+        .elai_cc/rust/crates/orchestrator/tests/ returns hits
+      - Test files compile: cargo check --tests exits 0
+    ADVERSARIAL:
+      - If anti-spiral detection only counts exact duplicates, slight variations escape.
+        Test: submit 3 sequences that differ by whitespace only, verify escalation still fires.
+      - If evidence gate checks are bypassable via malformed artifact, security hole.
+        Test: submit zero-byte file as "evidence", verify gate rejects.
+    ACCEPTANCE:
+      - Test code compiles (cargo check --tests exits 0)
+      - Tests exist for: anti-spiral, evidence gate, context budget, SSB conflict
+
+  3I.8 IMPLEMENT (make tests pass)
+    PRE_GATE:
+      - All test code from 3I.4-3I.7 compiles: cargo check --tests exits 0
+      - Tests are in red state (expected to fail — stubs/unimplemented in production code)
+    TASK:
+      - SimulatorRuntime: wraps SeededClock + SeededRng + madsim runtime (behind cfg flag)
+        Provides: sim.advance_time(duration), sim.inject_fault(fault), sim.snapshot_state()
+        sim.with_seed(seed) for deterministic initialization
+      - FsmReferenceModel: pure function apply(State, Event) -> State
+        Models: FSM states (8 variants), SSB row counts, agent lifecycle (spawn/running/crashed/cleaned),
+        channel state (LastValue current, Topic vec, Ephemeral presence, UntrackedValue excluded)
+        SuperstepBoundary: atomically applies clear_non_accumulating_topics, then execute
+        (as no-op in reference model), then clear_ephemeral, then evidence_gate_check.
+        AgentCleanup: transitions agent lifecycle from crashed to cleaned.
+        Deliberately simplified: no async, no I/O, no error recovery logic
+        Size target: <30% of real FSM LOC (oracle must be simpler)
+      - StateMachineTest impl: bridges reference model to actual system
+        init_test: creates real FSM+SSB with SeededClock+SeededRng from reference initial state
+        apply: translates FsmEvent to actual system call, RETURNS updated SUT by value
+        check_invariants: compares real state to reference state (FSM + SSB rows + channels)
+      - Determinism verification: use madsim static function pattern:
+        madsim::runtime::Runtime::check_determinism(seed, config, bare_fn_pointer)
+        The function pointer constraint means no closure captures.
+        All test state must be initialized inside the function, not passed in.
+        For non-madsim determinism: run identical test with same SeededClock+SeededRng twice.
+      - proptest-regressions/ directory: auto-populated by proptest on failure.
+        Create synthetic failure to generate initial regression file, then revert.
+        Check regression files into git. CI re-runs regression cases on every commit.
+      - madsim IPC tests: behind cfg(madsim), use #[madsim::test] attribute
+        NetSim fault profiles: partition(clog_link), delay(send_latency: Duration range), drop(packet_loss_rate)
+        buggify_with_prob() for inline probabilistic fault injection
+    DETERMINISTIC_CHECK:
+      - cargo test --workspace exits 0 (all non-madsim tests pass)
+      - PROPTEST_CASES=10000 cargo test fsm_reference_model_matches --
+        exits 0 within 10 minute timeout
+      - RUSTFLAGS="--cfg madsim" cargo test ipc_ -- exits 0 (all IPC tests)
+      - Reference model complexity check (cross-platform):
+        python -c "import pathlib; r=len(pathlib.Path('REF_MODEL_PATH').read_text().splitlines()); f=len(pathlib.Path('FSM_PATH').read_text().splitlines()); assert r < 0.3*f, f'ref={r} >= 30% of fsm={f}'"
+        (substitute actual file paths for REF_MODEL_PATH and FSM_PATH)
+    ADVERSARIAL:
+      - If implementation makes reference model pass by weakening check_invariants,
+        the oracle is useless. Test: revert to strict invariants, verify still passes.
+    ACCEPTANCE:
+      - All tests from steps 3I.4-3I.7 pass (TDD green phase)
+      - Reference model LOC < 30% of real FSM LOC
+      - Zero regressions in Phase 0-3H tests
+      - At least one proptest-regressions/ file exists (from synthetic failure exercise)
+
+  3I.9 MEASURE
+    PRE_GATE:
+      - Step 3I.8 passed (all tests green)
+    TASK:
+      - State space coverage: count unique (FsmState, FsmState) transition pairs exercised
+        out of total possible pairs. Target: >80% of valid pairs.
+      - Bugs found: count invariant violations caught by reference model during development
+      - Determinism: verify 100% identical output with same seed (already tested, record result)
+      - Shrunk regression count: number of auto-shrunk test cases in proptest-regressions/
+      - Simulation speed: time 10,000 reference model operations, compute ops/sec
+        UNGROUNDED target: 100K ops/sec. Based on reference model being pure in-memory
+        state machine with no I/O. Actual measurement will establish baseline.
+      - Compile time impact: measure cargo build --workspace time delta from Phase 3H baseline.
+        Note: RUSTFLAGS="--cfg madsim" builds are separate and expected to be slower
+        (full rebuild). Report both normal and madsim compile times.
+    DETERMINISTIC_CHECK:
+      - Metrics file exists: .elai_cc/metrics/phase_3I.toml
+      - Metrics file contains: state_coverage_pct, bugs_found, determinism_verified,
+        regression_count, ops_per_sec, compile_time_delta_sec, madsim_compile_time_sec
+    ACCEPTANCE:
+      - All metrics recorded in phase_3I.toml
+      - State space coverage > 80% of valid transition pairs
+      - Determinism: 100% (same seed = identical output, no exceptions)
+      - Zero Phase 0-3H regressions
+
+
+EXIT CRITERIA
+  DST reference model matches actual FSM for 10,000+ random operation sequences.
+  Same seed = identical output. No exceptions.
+  BSP superstep determinism verified with 100 identical runs.
+  IPC fault injection scenarios all pass with correct recovery (or documented skip if madsim unavailable).
+  All adversarial state space tests pass.
+  VCR cassette replay produces identical SSB state as live run.
+  Prompt hash mismatch detected and reported (not silently wrong).
+  TraceOps trajectory replay exercises all FSM transitions.
+  SQLite VFS spike completed (custom VFS implemented OR madsim hooks proven sufficient).
+  Note: full INTERACTIVE (HITL) end-to-end loop is a walking skeleton milestone
+  verified across Phases 0-3, not by this phase alone. Phase 3I proves the
+  deterministic testing infrastructure that validates the HITL loop.
+  AUTONOMOUS auto-advance is NOT yet enabled -- that is Phase 4G.
+
+
+GROUNDING
+  "madsim is a drop-in tokio replacement" -> VERIFIED: FALSE. Requires cfg(madsim)
+    compile flag + Cargo.toml dependency swaps (madsim-tokio for tokio). v0.2.34 (Oct 2025).
+    Source: crates.io/crates/madsim, github.com/madsim-rs/madsim README.
+  "madsim supports packet loss, jitter, disconnects" -> VERIFIED: net::Config has
+    packet_loss_rate (f64), send_latency (Range<Duration> with explicit Duration construction),
+    NetSim::clog_link(src,dst) for asymmetric disconnect. Also buggify_with_prob().
+  "madsim supports seed-based deterministic scheduling" -> VERIFIED: Runtime::with_seed_and_config(seed, config).
+    Also Runtime::check_determinism(seed, config, bare_fn_pointer) -- STATIC function,
+    not instance method. Takes bare function pointer (no closure captures).
+    Source: github.com/madsim-rs/madsim/blob/main/madsim/src/sim/runtime/mod.rs
+  "madsim works on Windows" -> UNGROUNDED: no platform-specific code (pure userspace),
+    no confirmed Windows CI. Spike test (step 3I.1) required before commitment.
+  "proptest supports stateful PBT with auto-shrinking" -> VERIFIED: proptest-state-machine
+    crate v0.8.0 (same repo as proptest, released 2026-03-24). ReferenceStateMachine +
+    StateMachineTest traits. 3-phase shrinking: delete from end, shrink transitions, shrink initial state.
+    StateMachineTest::apply() returns SUT by value (ownership threading).
+    Source: docs.rs/proptest-state-machine, proptest-rs.github.io/proptest/proptest/state-machine.html
+  "FsmReferenceModel as F(State,Event)->State" -> GROUNDED: external-analysis.txt L277
+    confirms "FSM + SSB + BSP is already a state machine F(State, Event) -> State".
+    proptest-state-machine trait maps directly (apply method).
+  "10,000 random operation sequences" -> GROUNDED: external-analysis.txt L278.
+    proptest PROPTEST_CASES env var controls count. 10 min hard timeout required for CI.
+  "100K ops/sec reference model speed" -> UNGROUNDED: no benchmark cited.
+    Pure in-memory state machine should be fast, but actual speed depends on
+    State clone cost and transition complexity. Will measure empirically in step 3I.9.
+  "Digital sibling methodology" -> GROUNDED: external-analysis.txt L275-276 cites
+    ICSE 2024/2025 and TigerBeetle VOPR pattern.
+  "orchestrator.txt DST section" -> SPEC_GAP: orchestrator.txt has NO DST section.
+    DST design is in external-analysis.txt L268-305. READ directive corrected to reference
+    BSP (section 4), channels (section 5), testable invariants (section 15).
+  "core.txt Section 4 (ClockProvider, EntropySource)" -> VERIFIED with correction:
+    Section 4 is KEY TYPES (L53). Entropy traits are in unnumbered subsection (L67-92)
+    between sections 4 and 5. READ directive corrected to reference both.
+  "Channel types and BSP superstep behavior" -> GROUNDED: orchestrator.txt sections 4-5
+    (L76-134). LastValue, Topic, UntrackedValue, EphemeralValue all specified with
+    deterministic semantics. UntrackedValue explicitly excluded from checkpoints.
+  "BSP loop internal events" -> GROUNDED: orchestrator.txt L80-105 shows clear_non_accumulating
+    -> execute -> clear_ephemeral -> evidence_gate sequence. Modeled as SuperstepBoundary
+    composite event in FsmEvent enum.
+  "Agent lifecycle: spawn->running->crashed->cleaned" -> GROUNDED: orchestrator.txt
+    agent checkpointing section implies lifecycle states. AgentCleanup event added to
+    prevent reference model divergence after crash.
+  "proptest-regressions/ directory creation" -> VERIFIED: proptest creates this directory
+    LAZILY on first failure, not on first run. Synthetic failure exercise required to
+    demonstrate mechanism.

@@ -1,0 +1,332 @@
+PHASE 1D: PAGERANK REPO MAP
+Prerequisites: Phase 1C complete (cargo check --package knowledge exits 0 with ort integrated)
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Rank code symbols by importance using PageRank on DKG graph.
+Produce token-budget-fitted repo maps for context loading.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/knowledge.txt             Section 2, Layer 3.5 (PageRank Repo Map, design 31.7)
+  docs/specs/architecture-overview.txt        Section 4 (KnowledgeEngine trait)
+  docs/specs/crates/providers.txt             LlmProvider::token_count_estimate (design 31.9)
+  SOURCE REFERENCE: github.com/Aider-AI/aider/blob/main/aider/repomap.py (design 31.7 origin)
+    Our implementation diverges from aider in 3 deliberate ways (symbol-level nodes vs file-level,
+    density guard addition, insertion-order fallback) and adopts 5 improvements from source analysis.
+    See AIDER SOURCE ANALYSIS section below for full diff.
+
+RISKS TO WATCH
+  R20 (risk-register.txt:L88): PageRank density degradation. Density guard at 0.3 threshold.
+    NOTE: R20 is also used in phase-0.txt:L22 for "entropy quarantine scope" — ID collision.
+    This phase refers to the risk-register.txt definition (PageRank density degradation).
+    ACTION NEEDED: renumber one of the two R20s in a cross-file cleanup (out of scope for this phase).
+  R-NEW: Dangling nodes (leaf symbols with no outgoing edges) get zero rank in naive power iteration.
+    Code graphs have many leaves (constants, utility functions, config structs). Without dangling node
+    redistribution, these vanish from repo maps entirely. Source: aider uses dangling=personalization
+    to redistribute. NetworkX docs confirm: "dangling nodes are given outedges according to the
+    personalization vector." Mitigation: pass dangling vector = personalization vector in power iteration.
+  R-NEW: Orphan symbols (defined but never referenced) get zero rank and vanish from results.
+    Source: aider adds self-edges (weight=0.1) for defined-but-unreferenced symbols. Without this,
+    a newly-added function that nothing calls yet is invisible to the repo map.
+    Mitigation: add self-edges in adjacency matrix construction.
+
+
+STEPS
+
+  1D.1 SKELETON — pagerank module stub + dependency verification
+    PRE_GATE:
+      - Phase 1C exit criteria met: cd .elai_cc && cargo check --package knowledge 2>&1 | grep -c "^error" returns 0
+      - DKG layer exists: grep -r "pub struct" .elai_cc/crates/knowledge/src/ | grep -ci "dkg\|node\|symbol" returns >= 1
+      - providers crate has token_count_estimate: grep -r "token_count_estimate" .elai_cc/crates/providers/src/ returns hit
+      - DKG edge/adjacency API exists: grep -r "pub fn.*edge\|pub fn.*neighbor\|pub fn.*adjacen" .elai_cc/crates/knowledge/src/ returns >= 1 hit
+        If missing: Phase 1D.1 must first add an edge-iteration API to DkgEngine (query dkg_edges table).
+    TASK:
+      - Verify proptest crate exists: cargo search proptest --limit 1 (must return result)
+      - Add proptest to knowledge/Cargo.toml under [dev-dependencies]: proptest = "1"
+      - Define in-memory graph projection type for PageRank computation:
+        Struct: DkgSnapshot { nodes: Vec<DkgNodeInfo>, edges: Vec<(usize, usize, f64)> }
+        DkgNodeInfo { node_id: i64, symbol_name: String, file_path: PathBuf, signature: String, kind: SymbolKind, ref_count: usize }
+          ref_count: number of incoming references (used for sqrt scaling in edge weights)
+        Built by querying DkgEngine SQLite tables (dkg_nodes + dkg_edges).
+        Pub fn: DkgSnapshot::from_engine(engine: &DkgEngine) -> Result<DkgSnapshot>
+        Rationale: PageRank needs repeated adjacency iteration; SQLite round-trips per iteration are prohibitive.
+        Self-edges: during from_engine, add self-edge (weight=0.1) for any node with zero incoming edges.
+          Source: aider/repomap.py adds self-edges for defined-but-unreferenced symbols to prevent zero rank.
+          Proof: without self-edges, orphan symbols get rank=0 and vanish from repo map (test T16).
+      - Create pagerank module in knowledge crate with pub struct and stub functions:
+        Structs: PageRankConfig { damping_factor: f64, max_iterations: usize, tolerance: f64, density_threshold: f64, max_map_tokens: usize }
+          Defaults: damping_factor=0.85, max_iterations=100, tolerance=1e-6, density_threshold=0.3, max_map_tokens=2048
+          UNGROUNDED defaults: damping=0.85/max_iter=100/tol=1e-6 are standard PageRank values (Brin/Page 1998) but not specified in our specs. Stored in config so they are overridable.
+        Structs: RepoMap { ranked_symbols: Vec<RankedSymbol>, token_count: usize, density: f64, used_pagerank: bool, fit_iterations: usize }
+          fit_iterations: number of binary search iterations used (for convergence verification)
+        Structs: RankedSymbol { node_id: i64, symbol_name: String, file_path: PathBuf, rank: f64, signature: String }
+      - Pub fn: compute_repo_map(snapshot: &DkgSnapshot, task: &str, active_files: &[PathBuf], config: &PageRankConfig, token_estimator: &dyn Fn(&str)->usize) -> RepoMap
+      - All function bodies: todo!()
+    DETERMINISTIC_CHECK:
+      - cd .elai_cc && cargo check --package knowledge 2>&1 | grep -c "^error" returns 0
+      - grep -r "pub fn compute_repo_map" .elai_cc/crates/knowledge/src/ returns exactly 1 hit
+      - grep -r "pub struct PageRankConfig" .elai_cc/crates/knowledge/src/ returns exactly 1 hit
+      - grep -r "pub struct RepoMap" .elai_cc/crates/knowledge/src/ returns exactly 1 hit
+      - grep -r "pub struct DkgSnapshot" .elai_cc/crates/knowledge/src/ returns exactly 1 hit
+      - grep -r "proptest" .elai_cc/crates/knowledge/Cargo.toml returns hit
+    ADVERSARIAL:
+      - If DkgEngine schema changed since Phase 1A, DkgSnapshot::from_engine will query wrong columns. Test: cargo check catches type mismatch.
+      - If DkgEngine returns empty edge set (no edges in graph), DkgSnapshot.edges is empty — degenerate case. Test: handled by T11 (empty graph).
+      - If max_map_tokens = 0, binary search must not loop infinitely or panic. Test: add T13 below.
+    ACCEPTANCE:
+      - cargo check --package knowledge exits 0
+      - proptest listed in dev-dependencies
+
+  1D.2 VERIFY — compilation check
+    PRE_GATE:
+      - Step 1D.1 DETERMINISTIC_CHECK all pass
+    TASK:
+      - Run cargo check on entire workspace to verify no regressions
+      - Run existing tests: cargo test --package knowledge --lib (must not regress)
+    DETERMINISTIC_CHECK:
+      - cd .elai_cc && cargo check 2>&1 | grep -c "^error" returns 0
+      - cd .elai_cc && cargo test --package knowledge --lib 2>&1 | grep "test result:" | grep -v "FAILED" (all existing tests pass)
+    ADVERSARIAL:
+      - If pagerank module introduces naming conflicts with existing knowledge types. Test: cargo check catches ambiguous imports.
+    ACCEPTANCE:
+      - cargo check exits 0 for entire workspace
+      - All pre-existing knowledge tests pass (zero regressions)
+
+  1D.3 TEST — TDD: write failing tests
+    PRE_GATE:
+      - Step 1D.2 DETERMINISTIC_CHECK all pass
+      - proptest compiles: cd .elai_cc && cargo test --package knowledge --no-run 2>&1 | grep -c "^error" returns 0
+    TASK:
+      - Write unit tests (#[test], no network, deterministic):
+        T1: Basic ranking — 5-node linear graph + task mentioning node 3 -> node 3 ranked highest
+        T2: Edge-weight boost — edges touching active_files get weight *= 50, verified by checking boosted node ranks > unboosted
+        T3: Personalization — nodes mentioned in task get 10x personalization, rank higher than unmentioned nodes
+        T4: Density guard — graph with density > 0.3 -> used_pagerank == false, returns symbols in insertion order (DkgSnapshot node order)
+            Fallback is insertion-order (NOT BM25-ranked). Rationale: no BM25 dependency in compute_repo_map signature; BM25 reranking happens upstream in the query pipeline (knowledge.txt:L88).
+        T5: Density guard negative — graph with density < 0.3 -> used_pagerank == true
+        T6: Token budget fitting — result.token_count <= config.max_map_tokens * 1.15 (within +15% tolerance)
+        T7: Token budget undershoot — construct graph with 200 nodes, mock token_estimator returning 10 per symbol signature, set max_map_tokens=1000. Expect: result.token_count >= 850 (85% of 1000). This ensures binary search does not over-trim.
+            Mock calibration: 200 nodes * 10 tokens = 2000 total >> 1000 budget, so binary search must trim. 100 nodes * 10 = 1000 = budget. Result should include ~85-115 nodes.
+        T8: Special files always included — Cargo.toml, README present in output regardless of rank
+        T9: Personalization vector normalization — sum of personalization values == 1.0 (within f64 epsilon)
+        T10: Binary search convergence — graph with 1000 nodes, verify result.fit_iterations <= 10
+        T11: Empty graph (0 nodes) — returns empty RepoMap with token_count == 0, fit_iterations == 0
+        T12: Single-node graph — returns that node
+        T13: Zero budget — max_map_tokens=0, returns empty RepoMap (only special files if they fit in 0 tokens = none), no panic
+        T14: All nodes mentioned in task — personalization is uniform, PageRank still produces valid ranking (not NaN/Inf)
+        T15: Dangling node redistribution — graph: A->B->C (C is leaf, no out-edges). Without dangling
+             handling, C accumulates rank but never distributes. With dangling=personalization, C's rank
+             redistributes to all nodes proportionally. Verify: C.rank > 0 AND sum of all ranks ~= 1.0.
+             Source: aider passes dangling=personalization; NetworkX docs confirm behavior.
+        T16: Orphan self-edges — graph with 5 nodes where node 4 has no incoming or outgoing edges (orphan).
+             DkgSnapshot::from_engine adds self-edge weight=0.1 for node 4. Verify: node 4 rank > 0.
+             Without self-edge: node 4 rank = 0 (vanishes from repo map). Source: aider/repomap.py self-edge logic.
+        T17: Sqrt reference scaling — graph where node A has 100 incoming refs, node B has 4 incoming refs.
+             With sqrt scaling: edge weight ratio = sqrt(100)/sqrt(4) = 5x. Verify: A.rank / B.rank < 8
+             (not 25x as linear would give). This prevents generic symbols (Result, Error) from dominating.
+             Source: aider uses math.sqrt(num_refs) for reference count scaling.
+        T18: Line truncation — symbol with 500-char signature. Token estimator returns len/4 (simple mock).
+             Without truncation: estimated 125 tokens. With truncation (100 chars): estimated 25 tokens.
+             Verify: result uses truncated estimate (token_count reflects 100-char, not 500-char signatures).
+             Source: aider truncates all output lines to 100 chars.
+      - Property-based tests (proptest):
+        P1: For any random graph (1-500 nodes, random edges), all ranks are finite and >= 0.0
+        P2: For any random graph where used_pagerank==true, sum of all ranks approximately equals 1.0 (within 1e-4)
+        P3: For any random graph + random max_map_tokens (100-10000), result.token_count <= max_map_tokens * 1.15
+      - Adversarial tests:
+        A1: Near-complete graph (density ~0.95) — density guard must activate, verify used_pagerank == false
+        A2: Star graph (one hub, 100 spokes) — hub must rank highest
+        A3: Disconnected components — nodes in component without active files get base rank only
+      - Test helper: fn make_snapshot(nodes: usize, edges: Vec<(usize,usize)>) -> DkgSnapshot
+        Constructs in-memory DkgSnapshot for testing without needing DkgEngine/SQLite.
+    DETERMINISTIC_CHECK:
+      - All test files exist: grep -rl "fn test_.*pagerank\|fn test_.*repo_map\|fn test_.*density" .elai_cc/crates/knowledge/src/ returns >= 1 file
+      - Test count: grep -c "#\[test\]" in pagerank test file returns >= 21 (T1-T18 + A1-A3)
+      - Property test count: grep -c "proptest!" in pagerank test file returns >= 1
+      - All tests currently FAIL (expected — TDD): cargo test --package knowledge -- pagerank 2>&1 | grep "FAILED" (should show failures since implementation is todo!())
+    ADVERSARIAL:
+      - If DkgSnapshot does not expose enough info to build adjacency for tests, test helper make_snapshot fails. Test: make_snapshot compiles.
+      - If token_count_estimate is not yet implemented in providers, use a mock closure in tests (already specified in compute_repo_map signature as &dyn Fn).
+    ACCEPTANCE:
+      - >= 21 test functions written covering T1-T18, P1-P3, A1-A3
+      - Tests compile (cargo test --package knowledge --no-run exits 0)
+      - Tests fail at runtime (expected: todo!() panics)
+
+  1D.4 IMPLEMENT — make tests pass
+    PRE_GATE:
+      - Step 1D.3 DETERMINISTIC_CHECK all pass (tests written and compiling)
+    TASK:
+      - Implement DkgSnapshot::from_engine: query dkg_nodes and dkg_edges tables, build in-memory vectors.
+      - Implement compute_repo_map:
+        1. Build adjacency matrix from DkgSnapshot.edges
+           - Self-edges (weight=0.1) already present from DkgSnapshot::from_engine for orphan nodes.
+           - Apply sqrt(ref_count) scaling to edge weights. Source: aider uses sqrt(num_refs) to prevent
+             high-reference symbols (Result, Error, String) from dominating rankings. Proof: test T17
+             verifies that a 100-ref symbol does not rank disproportionately higher than a 4-ref symbol
+             (ratio should be ~sqrt(100)/sqrt(4) = 5x, not 25x linear).
+        2. Apply edge-weight boost (* 50) to edges touching active_files BEFORE PageRank
+        3. Build personalization vector: 10x weight for nodes mentioned in task, normalize to sum=1.0
+           If all nodes mentioned (uniform): still valid, personalization = 1/N for each.
+        4. Compute density: edges.len() as f64 / (nodes.len() * (nodes.len()-1)) as f64.
+           If density > config.density_threshold (0.3): skip PageRank, return nodes in insertion order, set used_pagerank=false.
+           DESIGN NOTE: density guard is our addition. Aider does NOT use a density guard (uses try/except
+           ZeroDivisionError fallback). We add it because: near-uniform PageRank on dense graphs wastes
+           compute for no ranking signal. Proof: test A1 verifies dense graph produces near-uniform ranks
+           (max_rank/min_rank < 1.1) — confirming the guard's value.
+           If nodes.len() <= 1: density=0, skip PageRank (trivial graph), used_pagerank=false.
+        5. Run power iteration PageRank: damping=config.damping_factor, max_iter=config.max_iterations, tolerance=config.tolerance
+           Dangling node handling: nodes with zero out-edges redistribute rank according to personalization vector.
+           Source: aider passes dangling=personalization to NetworkX. NetworkX docs: "dangling nodes are given
+           outedges according to the personalization vector." Without this, leaf nodes (constants, config structs)
+           accumulate rank but never distribute it — distorting the entire ranking. Proof: test T15 constructs
+           a graph with a leaf node and verifies its rank > 0 (fails without dangling redistribution).
+        6. Collect special files: hardcoded initial list for Rust projects:
+           Cargo.toml, Cargo.lock, README.md, README, LICENSE, .gitignore, Dockerfile, docker-compose.yml, build.rs, rust-toolchain.toml, clippy.toml, rustfmt.toml, .cargo/config.toml
+           (13 items for Rust. Config-driven extensibility deferred to future phase.)
+        7. Binary search to fit ranked nodes + special files to max_map_tokens using token_estimator.
+           If max_map_tokens == 0: return empty ranked_symbols with special files omitted, fit_iterations=0.
+           Tolerance: +-15%. Max 10 iterations.
+           Initial guess: min(max_map_tokens / 25, num_ranked_nodes) instead of all nodes.
+           Source: aider starts at max_map_tokens/25 (estimated avg tokens per tag). This reduces iterations
+           because the initial guess is closer to the answer. Proof: test T10 verifies fit_iterations <= 10.
+           With initial guess = all nodes on a 1000-node graph, worst case is ceil(log2(1000)) = 10.
+           With initial guess = max_tokens/25, starting closer means fewer iterations in practice.
+        7b. Line truncation: before token estimation, truncate each signature line to 100 characters.
+           Source: aider truncates all output lines to 100 chars to prevent minified/generated code from
+           consuming the entire token budget. Proof: test T18 constructs a symbol with a 500-char signature,
+           verifies token count is based on truncated (100-char) version, not the full 500-char line.
+        8. Return RepoMap with ranked symbols, actual token count, density, used_pagerank flag, fit_iterations count
+      - Internal helpers (private):
+        - build_adjacency_matrix(snapshot, active_files) -> Vec<Vec<f64>> (N x N)
+          Applies sqrt(ref_count) scaling. Includes self-edges from snapshot.
+        - build_personalization(node_count, task_mentioned_indices) -> Vec<f64>  (sums to 1.0)
+        - build_dangling_vector(matrix, personalization) -> Vec<f64>
+          Identifies nodes with zero out-degree, returns personalization-weighted redistribution vector.
+        - power_iteration(matrix, personalization, dangling, damping, max_iter, tolerance) -> Vec<f64>
+          Dangling redistribution: at each iteration, dangling nodes' accumulated rank is redistributed
+          proportional to the dangling vector (= personalization). This matches NetworkX behavior.
+          Guard: if any rank is NaN or Inf after iteration, clamp to 0.0 and log warning.
+        - truncate_signature(sig: &str, max_chars: usize) -> String  (default max_chars=100)
+        - is_special_file(path) -> bool
+        - binary_search_fit(ranked_nodes, special_nodes, max_tokens, tolerance, estimator) -> (Vec<RankedSymbol>, usize)
+          Returns (fitted symbols, iteration count). Initial guess: min(max_tokens/25, num_nodes).
+    DETERMINISTIC_CHECK:
+      - cd .elai_cc && cargo test --package knowledge -- pagerank 2>&1 | grep "test result:" shows 0 failures
+      - All T1-T18 tests pass
+      - All P1-P3 property tests pass (run with PROPTEST_CASES=100)
+      - All A1-A3 adversarial tests pass
+    ADVERSARIAL:
+      - If power iteration does not converge for certain graph topologies (e.g., bipartite), ranks may be NaN. Test: P1 checks all ranks finite. Guard: NaN/Inf clamping in power_iteration.
+      - If personalization normalization has floating-point drift, sum != 1.0. Test: T9 checks with epsilon.
+      - If binary search has off-by-one, token count may exceed budget by >15%. Test: T6, P3 check bounds.
+      - If special files list is hardcoded and incomplete, some project types miss key files. Test: verify Cargo.toml and README are in the list. Extensibility: config-driven list (future phase).
+      - If max_map_tokens=0 and special files exist, must not include them (budget is zero). Test: T13.
+    ACCEPTANCE:
+      - cargo test --package knowledge -- pagerank: 0 failures
+      - cargo clippy --package knowledge: 0 errors (warnings acceptable)
+      - No todo!(), unimplemented!(), or panic!("not implemented") in pagerank module: grep -c "todo!\|unimplemented!\|panic.*not.implemented" returns 0
+
+  1D.5 MEASURE — collect metrics
+    PRE_GATE:
+      - Step 1D.4 DETERMINISTIC_CHECK all pass
+    TASK:
+      - Measure and record in .elai_cc/metrics/phase_1D.toml:
+        - test_count: number of passing tests
+        - compile_time_seconds: cargo build --package knowledge --timings
+        - pagerank_loc: lines of code in pagerank module (wc -l on .rs files; tokei if available)
+        - ranking_quality: does star-graph hub rank #1? does task-mentioned node rank top-3? (boolean)
+        - token_budget_accuracy: max deviation from budget across test cases (percentage)
+        - density_guard_correct: density > 0.3 triggers fallback in all test cases (boolean)
+        - binary_search_max_iterations: max fit_iterations observed across test cases
+    DETERMINISTIC_CHECK:
+      - File exists: test -f .elai_cc/metrics/phase_1D.toml returns 0
+      - File has content: wc -l < .elai_cc/metrics/phase_1D.toml returns >= 5
+    ADVERSARIAL:
+      - LOC measurement: use wc -l as primary (always available). tokei optional enhancement only.
+    ACCEPTANCE:
+      - .elai_cc/metrics/phase_1D.toml exists and contains all 7 metrics listed above
+
+
+AIDER SOURCE ANALYSIS (github.com/Aider-AI/aider/blob/main/aider/repomap.py, fetched 2026-04-06)
+  Our spec is based on design 31.7 which derives from aider's repo map. Source analysis found:
+
+  ADOPTED from aider (5 improvements, each with deterministic test proving benefit):
+    1. Dangling node redistribution via personalization vector.
+       Aider: dangling=personalization in nx.pagerank(). Without: leaf nodes accumulate rank forever.
+       Test: T15 (leaf node C in A->B->C chain, verify rank > 0).
+    2. Self-edges (weight=0.1) for defined-but-unreferenced symbols.
+       Aider: G.add_edge(definer, definer, weight=0.1) for orphans. Without: orphans rank = 0.
+       Test: T16 (orphan node 4, verify rank > 0 with self-edge vs rank = 0 without).
+    3. sqrt(num_refs) edge weight scaling.
+       Aider: math.sqrt(num_refs). Without: generic symbols (Result, Error) with 100+ refs dominate.
+       Test: T17 (100-ref vs 4-ref node, verify rank ratio < 8x not 25x).
+    4. Binary search initial guess = max_map_tokens / 25.
+       Aider: middle = min(max_map_tokens // 25, num_tags). Starts closer to answer, fewer iterations.
+       Test: T10 (fit_iterations <= 10).
+    5. Line truncation to 100 chars before token estimation.
+       Aider: line[:100] for all output lines. Prevents minified code from blowing token budget.
+       Test: T18 (500-char signature, verify token count uses 100-char version).
+
+  DIVERGENCES from aider (3 deliberate design decisions):
+    1. Symbol-level nodes vs aider's file-level nodes.
+       Rationale: finer granularity for symbol-level context loading. Our DKG already provides symbol graph.
+       Trade-off: larger graph (more nodes) but more precise repo maps.
+    2. Density guard at 0.3 threshold (aider has none, uses try/except fallback).
+       Rationale: dense graphs produce near-uniform PageRank (no signal). Guard avoids wasted compute.
+       Proof: test A1 verifies max_rank/min_rank < 1.1 on dense graph (confirming no useful signal).
+    3. Insertion-order fallback (aider falls back to empty list on ZeroDivisionError).
+       Rationale: returning nothing is worse than returning symbols in DKG insertion order.
+
+  NOT ADOPTED from aider (justification for each):
+    - Identifier specificity boost (10x for long snake/camel names, 100x cumulative): adds complexity
+      with marginal benefit for symbol-level graphs (aider needs it because file-level is coarser).
+      Defer to future phase if ranking quality tests show need.
+    - Private symbol penalty (0.1x for underscore prefix): Rust uses pub/pub(crate) visibility, not
+      underscore convention. Not applicable to our primary language.
+    - Generic name penalty (0.1x for >5 definitions): sqrt(num_refs) already dampens high-ref symbols.
+      Adding another penalty factor risks over-penalizing legitimately important shared types.
+
+
+GROUNDING
+  "PageRank on DKG graph" -> GROUNDED: knowledge.txt:L64-76 (Layer 3.5, design 31.7)
+  "Density guard at 0.3" -> GROUNDED: knowledge.txt:L71, L262
+  "Binary search token fitting" -> GROUNDED: knowledge.txt:L73
+  "Edge-weight boost *= 50" -> GROUNDED: knowledge.txt:L67
+  "Personalization 10x" -> GROUNDED: knowledge.txt:L69
+  "Personalization sums to 1.0" -> GROUNDED: knowledge.txt:L261 (invariant)
+  "Special files ~100 items always included" -> GROUNDED: knowledge.txt:L75-76
+  "Binary search converges within 10 iterations" -> GROUNDED: knowledge.txt:L263 (invariant)
+  "Tolerance +-15%" -> GROUNDED: knowledge.txt:L74, providers.txt:L176
+  "Sampling-based token estimation" -> GROUNDED: providers.txt:L23 (token_count_estimate, design 31.9)
+  "Density guard fallback = insertion-order" -> GROUNDED: design decision (no BM25 dep in signature; BM25 reranking is upstream per knowledge.txt:L88 query pipeline)
+  "Power iteration damping=0.85" -> UNGROUNDED: standard PageRank default (Brin/Page 1998), not in our specs. Mitigated: stored in PageRankConfig, overridable.
+  "Power iteration max_iter=100, tolerance=1e-6" -> UNGROUNDED: standard convergence params, not in our specs. Mitigated: stored in PageRankConfig, overridable.
+  "Special files initial list = 13 Rust items" -> UNGROUNDED: no canonical list in specs. knowledge.txt:L75 says "~100 items" but lists only examples. Mitigated: minimal Rust-specific list, config-driven extensibility deferred.
+  "proptest crate" -> VERIFY at 1D.1: cargo search proptest --limit 1 (anti-slopsquatting check)
+  "Dangling node redistribution" -> GROUNDED: aider/repomap.py (dangling=personalization), NetworkX docs confirm behavior. Test T15 proves benefit.
+  "Self-edges weight=0.1 for orphans" -> GROUNDED: aider/repomap.py (G.add_edge(definer, definer, weight=0.1)). Test T16 proves benefit.
+  "sqrt(num_refs) edge scaling" -> GROUNDED: aider/repomap.py (math.sqrt(num_refs)). Test T17 proves dampening effect.
+  "Binary search initial guess max_tokens/25" -> GROUNDED: aider/repomap.py (middle = min(max_map_tokens // 25, num_tags)). Reduces iterations.
+  "Line truncation 100 chars" -> GROUNDED: aider/repomap.py (line[:100]). Test T18 proves budget protection.
+  "Density guard diverges from aider" -> GROUNDED: aider source has NO density guard, uses try/except ZeroDivisionError. Our 0.3 threshold is project-specific addition justified by A1 test.
+
+SPEC CONFLICTS FOUND
+  1. Phase originally said "Section 2, Layer 4" — knowledge.txt has PageRank at Layer 3.5 (L64). Layer 4 is CatRAG (L78). FIXED in this file.
+  2. R20 ID collision: risk-register.txt:L88 uses R20 for "PageRank density degradation", phase-0.txt:L22 uses R20 for "entropy quarantine scope". NOTED above, cross-file fix needed.
+
+EXIT CRITERIA
+  Phase 1D is done when:
+    1. cargo test --package knowledge -- pagerank: 0 failures, >= 21 tests passing
+    2. Density guard activates for graphs with density > 0.3 (used_pagerank == false)
+    3. Token budget fitting within +-15% tolerance for all test cases
+    4. Special files (Cargo.toml, README) always present in output (when budget allows)
+    5. No todo!(), unimplemented!(), or panic!("not implemented") in pagerank module
+    6. cargo clippy --package knowledge: 0 errors
+    7. .elai_cc/metrics/phase_1D.toml exists with all 7 metrics
+    8. Zero-budget edge case (T13) handled without panic
+    9. Property tests pass with PROPTEST_CASES=100
+    10. Dangling nodes get nonzero rank (T15 passes)
+    11. Orphan symbols with self-edges get nonzero rank (T16 passes)
+    12. sqrt scaling prevents high-ref symbol domination (T17 passes)
+    13. Line truncation limits token count for long signatures (T18 passes)

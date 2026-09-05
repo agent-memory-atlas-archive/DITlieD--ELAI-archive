@@ -1,0 +1,465 @@
+PHASE 4M: MULTI-RUNTIME BACKEND ABSTRACTION (ouroboros-derived) -- NEW 2026-05-10
+Prerequisites: Phase 3J complete (sidecar + AgentDispatchConfig + backend
+mode = local|api|hybrid|auto), Phase 4A complete (Tier C process isolation
++ IpcGateway types). Phase 4G recommended (mode switch lifecycle).
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+  Today ELAI binds the orchestrator to two control planes: the local sidecar
+  speaking the Anthropic /v1/messages protocol, and the cloud Anthropic API.
+  Phase 3J added [backend] mode = "local" | "api" | "hybrid" | "auto" but
+  the dispatch shape is bespoke per backend (ANTHROPIC_BASE_URL switching).
+
+  Ouroboros (github.com/Q00/ouroboros, MIT) demonstrates a cleaner pattern:
+  ONE workflow specification drives multiple runtime backends interchangeably
+  -- Claude Code, Codex CLI, OpenCode, Hermes, Gemini CLI, Kiro CLI, GitHub
+  Copilot CLI -- via a single AgentRuntime trait + per-backend adapter +
+  resolve_runtime_backend_name dispatch.
+
+  Phase 4M ports that abstraction to ELAI: a single AgentRuntime trait,
+  one adapter per backend, runtime selection via elai_cc.toml or CLI
+  flag. The orchestrator writes Anthropic-shaped messages once; adapters
+  translate to whatever the underlying runtime expects (or stay native
+  Anthropic for the existing sidecar/cloud paths).
+
+  Why now: ELAI's value proposition is "the intelligence is in the
+  infrastructure, not the model." The infrastructure should not be
+  locked to one inference protocol. Multi-runtime support also unlocks
+  hybrid topologies (e.g., Designer in cloud Codex, Executor in local
+  sidecar, Auditor in Claude Code) without forking the orchestrator.
+
+NON-GOALS
+  - Building new agent runtimes from scratch. We only adapt to existing
+    third-party CLIs / APIs that the user has installed.
+  - Ouroboros's "skills" magic-keyword routing. ELAI uses FSM + Designer
+    pipelines, not keyword triggers; we keep that shape.
+  - LiteLLM dependency. Ouroboros uses litellm for cloud providers; ELAI's
+    existing providers crate already has a LlmProvider trait. We extend
+    LlmProvider, not adopt litellm.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/providers.txt           S1, S4 (LlmProvider trait, ModelPool)
+  docs/specs/crates/orchestrator.txt        S12 (Tier C IPC, AgentDispatchConfig)
+  docs/specs/guide/steps/phase-3J.txt       3J.LOCAL, 3J.PIPELINE, 3J.WIRE.* sections
+  docs/specs/guide/steps/phase-4A.txt       Process isolation contract
+  docs/specs/guide/steps/phase-4G.txt       /mode + /model command lifecycle
+  workflow/papers/ouroboros-interface.md    INGEST FIRST: see 4M.0 below
+
+  Source code under reference (MIT, do not vendor):
+    github.com/Q00/ouroboros src/ouroboros/orchestrator/runtime_factory.py
+    github.com/Q00/ouroboros src/ouroboros/orchestrator/adapter.py (AgentRuntime trait)
+    github.com/Q00/ouroboros src/ouroboros/orchestrator/{codex,opencode,hermes,
+      gemini,kiro,copilot}_cli_runtime.py (per-backend adapters)
+    github.com/Q00/ouroboros src/ouroboros/backends/__init__.py
+      (resolve_runtime_backend_name + runtime_backend_choices)
+
+
+TYPES (new -- to be propagated to providers.txt + orchestrator.txt after approval)
+
+  enum RuntimeBackend {
+      Sidecar,        // existing: local Anthropic-protocol sidecar
+      AnthropicApi,   // existing: cloud Anthropic /v1/messages
+      ClaudeCode,     // new: spawn `claude` CLI (Claude Code) as subprocess
+      CodexCli,       // new: spawn `codex` (Codex CLI)
+      OpenCode,       // new: spawn `opencode run` subprocess
+      Hermes,         // new: Hermes CLI
+      GeminiCli,      // new: `gemini` CLI
+      KiroCli,        // new: Kiro CLI
+      CopilotCli,     // new: GitHub `copilot` CLI
+      Ollama,         // new: native Ollama HTTP (ELAI-specific addition)
+      Vllm,           // new: native vLLM HTTP (ELAI-specific addition)
+  }
+
+  trait RuntimeAdapter: Send + Sync {
+      async fn complete(
+          &self,
+          messages: Vec<Message>,
+          config: CompletionConfig,
+      ) -> Result<CompletionResponse, RuntimeError>;
+
+      async fn stream(
+          &self,
+          messages: Vec<Message>,
+          config: CompletionConfig,
+      ) -> Result<BoxStream<'static, StreamChunk>, RuntimeError>;
+
+      fn capabilities(&self) -> RuntimeCapabilities;
+      // Reports: supports_tools, supports_streaming, supports_vision,
+      // max_context, max_output, json_schema_mode, supports_prefill,
+      // supports_caching, native_thinking_budget.
+
+      async fn health_check(&self) -> RuntimeHealth;
+  }
+
+  // Existing LlmProvider trait (providers.txt S1) BECOMES the dyn-dispatched
+  // generalization of RuntimeAdapter. Phase 4M makes RuntimeAdapter the
+  // canonical name for the role; LlmProvider remains as the same vtable.
+
+  struct RuntimeFactoryConfig {
+      backend: RuntimeBackend,                // selected backend
+      cli_path: Option<PathBuf>,              // for CLI-spawning backends
+      base_url: Option<String>,               // for HTTP backends
+      api_key: Option<SecretString>,          // for cloud backends
+      model: Option<String>,                  // backend-specific model id
+      permission_mode: PermissionMode,        // ouroboros parity
+      runtime_profile: Option<String>,        // ouroboros parity (Codex)
+      cwd: Option<PathBuf>,
+      startup_output_timeout_seconds: Option<f64>,
+      stdout_idle_timeout_seconds: Option<f64>,
+  }
+
+  enum PermissionMode {
+      AcceptEdits,                            // Claude Code's accept-edits mode
+      Plan,                                   // plan-only, no writes
+      DangerouslySkipPermissions,             // bypass (for sandbox runs)
+      Default,                                // backend default
+  }
+
+  struct ResolveBackendError {
+      candidate: String,
+      supported: Vec<String>,
+  }
+
+  struct PerRoleRuntime {
+      role: AgentRole,
+      backend: RuntimeBackend,
+      fallback_chain: Vec<RuntimeBackend>,    // ordered alternatives
+  }
+  // Hybrid topology lives here: each AgentRole gets its own backend.
+  // Example config:
+  //   [agents.designer.runtime] backend = "anthropic_api"
+  //   [agents.executor.runtime] backend = "sidecar"
+  //   [agents.auditor.runtime]  backend = "claude_code"
+
+
+STEPS
+
+  4M.0 PAPER + SOURCE INGEST
+    PRE_GATE:
+      - cargo test --workspace passes (zero regression baseline)
+    TASK:
+      Spawn paper-ingestor with mode=source against ouroboros repo:
+        Agent: .claude/agents/paper-ingestor.md, mode=source,
+          target = "github.com/Q00/ouroboros src/ouroboros/orchestrator/
+                    {runtime_factory.py, adapter.py, codex_cli_runtime.py,
+                    opencode_runtime.py, hermes_runtime.py,
+                    gemini_cli_runtime.py, kiro_adapter.py,
+                    copilot_cli_runtime.py, command_dispatcher.py},
+                    src/ouroboros/backends/__init__.py".
+      Agent ingests files into RAG, writes
+        workflow/papers/ouroboros-runtime-interface.md with reliability=MEDIUM
+        (reviewed third-party MIT source, not official ELAI docs).
+    DETERMINISTIC_CHECK:
+      - workflow/papers/ouroboros-runtime-interface.md exists
+      - Interface doc lists at least 7 backend adapters with their
+        per-backend init parameters
+    ACCEPTANCE:
+      - Source-grounding doc exists, decompiled = LOW reliability flag
+        absent (we have the actual source, not decompiled)
+      - All RuntimeBackend variants in TYPES section have a corresponding
+        adapter ingested
+
+  4M.1 SKELETON (RuntimeAdapter trait + RuntimeBackend enum)
+    PRE_GATE:
+      - 4M.0 passes (interface doc exists)
+      - LlmProvider trait exists in providers crate (3J.PIPELINE)
+    TASK:
+      - Define RuntimeBackend enum (11 variants per TYPES)
+      - Define RuntimeAdapter trait. Confirm vtable shape compatible with
+        existing LlmProvider implementations -- if compatible, alias
+        RuntimeAdapter = LlmProvider; else introduce a new trait and
+        adapter wrapper.
+      - Define RuntimeFactoryConfig, PermissionMode, ResolveBackendError,
+        PerRoleRuntime, RuntimeCapabilities, RuntimeHealth.
+      - Stub `resolve_backend(candidate: &str) -> Result<RuntimeBackend,
+        ResolveBackendError>` (string -> enum, returns ResolveBackendError
+        with full supported list on miss). Match ouroboros's
+        resolve_runtime_backend_name semantics.
+      - Stub `create_runtime(cfg: RuntimeFactoryConfig) -> Box<dyn
+        RuntimeAdapter>` returning Err("not implemented") for all
+        new backends. Existing Sidecar + AnthropicApi paths remain
+        functional (port to the same factory signature).
+      - Add `[runtime] backend = "..."` and `[agents.<role>.runtime]`
+        sections to elai_cc.toml schema.
+    DETERMINISTIC_CHECK:
+      - cargo check --workspace (zero new errors)
+      - grep "enum RuntimeBackend" .elai_cc/crates/providers/src/ -- 1 hit
+      - grep "trait RuntimeAdapter" .elai_cc/crates/providers/src/ -- 1 hit
+      - grep "fn resolve_backend" .elai_cc/crates/providers/src/ -- 1 hit
+      - elai_cc.toml example contains [runtime] and [agents.designer.runtime]
+    ADVERSARIAL:
+      - If RuntimeAdapter is a new trait without LlmProvider compatibility,
+        existing sidecar code must be wrapped twice. Test: existing
+        sidecar provider implements RuntimeAdapter directly (or via
+        a thin auto-generated adapter, not by re-implementing logic).
+      - If resolve_backend returns String error, ResolveBackendError is
+        unused. Test: resolve_backend("typo") returns
+        ResolveBackendError { candidate: "typo", supported: [..11 names..] }.
+    ACCEPTANCE:
+      - All types compile, all stubs return Err
+      - Existing Sidecar + AnthropicApi tests still pass (zero regression)
+      - elai_cc.toml schema parses [runtime] and [agents.<role>.runtime]
+
+  4M.2 SIDECAR + ANTHROPIC ADAPTERS (port existing paths)
+    PRE_GATE:
+      - 4M.1 passes
+    TASK:
+      - SidecarRuntime: wraps existing sidecar HTTP client. Reads
+        ANTHROPIC_BASE_URL or RuntimeFactoryConfig.base_url. Uses the
+        same /v1/messages protocol the sidecar already speaks.
+      - AnthropicApiRuntime: wraps existing cloud client. Same protocol
+        as sidecar; differs only in base_url + api_key.
+      - Both implement RuntimeAdapter::capabilities() reporting
+        supports_tools=true, supports_streaming=true, max_context per
+        VRAM tier (sidecar) or model-card (cloud).
+      - health_check(): GET /v1/messages with a 4-token canary, return
+        Health::Ready / Degraded(reason) / Unavailable(error).
+      - Migrate phase-3J [backend] mode = "local"|"api"|"hybrid"|"auto"
+        to [runtime] backend = "sidecar"|"anthropic_api"|... -- map "local"
+        -> sidecar, "api" -> anthropic_api. Keep old names as deprecated
+        aliases for one release.
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_providers -- sidecar_runtime
+      - cargo test -p elai_providers -- anthropic_runtime
+      - Both adapters return Capabilities with non-zero max_context
+      - health_check() against running sidecar returns Ready
+    ADVERSARIAL:
+      - If existing sidecar tests fail after migration, regression.
+        Test: pre-migration test suite passes against post-migration code.
+      - If old [backend] config is silently ignored, users on v0.x
+        configs see runtime=Sidecar (default) even though they wrote
+        backend="api". Test: load old config -> deprecation warning
+        emitted AND correct backend resolved.
+    ACCEPTANCE:
+      - Sidecar + AnthropicApi backends operational via RuntimeAdapter
+      - Old [backend] config aliases work with deprecation warning
+      - All Phase 3J tests pass against the migrated paths
+
+  4M.3 CLI-SPAWNING ADAPTERS (Claude Code, Codex, OpenCode, Hermes,
+       Gemini, Kiro, Copilot)
+    PRE_GATE:
+      - 4M.2 passes
+      - Tier C process isolation (Phase 4A) operational
+      - workflow/papers/ouroboros-runtime-interface.md documents the
+        per-backend stdin/stdout protocol for each CLI
+    TASK:
+      For each of the 7 CLI-spawning backends:
+      - <Backend>Runtime adapter: spawn the CLI as subprocess via
+        std::process::Command + tokio io::AsyncRead/Write piping.
+      - Translate Anthropic-shaped messages -> whatever the CLI expects
+        on stdin (each CLI has its own protocol; reference the per-backend
+        ingest doc).
+      - Parse CLI stdout into Anthropic-shaped responses.
+      - Apply RuntimeFactoryConfig.permission_mode if backend supports it
+        (Claude Code: --permission-mode; Codex: profile; OpenCode:
+        --pure flag for non-interactive).
+      - Honor startup_output_timeout_seconds and stdout_idle_timeout_seconds.
+      - capabilities() reports per-backend caps (Codex supports tools,
+        OpenCode subprocess mode does NOT have native subagent hooks --
+        match ouroboros runtime_factory.py opencode_mode="subprocess").
+      - health_check() spawns CLI with `--version` or canary prompt,
+        returns Ready/Degraded/Unavailable per exit code + stdout.
+
+      IMPORTANT: ALL CLI-spawning adapters MUST run inside Tier C
+      isolation. The CLI binary becomes the "agent process" boundary,
+      same as elai_cc_agent today. CLI output is sanitized via the
+      existing IPC shape -- no raw subprocess output reaches the
+      orchestrator's prompt context.
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_providers -- claude_code_runtime
+      - cargo test -p elai_providers -- codex_cli_runtime
+      - cargo test -p elai_providers -- opencode_runtime
+      - cargo test -p elai_providers -- hermes_runtime
+      - cargo test -p elai_providers -- gemini_cli_runtime
+      - cargo test -p elai_providers -- kiro_runtime
+      - cargo test -p elai_providers -- copilot_cli_runtime
+      - Each adapter's health_check returns a valid RuntimeHealth variant
+        when CLI is missing (Unavailable, NOT panic)
+    ADVERSARIAL:
+      - If a CLI binary is missing on the user's machine, panic.
+        Test: missing claude binary -> health_check returns
+        Unavailable("claude not found in PATH"), NOT panic.
+      - If CLI subprocess hangs, orchestrator deadlocks.
+        Test: stdout_idle_timeout_seconds enforced -- subprocess sending
+        no stdout after timeout is killed.
+      - If CLI subprocess produces malicious stdout (e.g., ANSI escape
+        codes, control chars), prompt-injection risk.
+        Test: stdout sanitized via existing IPC sanitizer (4A) before
+        reaching orchestrator.
+      - If CLI exit code is nonzero but stdout looks like a valid response,
+        adapter must NOT silently succeed. Test: exit_code != 0 ->
+        return Err regardless of stdout shape.
+      - If permission_mode is ignored, Claude Code adapter writes files
+        without user consent. Test: PermissionMode::Plan flag passed to
+        Claude Code via --permission-mode plan; subprocess never invokes
+        Edit/Write tools.
+    ACCEPTANCE:
+      - All 7 CLI adapters operational
+      - health_check returns Unavailable (not panic) when CLI missing
+      - stdout_idle_timeout enforced
+      - permission_mode applied where backend supports it
+      - All 7 adapters run inside Tier C isolation
+
+  4M.4 NATIVE-HTTP ADAPTERS (Ollama, vLLM)
+    PRE_GATE:
+      - 4M.3 passes (proves the trait shape works on diverse backends)
+    TASK:
+      - OllamaRuntime: native Ollama HTTP /api/chat protocol. Existing
+        Ollama provider in 3J becomes this adapter. ELAI-specific
+        addition (not in ouroboros).
+      - VllmRuntime: native vLLM HTTP /v1/chat/completions protocol.
+        ELAI-specific addition. Phase 3J.1 already has VllmProvider --
+        port to the same factory signature.
+      - capabilities() reports per-model caps (Ollama: depends on
+        loaded model; vLLM: depends on tensor_parallel_size).
+      - health_check(): GET /api/tags (Ollama) or /health (vLLM).
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_providers -- ollama_runtime
+      - cargo test -p elai_providers -- vllm_runtime
+    ACCEPTANCE:
+      - Ollama + vLLM backends functional via RuntimeAdapter
+      - Existing Phase 3J Ollama + vLLM tests pass against migrated paths
+
+  4M.5 PER-ROLE HYBRID + RUNTIME-FALLBACK CHAINS
+    PRE_GATE:
+      - 4M.2, 4M.3, 4M.4 all pass
+    TASK:
+      - PerRoleRuntime: each AgentRole maps to its own RuntimeBackend
+        + fallback_chain. Loaded from elai_cc.toml
+        [agents.<role>.runtime] sections.
+      - Default per-role backends (configurable):
+          designer    -> AnthropicApi (highest reasoning quality)
+          executor    -> Sidecar (local code generation)
+          auditor     -> AnthropicApi (independent verification)
+          memory_writer -> Sidecar (cheap)
+          context_compiler -> Sidecar
+          prompt_engineer  -> Sidecar
+          researcher  -> AnthropicApi (when search needed)
+          media_validator -> AnthropicApi (vision needed)
+      - Runtime-fallback chain (orthogonal to model fallback chain in 4G):
+          When primary backend's health_check returns Unavailable,
+          try next in fallback_chain. Emit runtime_fallback SSB row.
+          On exhausted chain: ESCALATE (INTERACTIVE) or HALT (AUTONOMOUS).
+      - /runtime CLI command (parallel to existing /model and /mode):
+          /runtime show          -- print current per-role backends
+          /runtime set <role> <backend>  -- override at runtime
+          /runtime fallback <role> <backend1>,<backend2>  -- set chain
+    DETERMINISTIC_CHECK:
+      - cargo test -p elai_orchestrator -- per_role_runtime
+      - cargo test -p elai_orchestrator -- runtime_fallback_chain
+      - grep "SlashCommand::Runtime" .elai_cc/crates/cli/src/commands.rs
+    ADVERSARIAL:
+      - If per-role config is global (not per-session), changing
+        designer backend mid-session interferes with concurrent sessions.
+        Test: PerRoleRuntime is per-session (SessionState field), not
+        a global static.
+      - If runtime fallback fires silently, user has no idea why their
+        cloud-backed designer is now running on the local sidecar.
+        Test: runtime_fallback SSB row carries reason + backend chain
+        traversed.
+      - If model fallback (4G SUBSTITUTE_MODEL) and runtime fallback
+        race, two fallbacks could fire on the same failure. Test:
+        runtime fallback fires first; if all backends in chain
+        Unavailable, then escalate. Model fallback only fires within a
+        backend's health-OK state.
+    ACCEPTANCE:
+      - Per-role hybrid topology operational
+      - Runtime fallback chain traversed on Unavailable
+      - /runtime CLI command functional
+      - Fallback decisions logged to SSB
+
+  4M.6 DASHBOARD + MEASURE
+    PRE_GATE:
+      - 4M.5 passes
+    TASK:
+      - Dashboard RuntimePanel (or extend existing SettingsWindow):
+          Per-role current backend
+          Per-role fallback chain
+          Live health for each known RuntimeBackend (green/yellow/red)
+          "Test backend" button per row -> spawns canary health_check
+      - Metrics in .elai_cc/metrics/phase_4M.toml:
+          per-backend p50/p99 latency, tokens/sec, cost-per-1M-tokens
+          (cloud) or cost-per-hour (local) where available
+          fallback-fire rate per session
+          health_check uptime % per backend
+      - Migration guide in workflow/papers/phase-4M-migration.md:
+          old [backend] mode = ... -> new [runtime] backend = ... +
+          [agents.<role>.runtime] sections
+    DETERMINISTIC_CHECK:
+      - .elai_cc/metrics/phase_4M.toml exists with all listed metrics
+      - Dashboard RuntimePanel renders per-role backends
+      - Migration guide exists
+    ACCEPTANCE:
+      - All metrics populated
+      - Dashboard surface operational (live health pings)
+      - Migration guide explicit (old config -> new config worked example)
+
+
+GROUNDING
+
+  "Single AgentRuntime trait + per-backend adapter + resolve_backend
+  dispatch" -> GROUNDED: ouroboros src/ouroboros/orchestrator/
+  runtime_factory.py + adapter.py. MIT-licensed source.
+
+  "7 CLI backends list (claude/codex/opencode/hermes/gemini/kiro/copilot)"
+  -> GROUNDED: ouroboros backends/__init__.py runtime_backend_choices()
+  + per-backend runtime files in src/ouroboros/orchestrator/.
+
+  "Per-role hybrid topology" -> PARTIALLY GROUNDED: ouroboros has
+  per-role agent registration (AgentSpec) but their hybrid is per-CALL
+  not per-ROLE. ELAI extends to per-role because our FSM is role-aware.
+
+  "Runtime-fallback chain (orthogonal to model fallback)" -> OUR DESIGN:
+  ouroboros has no runtime-fallback. Need is ELAI-specific because we
+  support local sidecar that may genuinely go down (remote 3090 is
+  not always available).
+
+  "Tier C isolation for CLI subprocesses" -> GROUNDED in ELAI's own
+  architecture (Phase 4A): all subprocess outputs must pass through
+  IPC sanitization. Ouroboros runs CLIs without process isolation
+  (Python parent process holds CLI subprocess directly); ELAI
+  hardens this.
+
+  "Native Ollama + vLLM adapters" -> ELAI-SPECIFIC ADDITION: ouroboros
+  uses litellm for these. ELAI already has direct Ollama + vLLM
+  providers (Phase 3J), so we port directly.
+
+  "PermissionMode enum" -> GROUNDED: ouroboros src/ouroboros/
+  claude_permissions.py + codex_permissions.py + copilot_permissions.py.
+
+
+RISKS TO WATCH
+  R1: CLI version drift. Each backend's CLI evolves independently.
+    Adapter must report capability accurately even on older CLI versions.
+    Mitigation: capabilities() runs probe at startup, caches result.
+  R2: Permission-mode bypass. If Claude Code adapter runs with
+    --dangerously-skip-permissions in production, sandbox is meaningless.
+    Mitigation: default permission_mode=AcceptEdits; require explicit
+    user override (config + CLI flag) to use DangerouslySkipPermissions.
+  R3: Subprocess prompt injection. Malicious CLI stdout could inject
+    into orchestrator context. Mitigation: all stdout sanitized via
+    existing 4A IPC sanitizer before reaching prompt context.
+  R4: Runtime fallback masking real outage. If sidecar fails and
+    AnthropicApi succeeds, user pays cloud cost they didn't intend.
+    Mitigation: runtime_fallback SSB emits warning event; dashboard
+    surfaces it as a yellow indicator; cost-tracker integrates with
+    4G CloudSpendTracker.
+
+
+EXIT CRITERIA
+  RuntimeBackend enum with 11 variants (2 existing + 7 ouroboros + 2 native).
+  RuntimeAdapter trait covers all 11 backends with consistent capability
+    reporting and health checking.
+  Existing Sidecar + AnthropicApi paths migrated, zero regression on
+    Phase 3J + 3J.LOCAL + 3J.PIPELINE tests.
+  All 7 CLI-spawning adapters run inside Tier C isolation.
+  Per-role hybrid topology configurable via elai_cc.toml.
+  Runtime fallback chain enforced on health Unavailable.
+  /runtime CLI command operational (show/set/fallback subcommands).
+  Dashboard RuntimePanel surfaces live health.
+  Metrics in .elai_cc/metrics/phase_4M.toml.
+  Migration guide for old [backend] config -> new [runtime] config.
+  Every call site and struct that participates in request routing must
+  wire ssb, fsm, and clock through the single RuntimeClient; no step may
+  leave these fields as None or uninitialized after construction.

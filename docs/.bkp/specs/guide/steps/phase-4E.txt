@@ -1,0 +1,911 @@
+PHASE 4E: PIPELINE FACTORY L2 (builder + AutoB2G-derived DAG repair)
+Prerequisites: Phase 4D complete (PipelineSpec, QualitySpec, ResearchReport types operational)
+Status: IMPROVED 2026-04-06
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Deterministic pipeline assembly from PipelineSpec. No LLM needed. No agent process.
+L2 runs entirely in orchestrator crate. Pure Rust, deterministic validation and assembly.
+DAG repair loop (AutoB2G-derived pattern) fixes structural issues automatically using
+deterministic strategies only (reorder, substitute).
+Paper reference: arxiv 2603.26005 (AutoB2G — adopted pattern: bounded DAG validation
+  + iterative repair loop. NOT adopted: SOCIA LLM-driven repair. Our repair is deterministic.)
+
+DERIVATION NOTE (AutoB2G)
+  AutoB2G uses G=(V,E) DAG of callable functions with topological ordering enforcement.
+  Validator returns structured feedback Delta_t; LLM generates S_{t+1} = Phi_LLM(U, S_t, Delta_t).
+  We adopt: DAG structure, bounded repair rounds (T_DAG), structured validator feedback.
+  We diverge: repair strategies are deterministic (no LLM). Two adopted strategies:
+    1. REORDER: topological sort detects back-edges -> break by removing weakest dependency
+    2. SUBSTITUTE: missing tool -> find equivalent in ToolRegistry (same category, compatible IO)
+  Grounding: external-analysis.txt L173 adopts "reorder, substitute" as the two repair strategies.
+  If neither applies or T_DAG exhausted -> escalate to L1 (re-design) or human.
+  Non-repairable conditions (escalate immediately, no repair attempt):
+    - Resource overflow: detected by validation check #4, not a structural DAG issue
+    - Missing transitive dependencies with ambiguous resolution
+  Justification for deterministic-only: pipeline-factory.txt sec 2 ("no LLM"),
+    external-analysis.txt L176 ("SOCIA iterative optimization NOT ADOPTED").
+
+READ BEFORE IMPLEMENTING
+  docs/specs/integration/pipeline-factory.txt   Sections 2 (L2 builder), 3 (Stage 3 structural validation), 10 (QualitySpec)
+  docs/specs/decisions/external-analysis.txt    AutoB2G entry (L169-180)
+  docs/specs/crates/orchestrator.txt            Section 9 (hierarchical plan), L486 (AgentGrcConfig)
+  docs/specs/crates/rules.txt                   Section 3 (Predicate DSL), L161 (compile_predicate)
+  docs/specs/guide/steps/phase-4D.txt           Types: PipelineSpec, QualitySpec, QualityMetric, MediaSpec, PerfSpec (defined in 4D.1)
+  docs/specs/guide/steps/phase-4F.txt           L99-100 (novel_steps contract: L2 marks novel steps for FEASIBILITY_PROBE)
+
+
+TYPES (new in this phase)
+
+  Newtypes (all newtype wrappers over primitives):
+    struct PipelineId(u64);
+    struct StepId(u64);
+    struct NodeIndex(usize);    // index into DependencyGraph.nodes
+    struct StateId(u64);
+    struct DataRef(String);     // named data channel between pipeline steps
+
+  struct ExecutablePipeline {
+      pipeline_id: PipelineId,
+      spec: PipelineSpec,                       // input, preserved for traceability
+      fsm_states: Vec<PipelineFsmState>,         // generated FSM state sequence
+      dependency_graph: DependencyGraph,          // validated DAG (no cycles)
+      novel_step_ids: Vec<StepId>,               // steps with tool/approach not in capability registry
+      agent_configs: Vec<AgentPhaseConfig>,       // per-phase agent assignments
+      rule_configs: Vec<RuleBinding>,             // per-phase rule installations
+      resource_estimate: ResourceEstimate,        // VRAM, disk, time per phase
+      test_harness: TestHarnessSkeleton,          // generated from QualitySpec
+      repair_log: Vec<RepairAction>,              // empty if no repair needed
+      output_dir: PathBuf,                        // .elai_cc/pipelines/{id}/
+  }
+  Grounding: pipeline-factory.txt sec 2 lists deliverables: "validates components exist,
+    creates FSM states, configures agents, installs rules, estimates resources,
+    generates dependency graph, creates test harness skeleton."
+    Each field maps to one deliverable.
+  novel_step_ids: consumed by phase-4F (phase-4F.txt L99-100: "L2 structural validator marks
+    steps as novel when tool/approach not in capability registry"). Populated during structural
+    validation: any step whose tool_id is not in ToolRegistry.available_tools = novel.
+
+  struct AgentPhaseConfig {
+      phase_id: StepId,
+      agent_role: String,           // role name from orchestrator agent pool
+      grc_budget: (u32, u32),       // (max_calls, max_chars) per AgentGrcConfig (orchestrator.txt L486)
+      model_preference: Option<String>,
+  }
+  Grounding: pipeline-factory.txt sec 2 "configures agents" + orchestrator.txt L486 AgentGrcConfig.
+
+  struct RuleBinding {
+      phase_id: StepId,
+      rule_ids: Vec<RuleId>,        // from rules::RuleEngine.get_active_rules(context)
+      install_order: u32,           // evaluation priority within phase
+  }
+  Grounding: pipeline-factory.txt sec 2 "installs rules" + rules.txt L34 (rule schema).
+
+  struct DependencyGraph {
+      nodes: Vec<DagNode>,                        // pipeline steps as nodes
+      edges: Vec<(NodeIndex, NodeIndex)>,          // dependency edges (from -> to)
+  }
+  Invariant: topological_sort(&self) always succeeds (no cycles after validation/repair).
+
+  struct DagNode {
+      step_id: StepId,
+      tool_id: ToolId,                            // must exist in ToolRegistry
+      inputs: Vec<DataRef>,                        // outputs of predecessor nodes
+      outputs: Vec<DataRef>,
+      resource_req: ResourceReq,                   // model, VRAM, disk
+      optional: bool,                              // can be removed during repair
+  }
+
+  struct PipelineFsmState {
+      state_id: StateId,
+      phase_name: String,
+      allowed_tools: Vec<ToolId>,
+      allowed_rules: Vec<RuleId>,
+      entry_gate: Option<Predicate>,                // compiled predicate DSL (rules.txt sec 3)
+      exit_gate: Predicate,                         // compiled predicate DSL (rules.txt sec 3)
+      is_terminal: bool,                            // true for last phase (no outgoing transition)
+  }
+  Grounding: rules.txt L161 "compile_predicate" validates predicates at insertion time.
+    Using compiled Predicate (not raw String) ensures syntactic validity at construction.
+    is_terminal: single-phase pipelines have one terminal state with no outgoing transitions.
+
+  struct ResourceEstimate {
+      total_vram_mb: u64,
+      peak_vram_mb: u64,                           // max across concurrent phases
+      estimated_disk_mb: u64,
+      estimated_duration_secs: u64,                // sum of sequential phases
+      fits_hardware: bool,                         // compared against ModelPool.available_vram
+  }
+
+  struct TestHarnessSkeleton {
+      test_cases: Vec<TestCase>,                   // one per QualityMetric + PerfSpec
+      fixture_stubs: Vec<FixtureStub>,
+  }
+  Invariant: test_cases.len() >= quality_spec.metrics.len() + quality_spec.perf_specs.len()
+  Grounding: pipeline-factory.txt L192 "L2 validates every metric has automated check method."
+
+  enum RepairAction {
+      Reorder { from: NodeIndex, to: NodeIndex, reason: String },
+      Substitute { old_tool: ToolId, new_tool: ToolId, reason: String },
+  }
+  Grounding: external-analysis.txt L173 adopts exactly "reorder, substitute" from AutoB2G.
+
+  enum RepairOutcome {
+      Repaired { rounds: u32, actions: Vec<RepairAction> },
+      Escalated { rounds: u32, remaining_issues: Vec<ValidationError> },
+  }
+
+  struct ValidationError {
+      kind: ValidationErrorKind,
+      node: Option<NodeIndex>,
+      message: String,
+  }
+
+  enum ValidationErrorKind {
+      CycleDetected,
+      MissingTool,
+      MissingDependency,
+      ResourceOverflow,
+      UnmeasurableMetric,
+      InvalidPredicate,
+      MissingAdapter,
+      InvalidVisualCheck,
+  }
+
+  STRUCTURAL VALIDATION CHECKLIST (8 checks, all deterministic)
+    1. Tools referenced in PipelineSpec exist in ToolRegistry
+    2. Models referenced exist in ModelPool or are installable
+    3. No dependency cycles in pipeline graph (topological sort succeeds)
+    4. Resource requirements fit hardware (ModelPool.available_vram query)
+    5. Every QualityMetric has automated check method (unmeasurable -> REJECT)
+    6. FSM state predicates are syntactically valid (rules::compile_predicate succeeds — rules.txt L161)
+    7. Novel step detection: steps with tool_id not in ToolRegistry marked as novel (phase-4F dependency)
+    8. Visual check adapter validation: for each phase with visual_check=true,
+       a MediaRenderAdapter must exist for the phase's output_type.
+       Missing adapter -> ValidationError::MissingAdapter. visual_check=true with
+       output_type=None -> ValidationError::InvalidVisualCheck.
+       (See media-validator.txt section 7, phase-4I Render-Capture-Evaluate)
+
+
+STEPS
+
+  4E.1 SKELETON (types + stubs)
+    PRE_GATE:
+      - Phase 4D contract tests pass: cargo test -p orchestrator --lib -- research (exit 0)
+      - PipelineSpec type exists: grep -r "struct PipelineSpec" .elai_cc/crates/orchestrator/src/ returns matches
+      - QualitySpec type exists: grep -r "QualityMetric" .elai_cc/crates/orchestrator/src/ returns matches
+      - ToolRegistry operational: cargo test -p tools --lib -- registry (exit 0)
+      - ModelPool operational: cargo test -p providers --lib -- model_pool (exit 0)
+    TASK:
+      - ExecutablePipeline + all supporting types above (DependencyGraph, DagNode,
+          PipelineFsmState, ResourceEstimate, TestHarnessSkeleton, RepairAction,
+          RepairOutcome, ValidationError, ValidationErrorKind)
+      - PipelineBuilder stub: fn build(spec: &PipelineSpec, registry: &ToolRegistry,
+          pool: &ModelPool, rule_engine: &RuleEngine) -> Result<ExecutablePipeline>
+      - StructuralValidator stub: fn validate(graph: &DependencyGraph,
+          registry: &ToolRegistry, pool: &ModelPool) -> Vec<ValidationError>
+      - DagRepairLoop stub: fn repair(graph: &mut DependencyGraph,
+          errors: &[ValidationError], registry: &ToolRegistry,
+          max_rounds: u32) -> RepairOutcome
+      - FsmStateGenerator stub: fn generate_states(spec: &PipelineSpec) -> Vec<PipelineFsmState>
+      - TestHarnessGenerator stub: fn generate(quality_spec: &QualitySpec) -> TestHarnessSkeleton
+      - ResourceEstimator stub: fn estimate(graph: &DependencyGraph,
+          pool: &ModelPool) -> ResourceEstimate
+      - NoveltyDetector stub: fn detect_novel(graph: &DependencyGraph,
+          registry: &ToolRegistry) -> Vec<StepId>
+      - AgentConfigurator stub: fn configure_agents(spec: &PipelineSpec) -> Vec<AgentPhaseConfig>
+      - RuleInstaller stub: fn install_rules(spec: &PipelineSpec,
+          rule_engine: &RuleEngine) -> Vec<RuleBinding>
+      - L2 lives in orchestrator crate (no separate crate — no LLM, no agent process)
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator (exit 0, types compile)
+      - grep -r "ExecutablePipeline" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "DependencyGraph" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "PipelineBuilder" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "StructuralValidator" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "DagRepairLoop" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "RepairAction" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "TestHarnessSkeleton" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "ResourceEstimate" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "novel_step_ids" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "AgentPhaseConfig" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+      - grep -r "RuleBinding" .elai_cc/crates/orchestrator/src/ | wc -l  >= 1
+    ADVERSARIAL:
+      - If ExecutablePipeline stores PipelineSpec by reference, lifetime issues across async boundaries. Test: type compiles with 'static bound.
+      - If DependencyGraph allows self-edges, topological sort panics. Test: construct node with edge (n,n), assert rejection.
+      - If RepairAction enum is non-exhaustive, match statements silently skip new variants. Test: #[deny(non_exhaustive_omitted_patterns)] or exhaustive match.
+    ACCEPTANCE:
+      - All types from TYPES section have Rust struct/enum definitions that compile
+      - All 9 stubs exist with correct signatures (build, validate, repair, generate_states,
+          generate_harness, estimate, detect_novel, configure_agents, install_rules)
+      - No LLM imports or provider references in L2 module (deterministic-only)
+    GROUNDING:
+      - "ExecutablePipeline fields" -> GROUNDED: pipeline-factory.txt sec 2 (7 deliverables mapped to fields)
+      - "DependencyGraph as DAG" -> GROUNDED: AutoB2G paper (G=(V,E) DAG structure)
+      - "ToolRegistry dependency" -> GROUNDED: pipeline-factory.txt L41 "tools exist"
+      - "ModelPool dependency" -> GROUNDED: pipeline-factory.txt L41 "resources fit hardware"
+      - "TestHarnessSkeleton from QualitySpec" -> GROUNDED: pipeline-factory.txt L25 + L192
+      - "RepairAction 2 variants (Reorder, Substitute)" -> GROUNDED: external-analysis.txt L173 "reorder, substitute"
+      - "L2 in orchestrator crate" -> GROUNDED: implementation-plan.txt L705 "L2 runs entirely in orchestrator"
+      - "No LLM in L2" -> GROUNDED: pipeline-factory.txt L21 "deterministic, no LLM"
+      - "novel_step_ids field" -> GROUNDED: phase-4F.txt L99-100 (L2 marks steps as novel for FEASIBILITY_PROBE skip)
+      - "AgentPhaseConfig" -> GROUNDED: pipeline-factory.txt sec 2 "configures agents" + orchestrator.txt L486 AgentGrcConfig
+      - "RuleBinding" -> GROUNDED: pipeline-factory.txt sec 2 "installs rules" + rules.txt L34 rule schema
+      - "Newtypes (PipelineId, StepId, NodeIndex, StateId, DataRef)" -> DESIGN CHOICE: type safety, standard Rust newtype pattern
+
+  4E.2 VERIFY (compilation + existing tests)
+    PRE_GATE:
+      - 4E.1 DETERMINISTIC_CHECK all pass
+    TASK:
+      - Full workspace compilation: cargo build --workspace
+      - All existing contract tests still pass: cargo test --workspace
+      - No new warnings in orchestrator crate
+    DETERMINISTIC_CHECK:
+      - cargo build --workspace (exit 0)
+      - cargo test --workspace (exit 0)
+      - cargo clippy -p orchestrator -- -D warnings (exit 0)
+    ADVERSARIAL:
+      - If new types conflict with existing orchestrator types (name collision), build fails. Test: cargo build exit code.
+      - If ExecutablePipeline depends on types not yet in scope (e.g. RuleBinding from rules crate), compilation fails with missing import. Test: cargo check -p orchestrator.
+    ACCEPTANCE:
+      - Zero compilation errors, zero new warnings, zero test regressions
+    GROUNDING:
+      - "cargo build --workspace" -> GROUNDED: standard Rust workspace build verification
+      - "cargo clippy -D warnings" -> GROUNDED: project convention (see phase-4D.txt 4D.2)
+
+  4E.3 TESTS (contract + integration, expected to FAIL)
+    PRE_GATE:
+      - 4E.2 passes (workspace compiles clean)
+    TASK:
+      - Contract tests for structural validation (8-point checklist, first 6 below + novel detection + visual check separate):
+          - Tools referenced in PipelineSpec exist in ToolRegistry (or ValidationError::MissingTool)
+          - Models referenced exist in ModelPool (or ValidationError::ResourceOverflow)
+          - No dependency cycles (topological sort succeeds, or ValidationError::CycleDetected)
+          - Resource requirements fit hardware (ModelPool query)
+          - Every QualityMetric has automated check method (unmeasurable -> REJECT)
+          - FSM predicates parse correctly (or ValidationError::InvalidPredicate)
+          - visual_check=true phases have valid MediaRenderAdapter for output_type
+            (or ValidationError::MissingAdapter / ValidationError::InvalidVisualCheck)
+      - Contract tests for DAG repair loop:
+          - Cycle detected -> auto-repair attempt (REORDER strategy)
+          - Missing tool -> substitute attempt (SUBSTITUTE strategy)
+          - Non-repairable error (resource overflow) -> immediate escalation (no repair attempt)
+          - Max T_DAG=10 repair rounds before escalation
+          - Each repair round produces structurally different graph (hash differs)
+          - Repairable issue -> repaired within T_DAG rounds -> RepairOutcome::Repaired
+          - Unrepairable issue -> escalation after T_DAG rounds -> RepairOutcome::Escalated
+      - Contract tests for novel step detection:
+          - Step with known tool -> not in novel_step_ids
+          - Step with unknown tool -> in novel_step_ids
+          - All-known pipeline -> novel_step_ids.is_empty() == true
+      - Contract tests for FSM state generation:
+          - PipelineSpec with N phases -> N PipelineFsmState entries
+          - Each state has non-empty allowed_tools list
+          - Last state has is_terminal=true, all others is_terminal=false
+          - All entry_gate/exit_gate predicates are compiled (not raw strings)
+      - Contract tests for test harness generation:
+          - QualitySpec with M metrics -> TestHarnessSkeleton with >= M test cases
+          - Unmeasurable metric -> error (not silently dropped)
+      - Contract tests for resource estimation:
+          - Pipeline fitting hardware -> fits_hardware=true
+          - Pipeline exceeding VRAM -> fits_hardware=false
+          - peak_vram_mb <= total available VRAM (from ModelPool)
+      - Integration test: PipelineSpec -> ExecutablePipeline end-to-end
+          - Valid spec -> ExecutablePipeline with all fields populated
+          - Invalid spec (cycle) -> repair -> ExecutablePipeline
+          - Invalid spec (unrepairable) -> escalation error
+      - Property-based tests (proptest):
+          - Random DependencyGraph construction: if acyclic, topological_sort succeeds
+          - Random PipelineSpec: build never panics (returns Result)
+          - Random repair rounds: graph changes structurally each round (no fixpoint before convergence)
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- pipeline_builder (compiles, tests exist, expected FAIL)
+      - cargo test -p orchestrator --lib -- dag_repair (compiles, tests exist, expected FAIL)
+      - cargo test -p orchestrator --lib -- structural_validator (compiles, tests exist, expected FAIL)
+      - Test count >= 30 (7 validation + 7 repair + 3 novel + 4 FSM + 2 harness + 3 resource + 1 visual_check + 3 end-to-end)
+      - grep -c "#\[test\]" in pipeline builder test files >= 30
+    ADVERSARIAL:
+      - If repair loop does not check graph equality between rounds, it can loop T_DAG times on same graph. Test: inject cycle that REORDER cannot fix, assert escalation (not T_DAG identical attempts).
+      - If SUBSTITUTE picks tool with incompatible IO types, pipeline silently produces wrong results. Test: substitute tool must have compatible input/output DataRef types.
+      - If resource estimation ignores concurrent phases, peak_vram_mb underestimates. Test: pipeline with 2 concurrent GPU-using phases, assert peak > single phase VRAM.
+      - If QualitySpec validation silently drops unmeasurable metrics, test harness is incomplete. Test: inject unmeasurable metric, assert error returned (not empty test case).
+      - If FSM state predicates reference undefined variables, execution will fail at runtime. Test: generate states from spec, parse every predicate, assert all variables resolve.
+    ACCEPTANCE:
+      - >= 30 tests covering all 8 structural validations, 2 repair strategies + escalation,
+          novel step detection, visual check validation, FSM generation, harness generation,
+          resource estimation, end-to-end flow
+      - All tests compile and are expected to fail (stubs not yet implemented)
+    GROUNDING:
+      - "7 structural validations (+ visual check = 8)" -> GROUNDED: STRUCTURAL VALIDATION CHECKLIST above (sec 2,3,10 of pipeline-factory.txt + media-validator.txt sec 7)
+      - "2 repair strategies" -> GROUNDED: external-analysis.txt L173 "reorder, substitute"
+      - "novel step detection" -> GROUNDED: phase-4F.txt L99-100 (L2 marks steps as novel)
+      - "compiled predicates" -> GROUNDED: rules.txt L161-162 (compile_predicate validates at insertion time)
+      - "proptest for random graph" -> GROUNDED: project convention (see phase-4D.txt 4D.3 property-based tests)
+
+  4E.4 ADVERSARIAL TESTS (edge cases and attack surface)
+    PRE_GATE:
+      - 4E.3 DETERMINISTIC_CHECK all pass
+    TASK:
+      - Adversarial PipelineSpec inputs:
+          - Empty PipelineSpec (0 phases) -> graceful error, not panic
+          - PipelineSpec with 100+ phases -> completes within time budget
+          - PipelineSpec referencing nonexistent tools -> MissingTool for each
+          - PipelineSpec with all-optional steps -> valid pipeline (possibly empty)
+          - PipelineSpec with circular tool dependencies (A->B->C->A) -> detect + repair or escalate
+          - PipelineSpec with resource requirements exceeding 10x available VRAM -> immediate escalation (no repair attempt)
+      - Repair loop stress:
+          - T_DAG rounds with every round producing new error -> escalation at round 10
+          - Repair that introduces new cycle -> detected in next round (not accepted)
+          - REORDER + SUBSTITUTE in same round: REORDER applied first, SUBSTITUTE re-evaluated on modified graph
+      - FSM generation edge cases:
+          - Single-phase pipeline -> single FSM state with is_terminal=true, no outgoing transitions
+          - Phase with no tools -> empty allowed_tools (valid, agent handles)
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- adversarial_pipeline (compiles, expected FAIL)
+      - Test count >= 10 adversarial cases
+    ADVERSARIAL:
+      - If empty PipelineSpec produces ExecutablePipeline with non-empty fsm_states, downstream crashes. Test: assert empty spec -> 0 FSM states.
+      - If 100+ phase pipeline takes >10s, L2 becomes bottleneck for large plans. Test: 100-phase spec completes build in <5s.
+    ACCEPTANCE:
+      - All adversarial tests compile and cover the edge cases listed
+      - No panic paths in any adversarial input
+    GROUNDING:
+      - "Empty PipelineSpec handling" -> DESIGN CHOICE: graceful error prevents downstream panics
+      - "100+ phase time budget" -> GROUNDED: assembly target <1s for 10-phase (implementation-plan.txt L721), <5s for 100-phase is 50x linear scaling
+      - "10x VRAM immediate escalation" -> DESIGN CHOICE: repair cannot reduce VRAM by 10x, so attempting repair is wasteful
+
+  4E.5 IMPLEMENT (make all tests pass)
+    PRE_GATE:
+      - 4E.3 and 4E.4 DETERMINISTIC_CHECK all pass (tests exist, fail as expected)
+    TASK:
+      - Pipeline assembly: PipelineSpec -> DependencyGraph -> validate -> Phase Sizing -> repair -> ExecutablePipeline
+        NOTE: 5-stage elaboration pipeline (was 4): Research -> Plan Assembly -> Structural
+        Validation -> Phase Sizing (Stage 3.5) -> Feasibility Probe.
+        Source: technical-analysis-v3.txt Concern 4, pipeline-factory.txt S3.
+      - Phase Sizing (Stage 3.5, after structural validation, before repair):
+          L2 estimates phase_complexity from structural proxies:
+            phase_complexity = files_touched * avg_file_tokens
+                             + test_count * avg_test_tokens
+                             + contract_count * CONTRACT_OVERHEAD (default 200)
+          available_for_work computed from actual context budget allocator formula.
+          Split trigger: phase_complexity > available_for_work * SPLIT_RATIO (0.6).
+          Split by contract boundaries, then directory proximity.
+          Max split depth: 2 (matches Phase 4G SPLIT_TASK max depth).
+          Merge: adjacent phases only, no external dependents between them.
+          Phase Sizing uses PlanSkeleton::split_phase with preserve_contracts=true (Phase 3G).
+          Source: technical-analysis-v3.txt Concern 4 (Layer 2), pipeline-factory.txt S3.
+      - Kahn's cycle detection: L2 runs Kahn's algorithm on phase dependency graph BEFORE
+        producing ExecutablePipeline. Cycle detected -> ValidationError::CyclicDependency
+        with the cycle path. No runtime deadlock possible.
+        Source: technical-analysis-v3.txt Concern 4 (WARN 1 resolution).
+      - Structural validation (8-point checklist implementation):
+          1. ToolRegistry.available_tools(state) lookup for each referenced tool
+          2. ModelPool.check_model(model_id) for each referenced model
+          3. Topological sort (Kahn's algorithm or DFS-based) for cycle detection
+          4. ResourceEstimator: sum per-step VRAM, compute peak across concurrent phases
+          5. QualitySpec metric check: for each metric, verify method field is non-empty
+              and references a known validation tool or built-in checker
+          6. Predicate DSL compile check: rules::compile_predicate(predicate_str) for each FSM state
+              (rules.txt L161: predicates validated at insertion time, not evaluation time)
+          7. Novel step detection: tool_id not in ToolRegistry.available_tools -> mark as novel
+          8. Visual check adapter validation: for each phase where visual_check=true,
+              verify output_type is Some and a MediaRenderAdapter exists for that type
+              in the adapter registry. MissingAdapter or InvalidVisualCheck if not.
+      - FSM state generation: map each PipelineSpec phase to PipelineFsmState
+          - allowed_tools: union of tools in phase steps
+          - allowed_rules: rules engine query for phase context
+          - entry/exit conditions: from PipelineSpec phase gates (deterministic predicates)
+      - Dependency graph validation with bounded repair loop:
+          - Loop: validate -> if errors, apply first applicable strategy -> re-validate
+          - Strategy selection: REORDER for cycle errors, SUBSTITUTE for missing tool errors
+          - Non-repairable errors (resource overflow, unmeasurable metric) -> immediate escalation
+          - Each round: hash graph structure, compare to previous round hash
+          - If hash unchanged -> escalate immediately (fixpoint, no progress)
+          - If round > T_DAG=10 -> escalate with remaining errors
+      - Resource estimation via ModelPool:
+          - Per-step: model VRAM + tool disk + estimated runtime
+          - Peak: max VRAM across steps that can run concurrently (from DAG structure)
+          - fits_hardware: peak_vram_mb <= ModelPool.available_vram_mb
+      - Test harness skeleton generation from QualitySpec:
+          - One TestCase per QualityMetric (name, target, assertion template)
+          - One TestCase per PerfSpec (name, target, sample_count, timing template)
+          - Fixture stubs for common setup (model loading, data paths)
+      - Output: write ExecutablePipeline to .elai_cc/pipelines/{id}/ as msgpack
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- pipeline_builder (all pass)
+      - cargo test -p orchestrator --lib -- dag_repair (all pass)
+      - cargo test -p orchestrator --lib -- structural_validator (all pass)
+      - cargo test -p orchestrator --lib -- adversarial_pipeline (all pass)
+      - Zero test failures across all L2 test suites
+    ADVERSARIAL:
+      - If Kahn's algorithm implementation doesn't track in-degree correctly, cycles are missed. Test: known cyclic graph, assert CycleDetected.
+      - If strategy priority is not deterministic, same input produces different repair paths. Test: same invalid spec, same repair outcome across 100 runs.
+      - If graph hash uses pointer addresses instead of structural hash, fixpoint detection fails. Test: clone graph, assert same hash.
+    ACCEPTANCE:
+      - All contract, integration, adversarial, and property tests pass
+      - PipelineSpec -> ExecutablePipeline for valid specs in <1s
+      - Repair loop terminates for all test cases (no hangs)
+      - No LLM calls anywhere in L2 code path (grep confirms)
+    GROUNDING:
+      - "Kahn's algorithm for cycle detection" -> GROUNDED: standard algorithm, O(V+E), well-documented
+      - "Strategy selection: REORDER for cycles, SUBSTITUTE for missing tools" -> GROUNDED: external-analysis.txt L173 "reorder, substitute". Each strategy maps to one error type — no priority ambiguity
+      - "Graph structural hash for fixpoint detection" -> GROUNDED: AutoB2G paper requires "structurally different graph" per round, hash comparison is deterministic O(V+E) check
+      - "T_DAG=10" -> GROUNDED: external-analysis.txt L172, implementation-plan.txt L714. Justification: 10 rounds for 10-phase pipeline is O(n), with escalation as safety net
+      - "msgpack serialization" -> GROUNDED: implementation-guide.txt L35 "msgpack (disk)"
+      - "Output dir .elai_cc/pipelines/{id}/" -> GROUNDED: pipeline-factory.txt L26
+
+  4E.6 MEASURE
+    PRE_GATE:
+      - 4E.5 ACCEPTANCE all pass
+    TASK:
+      - Assembly time: PipelineSpec -> ExecutablePipeline wall clock
+          Target: <1s for 10-phase pipeline (implementation-plan.txt L721)
+          Measure: 1-phase, 5-phase, 10-phase, 50-phase, 100-phase
+      - Repair success rate: fraction of repairable issues auto-repaired
+          Measure across test corpus of intentionally broken PipelineSpecs
+      - Average repair rounds per pipeline (across test corpus)
+      - Repair strategy distribution: count per strategy type
+      - Test harness coverage: test_cases.len() / quality_metrics.len() (target: 1.0)
+      - Resource estimation accuracy: estimated vs actual VRAM (measured in Phase 4F+)
+    DETERMINISTIC_CHECK:
+      - Metrics file exists: test -f .elai_cc/metrics/phase_4E.toml
+      - Assembly time 10-phase < 1000ms (from metrics file)
+      - Repair success rate > 0% (at least some repairs succeed)
+    ACCEPTANCE:
+      - All metrics collected and stored in .elai_cc/metrics/phase_4E.toml
+      - Assembly time target met (<1s for 10-phase)
+      - Repair success rate >= 50% on test corpus of intentionally broken PipelineSpecs (N >= 10 specs)
+    ADVERSARIAL:
+      - If metrics file is stale from prior run, MEASURE reports cached data. Test: delete phase_4E.toml before run, verify file timestamp is after run start.
+      - If assembly time benchmark uses trivial PipelineSpec (1 tool, no deps), it doesn't stress the builder. Test: 10-phase benchmark includes at least 3 inter-phase dependencies.
+    GROUNDING:
+      - "Assembly time <1s for 10-phase" -> GROUNDED: implementation-plan.txt L721
+      - "Metrics stored in .elai_cc/metrics/phase_4E.toml" -> GROUNDED: implementation-guide.txt L198
+      - "Resource estimation accuracy deferred to 4F+" -> ACKNOWLEDGED: no actual VRAM measurement possible until pipeline executes
+
+EXIT CRITERIA
+  PipelineSpec -> ExecutablePipeline deterministically. All 8 structural validations enforced.
+  DAG repair handles repairable issues (cycles via REORDER, missing tools via SUBSTITUTE)
+  within T_DAG=10 rounds. Non-repairable issues escalate immediately.
+  Novel steps detected and marked for phase-4F FEASIBILITY_PROBE consumption.
+  Test harness generated from QualitySpec. No LLM calls in L2 code path.
+  All tests pass (>= 30 contract + integration + adversarial + property). Metrics collected.
+  Every call site and struct that participates in request routing must wire ssb, fsm, and clock through the single RuntimeClient; no step may leave these fields as None or uninitialized after construction.
+
+
+DECOMPOSITION TREE EXTENSION (Fractal Pipeline Builder)
+
+  The base 4E steps (4E.1-4E.6) build a flat ExecutablePipeline from PipelineSpec.
+  This extension builds a DecompositionTree from ConceptDecomposition (4D recursive output).
+  The tree is the primary execution artifact. The orchestrator traverses it deterministically.
+  Each leaf (baby step) cycles through FSM: TESTING_FIRST -> EXECUTING -> AUDITING.
+  No LLM controls the traversal. The TreeNavigator is pure Rust.
+
+  DESIGN PRINCIPLE
+    The DecompositionTree is DATA, not a prompt. It is a typed Rust struct that the
+    orchestrator reads to determine what happens next. The LLM fills in content
+    (code, tests) but never decides flow. Flow is: TreeNavigator picks next baby step ->
+    orchestrator assembles context from BabyStepGrounding -> FSM cycles -> result recorded ->
+    TreeNavigator picks next. If baby step fails acceptance, BubbleUpHandler decides what
+    to re-research. All decisions are deterministic given the tree state.
+
+  NEW TYPES
+
+    struct DecompositionTree {
+        tree_id: PipelineId,
+        root: ConceptDecomposition,              // from 4D recursive research
+        navigator: TreeNavigatorState,           // traversal state (serializable)
+        execution_log: Vec<BabyStepResult>,      // completed baby steps
+        bubble_up_log: Vec<BubbleUpEvent>,       // failure escalations
+        integration_checkpoints: Vec<IntegrationCheckpoint>,
+        created_at: u64,
+    }
+    Invariant: tree is always a valid DAG (no cycles, verified at construction).
+
+    struct TreeNavigatorState {
+        current_concept: Option<ConceptId>,
+        current_phase: Option<PhaseId>,
+        current_step: Option<StepId>,
+        current_baby_step: Option<BabyStepId>,
+        completed: BTreeSet<BabyStepId>,         // deterministic iteration
+        failed: BTreeMap<BabyStepId, FailureRecord>,
+        blocked: BTreeSet<BabyStepId>,           // waiting on dependencies
+        traversal_order: Vec<BabyStepId>,        // pre-computed, deterministic
+    }
+    Serialized to msgpack at every baby step completion for crash recovery.
+
+    struct FailureRecord {
+        baby_step_id: BabyStepId,
+        attempts: u32,
+        alternatives_tried: Vec<String>,         // framework/approach tried
+        last_error: String,
+        bubbled_up: bool,                        // true if escalated to parent
+    }
+
+    struct BabyStepResult {
+        baby_step_id: BabyStepId,
+        outcome: BabyStepOutcome,
+        tests_written: u32,
+        tests_passing: u32,
+        files_modified: Vec<String>,
+        commit_hash: Option<String>,             // WIP commit if code was written
+        elapsed_ms: u64,
+        auditor_findings: Vec<String>,           // BLOCK/WARN from auditor
+    }
+
+    enum BabyStepOutcome {
+        Pass,                                    // all acceptance criteria met
+        FailRetry { attempt: u32 },             // will retry with alternative
+        FailBubbleUp,                           // max retries exhausted, escalating
+        Skipped { reason: String },             // dependency not met or deferred
+        Deferred,                                // integration deferred (siblings incomplete)
+    }
+
+    struct BubbleUpEvent {
+        source: BabyStepId,                      // where failure originated
+        target_level: DecompositionLevel,         // where it escalated to
+        target_id: String,                       // step_id or phase_id or concept_id
+        action: BubbleUpAction,
+        research_report: Option<ResearchReport>, // new research if alternative found
+    }
+
+    enum DecompositionLevel { Concept, Phase, Step, BabyStep }
+
+    enum BubbleUpAction {
+        ResearchAlternative,                     // try different framework/approach
+        RedecomposeStep,                         // re-break step into different baby steps
+        ReplanPhase,                             // re-plan entire phase
+        ReplanConcept,                           // re-plan entire concept
+        Escalate,                                // give up, ask human (INTERACTIVE) or MAJOR replan
+    }
+
+    struct BubbleUpPolicy {
+        max_retries_per_baby_step: u32,          // default 3
+        max_retries_per_step: u32,               // default 2
+        max_retries_per_phase: u32,              // default 1
+        max_retries_per_concept: u32,            // default 1
+        on_concept_fail: BubbleUpAction,         // default Escalate
+    }
+
+    struct IntegrationCheckpoint {
+        level: DecompositionLevel,
+        id: String,                              // baby_step_id, step_id, phase_id, or concept_id
+        test_command: String,
+        test_passed: bool,
+        connects_to: Vec<String>,                // what main entry points were verified
+        timestamp: u64,
+    }
+
+    trait TreeNavigator {
+        fn next_baby_step(&self, state: &TreeNavigatorState, tree: &DecompositionTree)
+            -> Option<BabyStepId>;
+        fn record_result(&mut self, result: BabyStepResult);
+        fn handle_failure(&mut self, baby_step_id: BabyStepId, policy: &BubbleUpPolicy)
+            -> BubbleUpAction;
+        fn is_complete(&self) -> bool;
+        fn integration_ready(&self, baby_step_id: BabyStepId) -> bool;
+    }
+    Implementation: DepthFirstNavigator (default).
+    Traversal: depth-first within concept, concepts in dependency order.
+    Baby steps within a step: sequential (order matters for incremental building).
+    Steps within a phase: sequential (dependency order).
+    Phases within a concept: topological order (from depends_on edges).
+    Concepts: topological order (from cross-concept dependencies).
+
+  TREE NAVIGATOR ALGORITHM
+
+    fn next_baby_step(state, tree) -> Option<BabyStepId> {
+        for baby_step_id in &state.traversal_order {
+            if state.completed.contains(baby_step_id) { continue; }
+            if state.blocked.contains(baby_step_id) { continue; }
+            // Check pre_gate: all PreGateConditions must pass
+            let spec = tree.get_baby_step(*baby_step_id);
+            if !all_pre_gates_pass(&spec.pre_gate) { continue; }
+            // Check dependencies: all depends_on baby steps completed
+            if !dependencies_met(*baby_step_id, &state.completed, tree) { continue; }
+            return Some(*baby_step_id);
+        }
+        None  // all done or all blocked
+    }
+
+    Traversal order pre-computed at tree construction:
+      1. Topological sort concepts by cross-concept deps
+      2. Within each concept, topological sort phases by depends_on
+      3. Within each phase, steps in declared order
+      4. Within each step, baby steps in declared order
+      5. Flatten to Vec<BabyStepId>
+
+    This is deterministic. Same tree -> same traversal order -> same execution sequence.
+
+  BABY STEP EXECUTION CYCLE (orchestrator-driven, per baby step)
+
+    For each baby_step returned by TreeNavigator::next_baby_step():
+
+    1. CONTEXT ASSEMBLY (orchestrator, pure Rust, <5ms)
+       Load BabyStepGrounding into context budget Slot 3 (phase_spec slot).
+       Baby step context is tiny (~500 tokens grounding + ~200 tokens task).
+       This is how cheap local models produce quality code: narrow, grounded context.
+
+    2. PRE_GATE CHECK (orchestrator, deterministic)
+       Run each PreGateCondition.check_command via bash.
+       All must return expected_exit_code. Any failure -> baby step BLOCKED.
+
+    3. TESTING_FIRST (FSM state)
+       Executor agent writes tests per TddSpec.
+       Tests must reference grounded types/APIs from BabyStepGrounding.
+       Evidence gate: tests compile but fail (right reasons, not syntax errors).
+       Auditor validates test quality (do tests actually test the task?).
+
+    4. EXECUTING (FSM state)
+       Executor agent writes code per TaskSpec.
+       Context: ONLY BabyStepGrounding + task + test file. No full project context.
+       Every edit triggers T1/T2/T3 static analysis hooks (Phase 4C).
+       Incremental compilation feedback (Phase 4B) after each file write.
+       Max lines enforced: TaskSpec.max_lines.
+
+    5. AUDITING (FSM state)
+       Auditor runs DeterministicCheck commands.
+       Auditor runs adversarial tests on baby step code.
+       If BLOCK findings: executor re-enters EXECUTING (existing AUDITING->EXECUTING cycle).
+       Max audit retries: 3 per baby step (matches existing anti-spiral).
+
+    6. ACCEPTANCE CHECK (orchestrator, deterministic)
+       Check AcceptanceCriteria: min_tests_passing met?
+       If FAIL and attempts < max_retry_alternatives:
+         Go back to research for this step (ResearchAlternative).
+         FlashResearch runs with failure context: "X failed because Y, find alternative".
+         New baby steps generated. Retry.
+       If FAIL and attempts >= max_retry_alternatives:
+         BubbleUpHandler activates (see below).
+
+    7. INTEGRATION (orchestrator + executor)
+       If IntegrationSpec.deferred == false AND all sibling baby steps complete:
+         Run IntegrationSpec.integration_test_command.
+         If pass: record IntegrationCheckpoint.
+         If fail: this is a cross-baby-step issue. BubbleUp to step level.
+       If deferred: skip, will run at step completion.
+
+    8. EXIT CRITERIA (orchestrator, deterministic)
+       Run each ExitCriterion.check.
+       All pass -> baby step COMPLETE. Navigator moves to next.
+       Any fail -> treat as ACCEPTANCE failure.
+
+  BUBBLE-UP FAILURE HANDLING
+
+    fn handle_failure(baby_step_id, policy) -> BubbleUpAction {
+        let record = state.failed.get(baby_step_id);
+        if record.attempts < policy.max_retries_per_baby_step {
+            return ResearchAlternative;  // try different approach at baby step level
+        }
+        // Bubble up to step
+        let step = tree.parent_step(baby_step_id);
+        let step_failures = count_failures_in_step(step);
+        if step_failures < policy.max_retries_per_step {
+            return RedecomposeStep;  // re-break the step differently
+        }
+        // Bubble up to phase
+        let phase = tree.parent_phase(step);
+        let phase_failures = count_failures_in_phase(phase);
+        if phase_failures < policy.max_retries_per_phase {
+            return ReplanPhase;  // different framework/approach for whole phase
+        }
+        // Bubble up to concept
+        let concept = tree.parent_concept(phase);
+        let concept_failures = count_failures_in_concept(concept);
+        if concept_failures < policy.max_retries_per_concept {
+            return ReplanConcept;
+        }
+        // Nothing left
+        return policy.on_concept_fail;  // default: Escalate
+    }
+
+    Each BubbleUp action triggers re-research at the appropriate level:
+      ResearchAlternative: FlashResearch on baby step with failure context
+      RedecomposeStep: FlashResearch on step, regenerate baby steps
+      ReplanPhase: FlashResearch on phase, regenerate steps + baby steps
+      ReplanConcept: FlashResearch on concept, regenerate phases + steps + baby steps
+      Escalate: INTERACTIVE -> human decides. AUTONOMOUS -> ReplanRequest(MAJOR).
+
+    All bubble-up events logged in SSB as action_type='replan_request' with tree context.
+
+  INTEGRATION CHECKPOINTS (at every granularity level)
+
+    After each BABY STEP completion (if not deferred):
+      Run integration test connecting baby step output to target entry point.
+      E.g., after implementing Argon2 hashing, verify it compiles with AppState struct.
+      Quick: cargo check on affected files. <5s.
+
+    After each STEP completion (all baby steps in step done):
+      Run step-level integration test.
+      E.g., after all auth baby steps, verify auth module integrates with router.
+      Medium: cargo test on the step's module. <30s.
+
+    After each PHASE completion (all steps in phase done):
+      Run phase-level integration test.
+      E.g., after entire API backend phase, verify it starts and responds to health check.
+      Full: cargo test -p affected_crate. <60s.
+
+    After each CONCEPT completion (all phases in concept done):
+      Run concept-level end-to-end test.
+      E.g., after entire "Core API" concept, run full API test suite.
+      Full: cargo test --workspace -- concept_integration. <120s.
+
+    Integration test generation: L2 builder generates test stubs from IntegrationSpec.
+    Executor fills in test bodies during TESTING_FIRST of the first baby step that has
+    integration tests. Tests initially fail (TDD). They pass as baby steps complete.
+
+  STEPS (4E.7 through 4E.12 — extend the base 4E.1-4E.6)
+
+  4E.7 DECOMPOSITION TREE SKELETON
+    PRE_GATE:
+      - 4E.6 MEASURE complete (base L2 builder working)
+      - 4D.10 complete (recursive research types exist)
+      - All base 4E tests passing
+    TASK:
+      - Add DecompositionTree, TreeNavigatorState, FailureRecord, BabyStepResult,
+        BabyStepOutcome, BubbleUpEvent, DecompositionLevel, BubbleUpAction,
+        BubbleUpPolicy, IntegrationCheckpoint to orchestrator types
+      - Define TreeNavigator trait (next_baby_step, record_result, handle_failure,
+        is_complete, integration_ready)
+      - Implement DepthFirstNavigator stub
+      - Stub: fn build_decomposition_tree(concept_decomp, registry, pool) -> DecompositionTree
+      - Stub: fn compute_traversal_order(tree) -> Vec<BabyStepId>
+      - Stub: fn assemble_baby_step_context(baby_step, tree) -> ContextSlots
+      - Stub: fn run_integration_check(checkpoint: &IntegrationCheckpoint) -> bool
+    DETERMINISTIC_CHECK:
+      - cargo check -p orchestrator (exit 0)
+      - grep -r "DecompositionTree" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "TreeNavigator" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "BubbleUpPolicy" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "IntegrationCheckpoint" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+      - grep -r "BabyStepResult" .elai_cc/crates/orchestrator/src/ | wc -l >= 1
+    ADVERSARIAL:
+      - If TreeNavigatorState is not serializable, crash recovery loses traversal progress.
+        Test: serde round-trip TreeNavigatorState with 100 completed + 5 failed entries.
+      - If traversal_order computation is non-deterministic, same tree produces different
+        execution sequences. Test: compute_traversal_order 100 times, assert identical.
+    ACCEPTANCE:
+      - All types compile with serde Serialize/Deserialize
+      - TreeNavigator trait is object-safe (Box<dyn TreeNavigator> compiles)
+      - Zero changes to base 4E behavior
+
+  4E.8 TREE NAVIGATION + BUBBLE-UP TESTS (expected to FAIL)
+    PRE_GATE:
+      - 4E.7 compiles clean
+    TASK:
+      Navigation tests:
+        - Linear tree (1 concept, 1 phase, 1 step, 3 baby steps) -> visits in order
+        - Branching tree (2 concepts, each with 2 phases) -> respects topological order
+        - Dependency skip: baby step B depends on A, A not done -> B skipped, A returned
+        - Pre-gate failure: baby step pre_gate fails -> blocked, next baby step returned
+        - Completion: all baby steps done -> next_baby_step returns None
+        - Crash recovery: serialize state, deserialize, continue from last completed
+      Bubble-up tests:
+        - 1 failure -> ResearchAlternative
+        - 3 failures at baby step -> RedecomposeStep (bubble to step)
+        - 2 step failures -> ReplanPhase (bubble to phase)
+        - 1 phase failure -> ReplanConcept (bubble to concept)
+        - Concept failure -> Escalate (default policy)
+        - Custom policy: max_retries_per_baby_step=5 -> 5 attempts before bubble
+      Integration checkpoint tests:
+        - Baby step with deferred=false + siblings complete -> integration runs
+        - Baby step with deferred=true -> integration skipped
+        - Step completion -> step-level integration runs
+        - Phase completion -> phase-level integration runs
+        - Integration failure -> BubbleUp to step level
+      proptest:
+        - Random tree shapes -> traversal_order always valid topological sort
+        - Random failure sequences -> bubble-up always terminates (no infinite loop)
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- decomposition_tree (>= 18 tests, all FAIL)
+    ACCEPTANCE:
+      - >= 18 tests exist, all fail for right reason
+
+  4E.9 BABY STEP EXECUTION CYCLE TESTS (expected to FAIL)
+    PRE_GATE:
+      - 4E.8 tests compile
+    TASK:
+      Tests for the full baby step execution cycle:
+        - Context assembly: baby step grounding fits in Slot 3, < 1K tokens
+        - Pre-gate check: command returns expected exit code -> proceed
+        - Pre-gate check: command fails -> baby step BLOCKED
+        - TDD: tests written before code (test files exist, code files don't)
+        - TDD: tests fail after write (correct behavior)
+        - EXECUTING: code written, T1/T2/T3 hooks fire on each edit
+        - AUDITING: deterministic checks run, all pass -> ACCEPTANCE
+        - ACCEPTANCE pass: min_tests_passing met -> baby step COMPLETE
+        - ACCEPTANCE fail: attempt 1 -> ResearchAlternative
+        - ACCEPTANCE fail: attempt 3 -> BubbleUp
+        - Integration: non-deferred baby step -> integration test runs after acceptance
+        - Integration: deferred -> skipped
+        - Exit criteria: all pass -> navigator advances
+        - Exit criteria: fail -> treated as acceptance failure
+        - Max lines enforcement: code exceeding max_lines -> rejected by T2 hook
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- baby_step_cycle (>= 15 tests, all FAIL)
+    ACCEPTANCE:
+      - >= 15 tests exist, all fail
+
+  4E.10 IMPLEMENT TREE NAVIGATOR + BUBBLE-UP
+    PRE_GATE:
+      - 4E.8 + 4E.9 tests compile and fail correctly
+    TASK:
+      - Implement DepthFirstNavigator:
+        Traversal order: topological sort concepts, then phases, then steps, then baby steps.
+        Pre-gate evaluation: run check_command via BashSandbox (reuse from tools/ crate).
+        Dependency resolution: check completed set against baby step dependencies.
+      - Implement BubbleUpHandler:
+        Count failures per level. Compare against BubbleUpPolicy thresholds.
+        On ResearchAlternative: trigger FlashResearch with failure context.
+        On RedecomposeStep: re-run 4D extract_steps + decompose_to_baby_steps.
+        On ReplanPhase: re-run 4D extract_phases for affected concept.
+        On Escalate: emit ReplanRequest(MAJOR) to FSM.
+      - Implement baby step execution cycle orchestration:
+        Assemble context from BabyStepGrounding into Slot 3.
+        Drive FSM through TESTING_FIRST -> EXECUTING -> AUDITING per baby step.
+        Record BabyStepResult after each cycle.
+        Run integration checks when applicable.
+      - Implement IntegrationCheckpoint recording and verification.
+      - Implement TreeNavigatorState serialization to msgpack for crash recovery.
+        Checkpoint after every baby step completion.
+    DETERMINISTIC_CHECK:
+      - cargo test -p orchestrator --lib -- decomposition_tree (all pass)
+      - cargo test -p orchestrator --lib -- baby_step_cycle (all pass)
+      - cargo test --workspace (zero regressions)
+    ADVERSARIAL:
+      - If bubble-up re-research produces same failing approach, infinite loop.
+        Test: inject same failure 3 times, assert different research query each time
+        (failure context appended to query, making it distinct).
+      - If TreeNavigatorState checkpoint corrupts, entire tree progress lost.
+        Test: corrupt one byte in checkpoint, assert graceful recovery (re-traverse from SSB).
+    ACCEPTANCE:
+      - All 33+ tests pass (18 navigation + 15 execution cycle)
+      - Zero regressions
+      - Traversal order deterministic across 100 runs
+
+  4E.11 IMPLEMENT INTEGRATION CHECKPOINTS
+    PRE_GATE:
+      - 4E.10 complete (navigator + bubble-up working)
+    TASK:
+      - Baby step integration: after each baby step, if not deferred:
+        Run cargo check on affected files (or language-appropriate equivalent).
+        Record IntegrationCheckpoint with pass/fail.
+      - Step integration: after all baby steps in step complete:
+        Run step-level test command from IntegrationSpec.
+        If fail: BubbleUp to step level (try different decomposition).
+      - Phase integration: after all steps in phase complete:
+        Run phase-level integration test.
+        If fail: BubbleUp to phase level.
+      - Concept integration: after all phases in concept complete:
+        Run concept-level end-to-end test.
+        If fail: BubbleUp to concept level.
+      - Integration test stubs generated by L2 builder from IntegrationSpec.
+        Executor fills in test bodies during TESTING_FIRST.
+      - All integration results logged to SSB.
+    DETERMINISTIC_CHECK:
+      - Integration checkpoint tests from 4E.8 all pass
+      - cargo test --workspace (zero regressions)
+    ACCEPTANCE:
+      - Integration runs at all 4 levels (baby step, step, phase, concept)
+      - Integration failures trigger appropriate bubble-up level
+      - All integration results in SSB
+
+  4E.12 DECOMPOSITION TREE MEASURE
+    PRE_GATE:
+      - 4E.11 complete
+    TASK:
+      - Baby steps per idea: average, median, max across test corpus
+      - FSM cycles per idea: count of TESTING_FIRST->EXECUTING->AUDITING cycles
+      - Bubble-up rate: % of baby steps that required escalation
+      - Integration pass rate: % of integration checkpoints that passed first time
+      - Traversal overhead: time in TreeNavigator vs time in agent execution
+      - Context size per baby step: p50, p95 token count (target: <2K)
+      - Total execution time per idea: seconds (measure on test hardware)
+      - Cache effectiveness: research calls saved by ResearchCache
+    DETERMINISTIC_CHECK:
+      - Metrics appended to .elai_cc/metrics/phase_4E.toml
+      - grep "baby_steps_per_idea\|bubble_up_rate\|context_p50" phase_4E.toml >= 3
+    ACCEPTANCE:
+      - All decomposition tree metrics collected
+      - Context p95 < 2K tokens (baby steps are truly atomic)
+      - Traversal overhead < 5% of total time (navigator is not the bottleneck)

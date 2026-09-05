@@ -1,0 +1,7 @@
+needs claude code leak rust port
+
+we will make first the personal workflow with the custom claude code harness and then use it to implement the workflow in empire
+
+the focus points are 1- deterministic inputs/outputs > 2- token efficiency > 3- TDD driven approach (validate the LLM results in a way the LLM is the creator and deterministic scrips are the testers)
+
+If an agent works on a problem for 50+ turns, its context window fills with junk, causing it to forget original instructions, fix; Progress, Compress, Reset to 

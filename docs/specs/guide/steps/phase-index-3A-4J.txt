@@ -1,0 +1,390 @@
+PHASE INDEX: 3A through 4J (includes 3J)
+Purpose: concise summary for LLM context. Read individual phase files for full details.
+
+PHASE 3: ORCHESTRATION LAYER (all require Phase 0-2 complete)
+
+  3A: FULL FSM (INTERACTIVE MODE)
+    Extends minimal IDLE->EXECUTING->IDLE to all 9 states (including CONFIGURING):
+      IDLE -> PLANNING -> FEASIBILITY_PROBE -> TESTING_FIRST -> EXECUTING
+        -> AUDITING -> MEMORIZING -> COMPLETE -> IDLE (plus IDLE -> CONFIGURING -> IDLE)
+    Deliverables: (1) FSM state machine with transition validation matrix,
+      (2) phase-aware tool/rule loading per state, (3) 7 evidence gates (DAIRA-derived),
+      (4) INTERACTIVE gate (pause + evidence + human APPROVE/REJECT/MODIFY/REDIRECT),
+      (5) risk-level classification (LOW/MEDIUM/HIGH) per transition.
+    ReplanRequest support (MINOR/MAJOR). State persisted to msgpack.
+    AUTONOMOUS auto-advance deferred to Phase 4G.
+    Key specs: orchestrator.txt S2, S13; architecture-overview.txt S4, S5, S6.
+
+  3B: SSB (SHARED STATE BOARD)
+    Inter-agent communication via SQLite WAL with single-writer guarantee.
+    Schema: ssb table (17 action_types including reasoning_trace, phase_complete, memory_monitoring)
+      + ssb_files junction.
+    Deliverables: (1) SSB core (schema + WAL config + r2d2 read pool + migration),
+      (2) conflict detection (JOIN query with project_id isolation + rarray),
+      (3) typed action validation (17 payload structs, msgpack serialized).
+    Single tokio::mpsc writer channel. broadcast for event notification (Arc<[u8]> payload).
+    Append-only enforced at type level + runtime update_hook. ClockProvider for timestamps.
+    Key specs: orchestrator.txt S3, S5, S7A; audit-results.txt BLOCKs 1,5,8.
+
+  3C: AGENT SYSTEM
+    Agent spawning, lifecycle, checkpointing, crash recovery, supervision, anti-spiral.
+    Agents run in-process (Tier A only). Process separation deferred to 4A (Tier C).
+    Deliverables: (1) AgentPool trait + AgentHandle + 8 AgentRoles (including Designer),
+      (2) lifecycle with 4 death classifications (CLEAN_EXIT/CRASH/TIMEOUT/BUDGET_EXCEEDED),
+      (3) checkpointing (5 msgpack files per agent, automatic triggers),
+      (4) recovery from checkpoint (same agent_id preserved, SSB trace continuity),
+      (5) Erlang-derived supervision tree (max_restarts per phase, escalation policy),
+      (6) anti-spiral detection (3x same step -> escalate, blake2s content hash).
+    Heartbeat 5s/15s timeout. Tier A invisible walls (hidden paths return "not found").
+    ReplanRequest: max 1 per agent per phase. ReasoningTraceEntry written to SSB per GRC step.
+    Key specs: orchestrator.txt S7, S7A, S8, S12; architecture-overview.txt S4, S9.
+
+  3D: BSP SUPERSTEPS + CHANNELS
+    Deterministic macro-level orchestration via BSP superstep model.
+    4 channel types: LastValue<T>, Topic<T>(accumulate), EphemeralValue<T>, UntrackedValue<T>.
+    BinaryOp intentionally dropped (non-deterministic).
+    Deliverables: (1) channel type definitions with DeepSizeOf for UntrackedValue,
+      (2) BSP superstep loop (snapshot -> clear topics -> execute -> apply writes -> clear ephemeral -> evidence gate -> checkpoint),
+      (3) deferred node execution (post-barrier, single pass, no cascading),
+      (4) checkpoint + memory management (UntrackedValue never checkpointed, EphemeralValue clearing recorded in SSB for replay),
+      (5) parallel agent execution (upgrade spawn_parallel from sequential stub to tokio::JoinSet with VRAM-aware scheduling).
+    Straggler handling via per-agent timeout reusing 3C heartbeat.
+    Determinism guarantee in simulation mode (mocked agents, fixed seed).
+    Key specs: orchestrator.txt S4, S5; audit-results.txt BLOCK 4.
+
+  3E: CONTEXT BUDGET ALLOCATOR
+    Fixed-slot context budget distribution ensuring model context window never exceeded.
+    8 slots: SystemPrompt, Rules, PhaseSpec, RepoMap, CodeContext, SsbEntries, GrcHistory, OutputReserve.
+    Dynamic slots (4-7) distributed by percentage (15/40/25/20). Floors: SsbEntries>=200, GrcHistory>=500, OutputReserve>=2000.
+    2 cache breakpoints (after PhaseSpec, after CodeContext) aligned with provider prefix caching.
+    SSB entry filtering by file_overlap_score = |intersection| / |agent.files|.
+    3-level adaptive reduction (FilteredByRelevance -> ReducedGranularity -> ReducedScope -> Terminal).
+    Terminal: INTERACTIVE=ESCALATE, AUTONOMOUS=SPLIT_TASK (Phase 4G).
+    Assembly latency target: <50ms. Token counting: estimate for allocation, exact for validation.
+    Key specs: orchestrator.txt S6; providers.txt S1, S10; prompt-architecture.txt S3.
+
+  3F: RULES ENGINE
+    Deterministic rule enforcement replacing probabilistic prompts. Rules are DATA in SQLite.
+    Predicate DSL: 5 types (AST_PATTERN, GREP_PATTERN, SCHEMA_REQUIRED, METRIC_GATE, COMPOSITE).
+    Three-tier enforcement: Tier 1 (deterministic code), Tier 2 (constrained decoding), Tier 3 (prompt+auditor).
+    Deliverables: (1) SQLite schema, (2) predicate types + Verdict enum (ALLOW/WARN/BLOCK/ESCALATE),
+      (3) RuleEngine trait (evaluate, get_active_rules, compile_predicate),
+      (4) lifecycle state machine (PROPOSED->CANDIDATE->SHADOW->ACTIVE->RETIRED with metric gates),
+      (5) predicate DSL interpreter (evaluation order: METRIC<GREP<AST<COMPOSITE, short-circuit on BLOCK),
+      (6) phase-aware + domain-aware activation (bitmask + domain detection),
+      (7) self-discovery from auditor violations (3+ occurrences -> auto-propose, compile-time validation),
+      (8) seed data (~33 rules, including post-tool completeness GREP rules), (9) contract test suite (>=254 static + proptest), (10) benchmarks.
+    Trust boundary: auditor-sourced rules need independent approval. mutable=0 rules exempt from auto-retirement.
+    Key specs: rules.txt (full); prompt-architecture.txt S1-2, S4-6.
+
+  3G: HIERARCHICAL PLAN MANAGEMENT
+    Two-artifact representation: skeleton (fits 2-4k tokens, always in Slot 3) + per-phase elaboration.
+    Types: PlanSkeleton (TOML), PhaseEntry (goal<=120 chars, inputs/outputs as ContractRef, depends_on/depended_by),
+      PhaseDetail (contracts + content + token_count), ExtractedContracts.
+    Contract extraction: input_contracts from deps' outputs, output_contracts from dependents' inputs.
+    Coherence enforcement: 3 auditor checks (contracts satisfied, no undeclared interfaces, version incremented).
+    Dependency propagation via Kahn's algorithm (topological sort, cycle detection).
+    stub_reference emitted for un-elaborated phases. Version tracking at phase and skeleton level.
+    Key specs: orchestrator.txt S9; pipeline-factory.txt S2.
+
+  3H: SESSION HANDOFF (CMV-derived)
+    DAG-based session state versioning with structurally lossless trimming.
+    SQLite schema: snapshots table + snapshot_context (per-message rows).
+    3-pass trimming: identify (tool results > stub_threshold) -> stub (replace with Stub struct + SSB seq ref) -> validate (verify SSB seq exists).
+    User/assistant messages NEVER stubbed. Slots 1-3 never stubbed (cache prefix preserved).
+    Branch-and-explore: max 3 active branches, merge picks winner, abandoned branches tagged (not deleted).
+    Stub recovery from SSB with blake3 integrity verification.
+    Handoff trigger: 85% token budget. Checkpoint trigger: every GRC step, tool call, phase transition.
+    Key specs: orchestrator.txt S10; CMV paper (arxiv 2602.22402).
+
+  3I: DETERMINISTIC SIMULATION TESTING (DST)
+    Proves FSM+SSB+BSP correctness via deterministic simulation.
+    Reference model (digital sibling) as infallible oracle: pure F(State, Event) -> State.
+    Uses proptest-state-machine for stateful PBT with auto-shrinking (10K+ random sequences).
+    FsmEvent enum: PhaseTransition, AgentSpawn/Crash/Cleanup, ToolCall, FileWrite, GrcStep, SSBWrite, ConfigChange, SuperstepBoundary.
+    madsim for IPC fault injection (packet loss, jitter, disconnect, SIGKILL simulation).
+    BSP determinism: same seed = identical checkpoints. Entropy quarantine enforced.
+    Adversarial state space: anti-spiral, evidence gate bypass, context budget overflow, SSB concurrent writes.
+    Key specs: orchestrator.txt S4, S5, S15; core.txt S4; external-analysis.txt DST section.
+
+
+  3K: RAG PRODUCTION HARDENING (internal knowledge/ crate)
+    Upgrade ELAI internal retrieval pipeline (.elai_cc/crates/knowledge/) from prototype
+    to production quality. Pipeline has DKG+BM25+dual-vector+PageRank+CatRAG+A-RAG+reranker
+    but uses 50-line fixed windows for BM25, single-query search, no HyDE, no tier routing.
+    Deliverables:
+      (1) Adaptive chunking: replace 50-line BM25 windows with AST-aware splitting.
+          Reuse DKG tree-sitter grammars (Phase 1A). Split at fn/impl/struct/class boundaries.
+      (2) Query expansion: template-based multi-query retrieval (no LLM). Keyword extraction,
+          code symbol CamelCase/snake_case variants, synonym expansion. Merge + dedup before reranker.
+      (3) HyDE (arxiv 2212.10496): generate hypothetical answer via inference sidecar,
+          embed that instead of raw query, rerank against original query. Complex queries only.
+      (4) Query tier routing: FAST (<20ms, BM25 only), STANDARD (<200ms, hybrid+reranker),
+          DEEP (<5s, expansion+HyDE+hybrid+reranker). Auto-detect from query characteristics.
+          Distinct from Phase 1I SearchMode cascade (degradation vs intentional tier selection).
+      (5) Retrieval quality benchmark: 30 queries, measure Recall@5, Recall@10, MRR, latency per tier.
+    Prerequisites: Phases 1A-1I complete. Phase 3J for HyDE only (step 3K.3).
+    Key papers: HyDE (arxiv 2212.10496).
+    Touches: knowledge/src/bm25.rs, knowledge/src/pipeline.rs, knowledge/src/lib.rs.
+
+  3J: vLLM INTEGRATION + ADVANCED PROVIDERS + PLUGINS + ORCHESTRATOR HARDENING
+    Integrates vLLM as production inference backend, enabling layer-level optimizations.
+    Deliverables: (1) VllmProvider implementing LlmProvider trait (HTTP client, streaming SSE,
+      health check), (2) ModelPool vLLM backend (tensor parallelism, delegated GPU memory),
+      (3) DoLa layer-contrast decoding (dynamic premature layer selection via JSD, per-role
+      enable/disable, alpha=0.1 plausibility, model-specific candidate buckets),
+      (4) TurboQuant KV cache compression evaluation (FEASIBLE/DEFER decision with evidence),
+      (5) ActAdd steering vectors (per-role contrast pairs, mid-layer injection, composable),
+      (6) GPU multiplexing (VRAM safety margin, colocation policy, Murakkab-derived SLO tiers),
+      (7) predictive model pre-loading (FSM-state-driven background loads),
+      (8) workload profiling (per-agent per-phase metrics to SSB),
+      (9) MILP scheduling evaluation (good_lp + HiGHS, ADOPT/DROP decision, greedy baseline),
+      (10) MCP bridge (external server connection, error recovery, security),
+      (11) tiered static analysis hooks (T1<1ms/T2<10ms/T3<5ms, no LLM in hot path),
+      (12) AppContainer isolation (Windows, Job object limits, self-mod locks),
+      (13) all 17 SSB action_types with typed validation,
+      (14) Gemma4 31B validation via CPU offload (steering vectors, DoLa, codebooks).
+    Dual-model testing: E2B on RTX 3060 12GB (primary, all steps), 31B on CPU offload
+      64GB RAM (slow, artifact generation + validation). EAGLE-3 31B deferred to 48GB GPU.
+    Feature-gated: vLLM and MCP behind cfg features (non-vllm builds unaffected).
+    Key papers: DoLa (2309.03883), TurboQuant (2504.19874), ActAdd (2308.10248),
+      EAGLE-3 (2503.01840), TIDE (2602.05145), Murakkab (2508.18298).
+    Key specs: providers.txt S3-4; plugins.txt S3-4; orchestrator.txt S3,S7A,S12.
+    New sub-steps (added during 3J implementation):
+      3J.COMPOSE: DoLa + TurboQuant composed inference sidecar (Python server,
+        Anthropic-compatible protocol, auto-start from CLI).
+      3J.LOCAL: CLI --local mode with full interactive experience via sidecar.
+      3J.PIPELINE: Wire CLI ConversationRuntime through orchestrator pipeline.
+        InferenceDispatcher trait with ApiDispatcher + LocalDispatcher.
+        FSM-aware tool filtering, context budget integration, backend selection
+        via elai_cc.toml [backend] mode = "local" | "api" | "hybrid" | "auto".
+        Both local and API backends use full phase 1-3 infrastructure.
+      3J.WIRE.FOUNDATION: Ssb + Fsm + InteractiveGate into LiveCli.
+      3J.WIRE.BUDGET: Real ContextBudget slot allocation (replace zeroed [0,0,0]).
+      3J.WIRE.RULES: Rules engine into pre-tool hooks + seed rules + strip .md from local prompt.
+      3J.WIRE.SESSION: SessionDag replacing raw jsonl persistence + auto-trim.
+      3J.WIRE.PLAN: PlanSkeleton awareness, /plan command, phase context in budget Slot 2.
+      3J.WIRE.STUBS: TreeSitterAstEvaluator + DkgQuerierAdapter replacing Pass/Empty stubs.
+      3J.14 WIRE.E2E: End-to-end local pipeline — ollama fallback, knowledge retrieval
+        (QueryPipeline/BM25) wired into prompt assembly, release binary build.
+        Makes "elai.bat" start the full Phase 0-3 pipeline as a single command.
+      3J.15 (was 3J.14): Gemma4 31B CPU offload validation.
+        See phase-3J.txt for detailed step definitions.
+
+
+PHASE 4: PRODUCTION HARDENING (requires Phase 3 INTERACTIVE loop validated)
+
+  4A: AGENT PROCESS ISOLATION (Tier C)
+    Agents run as isolated OS processes communicating via IPC (unix socket / named pipe).
+    Wire protocol: 1-byte version + 4-byte length + postcard payload. 15 message types.
+    ToolFilter (whitelist) enforced at IPC layer. AgentDispatchConfig is authoritative config source.
+    phase_complete SSB record written at swap protocol boundary (atomic durability marker).
+    Agent binary (elai_cc_agent): NO LLM client, NO network, NO tools. All proxied via IPC.
+    Linux: clone(NEWNS|NEWPID|NEWNET), seccomp-bpf (IPC_BASELINE + NETWORK_EXTRA for researcher),
+      prctl(PR_SET_NO_NEW_PRIVS), zero capabilities, rlimits, /proc masked.
+    Windows: AppContainer (preferred) or restricted token + Job object (documented-weaker fallback).
+    GRC budget enforced by orchestrator (not agent). GroundingRequest proxied via IPC.
+    Self-mod locks: IPC-level + filesystem-level + git-level. Auditor findings gated (PROPOSED only).
+    Key specs: orchestrator.txt S12; tools.txt S8-9; reasoning.txt S4; audit-results-phase4.txt.
+
+  4B: TOOLS (git, validation, trace, edit matching, compilation)
+    Full tool suite in orchestrator process, accessed via IPC ToolRequest/ToolResult.
+    Deliverables: git2 native ops (auto-commit, branch per plan, safe undo),
+      5-tier validation pipeline (determinism -> quality/AST -> unit -> integration -> stress),
+      DAIRA trace (structured markers), 3-tier edit matching (exact -> whitespace-normalized -> ellipsis),
+      ShortCoder AST-preserving simplification (10 tree-sitter rules),
+      failure taxonomy (9 deterministic regex categories),
+      file read enhancement (outline mode >300 lines),
+      incremental compilation feedback (async, max 3 retries, skips TESTING_FIRST).
+    EXTENSION — Baby Step Integration Test Runner (steps 4B.6-4B.7):
+      IntegrationTestRunner operates per-baby-step and per-level in the DecompositionTree.
+      4 granularity levels: BABY_STEP (cargo check, <5s), STEP (cargo test module, <30s),
+        PHASE (cargo test -p crate, <60s), CONCEPT (cargo test --workspace, <120s).
+      New types: IntegrationTestRunner, IntegrationLevel, IntegrationResult.
+      Triggered by orchestrator after baby step acceptance, not by agent.
+      Uses existing BashSandbox, FailureTaxonomy, incremental compilation infrastructure.
+    Key specs: tools.txt (full); DAIRA arxiv 2603.22048; ShortCoder arxiv 2601.09703.
+
+  4C: PLUGINS (hooks + tiered static analysis)
+    Hook system (PreToolUse/PostToolUse/Stop/PreCompact) intercepts IPC messages in orchestrator.
+    Tiered static analysis: T1 (predicate DSL from rules.db, <1ms), T2 (tree-sitter parse, <10ms for <5k lines),
+      T3 (pattern-match only, no LLM, <5ms, fires only on WARN without BLOCK).
+    Error sanitization: agent sees "tool call rejected by policy", never rule IDs or internal details.
+    Circular trust prevention: orchestrator normalizes findings, AUDITOR rules need independent approval.
+    ShortCoder runs in PostToolUse on AgentResponse before auditor view.
+    Key specs: plugins.txt; orchestrator.txt S12; rules.txt S3, S6.
+
+  4D: PIPELINE FACTORY L1 (designer + FlashResearch + recursive decomposition)
+    Research Agent + Designer (distinct from Executor) produce pipelines from task descriptions.
+    Designer receives ResearchReport + SystemConstraints (model_max_context, available_for_work,
+      avg_file_tokens, avg_test_tokens). Designer produces PipelineSpec, not code.
+    Research Agent designs pipelines from task descriptions via tree-structured research with GRC grounding.
+    ResearchTree: breadth_factor, depth_limit, max_iterations, dual-threshold convergence (phi/psi).
+    Per-node loop: FORMULATE -> SEARCH -> EXTRACT (sampling-based) -> REFLECT -> CONVERGE/EXPAND/ITERATE.
+    Source quality: 5-tier deterministic domain-based lookup (no LLM).
+    Speculative execution (cloud only, bounded by speculative_depth * breadth_factor).
+    Outputs: PipelineSpec + QualitySpec via structured ResearchReport.
+    Research Agent runs as Tier C isolated process with web search via IPC proxy only.
+    EXTENSION — Recursive Decomposition (steps 4D.7-4D.10):
+      Fractal research pipeline: Idea -> Concepts -> Phases -> Steps -> BabySteps.
+      Each tree level triggers grounded FlashResearch (not just top-level).
+      New types: ConceptDecomposition, ConceptNode, PhaseNode, StepNode, BabyStepSpec (8 blocks:
+        GROUNDING, PRE_GATE, TASK, TDD, DETERMINISTIC_CHECK, ACCEPTANCE, INTEGRATION, EXIT_CRITERIA).
+      TechStackDecision with DecisionSource (RESEARCH/EXISTING_PROJECT/USER_SPECIFIED/FALLBACK).
+      PackageRef with API_REGISTRY_CHECK (verify_packages prevents hallucinated deps).
+      ResearchCache: LRU cache preventing redundant FlashResearch across siblings.
+      INTERACTIVE mode: alternatives presented to user. AUTONOMOUS: highest-evidence auto-selected.
+      Steps: 4D.7 skeleton, 4D.8 tests (13+, expected FAIL), 4D.9 implement, 4D.10 measure.
+    Key specs: pipeline-factory.txt S1-9; FlashResearch arxiv 2510.05145.
+
+  4E: PIPELINE FACTORY L2 (builder + DAG repair + Phase Sizing + DecompositionTree)
+    Deterministic pipeline assembly from PipelineSpec. No LLM. Pure Rust in orchestrator crate.
+    5-stage elaboration pipeline: Research -> Plan Assembly -> Structural Validation -> Phase Sizing -> Feasibility Probe.
+    Phase Sizing (Stage 3.5): estimates phase_complexity from structural proxies, splits phases
+      that exceed available_for_work * 0.6. Split by contract boundaries, max depth 2.
+    Produces ExecutablePipeline: FSM states, dependency graph (DAG), agent configs, rule bindings,
+      resource estimates, test harness skeleton, novel_step_ids (for 4F).
+    8-point structural validation (includes visual_check adapter mapping) + Kahn's cycle detection before producing ExecutablePipeline.
+    DAG repair loop (AutoB2G-derived): REORDER for cycles, SUBSTITUTE for missing tools.
+      Max T_DAG=10 rounds. Non-repairable -> escalate. Deterministic only (no LLM repair).
+    Assembly target: <1s for 10-phase pipeline.
+    EXTENSION — DecompositionTree + TreeNavigator (steps 4E.7-4E.12):
+      DecompositionTree is the primary execution artifact — typed Rust struct, not prompts.
+      TreeNavigator: deterministic depth-first traversal through baby steps.
+      Baby step execution cycle (8-step per baby step):
+        context assembly -> pre_gate -> TESTING_FIRST -> EXECUTING -> AUDITING ->
+        acceptance -> integration -> exit criteria.
+      Same FSM states (TESTING_FIRST/EXECUTING/AUDITING) cycle at baby step granularity.
+      BubbleUpHandler: failure cascades up tree levels with configurable retry thresholds.
+        BabyStep(3 retries) -> Step(2) -> Phase(1) -> Concept(0) -> Escalate.
+        Actions: ResearchAlternative, RedecomposeStep, ReplanPhase, ReplanConcept, Escalate.
+      Integration checkpoints at 4 levels:
+        BABY_STEP (cargo check, <5s), STEP (module tests, <30s),
+        PHASE (crate tests, <60s), CONCEPT (workspace tests, <120s).
+      New types: DecompositionTree, TreeNavigatorState, FailureRecord, BabyStepResult,
+        BabyStepOutcome, BubbleUpEvent, DecompositionLevel, BubbleUpAction, BubbleUpPolicy,
+        IntegrationCheckpoint, TreeAutoAdvancePolicy.
+      Steps: 4E.7 skeleton, 4E.8 navigation+bubble-up tests, 4E.9 implement navigation,
+        4E.10 implement bubble-up, 4E.11 integration checkpoint tests, 4E.12 measure.
+    Key specs: pipeline-factory.txt S2-3, S10; AutoB2G arxiv 2603.26005.
+
+  4F: FEASIBILITY_PROBE
+    System probe detects hardware/resource constraints before execution.
+    Novel step stubs (<50 lines) test feasibility in Tier C sandbox with branch-and-explore.
+    Feasibility executor uses AgentDispatchConfig overrides: GRC 3/600, tool_filter=[stub_write, bash],
+      25s graceful / 30s hard kill. DispatchStage.agent is authoritative (not AgentRole alone).
+    Skip criteria (both must hold): zero novel steps AND all resources >= 20% margin.
+    SystemProbe: GPU via nvml-wrapper, RAM/disk via sysinfo. Constraint check is pure function.
+    Stub harness: reuses 4A agent process with FEASIBILITY tool restrictions.
+    Dual timeout: graceful at 25s, hard kill at 30s. Max 3 alternatives per novel step, then escalation.
+    Output: stub_results.msgpack (FeasibilityReport).
+    EXTENSION — Baby Step Feasibility (steps 4F.7-4F.8):
+      Probes at baby step level within DecompositionTree (not just top-level novel steps).
+      Novel baby step detection: unverified PackageRef, unused framework, untested capability.
+      Feasibility runs PER CONCEPT (not all at once): before executing concept N, probe
+        all novel baby steps in concept N. Concept 2's approach may change based on concept 1.
+      New types: BabyStepFeasibilityReport, BabyStepStubResult, BabyStepEscalation.
+      Steps: 4F.7 tests, 4F.8 implement.
+    Key specs: orchestrator.txt S2, S10; pipeline-factory.txt S3-4; providers.txt S4.
+
+  4G: AUTONOMOUS MODE ENABLEMENT
+    Adds auto-advance logic on top of validated INTERACTIVE pipeline. No new FSM states.
+    AutonomousGate wraps InteractiveGate using DispatchPipeline/PlanDispatchTable types:
+      checks evidence artifacts first, delegates to human only on HIGH-risk gate, missing
+      evidence, or escalation trigger.
+    6 evidence checks (one per gate from S13): knowledge readiness, zero UNGROUNDED,
+      tests fail correctly, test flipped, zero BLOCKs, DKG+changelog present.
+    Escalation triggers: anti-spiral (3x), HIGH risk, ReplanRequest(MAJOR), circuit breaker (>10 auto-advances).
+    SPLIT_TASK on context budget Terminal: max 4 sub-tasks, max depth 2 (ties to Phase Sizing), sequential merge.
+    SUBSTITUTE_MODEL on max_restarts: iterate fallback_chain via ModelPool swap protocol.
+    Mode switch (/mode autonomous|interactive) takes effect at next gate. Per-session, not global.
+    EXTENSION — Tree-Level Autonomous Advance (steps 4G.7-4G.8):
+      Auto-advances at baby step granularity within DecompositionTree.
+      Per-baby-step auto-advance: TESTING_FIRST->EXECUTING (tests fail) -> EXECUTING->AUDITING
+        (test flipped) -> AUDITING->ACCEPTANCE (zero BLOCKs) -> ACCEPTANCE->NEXT (criteria met).
+      Risk levels per decomposition level: BabyStep=LOW, Step=LOW, Phase=MEDIUM, Concept=HIGH.
+      Concept-level bubble-up always requires human (HIGH risk, fundamental approach change).
+      Circuit breaker: max 50 auto baby steps per concept before forced human check.
+      New type: TreeAutoAdvancePolicy (merges with existing EscalationPolicy).
+      Steps: 4G.7 tests, 4G.8 implement.
+    MODEL SELECTION UI (from 3J.LOCAL):
+      CLI startup model routing: --local (all local), --api (all cloud), --hybrid (per-role).
+      AgentDispatchConfig maps role -> model -> provider -> optimizations.
+      Runtime: elai --local = sidecar (single model chat, scope A, built in 3J).
+               elai --hybrid = per-role routing (executor=local 31B, auditor=API, etc, scope B).
+               elai (default) = cloud API only (current behavior).
+      /model command at runtime to inspect/change routing without restart.
+      Config from elai_cc.toml [agents.{role}.backend] = "local" | "api" | "auto".
+      Auto mode: use local if sidecar healthy, fall back to API if not.
+    Key specs: architecture-overview.txt S6; orchestrator.txt S6, S7, S13; providers.txt S4.
+
+  4H: SELF-MODIFICATION (DGM/CEL/DarwinNet-derived) -- REVISED 2026-04-15
+    System improves its own configs, rules, and data tables from pipeline outcome data.
+    Two self-modification classes:
+      Class A (data-table updates): additive rows in deprecated_patterns, FailureTaxonomy,
+        lazy-code regex, source-tiers. Validated by false-positive rate, no staged eval.
+      Class B (parameter changes): ETC threshold, baby step LOC, AB-MCTS temps, context
+        slot weights, freshness half-life, etc. Validated by staged eval (10/50/200).
+    Layer 1: automatic metrics from PipelineOutcome (no LLM). Security/safety rules never auto-adjusted.
+    Layer 1A: automatic data-table growth (no LLM, no staged eval). FPR validation.
+      Wires into: anti-staleness (deprecated_patterns), reasoning (FailureTaxonomy expansion),
+      code completeness (lazy-code patterns), pipeline modes (source-tier updates).
+      Grounding: DarwinNet Gene Pool (section IV-A2) stores successful patterns for reuse.
+    Layer 2: log-driven proposals (reads SSB + reasoning traces), DGM sigmoid-weighted parent selection
+      (lambda=10, alpha_0=0.5), staged evaluation (10/50/200 tasks), TestOutcomeReport
+      (4-category SWE-bench grading, PASS_TO_FAIL -> immediate reject).
+      Proposals routed by AllowedConfigKey enum: DataTable -> Layer 1A, Parameter -> Layer 2.
+    Layer 3: structural changes (FSM states, agent roles, GRC protocol) -- human-only, stubs in this phase.
+    Config archive: max 50 variants per PipelineMode, deceptive-dip resilient.
+    Score normalization: weighted component metrics, always in [0.0, 1.0].
+    MSI (Modification Solidification Index): exponential-decay weighted moving avg (lambda=0.3)
+      of delta_score over N=10. Per-PipelineMode (SURGICAL/GREENFIELD tracked independently).
+      IMPROVING (>0.3), STABILIZING (-0.1 to 0.3), DIVERGING (<=-0.1 -> pause + alert).
+    AllowedConfigKey enum: closed set of mutable keys. Locked keys (cloud budget, gate defs,
+      score weights) never modifiable. Adding new keys requires Layer 3 human approval.
+    Safety: 4 enforcement layers (dispatch + IPC + filesystem + git).
+      Self-mod agent cannot read lock list. Cannot modify locked config keys.
+      Auto-revert on >10% degradation over 3 pipelines. Trigger task detects objective hacking (DGM Appendix H).
+    Anti-staleness wiring: triggers nightly dep audit, Layer 1A grows deprecated_patterns,
+      triggers steering vector refresh on deprecated_patterns change.
+    Reasoning wiring: failure_taxonomy_misses -> Layer 1A -> new FailureTaxonomy categories.
+    Key specs: self-modification.txt; DGM arxiv 2505.22954v3; DarwinNet arxiv 2604.01236.
+    Key design docs: anti-staleness-enforcement.txt, reasoning-architecture-design.txt,
+      code-completeness-enforcement-design.txt, token-efficiency-design.txt, pipeline-modes-design.txt.
+
+  4I: MEDIA VALIDATOR (conditional -- only if pipeline produces media)
+    Validates non-code outputs (images, 3D, audio, UI screenshots).
+    Tier 1: deterministic checks via external tools (ImageMagick, FFmpeg, Tesseract, Blender CLI).
+      SSIM/LPIPS via ONNX Runtime CPU EP only (GPU non-deterministic). <100ms target.
+    Tier 2: VLM structured output (advisory only, Tier 1 has veto).
+      Mode A: Qwen3.5-VL-30B-A3B via ollama (~17GB Q4). Mode B: InternVL3.5-38B via SGLang only (~38GB 8-bit).
+      Constrained decoding enforces VlmValidationOutput JSON schema.
+    CLAP for audio-text similarity (~200M params, ~0.4GB FP16, always-loaded when audio active).
+    Lazy loading: media_validator only instantiated when PipelineSpec has media steps.
+    Veto logic: Tier1 fail -> Fail. Tier1 pass + Tier2 disagree -> HumanReview. VLM unavailable -> Degraded.
+    Bounded concurrency: max 4 Tier 1, max 1 Tier 2, queue depth 64.
+    Render-Capture-Evaluate extension: MediaRenderAdapter trait provides "eyes" to the pipeline.
+      Adapters per output type (Playwright for web, Blender CLI for 3D, FFmpeg for animation).
+      Renders output -> captures screenshot/image -> feeds to Tier 2 VLM for evaluation.
+      Enables visual feedback loop: executor produces -> adapter renders -> VLM evaluates ->
+        structured feedback -> executor iterates. Max N iterations before escalation.
+    Key specs: media-validator.txt; pipeline-factory.txt S10.
+
+  4J: EMPIRE INTEGRATION (conditional -- only when Empire codebase accessible)
+    Connects elai_cc to the Empire ecosystem via FactoryLine protocol.
+    Deliverables: (1) FactoryLine protocol client (pure Rust, newline-JSON over Unix socket / TCP),
+      (2) brain registration with heartbeat monitoring + reconnection + re-registration,
+      (3) replace broken brainctl CLI (orchestrator drives FactoryLine directly, zero Python deps),
+      (4) Empire event subscription with SSB bridge (rate-limited, filtered, priority-classified,
+        Empire events become GRC grounding source),
+      (5) capability exposure (ElaiNeuron registers 4 capabilities: task_submit, task_status,
+        pipeline_result, health_check — ToolFilter enforced, zero internal state leaked),
+      (6) Empire repair pipeline (detect 3 verified issues: circular deps, hard imports,
+        stdlib shadow — generate PipelineSpec per issue, validate with TestOutcomeReport).
+    Cross-platform: UnixTransport (Linux) + TcpTransport (Windows) via generic trait.
+    Graceful degradation: works without Empire connection. Feature-gated: cfg(feature="empire").
+    Empire brings: live deployment environment, multi-brain coordination, tested IPC/bus layer.
+    elai_cc brings: self-improvement, grounded reasoning, pipeline execution, schema validation.
+    Key specs: empire.txt (full); orchestrator.txt S3, S7, S12.
+
+

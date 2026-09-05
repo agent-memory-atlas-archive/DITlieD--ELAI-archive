@@ -1,0 +1,662 @@
+TECHNICAL ANALYSIS V3: LOCAL INFRASTRUCTURE, PROACTIVE THINKING, AUTOMATIC TASK BREAKDOWN, DETERMINISTIC DISPATCH, CONTEXT PRESERVATION
+Date: 2026-04-06
+Status: AUDITED AND RESOLVED — 7 BLOCKs resolved, 5 WARNs resolved
+Supersedes: technical-analysis-v2.txt (7 BLOCKs), technical-analysis-local-proactive-breakdown.txt (v1)
+Audit trail: v1 audited (8 BLOCKs -> resolved), v2 audited (7 BLOCKs -> resolved here)
+
+Context: five user concerns about elai_cc's technical design, analyzed against the
+full spec suite, subjected to two rounds of adversarial audit, all findings resolved.
+
+
+================================================================================
+CONCERN 1: EVERYTHING MUST BE LOCAL (PROJECT-SCOPED)
+================================================================================
+
+Status: RESOLVED (v1, unchanged in v2/v3).
+
+Spec alignment: elai_cc is fully local by design.
+  - Knowledge engine: embedded Rust library. DKG (SQLite), BM25 (tantivy),
+    vectors (ONNX in-process via ort). Orchestrator calls KnowledgeEngine::query().
+  - Storage: all under .elai_cc/projects/{id}/. SSB, DKG, vector cache, rules.db,
+    session DAG, BM25 index.
+  - LLM inference: ollama localhost (Phase 0-1), vLLM local (Phase 2+).
+    Cloud APIs are fallback/optional.
+  - Orchestrator: Rust binary. Zero VRAM. Persists in RAM + SQLite.
+
+Resolved gap: ONNX model storage.
+  - Canonical path: .elai_cc/models/onnx/
+  - Pre-staged via setup script (outside session), not auto-downloaded.
+  - Setup: download + blake2 hash verify + write index_version.toml.
+  - Missing models at startup -> DEGRADED mode (BM25_ONLY), not crash.
+  - SPLADE storage conditional on Phase 1G/1H KEEP decision.
+
+Claim: "local-first during execution. Cloud optional for research agent.
+ONNX models pre-staged, not auto-downloaded."
+
+
+================================================================================
+CONCERN 2: CONTEXT PRESERVATION ACROSS AGENT SPAWNS
+================================================================================
+
+Status: RESOLVED (v2 + v3 audit fixes for swap protocol).
+
+Core argument (correct, confirmed by auditor):
+The orchestrator is a Rust binary with zero VRAM footprint. It runs in CPU RAM
+and never "unloads" because it was never loaded onto a GPU. Model swaps only
+affect GPU memory. Orchestrator state is CPU-side and persists across all swaps.
+
+Architecture:
+  1. Orchestrator (Rust binary, ~20MB RAM, always running):
+     Owns FSM state, SSB (SQLite), channel state, agent checkpoints,
+     knowledge engine indexes, rules.db, plan skeleton, session DAG.
+     All deterministic Rust code on CPU.
+
+  2. Agent processes (spawned per role, use GPU):
+     Isolated OS processes (Tier C). Receive assembled prompt via IPC.
+     Call LLM via IPC (InferRequest -> orchestrator -> provider -> InferResponse).
+     GRC reasoning chain checkpointed to disk after each step.
+     Return AgentResponse via IPC, process exits.
+
+  3. Model swap protocol (at phase boundaries):
+     [RESOLVED — v2 BLOCK 3 + BLOCK 5 fix: atomic phase_complete record]
+
+     a. Current agent sends AgentResponse via IPC.
+     b. Orchestrator validates AgentResponse against evidence gate.
+     c. Orchestrator writes SSB record: action_type='phase_complete'.
+        Content: { phase_id, agent_id, fsm_state, evidence_artifacts,
+          commit_hashes, test_outcomes }
+        This is the ATOMIC DURABILITY MARKER. Everything before this record
+        is committed. Everything after is idempotent on replay.
+     d. Orchestrator advances FSM state (Fsm::transition()).
+     e. ModelPool unloads current model from GPU.
+        Precondition: phase_complete record flushed to SQLite WAL.
+        Only proceeds after fsync confirms durability.
+     f. ModelPool loads next model (predictive pre-load if VRAM allows).
+     g. Orchestrator spawns new agent process with next phase's AgentRequest.
+     h. Health check inference on new model. Failure -> reload previous model
+        from ModelPool cache (model binary still on disk, re-load ~15-30s).
+
+     Crash recovery semantics:
+       - Crash before step (c): phase_complete absent. On restart, orchestrator
+         re-dispatches the same phase. Agent re-runs from last internal checkpoint.
+         SSB side effects from the crashed run are present but do not conflict
+         (append-only, new run appends new seq numbers).
+       - Crash between (c) and (e): phase_complete present. On restart,
+         orchestrator reads phase_complete, skips re-execution, proceeds to (e).
+       - Crash between (e) and (g): FSM advanced, model unloaded. On restart,
+         orchestrator loads the next model per FSM state and spawns agent.
+       - Crash during (g)/(h): Agent process may be partially spawned. On restart,
+         orchestrator kills orphan processes (stale PID check), re-spawns.
+
+     Swap cost: ~15-30 seconds (model load dominates). Measured on target hardware.
+
+  4. What is preserved across swaps:
+     - FSM state: orchestrator RAM + .elai_cc/sessions/{id}/.fsm-state.json
+     - SSB: all rows from all agents, all phases (SQLite WAL on disk)
+     - Channel values: LastValue/Topic in checkpoints (msgpack)
+     - Plan: skeleton + phase details in .elai_cc/pipelines/{id}/
+     - Knowledge engine: DKG, BM25, vector cache (all on disk)
+     - Agent checkpoints: per-agent state.msgpack, grc_history.msgpack
+     - Reasoning traces: SSB action_type='reasoning_trace'
+
+  5. What is NOT preserved (intentionally):
+     - UntrackedValue channels: in-memory only, never checkpointed.
+       [RESOLVED — v2 WARN 3: UntrackedValue usage contract]
+       CONTRACT: agents MUST NOT use UntrackedValue for state they cannot
+       recompute from SSB or tool re-execution. UntrackedValue is for
+       transient data only (streaming progress, temporary counters).
+       If an agent checkpoint references a channel, that channel MUST be
+       LastValue or Topic (checkpointed). Violation: orchestrator rejects
+       checkpoint that references UntrackedValue channel IDs.
+       Enforcement: checkpoint serializer validates channel references
+       against channel registry type map.
+     - LLM KV cache: model-internal, lost on unload.
+       Mitigated by prompt prefix caching (cache breakpoints Slots 1-3).
+
+  Branch-and-explore for sub-agents (SessionDag):
+  - Before spawning alternative approach: snapshot with tag="branch:{name}".
+  - Agent A on branch A, Agent B on branch B (from same checkpoint).
+  - Max 3 active branches per session.
+  - Winner picked, losers tagged abandoned (not deleted).
+
+Spec files to update:
+  - providers.txt S4: expand swap protocol steps 3-4 with phase_complete
+    precondition, fsync requirement, crash recovery semantics, health check
+    rollback path
+  - orchestrator.txt S3: add action_type='phase_complete' to SSB schema
+    (16 -> 17 action_types)
+  - orchestrator.txt S7: add checkpoint validation rule (no UntrackedValue
+    channel references in serialized checkpoint)
+
+
+================================================================================
+CONCERN 3: PROACTIVE THINKING (COMPLETENESS SYSTEM)
+================================================================================
+
+Status: RESOLVED (v1, unchanged in v2/v3).
+
+Three-mechanism solution:
+
+Mechanism 1 — Scope enumeration in GRC Observe step:
+  Add scope: Option<Vec<String>> to ThinkStep.
+  When AgentGrcConfig.require_scope_enumeration = true (default: true for
+  executor, false for memory-writer), the Observe step must enumerate all
+  task components/modalities before proceeding.
+  Orchestrator validates: every scope item appears in subsequent plan_action.
+  Unaddressed items -> WARN injected into agent context.
+  No new GrcState. Backward compatible.
+
+Mechanism 2 — Post-tool completeness rules (Tier 1 GREP_PATTERN):
+  Rules that scan tool RESULTS for indicators of unextracted content:
+    web_fetch <img> tags -> WARN: "N images not extracted"
+    web_fetch <table> tags -> WARN: "N tables not extracted"
+    file_read TODO/FIXME -> INFO
+  PostToolUse hook, <1ms, deterministic. No pre-execution I/O.
+
+Mechanism 3 — Completeness as QualityMetric:
+  Uses existing QualityMetric type. method: grep_output, count_modalities.
+  L2 validates automated check method exists.
+
+Spec files to update: reasoning.txt (ThinkStep, AgentGrcConfig),
+rules.txt (engineering GREP_PATTERN rules), pipeline-factory.txt (metrics).
+
+
+================================================================================
+CONCERN 4: AUTOMATIC TASK BREAKDOWN
+================================================================================
+
+Status: RESOLVED (v1 Phase Sizing + v2 L1 budget-aware + v3 bootstrap fix).
+
+Three layers of defense:
+
+Layer 1 — L1 Budget-Aware Decomposition (proactive, at PLANNING time):
+  L1 designer receives model context constraints as input:
+
+  SystemConstraints (extended):
+    model_max_context: usize,
+    available_for_work: usize,
+    avg_file_tokens: usize,
+    avg_test_tokens: usize,
+
+  [RESOLVED — v2 BLOCK 4: bootstrap fallback for new projects]
+  When knowledge index has < 10 files:
+    avg_file_tokens = elai_cc.toml [planning.sizing.default_avg_file_tokens]
+      (default: 150)
+    avg_test_tokens = elai_cc.toml [planning.sizing.default_avg_test_tokens]
+      (default: 80)
+  When index has >= 10 files:
+    avg_file_tokens = knowledge_engine.index_stats().avg_file_tokens
+    avg_test_tokens = knowledge_engine.index_stats().avg_test_tokens
+
+  L1 designer's Observe step includes: "Context budget: {available_for_work}
+  tokens. Each file averages {avg_file_tokens} tokens. Phase must touch at most
+  {floor(available_for_work * 0.4 / avg_file_tokens)} files."
+
+  This is a PLANNING CONSTRAINT in the role_prompt. Not a rule.
+
+Layer 2 — L2 Phase Sizing (validation, after structural validation):
+  L2 estimates phase_complexity from structural proxies:
+    phase_complexity = files_touched * avg_file_tokens
+                     + test_count * avg_test_tokens
+                     + contract_count * CONTRACT_OVERHEAD (default 200)
+
+  available_for_work computed from actual context budget allocator formula.
+  Split trigger: phase_complexity > available_for_work * SPLIT_RATIO (0.6).
+  Split by contract boundaries, then directory proximity.
+  Max split depth: 2 (matches Phase 4G).
+  Merge: adjacent phases only, no external dependents between them.
+
+  [RESOLVED — v2 WARN 1: cycle detection at L2 build time]
+  L2 runs Kahn's algorithm on phase dependency graph BEFORE producing
+  ExecutablePipeline. Cycle detected -> L2 returns ValidationError::CyclicDependency
+  with the cycle path. No runtime deadlock possible.
+
+Layer 3 — SPLIT_TASK (runtime recovery, Phase 4G):
+  Catches cases where actual code larger than proxy estimates.
+  Max 4 sub-tasks, max depth 2, sequential merge.
+
+Interaction: L1 (proactive) -> L2 (validation) -> 4G (runtime). No cascading.
+
+Spec files to update:
+  - pipeline-factory.txt: L1 context constraints, Phase Sizing, cycle detection
+  - orchestrator.txt S13A: add model_max_context, available_for_work to SystemConstraints
+  - elai_cc.toml schema: [planning.sizing] section with defaults
+
+
+================================================================================
+CONCERN 5: DETERMINISTIC AGENT DISPATCH (NO MAIN LLM ORCHESTRATING)
+================================================================================
+
+Status: RESOLVED (v2 proposal + v3 audit fixes for all 5 dispatch BLOCKs).
+
+Core design: the orchestrator is Rust code, not an LLM. There is no "main LLM"
+that decides to spawn agents or writes their tasks. FSM state determines agent
+role. Plan determines task content. Knowledge engine determines code context.
+Rules.db determines constraints. Prompt assembly is pure Rust, <5ms.
+
+[RESOLVED — v2 WARN 2: two dispatch tables, not one]
+
+TWO DISPATCH TABLES:
+
+  A. META-DISPATCH TABLE (static, hardcoded in orchestrator crate):
+     Used for the PLANNING and CONFIGURING states.
+     These states run BEFORE a PipelineSpec exists.
+     Cannot be built from PipelineSpec — they PRODUCE it.
+     Loaded from: elai_cc.toml [fsm.meta_dispatch] OR hardcoded defaults.
+     Immutable during pipeline execution.
+
+  B. PLAN-DISPATCH TABLE (dynamic, built from PipelineSpec at L2):
+     Used for FEASIBILITY_PROBE, TESTING_FIRST, EXECUTING, AUDITING, MEMORIZING.
+     Built once when L2 produces ExecutablePipeline.
+     Contains per-phase agent configs derived from PipelineSpec + elai_cc.toml.
+     Immutable after construction (rebuilt only on ReplanRequest).
+
+
+META-DISPATCH TABLE (static):
+
+  [RESOLVED — v2 BLOCK 1: CONFIGURING added to phase-aware loading]
+
+  FsmState           Dispatch Entry
+  -----------------------------------------------------------------
+  PLANNING           DispatchPipeline (see below — multi-stage)
+  CONFIGURING        Single: executor, config paths only, workflow domain
+  IDLE               No dispatch (waiting for user input)
+  COMPLETE           No dispatch (cleanup, transition to IDLE)
+
+  [RESOLVED — v2 BLOCK 2 + BLOCK 6: DispatchPipeline for PLANNING]
+
+  PLANNING state requires sequential multi-agent execution with data flow.
+  A flat Vec<AgentDispatchConfig> cannot express this. New type:
+
+  DispatchPipeline {
+    stages: Vec<DispatchStage>,
+  }
+
+  DispatchStage {
+    stage_id: StageId,
+    agent: AgentDispatchConfig,
+    input_from: Option<StageId>,       // data dependency (output of prior stage)
+    output_artifact: ArtifactType,     // what this stage produces
+    gate: Option<GateCondition>,       // quality check before next stage proceeds
+    skip_condition: Option<SkipCondition>,  // when to skip (e.g., L2 is pure Rust, no agent)
+  }
+
+  ArtifactType enum {
+    ResearchReport,
+    PipelineSpec,
+    QualitySpec,
+    TransformedPrompt,
+    FeasibilityReport,
+    ExecutablePipeline,
+  }
+
+  GateCondition enum {
+    ArtifactExists(ArtifactType),          // file/SSB record must exist
+    QualityThreshold { metric, min },      // numeric quality check
+    EvidenceGate(FsmState),                // reuse existing evidence gate logic
+  }
+
+  SkipCondition enum {
+    NotAnAgent,          // stage is pure Rust code (L2 builder, L3 executor)
+    FeatureDisabled,     // stage conditionally disabled in elai_cc.toml
+  }
+
+  PLANNING DispatchPipeline (4 stages from pipeline-factory.txt S3):
+
+    Stage 1 — RESEARCH:
+      agent: { role: Researcher, model: cloud_preferred, grc: 10/1200,
+               tool_filter: [web_search] (IPC proxied), sandbox: Tier_C }
+      input_from: None (receives raw user task)
+      output_artifact: ResearchReport
+      gate: ArtifactExists(ResearchReport) AND all sub-questions have
+            phi >= phi_min (convergence check)
+
+    Stage 2 — PLAN ASSEMBLY (L1 designer):
+      agent: { role: Designer, model: executor_model, grc: 8/1200,
+               tool_filter: [none — receives context via prompt],
+               sandbox: Tier_C }
+      input_from: Stage 1 (ResearchReport injected into prompt)
+      output_artifact: PipelineSpec
+      gate: ArtifactExists(PipelineSpec) AND zero ungrounded claims
+      NOTE: Designer is a DISTINCT agent role. Not executor.
+        Executor writes code to pass tests. Designer produces PipelineSpec.
+        Different role_prompt, different GRC required_steps, different output format.
+        Reuses executor's model (Gemma 4 31B) but is a separate role with
+        separate AgentGrcConfig.
+
+    Stage 3 — STRUCTURAL VALIDATION (L2 builder):
+      skip_condition: NotAnAgent (pure Rust code, runs in orchestrator process)
+      Kahn's cycle detection, 7-point structural validation, Phase Sizing,
+      produces ExecutablePipeline. No LLM. No agent process.
+      output_artifact: ExecutablePipeline
+
+    Stage 4 — FEASIBILITY PROBE:
+      [RESOLVED — v2 BLOCK 7: explicit config override for executor probe]
+      agent: { role: Executor, model: executor_model, grc: 3/600,
+               tool_filter: [stub_write, bash, web_search],
+               sandbox: Tier_C_Feasibility }
+      input_from: Stage 3 (novel_step_ids from ExecutablePipeline)
+      output_artifact: FeasibilityReport
+      gate: ArtifactExists(FeasibilityReport)
+      skip_condition: novel_steps.is_empty() AND all resources >= 20% margin
+      NOTE: This uses AgentRole::Executor but with EXPLICIT config overrides
+        in the DispatchStage.agent field. The AgentDispatchConfig is the
+        AUTHORITATIVE config source, not the role alone. Code that checks
+        role == Executor must also check the dispatch config for tool_filter
+        and grc_config. Concretely:
+          - GRC budget: 3/600 (not executor's normal 8/1200)
+          - Tool filter: stub_write + bash only (not full edit/git)
+          - Sandbox: 25s graceful / 30s hard kill (not normal timeout)
+          - Line limit: strict <50 lines per stub (enforced before execution)
+
+  CONFIGURING DispatchPipeline (single stage):
+    Stage 1: { role: Executor, tool_filter: [config_paths_only],
+               sandbox: Tier_A (config editing is trusted) }
+    input_from: None (receives user /config or /workflow command)
+    output_artifact: None (direct config modification)
+    No gate (CONFIGURING -> IDLE on completion)
+
+
+PLAN-DISPATCH TABLE (dynamic, built from PipelineSpec):
+
+  Built by L2 builder during Stage 3 of PLANNING.
+  One entry per PipelineSpec phase.
+
+  PlanDispatchEntry {
+    phase_id: PhaseId,
+    fsm_state: FsmState,
+    agent: AgentDispatchConfig,
+    depends_on: Vec<PhaseId>,
+  }
+
+  Mapping from FSM state to agent config (deterministic):
+
+  FsmState            Agent Role     Tool Access                  GRC Config
+  ---------------------------------------------------------------------------
+  TESTING_FIRST       Executor       test framework, plan         5/800
+  EXECUTING           Executor       edit, bash, git              8/1200
+  AUDITING            Auditor        validation, test runner      10/1200
+  MEMORIZING          MemoryWriter   memory write only            2/400
+
+  [RESOLVED — v2 WARN 5: ToolFilter type definition and enforcement]
+
+  ToolFilter {
+    allowed_tools: Vec<ToolId>,     // WHITELIST — only these tools permitted
+  }
+
+  Enforcement: at the IPC layer in the orchestrator.
+    When agent sends ToolRequest via IPC:
+      1. Orchestrator reads ToolRequest.tool_id.
+      2. Checks against dispatch entry's ToolFilter.allowed_tools.
+      3. Not in whitelist -> reject with generic error ("tool call rejected by policy").
+      4. In whitelist -> forward to tool executor, run PreToolUse hooks, return result.
+    Agent binary has no tool implementations. It cannot bypass the IPC filter.
+    This is defense-in-depth on top of the existing PreToolUse hook system.
+
+
+DISPATCH SEQUENCE (per phase, fully deterministic):
+
+  1. Orchestrator reads FSM state.
+     Meta-dispatch states (PLANNING, CONFIGURING): use meta-dispatch table.
+     Plan-dispatch states (all others): use plan-dispatch table.
+
+  2. Dispatch table returns DispatchStage (or DispatchPipeline for multi-stage).
+     For single-stage: one AgentDispatchConfig.
+     For multi-stage (PLANNING): iterate stages, respecting data deps and gates.
+
+  3. For each stage:
+     a. Check skip_condition. If met, run Rust code directly (no agent process).
+     b. Assemble prompt from 4 sources:
+        [role_prompt]       ~80 tokens   from elai_cc.toml [agents.{role}.role_prompt]
+        [tier_3_rules]      ~200 tokens  from rules.db (active for detected domains)
+        [code_context]      ~6000 tokens from knowledge engine query
+        [task_spec]         ~500 tokens  from phase detail (or prior stage output)
+        Total: ~7000 tokens. No orchestration instructions. Just the job.
+     c. Spawn agent process (Tier C): create IPC socket, spawn elai_cc_agent,
+        send AgentRequest (assembled prompt) over IPC.
+     d. Agent works autonomously (GRC chain, tool calls via IPC, LLM via IPC).
+     e. Agent returns AgentResponse via IPC.
+     f. Check gate condition. Pass -> next stage. Fail -> retry or escalate.
+
+  4. All stages complete -> evidence gate -> FSM transition.
+     For plan-dispatch: write phase_complete SSB record, then proceed to model
+     swap if next phase requires different model.
+
+KEY PROPERTIES:
+
+  a. No LLM in the dispatch loop. Steps 1-3 are pure Rust code.
+     LLM only runs inside agent processes (step 3d).
+
+  b. TWO tables, not one. Meta-dispatch is static (PLANNING/CONFIGURING).
+     Plan-dispatch is dynamic (built from PipelineSpec).
+     Meta-dispatch exists before PipelineSpec. No circular dependency.
+
+  c. Agent has zero knowledge of the dispatch system. It receives a prompt
+     and produces output. Cannot see FSM, rules.db, other agents, plan skeleton.
+
+  d. session_id + pipeline_id + phase_id uniquely identify what to do.
+     Together they deterministically produce: agent role + prompt + tool access.
+
+  e. Multi-agent sequencing in PLANNING is explicit in DispatchPipeline type.
+     Data flow (Stage 1 output -> Stage 2 input) declared, not inferred.
+     Gates between stages are deterministic checks, not LLM judgment.
+
+  f. FEASIBILITY_PROBE executor is the same AgentRole::Executor but with
+     config overrides in the DispatchStage. AgentDispatchConfig is authoritative.
+
+  g. Dispatch table storage: HARDCODED in orchestrator crate for meta-dispatch
+     (PLANNING/CONFIGURING are fixed protocol, not user-configurable).
+     Plan-dispatch built programmatically by L2 from PipelineSpec.
+     User can configure agent models and GRC budgets in elai_cc.toml, but
+     cannot change dispatch table structure (prevents accidental misconfiguration).
+
+IMPLEMENTATION TYPES (for spec update):
+
+  AgentDispatchConfig {
+    role: AgentRole,
+    model_preference: ModelPreference,
+    tool_filter: ToolFilter,
+    rule_domains: Vec<Domain>,
+    grc_config: AgentGrcConfig,
+    sandbox_config: SandboxConfig,
+  }
+
+  ToolFilter {
+    allowed_tools: Vec<ToolId>,    // whitelist, enforced at IPC layer
+  }
+
+  DispatchPipeline {
+    stages: Vec<DispatchStage>,
+  }
+
+  DispatchStage {
+    stage_id: StageId,
+    agent: AgentDispatchConfig,
+    input_from: Option<StageId>,
+    output_artifact: ArtifactType,
+    gate: Option<GateCondition>,
+    skip_condition: Option<SkipCondition>,
+  }
+
+  MetaDispatchTable {
+    planning: DispatchPipeline,        // 4 stages (research, design, validate, probe)
+    configuring: DispatchPipeline,     // 1 stage (executor with config paths)
+  }
+
+  PlanDispatchTable {
+    entries: Vec<PlanDispatchEntry>,   // one per PipelineSpec phase
+  }
+
+  PlanDispatchEntry {
+    phase_id: PhaseId,
+    fsm_state: FsmState,              // TESTING_FIRST | EXECUTING | AUDITING | MEMORIZING
+    agent: AgentDispatchConfig,
+    depends_on: Vec<PhaseId>,         // from skeleton topology
+  }
+
+  NEW AGENT ROLE:
+    AgentRole enum: Executor, Auditor, Researcher, Designer, PromptEngineer,
+      ContextCompiler, MemoryWriter, MediaValidator
+
+    Designer (NEW): produces PipelineSpec from Research Report + user task.
+      role_prompt: "Design a phased execution plan from the research findings.
+        Output: TOML PipelineSpec with phases, dependencies, tool requirements,
+        resource estimates, and quality metrics. Do not implement. Plan only."
+      GRC: 8/1200, required_steps: [observe, hypothesize, plan_action, verify, converge]
+      Model: reuses executor model (Gemma 4 31B)
+
+
+================================================================================
+INTERACTION BETWEEN ALL FIVE CONCERNS
+================================================================================
+
+LOCAL-FIRST (C1): dispatch tables, plan files, knowledge indexes, rules.db all
+live in .elai_cc/. No external service needed to dispatch agents.
+
+CONTEXT PRESERVATION (C2): orchestrator (holding dispatch tables, FSM, SSB, plan)
+never loses state. Model swaps only affect GPU. phase_complete SSB record is the
+atomic durability marker. Crash recovery is deterministic.
+
+PROACTIVE COMPLETENESS (C3): scope enumeration in GRC Observe, post-tool rules,
+completeness QualityMetrics. All within the local dispatch framework.
+
+AUTOMATIC BREAKDOWN (C4): L1 budget-aware (with bootstrap defaults) -> L2 Phase
+Sizing with cycle detection -> 4G runtime recovery. Three layers, no cascading.
+
+DETERMINISTIC DISPATCH (C5): meta-dispatch (static, for PLANNING/CONFIGURING) +
+plan-dispatch (dynamic, from PipelineSpec). DispatchPipeline for multi-agent
+states with data flow and gates. No LLM in dispatch loop. Agent has zero knowledge
+of dispatch system.
+
+
+================================================================================
+TESTABLE INVARIANTS (all concerns, all audit fixes)
+================================================================================
+
+  Local infrastructure:
+  - ONNX models at .elai_cc/models/onnx/ before startup sequence
+  - Startup canary on pre-staged models (no download during session)
+  - Missing ONNX model -> DEGRADED, not crash
+  - .elai_cc/models/** hidden from agents
+
+  Context preservation:
+  - Orchestrator RAM state survives model swap (FSM, channels, plan)
+  - SSB rows persist across model swaps (SQLite WAL on disk)
+  - phase_complete SSB record written BEFORE model unload
+  - phase_complete record flushed to WAL (fsync) before unload proceeds
+  - Crash before phase_complete -> phase re-executed from last checkpoint
+  - Crash after phase_complete -> phase skipped, next phase dispatched
+  - Health check failure after model unload -> previous model reloaded
+  - UntrackedValue channel IDs never in serialized checkpoint data
+  - Agent checkpoint referencing UntrackedValue -> rejected by serializer
+  - SessionDag snapshot at 85% token budget threshold
+
+  Proactive thinking:
+  - ThinkStep.scope present when require_scope_enumeration=true
+  - Every scope item addressed in plan_action (WARN if not)
+  - Post-tool GREP rules fire in <1ms
+  - No pre-execution I/O added to tool calls
+
+  Automatic task breakdown:
+  - L1 receives model_max_context in SystemConstraints
+  - avg_file_tokens defaults to 150 when index has <10 files
+  - avg_test_tokens defaults to 80 when index has <10 files
+  - L2 runs Kahn's cycle detection before producing ExecutablePipeline
+  - Cyclic phase dependency -> ValidationError::CyclicDependency (no deadlock)
+  - Phase Sizing + SPLIT_TASK do not cascade
+
+  Deterministic dispatch:
+  - Meta-dispatch table is static (hardcoded in orchestrator crate)
+  - Plan-dispatch table built once per pipeline from PipelineSpec (no LLM)
+  - PLANNING DispatchPipeline has exactly 4 stages with explicit data deps
+  - Stage 2 (L1 Designer) receives Stage 1 (ResearchReport) as input
+  - Stage 3 (L2 builder) has skip_condition: NotAnAgent (runs as Rust code)
+  - Stage 4 (feasibility) has skip_condition when no novel steps + margin >= 20%
+  - CONFIGURING state has phase-aware tool loading (config paths only)
+  - FSM state -> agent role mapping is deterministic
+  - Prompt assembly completes in <5ms (no LLM, all from RAM/SQLite)
+  - Agent process receives complete prompt via IPC (no file reading by agent)
+  - Agent has zero knowledge of dispatch system
+  - ToolFilter is a whitelist enforced at IPC layer
+  - ToolRequest for disallowed tool -> generic rejection (no internal details)
+  - FEASIBILITY executor uses config overrides (GRC 3/600, stub_write+bash, 25s kill)
+  - AgentDispatchConfig is authoritative (not AgentRole alone)
+  - Designer is a distinct AgentRole from Executor
+  - session_id + pipeline_id + phase_id uniquely determine dispatch
+
+
+================================================================================
+SPEC FILES REQUIRING UPDATES (complete list, all versions)
+================================================================================
+
+  architecture-overview.txt:
+    - Add Designer to agent roles (section 9)
+    - Add phase_complete to SSB action_types count
+
+  core.txt:
+    - Add .elai_cc/models/onnx/ canonical path
+    - Add setup script specification
+
+  reasoning.txt:
+    - Add scope: Option<Vec<String>> to ThinkStep
+    - Add require_scope_enumeration to AgentGrcConfig
+
+  rules.txt:
+    - Add engineering GREP_PATTERN rules for post-tool completeness
+
+  pipeline-factory.txt:
+    - Add model context constraints to L1 designer input
+    - Add Phase Sizing stage (5-stage elaboration pipeline)
+    - Add completeness QualityMetric examples
+    - Add Designer agent role description for Stage 2
+
+  orchestrator.txt:
+    - S2: add CONFIGURING to phase-aware loading table with tool restrictions
+    - S3: add action_type='phase_complete' (17 total)
+    - S7: add checkpoint validation (no UntrackedValue channel refs)
+    - NEW section: Deterministic Dispatch Protocol
+      - MetaDispatchTable (static, PLANNING/CONFIGURING)
+      - PlanDispatchTable (dynamic, from PipelineSpec)
+      - DispatchPipeline type for multi-stage states
+      - DispatchStage with data deps, gates, skip conditions
+      - ToolFilter definition and IPC-layer enforcement
+    - S13A: add model_max_context, available_for_work to SystemConstraints
+    - S9: add preserve_contracts flag to skeleton split operation
+
+  prompt-architecture.txt:
+    - Add Dispatch Protocol section showing end-to-end flow
+    - Reference MetaDispatchTable and PlanDispatchTable
+
+  providers.txt:
+    - S4: expand swap protocol with phase_complete precondition, fsync,
+      crash recovery semantics, health check rollback path
+    - Add ONNX model path reference (S9)
+
+  knowledge.txt:
+    - Add onnx_model_path to index_version.toml
+    - Add avg_file_tokens / avg_test_tokens statistics export
+    - Add fallback behavior when index has <10 files
+
+  implementation-guide.txt:
+    - Add setup step for ONNX model pre-staging
+    - Add Designer agent role to role list
+    - Update elaboration pipeline (5-stage)
+
+  implementation-plan.txt:
+    - Update Phase 1C (canonical ONNX path)
+    - Update Phase 2A (ThinkStep scope field)
+    - Add Phase Sizing tests to Phase 4E
+    - Add Designer role tests to Phase 3C
+
+  elai_cc.toml schema:
+    - [planning.sizing] section with default_avg_file_tokens, default_avg_test_tokens
+    - [fsm.meta_dispatch] section (if not hardcoded)
+
+  risk-register.txt:
+    - R54: Phase Sizing heuristic accuracy (mitigated by SPLIT_TASK)
+    - R55: Scope enumeration completeness (mitigated by post-tool rules)
+    - R56: L1 budget-aware over-constraining (mitigated by L2 merge)
+    - R57: Designer agent may produce low-quality PipelineSpec on local models
+      (mitigated by L2 structural validation + feasibility probe)
+    - R58: phase_complete record creates extra SSB write per phase boundary
+      (~16 bytes overhead, negligible vs 50K/sec SSB throughput ceiling)

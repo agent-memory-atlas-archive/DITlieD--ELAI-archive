@@ -1,0 +1,388 @@
+PHASE 3D: BSP SUPERSTEPS + CHANNELS
+Prerequisites: Phase 3B (SSB) complete, Phase 3C (Agent system) complete.
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Deterministic macro-level orchestration via BSP superstep model (Valiant 1990).
+4 channel types for inter-agent state sharing. BinaryOp intentionally dropped
+(non-deterministic with concurrent writes; see audit BLOCK 4).
+Determinism guarantee: all channel combiners are either total-ordered (LastValue via
+SSB seq) or append-only with deterministic ordering (Topic via SSB seq). This satisfies
+Blelloch et al. (CMU 2012) requirement that parallel combiners must be commutative+
+associative or linearizable for internal determinism.
+IMPORTANT: the determinism guarantee applies in deterministic simulation mode (mocked
+agents with fixed seed). With real LLM agents, straggler timeouts may remove different
+agents across runs, producing different superstep participation sets. Channel combiners
+are well-defined on partial inputs (LastValue: last surviving writer; Topic: subset of
+appends), but byte-identical checkpoint reproduction requires identical agent sets.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/orchestrator.txt          Sections 4 (BSP loop), 5 (channel types)
+  docs/specs/decisions/audit-results.txt      BLOCK 4 (BinaryOp dropped), BLOCK-1 (UntrackedValue lifecycle), BLOCK-5 (deferred nodes post-barrier)
+  docs/specs/decisions/risk-register.txt      R19 (UntrackedValue memory accumulation)
+  docs/specs/architecture-overview.txt        BSP supersteps, simulation-testable property
+
+RISKS TO WATCH
+  R19: UntrackedValue memory accumulation. Monitor per superstep.
+    Threshold: configurable in elai_cc.toml [orchestrator.bsp.untracked_memory_limit_bytes].
+    Default: 10MB per UntrackedValue channel. Force-clear when usage exceeds 2x limit.
+    Measurement: custom DeepSizeOf trait (NOT std::mem::size_of_val which only measures
+    stack representation — a Vec<u8> with 15MB data returns 24 bytes via size_of_val).
+    Require T: DeepSizeOf bound on UntrackedValue<T>. Use deepsize crate or hand-roll.
+  R-NEW-1: Straggler agents blocking barrier. LLM calls have variable latency (seconds
+    to minutes). Mitigation: per-agent superstep timeout, reusing Phase 3C heartbeat
+    timeout (15s default). Agent exceeding timeout classified as AgentDeath::TIMEOUT,
+    removed from barrier wait set. Remaining agents proceed.
+    Source: CMU HotOS'13 "Solving the Straggler Problem with Bounded Staleness".
+  R-NEW-2: Barrier deadlock if agent crashes mid-superstep without triggering timeout.
+    Mitigation: Phase 3C supervision tree detects crash (CLEAN_EXIT/CRASH/TIMEOUT
+    classification). Crashed agent removed from current superstep barrier. Orchestrator
+    does not wait for dead agents.
+
+SPEC AMENDMENTS REQUIRED BEFORE IMPLEMENTING
+  These gaps were found during improvement. Must be resolved in orchestrator.txt before
+  implementation begins (amendments blocked by parallel sessions at time of writing):
+  1. orchestrator.txt section 5: add Topic(accumulate=false) behavior definition.
+     Proposed: "accumulate=false: Vec<T> cleared to empty at superstep boundary, after
+     channel state is snapshot for scheduling reads but before execute_tasks writes."
+  2. orchestrator.txt section 3: add action_type='memory_monitoring' to canonical list
+     (currently 15 types). Payload: {channel_id, size_bytes, threshold_bytes, action}.
+  3. orchestrator.txt section 5: add ChannelRegistry trait definition (read/write/clear
+     interface). Currently only channel type names are listed, no programmatic interface.
+  4. orchestrator.txt section 4: fix save_checkpoint placement in BSP loop — must occur
+     AFTER evidence_gate_passes to prevent checkpoint filename collision on gate retry.
+
+
+STEPS
+
+3D.1 CHANNEL TYPE DEFINITIONS
+  PRE_GATE:
+    - Phase 3B SSB contract tests pass: cargo test -p contracts --test ssb
+    - Phase 3C agent spawn/lifecycle tests pass: cargo test -p contracts --test agent_pool
+    - orchestrator crate compiles: cargo check -p orchestrator
+    - Spec amendments 1 and 3 (above) applied to orchestrator.txt
+  TASK:
+    - Define channel enum and 4 channel type structs in orchestrator/src/bsp/channels.rs:
+      - LastValue<T>: single value, last writer wins. Writer ordering = SSB seq (monotonic).
+        Read returns Option<T> (None if never written).
+      - Topic<T>(accumulate: bool):
+        accumulate=true: append-only Vec<T>, persists across supersteps.
+        accumulate=false: Vec<T> cleared to empty at superstep boundary. Two-phase reset:
+          (1) snapshot current state for prepare_next_tasks scheduling reads,
+          (2) clear to empty Vec before execute_tasks writes new values.
+          This prevents stale data from influencing task selection (WARN-7 fix).
+        Append ordering follows SSB seq within a superstep.
+      - EphemeralValue<T>: fire-and-forget signal. Cleared to MISSING on any superstep
+        where write_count == 0. Detection: u32 write counter per channel per superstep,
+        incremented on write (saturating_add to prevent overflow), checked at barrier.
+        Clearing decision recorded in SSB as action_type='checkpoint' with subtype
+        'ephemeral_clear' so crash recovery can replay clearing deterministically from
+        SSB data alone (WARN-8 fix: count writes per channel per superstep in SSB,
+        if count==0 for a superstep, set MISSING during replay).
+      - UntrackedValue<T: DeepSizeOf>: in-memory only, never serialized to checkpoint.
+        guard=false allows multi-writer. Persists until overwritten or force-cleared.
+        Lost on crash. T must implement DeepSizeOf trait for R19 memory monitoring.
+    - Define ChannelId (typed key, e.g. ChannelId<LastValue<PlanDraft>>).
+    - Define ChannelState enum for checkpoint serialization (excludes UntrackedValue).
+    - Define ChannelRegistry trait (implementation-defined interface, must be reviewed
+      before Phase 3E TESTING_FIRST begins):
+        read(id) -> ChannelValue<T>
+        write(id, value) -> Result<(), ChannelError>
+        snapshot_for_scheduling() -> ChannelSnapshot  (frozen read-only view)
+        clear_ephemeral() -> cleared count
+        force_clear_untracked(id) -> bool
+        deep_size_untracked(id) -> usize
+    - Define ChannelWrite, ChannelValue, ChannelError, ChannelSnapshot types.
+    - NOTE: ChannelRegistry, ChannelId, ChannelState, ChannelValue, ChannelWrite,
+      ChannelError, ChannelSnapshot are NOT yet in the authoritative spec
+      (orchestrator.txt). These are implementation-defined here. Spec amendment 3
+      must land before 3E starts to formalize these as inter-phase contracts.
+  DETERMINISTIC_CHECK:
+    - cargo test -p orchestrator --test channel_types -- all 4 type constructors compile and round-trip
+    - grep -r "UntrackedValue" orchestrator/src/bsp/ | grep -v "checkpoint\|serialize\|Serialize" confirms UntrackedValue excluded from serde
+    - ChannelState enum has exactly 3 variants (LastValue, Topic, Ephemeral) — no UntrackedValue
+    - grep -r "size_of_val" orchestrator/src/bsp/ returns 0 hits (size_of_val banned, use DeepSizeOf)
+  ADVERSARIAL:
+    - If SSB seq is not used for LastValue ordering, concurrent writers produce non-deterministic reads. Test: 2 agents write to same LastValue in same superstep, verify last-by-seq wins (not last-by-wallclock).
+    - If Topic append order ignores SSB seq, replaying from checkpoint produces different order. Test: serialize Topic state, deserialize, compare — must be identical across runs.
+    - If EphemeralValue write_count is not reset at superstep start, stale writes from previous superstep prevent clearing. Test: write in superstep N, skip write in N+1, read in N+1 must return MISSING.
+    - If DeepSizeOf is not implemented, size measurement returns stack size only (24 bytes for any Vec). Test: create UntrackedValue<Vec<u8>> with 15MB payload, call deep_size_untracked(), assert result > 15_000_000 (not 24).
+  ACCEPTANCE:
+    - All 4 channel types construct, read, write without panic: cargo test channel_types PASS
+    - UntrackedValue never appears in ChannelState serialization: grep check PASS
+    - Type system enforces ChannelId<T> matches channel variant: mismatched read fails at compile time
+    - size_of_val not used anywhere in bsp/: grep check PASS
+    - DeepSizeOf returns accurate size for Vec<u8> payload: deep_size test PASS
+    - Contract test: ChannelRegistry trait satisfies consumers in 3E and 3D: cargo test -p contracts --test channel_registry PASS
+
+3D.2 BSP SUPERSTEP LOOP
+  PRE_GATE:
+    - Step 3D.1 ACCEPTANCE criteria met (all channel types defined and tested)
+    - SSB single-writer channel operational (Phase 3B): cargo test -p contracts --test ssb_write
+    - Spec amendment 4 applied to orchestrator.txt (save_checkpoint placement fix)
+  TASK:
+    - Implement superstep loop in orchestrator/src/bsp/engine.rs.
+      NOTE: loop structure differs from orchestrator.txt section 4 pseudocode.
+      save_checkpoint moved AFTER evidence_gate_passes to prevent checkpoint filename
+      collision on gate retry (auditor BLOCK-4). The spec must be amended (amendment 4).
+      Corrected loop:
+        loop {
+            channel_snapshot = channels.snapshot_for_scheduling();
+            tasks = prepare_next_tasks(checkpoint, channel_snapshot, nodes);
+            if tasks.empty() { break; }
+            // clear Topic(accumulate=false) AFTER snapshot, BEFORE execute
+            channels.clear_non_accumulating_topics();
+            writes = execute_tasks_parallel(tasks, model_pool, ssb);
+            apply_writes(checkpoint, channels, writes);
+            // deferred phase in step 3D.3
+            // EphemeralValue clearing: check write_count, record in SSB
+            channels.clear_ephemeral();  // logs clearing to SSB for replay
+            if !evidence_gate_passes(checkpoint, channels) {
+                attempt += 1;
+                if attempt >= max_superstep_attempts { break; }  // safety valve
+                continue;
+            }
+            save_checkpoint(checkpoint, channels);  // AFTER gate passes
+            superstep += 1;
+            attempt = 0;
+        }
+    - prepare_next_tasks: reads channel_snapshot (frozen, pre-clear), determines ready nodes.
+    - execute_tasks_parallel: dispatches to agent pool via spawn_parallel (Phase 3C).
+      Collects ChannelWrite results. Each write recorded in SSB.
+    - apply_writes: applies ChannelWrites to channels in SSB seq order (deterministic).
+    - save_checkpoint: serializes HashMap<ChannelId, ChannelState> for LastValue+Topic+
+      Ephemeral. UntrackedValue excluded. Format: msgpack. Location:
+      .elai_cc/sessions/{sid}/checkpoints/superstep_{N}.msgpack
+      Only written after gate passes — no collision, no overwrite on retry.
+    - evidence_gate_passes: checks whether phase transition evidence is sufficient.
+      Returns false to retry superstep. Max attempts: configurable (default 3 per
+      superstep, distinct from max_supersteps which limits total supersteps to 100).
+    - superstep counter: u64, persisted in checkpoint. Monotonically increasing.
+    - Straggler handling: per-agent timeout at barrier (default: Phase 3C heartbeat
+      timeout, 15s). On timeout: remove agent from barrier wait set, classify as
+      AgentDeath::TIMEOUT, trigger supervision restart policy. Remaining agents proceed.
+  DETERMINISTIC_CHECK:
+    - cargo test -p orchestrator --test bsp_loop -- superstep counter increments correctly
+    - Determinism proof (simulation mode): run same superstep sequence with fixed seed
+      and mocked agents twice, compare checkpoint files byte-for-byte (must be identical)
+    - Superstep counter persists in checkpoint: load checkpoint, assert superstep == expected
+    - No checkpoint file written on failed gate: trigger gate failure, verify no superstep_{N}.msgpack created
+  ADVERSARIAL:
+    - If apply_writes does not use SSB seq order, non-deterministic channel state results.
+      Test: inject 10 writes with shuffled timestamps, verify apply_writes sorts by seq before applying.
+    - If evidence_gate_passes is never false, infinite loop if tests never pass.
+      Test: inject always-false gate, verify loop terminates after max_superstep_attempts.
+    - If straggler timeout is too short, legitimate long LLM calls get killed.
+      Test: set timeout=1ms, verify agent receives TIMEOUT classification (not CRASH).
+    - If save_checkpoint still runs before gate, retry overwrites checkpoint.
+      Test: fail gate twice, verify only 1 checkpoint file exists for that superstep (post-gate).
+  ACCEPTANCE:
+    - BSP loop executes 3+ supersteps with 2 agents: cargo test bsp_loop_integration PASS
+    - Byte-identical checkpoints on repeated runs with same seed (simulation mode): determinism test PASS
+    - max_superstep_attempts terminates retry loop: safety test PASS
+    - No checkpoint on failed gate: checkpoint placement test PASS
+
+3D.3 DEFERRED NODE EXECUTION
+  PRE_GATE:
+    - Step 3D.2 ACCEPTANCE criteria met (BSP loop operational)
+    - Deferred node concept from audit BLOCK-5 understood: post-barrier cleanup, not BSP replacement
+  TASK:
+    - Add deferred phase to BSP loop (between apply_writes and clear_ephemeral):
+        for node in get_deferred_nodes(nodes) {
+            if node.all_inputs_satisfied(channels) {
+                deferred_writes = execute_single(node, channels);
+                apply_writes(checkpoint, channels, deferred_writes);
+            }
+        }
+    - Deferred nodes are marked at graph construction time (is_deferred: bool on NodeSpec).
+    - all_inputs_satisfied: checks that all input channels for this node have non-MISSING values.
+    - Deferred writes applied WITHIN the same superstep (before clear_ephemeral and save_checkpoint).
+      This matches LangGraph defer=True semantics: post-barrier but same superstep boundary.
+    - Deferred nodes cannot trigger other deferred nodes (no cascading). Single pass only.
+    - Use cases: fan-in aggregation, consensus voting, cleanup after all agents report.
+  DETERMINISTIC_CHECK:
+    - cargo test -p orchestrator --test deferred_nodes -- deferred fires after barrier
+    - Test: 2 non-deferred agents write, 1 deferred node reads both outputs. Verify deferred
+      node sees BOTH writes (not partial).
+    - Test: deferred node with unsatisfied input does NOT fire. Verify via mock channel state.
+  ADVERSARIAL:
+    - If deferred nodes can trigger other deferred nodes, execution order becomes graph-dependent
+      and potentially cyclic. Test: register 2 deferred nodes where A reads B's output and B reads
+      A's output. Verify: neither fires (both inputs unsatisfied), no panic, no infinite loop.
+    - If deferred writes are applied AFTER save_checkpoint, checkpoint state diverges from actual
+      state. Test: checkpoint saved, deferred fires, verify next superstep reads deferred output
+      (not stale checkpoint).
+  ACCEPTANCE:
+    - Deferred node fires after all non-deferred complete: ordering test PASS
+    - Cascading deferred is impossible (single pass enforced): test PASS
+    - Deferred writes visible in same superstep checkpoint: consistency test PASS
+
+3D.4 CHECKPOINT + MEMORY MANAGEMENT INTEGRATION
+  PRE_GATE:
+    - Steps 3D.1-3D.3 ACCEPTANCE criteria met
+    - Phase 3C checkpoint infrastructure exists (agent checkpointing, orchestrator.txt section 7)
+    - Spec amendment 2 applied (memory_monitoring action_type added to orchestrator.txt)
+  TASK:
+    - Integrate BSP checkpoint with agent checkpoint system:
+      - BSP checkpoint (superstep-level): channel state + superstep counter + node status.
+      - Agent checkpoint (per-agent): GRC history + tool results + output draft.
+      - Both stored under .elai_cc/sessions/{sid}/ in separate subdirectories.
+      - BSP checkpoint triggers agent checkpoint (agents flush state at superstep boundary).
+    - UntrackedValue memory monitoring:
+      - At each superstep boundary, call deep_size_untracked(id) for each UntrackedValue channel.
+      - Log to SSB as action_type='memory_monitoring' (NEW action type, not isolation_metric).
+        Payload: {channel_id, size_bytes, threshold_bytes, action: "measure"|"force_clear"}.
+        isolation_metric remains exclusively for cognitive token savings (orchestrator.txt 7A).
+      - If size > 2x configured limit (default 10MB): log warning with action="force_clear",
+        clear channel, record event in SSB.
+    - EphemeralValue zero-write detection:
+      - Per-channel write_count: u32, reset to 0 at superstep start.
+      - Incremented on each write() call via saturating_add.
+      - At barrier (in clear_ephemeral): if write_count == 0, set value to MISSING.
+      - Record clearing decision in SSB for crash recovery replayability:
+        action_type='checkpoint', payload includes ephemeral_clears: Vec<ChannelId>.
+        On recovery replay: for each superstep, count writes to each EphemeralValue in
+        SSB entries. If count == 0, set MISSING. This makes clearing deterministic from
+        SSB data alone, without requiring runtime write_count state.
+    - Topic(accumulate=false) superstep reset:
+      - Two-phase: (1) snapshot_for_scheduling() captures current state for prepare_next_tasks,
+        (2) clear_non_accumulating_topics() clears to empty Vec AFTER snapshot but BEFORE
+        execute_tasks writes new values.
+      - Checkpoint contains the post-execute state (new writes), not the pre-clear snapshot.
+    - Crash recovery: on restart, load latest checkpoint, replay SSB entries since
+      checkpoint superstep to reconstruct channel state. For each replayed superstep:
+        1. Apply writes in SSB seq order (same as live apply_writes).
+        2. For EphemeralValue: count writes per channel in that superstep. If 0, set MISSING.
+        3. For Topic(accumulate=false): clear at superstep boundary start before applying writes.
+      UntrackedValue lost on crash (by design — never in checkpoint, never in SSB).
+  DETERMINISTIC_CHECK:
+    - cargo test -p orchestrator --test checkpoint_roundtrip -- save/load checkpoint, verify channel state identical
+    - UntrackedValue absent from checkpoint: deserialize checkpoint, assert no UntrackedValue key exists
+    - EphemeralValue cleared on zero-write: integration test with 2 supersteps, write in S1, skip in S2, read in S2 returns MISSING
+    - Topic(accumulate=false) cleared at boundary: write 3 values in S1, verify empty at S2 start (after clear, before new writes)
+    - Force-clear event logged: create UntrackedValue<Vec<u8>> with 25MB payload, verify SSB contains memory_monitoring action with action="force_clear"
+    - grep -r "isolation_metric" orchestrator/src/bsp/ returns 0 hits (memory_monitoring only)
+    - Crash recovery replay: simulate crash at superstep 3, recover, compare all channel states to clean run — must be identical
+  ADVERSARIAL:
+    - If crash recovery replays SSB entries but applies them in wrong order, channel state diverges
+      from pre-crash state. Test: simulate crash mid-superstep, recover, compare channel state to
+      a clean run — must be identical.
+    - If EphemeralValue clearing is not recorded in SSB, crash recovery cannot reproduce clearing
+      decisions. Test: crash after EphemeralValue was cleared, recover, verify EphemeralValue is
+      MISSING (not stale value from before clear).
+    - If Topic(accumulate=false) clear happens after prepare_next_tasks reads live channels (not
+      snapshot), stale data influences task selection. Test: verify prepare_next_tasks receives
+      ChannelSnapshot (frozen), not live channel reference.
+    - If deep_size_untracked returns 24 (stack size) instead of heap size, force-clear never
+      triggers. Test: inject 25MB Vec<u8>, verify deep_size returns >25_000_000.
+    - If memory_monitoring events are confused with isolation_metric, cognitive isolation metric
+      is corrupted. Test: query SSB for isolation_metric after force-clear, verify 0 contamination.
+  ACCEPTANCE:
+    - Checkpoint round-trip is byte-identical: cargo test checkpoint_roundtrip PASS
+    - R19 force-clear triggers at threshold via DeepSizeOf: memory monitoring test PASS
+    - Crash recovery produces identical state to clean run (including EphemeralValue clearing): recovery test PASS
+    - All channel lifecycle behaviors correct across 5+ supersteps: integration test PASS
+    - No isolation_metric in bsp/ code: grep check PASS
+    - Contract test: ChannelRegistry consumers (3E, 3F) can read/write: cargo test -p contracts --test channel_registry PASS
+
+3D.5 PARALLEL AGENT EXECUTION (spawn_parallel upgrade)
+  PRE_GATE:
+    - Steps 3D.1-3D.4 ACCEPTANCE criteria met
+    - Phase 3C spawn_parallel stub exists and runs sequentially: grep "spawn_parallel" orchestrator/src/agents/
+    - Phase 3C AgentPool::spawn operational: cargo test -p contracts --test agent_pool
+  TASK:
+    - Upgrade Phase 3C spawn_parallel from sequential stub to true parallel execution.
+      Phase 3C output contract (phase-3C.txt): "spawn_parallel STUBBED here, implemented
+      with true parallelism in 3D."
+    - Implementation: tokio::JoinSet for concurrent agent task dispatch.
+      Each agent task: send AgentRequest via IPC (in-process in Phase 3, Tier C in Phase 4),
+      await AgentResponse, collect ChannelWrites.
+    - VRAM-aware scheduling: check ModelPool available VRAM before dispatching.
+      If insufficient VRAM for N agents simultaneously, serialize to max_concurrent agents.
+      max_concurrent = floor(available_vram / per_agent_vram_estimate).
+      Fallback: max_concurrent=1 (fully sequential, same as Phase 3C stub behavior).
+    - Barrier: tokio::JoinSet::join_all() with per-agent timeout.
+      Timed-out agents: classify as AgentDeath::TIMEOUT, remove from result set.
+    - execute_tasks_parallel in BSP loop (3D.2) calls this upgraded spawn_parallel.
+    - Wall-time verification: parallel execution with 2+ agents must complete in less than
+      2x the wall time of the slowest single agent (proving concurrency, not serialization).
+  DETERMINISTIC_CHECK:
+    - cargo test -p orchestrator --test parallel_agents -- 2 agents run concurrently
+    - Wall-time test: 2 mocked agents (each sleeps 100ms), total wall time < 250ms (not 200ms+)
+    - Sequential fallback: set max_concurrent=1, verify agents run one at a time
+    - VRAM check: mock ModelPool with 12GB, per_agent=8GB, verify max_concurrent=1
+  ADVERSARIAL:
+    - If spawn_parallel ignores VRAM limits, 2 agents on 12GB GPU with 8GB each = OOM.
+      Test: mock 12GB VRAM, 2 agents at 8GB each, verify only 1 dispatched at a time.
+    - If JoinSet does not respect per-agent timeout, straggler blocks all.
+      Test: 1 agent sleeps forever, timeout=100ms, verify other agent's results collected.
+    - If parallel results are collected in completion order (not SSB seq order), channel
+      writes are non-deterministic. Test: agent A finishes before B but has higher seq,
+      verify apply_writes still orders by seq.
+  ACCEPTANCE:
+    - spawn_parallel dispatches 2+ agents concurrently (not sequentially): wall-time test PASS
+    - VRAM-aware scheduling limits concurrent agents: VRAM test PASS
+    - Straggler timeout works in parallel mode: timeout test PASS
+    - Phase 3C spawn_parallel stub replaced (no longer sequential): grep confirms implementation
+
+
+EXIT CRITERIA
+  - BSP supersteps execute deterministically in simulation mode (mocked agents, fixed seed):
+    same inputs -> byte-identical checkpoints (verified by running twice and diffing)
+  - All 4 channel types work correctly per their specified semantics
+  - Deferred nodes fire exactly once per superstep, after all non-deferred complete
+  - UntrackedValue never in checkpoint. Force-clear triggers at 2x threshold via DeepSizeOf.
+  - EphemeralValue cleared on zero-write superstep (verified by write_count mechanism)
+  - EphemeralValue clearing is replayable from SSB data alone (crash recovery verified)
+  - Topic(accumulate=false) cleared at superstep boundary via two-phase snapshot+clear
+  - Straggler timeout removes slow agents from barrier without deadlock
+  - Crash recovery from checkpoint + SSB replay produces identical channel state
+  - spawn_parallel executes agents concurrently (not sequentially) with VRAM-aware scheduling
+  - No isolation_metric used for memory monitoring (memory_monitoring action_type only)
+  - All contract tests from phases 3B and 3C still pass (no regression)
+  - ChannelRegistry contract test passes for 3E and 3F consumers
+
+BASELINE MEASUREMENTS (targets are estimates — establish empirically during implementation)
+  - Superstep overhead: wall time for barrier sync + checkpoint save (estimate: <50ms for 4 agents)
+  - Channel state size: total bytes across all checkpointed channels per superstep
+  - UntrackedValue peak memory per superstep (measured via DeepSizeOf)
+  - Checkpoint file size (estimate: <1MB for typical 4-agent session)
+  - Crash recovery time: checkpoint load + SSB replay (estimate: <500ms)
+  - Parallel speedup: wall time with N agents vs sequential (expect near-linear for CPU-bound)
+  Note: estimates are UNGROUNDED. Measure at implementation time, adjust thresholds based on
+  actual data. These are baselines, not exit criteria.
+
+GROUNDING
+  "BSP guarantees determinism" -> VERIFIED: requires total-ordered or commutative+associative
+    combiners (Blelloch et al., CMU 2012, cs.cmu.edu/~guyb/papers/BFGS12.pdf). Our channels
+    use SSB seq (total order from SQLite autoincrement), satisfying this. Caveat: determinism
+    guarantee holds only when same agents participate in same supersteps (simulation mode).
+    With real LLM agents, straggler timeouts may vary across runs.
+  "LastValue last writer wins by SSB seq" -> GROUNDED: orchestrator.txt section 5 L101.
+  "BinaryOp dropped" -> GROUNDED: audit-results.txt BLOCK 4. Non-deterministic with concurrent writes.
+  "Deferred nodes fire after barrier" -> GROUNDED: audit-results.txt BLOCK-5. Post-barrier cleanup.
+    Precedent: LangGraph defer=True (langchain changelog, May 2025).
+  "EphemeralValue cleared on zero-write superstep" -> GROUNDED: orchestrator.txt section 5 L105.
+    Detection mechanism (write_count with saturating_add) elaborated from spec description.
+    Clearing recorded in SSB for crash recovery replayability (auditor WARN-8 fix).
+  "UntrackedValue never checkpointed" -> GROUNDED: orchestrator.txt section 5 L103.
+  "Straggler is primary BSP failure mode" -> VERIFIED: CMU HotOS'13
+    (cs.cmu.edu/~seunghak/hotOS-13-cipar.pdf). LLM calls are inherently variable-latency.
+  "Topic(accumulate=false) cleared at superstep boundary" -> NEW DEFINITION: spec gap found.
+    Grep for "accumulate.*false" returned 0 hits across all specs. Defined here with two-phase
+    snapshot+clear to prevent scheduling blindness (auditor WARN-7 fix).
+  "10MB default for UntrackedValue memory limit" -> UNGROUNDED ESTIMATE: based on typical
+    agent scratch data size. Configurable, so exact default is tunable at implementation time.
+  "15s straggler timeout" -> GROUNDED: reuses Phase 3C heartbeat timeout (orchestrator.txt L156).
+  "std::mem::size_of_val only measures stack size" -> VERIFIED: Rust std docs confirm
+    size_of_val returns size of pointed-to value's stack representation. Vec<u8> = 24 bytes
+    regardless of heap contents. DeepSizeOf required (auditor BLOCK-2 fix).
+  "isolation_metric is for cognitive token savings only" -> GROUNDED: orchestrator.txt section
+    7A L191-192. New memory_monitoring action_type avoids semantic collision (auditor BLOCK-6 fix).
+  "spawn_parallel stubbed in Phase 3C" -> GROUNDED: Phase 3C output contract. Must be upgraded
+    to true parallelism in 3D (auditor BLOCK-5 fix).
+  "save_checkpoint before evidence gate causes filename collision" -> VERIFIED: auditor BLOCK-4
+    demonstrated via verification script. Fixed by moving save_checkpoint after gate.
+  Measurement estimates (<50ms, <1MB, <500ms) -> UNGROUNDED: moved to BASELINE section, not
+    exit criteria. Establish empirically during implementation.

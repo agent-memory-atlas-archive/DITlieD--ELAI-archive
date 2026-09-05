@@ -1,0 +1,290 @@
+PHASE 1H: SPLADE KEYWORD EXPANSION (conditional)
+Prerequisites: Phase 1G complete
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Evaluate SPLADE sparse keyword expansion. Feature-gated behind cfg(feature="splade").
+Compare two model candidates: prithivida/Splade_PP_en_v1 (established, ONNX-ready) and naver/splade-v3 (newer, ensemble distillation, outperforms PP_en_v1 on TREC/BEIR — arxiv 2403.06789).
+Pick the better-performing candidate on our code corpus, then apply the keep/drop gate.
+DROP if <5% recall improvement over BM25-only on our test corpus.
+
+CRITICAL RISK — BERT vocabulary mismatch on code:
+  SPLADE operates in the BERT WordPiece vocabulary space (30522 tokens). Code tokens like
+  "fn", "impl", "async", "Vec<T>", "unwrap()", "println!" may be aggressively subword-split,
+  degrading expansion quality. HuggingFace research confirms "vocabulary mismatch can destroy
+  the representation entirely" for specialized domains (huggingface.co/blog/yjoonjang/vocabulary-is-the-most-important-element-in-splade).
+  This phase MUST measure vocabulary coverage before concluding SPLADE helps on code.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/knowledge.txt             Layer 3.25 SPLADE section (L57-62), query pipeline (L88)
+  docs/specs/architecture-overview.txt        Section 10 deps: ort (L275), tokenizers (L276), SPLADE model candidates + vocab risk NOTE (L278-281)
+  docs/specs/crates/knowledge.txt             Section 6: ONNX circuit breaker (L133-151)
+  docs/specs/crates/knowledge.txt             Section 7: startup readiness, SPLADE optional load (L157)
+  BLOCKED: knowledge.txt L58 has typo "prithvida" and lacks SPLADE-v3/quantized/vocab-risk info. Owned by s-702732 at time of writing. Update when unlocked.
+
+RISKS TO WATCH
+  R24: SPLADE ONNX dependency weight (~532MB for main model) vs marginal recall gain on code search.
+  R25: SPLADE benchmarks (29% nDCG@10 on ESCI) are for natural language — code search recall may differ significantly.
+  R26: ort crate ONNX Runtime download strategy (default: downloads prebuilt from Microsoft) may fail in air-gapped environments.
+  R27: SPLADE requires BERT tokenization (input_ids, attention_mask, token_type_ids). The ort crate does NOT include tokenization — requires separate tokenizers crate (may already be present from Phase 1G cross-encoder).
+  R28: ort is an unconditional dependency for GraphCodeBERT/Granite (added in Phase 1G). Feature-gating SPLADE does NOT gate ort itself — only the SPLADE-specific ort::Session initialization.
+  R29: BERT WordPiece tokenizer has ~30522 subword tokens trained on Wikipedia/BookCorpus. Programming-specific tokens (fn, impl, async, mut, Vec, HashMap, unwrap) are NOT in the vocabulary and will be split into character n-grams, reducing SPLADE expansion quality for code-specific queries. Evidence: HuggingFace blog "Vocabulary is the most important element of Sparse Retrieval" demonstrates vocab mismatch destroys SPLADE representations in specialized domains.
+  R30: 10-query evaluation is statistically underpowered. TREC standard is 50 topics minimum for reliable IR evaluation (Sakai 2016, SIGIR/TOIS systematic review of statistical power). With 10 queries, effect sizes below ~15% are undetectable with any confidence.
+  NOTE: knowledge.txt L58 has typo "prithvida" — correct spelling is "prithivida". File a correction when editing knowledge.txt.
+
+
+GROUNDING
+  "prithivida/Splade_PP_en_v1"              | VERIFIED  | HuggingFace model exists, ONNX file = 532MB (main), 436MB (quantized variant)
+  "~500MB ONNX weight"                      | VERIFIED  | 532MB actual (main model). Close enough but corrected in this file.
+  "ort crate for ONNX Runtime"              | VERIFIED  | pyke/ort on crates.io, active maintenance, wraps Microsoft ONNX Runtime
+  "RRF fusion with BM25"                    | GROUNDED  | knowledge.txt L61, L88 confirm weighted RRF before PageRank
+  "5% recall threshold"                     | GROUNDED  | knowledge.txt L62 specifies this as the drop criterion
+  "SPLADE improves recall over BM25"        | VERIFIED  | 29% nDCG@10 on ESCI (Qdrant benchmark), competitive with dense retrievers
+  "error handling matches try/catch"        | GROUNDED  | knowledge.txt L60 states this as SPLADE design intent
+  SPLADE recall improvement on CODE SEARCH  | UNGROUNDED | All benchmarks are NL (ESCI, TREC DL). Code search recall is unknown. Assumed because: vocabulary expansion should help with programming synonyms (e.g., error/exception/try/catch) but magnitude is unverified.
+  fastembed-rs as alternative to raw ort     | GROUNDED  | architecture-overview.txt L280 marks as EVALUATE, not confirmed
+  "naver/splade-v3"                          | VERIFIED  | HuggingFace model exists (huggingface.co/naver/splade-v3). Uses ensemble distillation + fused losses. Outperforms SPLADE++ on TREC DL and BEIR (arxiv 2403.06789). ONNX export possible via sentence-transformers.
+  BERT vocab coverage on code tokens         | VERIFIED  | HuggingFace blog confirms vocab mismatch destroys SPLADE in specialized domains. BERT WordPiece has 30522 tokens, none programming-specific. Measurable via tokenizer OOV rate on code corpus.
+  10-query eval statistical power             | VERIFIED  | TREC standard = 50 topics. Sakai 2016 systematic review: 10 queries insufficient to detect effect sizes < ~15%. Wilcoxon + Benjamini-Hochberg recommended for significance testing.
+  Quantized ONNX variant                     | VERIFIED  | onnx-models/Splade_PP_en_v1-onnx = 436MB (int8 quantized). ~3x inference speedup on CPU per sentence-transformers docs. Quality loss typically <1% nDCG for int8 quantization.
+
+
+STEPS
+
+  1. SKELETON — splade module stub (feature-gated)
+
+    PRE_GATE
+      - Phase 1G exit criteria met (tantivy BM25 index operational, confirmed by prior phase audit)
+      - cargo check on workspace succeeds (0 errors)
+        CHECK: cargo check 2>&1 | tail -1 | grep -q "could not compile" && exit 1 || exit 0
+      - ort crate resolvable: grep 'ort' Cargo.toml returns a hit OR add it in this step
+        CHECK: grep -q 'ort' .elai_cc/Cargo.toml && echo "present" || echo "missing — add in this step"
+
+    IMPLEMENT
+      - Add ort dependency with feature gate in Cargo.toml: [dependencies.ort] version = "..." optional = true
+      - Create .elai_cc/src/knowledge/splade.rs with cfg(feature="splade") gate on the entire module
+      - Module stub: pub struct SpladeExpander (no fields yet), pub fn expand_query(&self, query: &str) -> Vec<(String, f32)> returning empty vec
+      - Re-export from knowledge/mod.rs behind #[cfg(feature = "splade")]
+
+    DETERMINISTIC_CHECK
+      - cargo check (no features): compiles, splade module not included
+        CHECK: cargo check --manifest-path .elai_cc/Cargo.toml 2>&1 | grep -c "error" | grep -q "^0$"
+      - cargo check --features splade: compiles, splade module included
+        CHECK: cargo check --manifest-path .elai_cc/Cargo.toml --features splade 2>&1 | grep -c "error" | grep -q "^0$"
+      - Without splade feature, no SPLADE-specific symbols compiled (ort itself is unconditional for GraphCodeBERT/Granite):
+        CHECK: cargo check --manifest-path .elai_cc/Cargo.toml 2>&1 | grep -c "error" | grep -q "^0$" && ! grep -rq "SpladeExpander" .elai_cc/target/debug/deps/ 2>/dev/null
+
+    ADVERSARIAL
+      - If feature gate is misconfigured, SpladeExpander leaks into non-SPLADE builds (ort itself is always present for other models — do NOT test for ort absence).
+        Test: cargo check without --features splade must compile. grep -r "SpladeExpander" across non-feature-gated code must return nothing.
+      - If module stub has non-gated pub items, they leak into non-SPLADE builds.
+        Test: grep for "pub fn.*splade\|pub struct.*Splade" in src/ files outside of #[cfg(feature = "splade")] blocks — must be absent.
+
+    ACCEPTANCE
+      - [ ] cargo check (no features): 0 errors, no SpladeExpander symbols in non-gated code
+      - [ ] cargo check --features splade: 0 errors, SpladeExpander compiles
+      - [ ] ort remains in dependency tree regardless of splade feature (it serves GraphCodeBERT/Granite)
+
+
+  2. TEST — write failing tests before implementation
+
+    PRE_GATE
+      - Step 1 DETERMINISTIC_CHECK passes (skeleton compiles both ways)
+        CHECK: cargo check --manifest-path .elai_cc/Cargo.toml --features splade 2>&1 | grep -c "error" | grep -q "^0$"
+
+    IMPLEMENT
+      - tests/knowledge/splade_tests.rs (feature-gated with #[cfg(feature = "splade")])
+      - Unit test: expand_query("error handling") returns sparse vector containing terms like "error", "exception", "try", "catch", "handling" with non-zero weights
+      - Unit test: expand_query("") returns empty vector (edge case)
+      - Unit test: expand_query with very long input (>10000 chars) does not panic, returns result or graceful error
+      - Unit test: RRF fusion of SPLADE + BM25 scores produces combined ranking that differs from BM25-only
+      - Property test: for any non-empty query string, all returned weights are finite and >= 0.0
+      - Integration test (marked @pytest.mark.integration equivalent): recall measurement on synthetic corpus comparing BM25-only vs BM25+SPLADE
+
+    DETERMINISTIC_CHECK
+      - All tests compile with --features splade:
+        CHECK: cargo test --manifest-path .elai_cc/Cargo.toml --features splade --no-run 2>&1 | grep -c "error" | grep -q "^0$"
+      - Tests fail (TDD — implementation not yet done):
+        CHECK: cargo test --manifest-path .elai_cc/Cargo.toml --features splade 2>&1 | grep -q "FAILED\|test result: FAILED"
+
+    ADVERSARIAL
+      - If tests accidentally pass with the stub (empty vec), they are not testing real behavior.
+        Test: verify at least one test asserts non-empty output from expand_query on a real query.
+      - If property test generator only produces ASCII, Unicode queries could cause panics.
+        Test: include at least one Unicode query in property test seed corpus.
+
+    ACCEPTANCE
+      - [ ] Test file compiles with --features splade
+      - [ ] At least 5 unit tests + 1 property test + 1 integration test defined
+      - [ ] Tests FAIL at this stage (TDD: red phase)
+
+
+  3. IMPLEMENT — SPLADE inference + RRF fusion
+
+    PRE_GATE
+      - Step 2 tests compile (--no-run passes)
+        CHECK: cargo test --manifest-path .elai_cc/Cargo.toml --features splade --no-run 2>&1 | grep -c "error" | grep -q "^0$"
+      - tokenizers crate available (required for BERT tokenization — ort does NOT include tokenization):
+        CHECK: grep -q 'tokenizers' .elai_cc/Cargo.toml && echo "present" || echo "MISSING — add tokenizers crate"
+      - ONNX model file accessible (default path: .elai_cc/models/splade/model.onnx, override via SPLADE_MODEL_PATH env var):
+        CHECK: SPLADE_MODEL_PATH="${SPLADE_MODEL_PATH:-.elai_cc/models/splade}"; test -f "$SPLADE_MODEL_PATH/model.onnx" || echo "MODEL_MISSING — download prithivida/Splade_PP_en_v1 ONNX to $SPLADE_MODEL_PATH/"
+
+    IMPLEMENT
+      - Ensure tokenizers crate is in Cargo.toml (may already be present from Phase 1G cross-encoder). If missing, add it.
+      - SpladeExpander::new(model_path): load ONNX model via ort::Session. Load BERT tokenizer via tokenizers crate (vocab.txt + tokenizer.json from model repo). Model path is configurable to support swapping between candidates.
+      - SpladeExpander::expand_query(): tokenize input to (input_ids, attention_mask, token_type_ids) via tokenizers, run ONNX inference, apply SPLADE pooling, return top-k (token, weight) pairs.
+        IMPORTANT — ONNX output varies by model source:
+          PP_en_v1 (prithivida ONNX): outputs MLM logits directly. Apply max-pooling over token positions, then ReLU + log(1+x) to get sparse vector.
+          splade-v3 (sentence-transformers optimum export): outputs raw MLM logits only — the SPLADE pooling (max-pool + ReLU + log1p) is NOT baked into the ONNX graph. expand_query() MUST apply pooling in Rust code after inference. Use a model_variant enum (PrePooled, RawMLM) to dispatch. Verify output shape: [1, seq_len, 30522] for RawMLM vs [1, 30522] for PrePooled.
+      - SpladeExpander::vocab_coverage(corpus_tokens: &[String]) -> f64: measure what fraction of unique code tokens in corpus map to a single WordPiece token (not split into subwords). Returns ratio 0.0-1.0. This is the vocabulary fitness metric — if coverage < 0.3, SPLADE is unlikely to help on this code corpus regardless of model choice.
+      - Weighted RRF fusion function: rrf_fuse(bm25_results, splade_results, k=60, weight_bm25=0.5, weight_splade=0.5) -> merged ranking. Ranks are 1-based (first result = rank 1). Guard: k = max(k, 1) to prevent division by zero.
+      - Circuit breaker integration: wrap ONNX calls with existing circuit breaker pattern from knowledge.txt Section 6
+      - Fallback on SPLADE failure: return empty expansion (BM25-only path continues)
+      - Support both model candidates via config:
+        Candidate A: prithivida/Splade_PP_en_v1 (532MB full, 436MB quantized int8)
+        Candidate B: naver/splade-v3 (export to ONNX via sentence-transformers optimum)
+        Both share the same SpladeExpander interface — only model_path differs.
+
+    DETERMINISTIC_CHECK
+      - All unit tests pass:
+        CHECK: cargo test --manifest-path .elai_cc/Cargo.toml --features splade --lib 2>&1 | grep "test result:" | grep -q "0 failed"
+      - Property test passes (all weights finite, >= 0.0):
+        CHECK: cargo test --manifest-path .elai_cc/Cargo.toml --features splade property_ 2>&1 | grep -q "ok"
+      - Feature-gated build without splade still compiles clean:
+        CHECK: cargo check --manifest-path .elai_cc/Cargo.toml 2>&1 | grep -c "error" | grep -q "^0$"
+      - Vocabulary coverage function returns a valid ratio:
+        CHECK: cargo test --manifest-path .elai_cc/Cargo.toml --features splade vocab_coverage 2>&1 | grep -q "ok"
+
+    ADVERSARIAL
+      - If vocab_coverage returns > 0.3 but most "covered" tokens are common English words (the, is, for), the metric is misleading. The coverage check must run on CODE-SPECIFIC tokens extracted from the corpus (identifiers, keywords, operators), not all tokens including comments/strings.
+        Test: extract top-100 code identifiers from synthetic corpus via tree-sitter, run vocab_coverage on those specifically. Report code-specific coverage separately from overall coverage.
+      - If ONNX model file is corrupted or wrong format, ort::Session::new panics instead of returning Err.
+        Test: create a 1-byte file as model.onnx, call SpladeExpander::new(), assert it returns Err, not panic.
+      - If tokenizer produces tokens outside model vocabulary, inference produces garbage.
+        Test: expand_query with non-English input (e.g., Chinese characters) returns empty or valid sparse vector, never panics.
+      - If model loads but takes >5s per query on CPU, it defeats the purpose for interactive use.
+        Test: time a single expand_query call. Assert <2s on CPU for a 100-char query. If fails, flag for optimization.
+      - If RRF k parameter is 0 and ranks are 0-based, division by zero in 1/(k+rank).
+        Test: rrf_fuse with k=0 does not panic — must clamp k to min 1. Also test with an empty result set (0 results from one source).
+      - If tokenizers crate is missing or tokenizer files (vocab.txt, tokenizer.json) are absent, SpladeExpander::new() must return Err.
+        Test: call SpladeExpander::new() with valid ONNX but missing tokenizer files — assert Err, not panic.
+
+    ACCEPTANCE
+      - [ ] All unit tests pass with --features splade
+      - [ ] Property test confirms weights are always finite and non-negative
+      - [ ] Corrupted model file returns Err (not panic)
+      - [ ] Non-feature build: 0 errors, no SpladeExpander symbols in non-gated code
+      - [ ] Single query latency <2s on CPU (100-char input, p50 of N=10 calls, excluding first warm-up call)
+      - [ ] Missing tokenizer files returns Err (not panic)
+      - [ ] vocab_coverage() returns valid ratio 0.0-1.0 on sample code tokens
+      - [ ] Both model candidates (PP_en_v1 and splade-v3) load and produce output via same interface
+
+
+  4. MEASURE — vocabulary fitness, model comparison, recall evaluation, and keep/drop decision
+
+    PRE_GATE
+      - Step 3 ACCEPTANCE criteria all pass
+      - Integration test infrastructure exists (synthetic corpus from step 2)
+        CHECK: grep -rq "recall\|Recall" .elai_cc/tests/ && echo "recall test exists" || echo "MISSING"
+
+    IMPLEMENT (execute in order — each sub-step gates the next)
+
+      4a. VOCABULARY FITNESS CHECK (early-exit gate)
+        - Extract unique code identifiers from synthetic corpus via tree-sitter (function names, type names, variables, keywords — NOT string literals or comments).
+        - Run SpladeExpander::vocab_coverage() on extracted identifiers.
+        - If code-specific vocab coverage < 0.3 (less than 30% of code tokens are single WordPiece tokens):
+          EARLY DROP. Log: "SPLADE vocabulary coverage on code tokens is [X]% — below 30% threshold. BERT WordPiece tokenizer is fundamentally mismatched for this code corpus. SPLADE will not meaningfully expand code-specific queries. Decision: DROP without recall measurement."
+          Skip steps 4b-4d. Proceed directly to EXIT CRITERIA (DROP path).
+        - If coverage >= 0.3: log coverage ratio and proceed to 4b.
+        - Rationale: HuggingFace research confirms vocab mismatch destroys SPLADE representations. Measuring recall with a broken tokenizer wastes time and produces misleading results.
+        - UNGROUNDED: the 0.3 threshold is a conservative heuristic, NOT established by any published study. Reasoning: below 30% coverage means >70% of code identifiers are split into 2+ subwords, each diluting BERT's contextualized expansion — at that point, SPLADE is operating on fragments rather than meaningful tokens. This threshold should be revisited with production data. If coverage lands between 0.2-0.4, consider proceeding to recall measurement anyway and using the result to calibrate a data-driven threshold.
+
+      4b. MODEL VARIANT SELECTION
+        - PRE_GATE: all model files must be pre-staged locally before this step. Model download is a prerequisite OUTSIDE this session (models are 500MB+ each). Verify:
+          CHECK: test -f .elai_cc/models/splade/model.onnx && echo "PP_en_v1 present" || echo "MISSING"
+          CHECK: test -f .elai_cc/models/splade-v3/model.onnx && echo "splade-v3 present" || echo "MISSING — run ONNX export first"
+          If splade-v3 export is unavailable, proceed with Candidate A variants only and log "Candidate B unavailable — skipped."
+        - Quantization check (Jaccard is valid here — same model, different precision):
+          Run Candidate A-full (532MB) and A-quant (436MB int8) on 5 sample queries.
+          Measure Jaccard of top-50 expanded terms. If overlap >= 0.95, prefer A-quant (saves 96MB + ~3x speed).
+          Jaccard is ONLY valid for same-model quantization regression detection, NOT for cross-model comparison.
+        - Cross-model comparison (A vs B — requires actual recall, not Jaccard):
+          If Candidate B (splade-v3) is available, run a quick recall@10 on 10 of the 50 queries for both A-winner and B.
+          Pick the candidate with higher mean recall@10. If within 1% of each other, pick the faster one.
+          This is a preliminary selection — the full 50-query evaluation in 4c uses the winner.
+        - Log comparison table (candidate, p50_latency_ms, quantization_jaccard, quick_recall) to workflow/reasoning/phase-1H-measurements.md.
+
+      4c. RECALL MEASUREMENT (statistically powered)
+        - Build synthetic test corpus: 100 code files with known relevant matches for 50 queries.
+          Rationale: TREC standard is 50 topics minimum for reliable IR evaluation. 10 queries cannot detect effect sizes below ~15% (Sakai 2016). With 50 queries + Wilcoxon signed-rank test, we can detect ~5% differences at p<0.05 with ~80% power.
+        - Query design requirements:
+          At least 15 queries must target vocabulary-mismatch scenarios (e.g., "error handling" should match try/catch, "concurrent access" should match mutex/rwlock/arc).
+          At least 15 queries must have distractors (files sharing keywords but not relevant).
+          At least 10 queries must be straightforward keyword matches (baseline sanity).
+        - Measure for the winning candidate from 4b:
+          BM25-only recall@10 per query
+          BM25+SPLADE (RRF fused) recall@10 per query
+        - Compute per-query delta: if bm25_recall > 0: (splade_recall - bm25_recall) / bm25_recall * 100. If bm25_recall == 0: exclude query from delta computation and log warning.
+        - Run Wilcoxon signed-rank test on paired (bm25_recall, splade_recall) per query. Report p-value.
+        - Log: mean delta, std, p-value, per-query breakdown.
+
+      4d. KEEP/DROP DECISION
+        - KEEP if: mean delta >= 5% AND p-value < 0.05 (statistically significant improvement).
+        - DROP if: mean delta < 5% OR p-value >= 0.05 (improvement absent or not statistically distinguishable from noise).
+        - EDGE CASE: if delta >= 5% but p >= 0.05 — log as "promising but inconclusive, need larger corpus." Default to DROP but preserve module for future re-evaluation with production data.
+        - Log full decision rationale to workflow/reasoning/phase-1H-measurements.md.
+
+    DETERMINISTIC_CHECK
+      - Vocab coverage produces numeric output:
+        CHECK: cargo test --manifest-path .elai_cc/Cargo.toml --features splade vocab_coverage 2>&1 | grep -qE "coverage.*[0-9]+\.[0-9]+"
+      - Model comparison table logged (if vocab check passed):
+        CHECK: test -f workflow/reasoning/phase-1H-measurements.md && grep -qE "Candidate|latency|overlap" workflow/reasoning/phase-1H-measurements.md
+      - Recall measurement produces per-query output (if vocab check passed):
+        CHECK: cargo test --manifest-path .elai_cc/Cargo.toml --features splade measure_recall 2>&1 | grep -qE "recall.*[0-9]+\.[0-9]+"
+      - Decision documented with statistical test:
+        CHECK: test -f workflow/reasoning/phase-1H-measurements.md && grep -qE "KEEP|DROP" workflow/reasoning/phase-1H-measurements.md && grep -qE "p.value|p_value|wilcoxon|EARLY DROP" workflow/reasoning/phase-1H-measurements.md
+
+    ADVERSARIAL
+      - If synthetic corpus is too easy (every query matches exactly), recall is 100% for both and delta is 0%.
+        Test: at least 15 of 50 queries must have distractors (files that share keywords but are not relevant).
+        CHECK: assert corpus definition has >= 15 queries with at least 1 distractor file each (automated in test setup).
+      - If all queries are NL-style ("find error handling"), SPLADE looks good on what it was trained for but fails on real code queries ("impl Display for MyStruct").
+        Test: at least 15 queries must use code-specific syntax/identifiers, not just English descriptions.
+      - If measurement only runs on subset of queries due to errors, result is biased.
+        Test: assert measurement runs on all 50 queries. If any query fails, log error but do not silently drop it.
+      - If SPLADE recall is measured after BM25 recall and caching affects results, measurement is invalid.
+        Test: run measurements in random order or clear caches between runs.
+      - If Wilcoxon test is applied with too few non-zero deltas, the test has insufficient power. Standard power tables require ~20-25 non-zero pairs for 80% power at p<0.05 for small effect sizes (r~0.3).
+        Test: assert at least 20 queries produce non-zero (bm25_recall - splade_recall) pairs. If fewer: log "insufficient paired differences (N=[X], need >=20) for significance testing" and default to DROP.
+      - If quantized model produces dramatically different expansions (Jaccard < 0.80 vs full model), quality loss exceeds typical <1% nDCG estimate.
+        Test: assert Jaccard overlap between quantized and full model top-50 terms >= 0.80 on sample queries.
+
+    ACCEPTANCE
+      - [ ] Vocab coverage measured on code-specific tokens (not all tokens). Result logged.
+      - [ ] If vocab coverage < 0.3: EARLY DROP documented with rationale. Phase complete.
+      - [ ] If vocab coverage >= 0.3: model comparison table with latency + term overlap logged
+      - [ ] Recall measured on 50 queries with 100 corpus files (or EARLY DROP)
+      - [ ] Wilcoxon signed-rank p-value computed and logged (or EARLY DROP)
+      - [ ] Decision (KEEP if delta >= 5% AND p < 0.05, else DROP) documented
+      - [ ] If DROP: splade feature flag remains but is not enabled by default, module preserved for future re-evaluation
+
+
+EXIT CRITERIA
+  Three possible outcomes:
+  1. EARLY DROP (vocab coverage < 0.3): phase complete without recall measurement. SPLADE fundamentally mismatched for code corpus.
+  2. DROP (delta < 5% OR p >= 0.05): improvement absent or statistically insignificant.
+  3. KEEP (delta >= 5% AND p < 0.05): statistically significant improvement confirmed.
+  All outcomes: feature flag works, module code preserved behind cfg(feature="splade") gate.
+  If KEEP: circuit breaker integrated, RRF fusion operational, winning model candidate documented.
+  If any DROP: feature flag disabled by default, decision rationale + all measurements logged.
+  Verify SPARSE_ONLY cascade: with splade feature disabled, SPARSE_ONLY mode must degrade to BM25_ONLY (no dead code path). Confirm grep for SPARSE_ONLY in knowledge engine shows BM25-only fallback when splade is absent.
+
+MEASUREMENTS
+  vocab_coverage_code: fraction of code-specific identifiers that map to single WordPiece tokens (0.0-1.0). Threshold: 0.3.
+  model_comparison: table of (candidate, p50_latency_ms, top50_term_jaccard) for each model variant.
+  recall_delta_percent: per-query (BM25+SPLADE recall@10 - BM25 recall@10) / BM25 recall@10 * 100, excluding queries where BM25 recall@10 = 0 (logged as warnings). Report mean + std across 50 queries.
+  wilcoxon_p_value: paired Wilcoxon signed-rank test on (bm25_recall, splade_recall) per query. Threshold: p < 0.05.
+  splade_query_latency_ms: p50 and p95 for single expand_query call (N=10, excluding warm-up)
+  model_load_time_s: time to load ONNX model into ort::Session
+  binary_size_delta_mb: increase in release binary with --features splade vs without

@@ -1,0 +1,378 @@
+CODE COMPLETENESS ENFORCEMENT DESIGN — ADVERSARIAL AUDIT
+Date: 2026-04-13
+Auditor: Claude Sonnet 4.6 (adversarial audit mode)
+Audit target: docs/specs/guide/code-completeness-enforcement-design.txt
+Verification scripts: workflow/audit-scratch/test_lazy_code_patterns.py (9 failures)
+
+PROGRESS SUMMARY: Tests: N/A (plan audit, no code tests) | Tiers: N/A | TestQuality: N/A |
+Regression: none | BLOCKs: 9 | Score: 0.41
+
+
+========================================================================
+BLOCK FINDINGS (must fix before implementation begins)
+========================================================================
+
+B-1: PYTHON PASS PATTERN HAS UNBOUNDED FALSE POSITIVES
+Section: 3.1, pattern r"pass\s*$"
+Problem: The pattern has no word boundary. It matches "bypass", "compass",
+"surpass", "overpass", and any other word ending in "pass". In a real Python
+codebase, identifiers like bypass_auth(), compass_heading, surpass_limit are
+common. Every occurrence would BLOCK a legitimate write.
+Evidence: workflow/audit-scratch/test_lazy_code_patterns.py lines bypass_FP,
+compass_FP, surpass_FP — all return FAIL (matched when they should not).
+Correct fix: r"\bpass\s*$" (word boundary before 'pass').
+
+B-2: MAGIC NUMBER REGEX IS UNUSABLE (catastrophic false positive rate)
+Section: 3.1, pattern r"42|1337|9999"
+Problem: No word boundaries, no context. Matches these substrings anywhere —
+inside identifiers, inside strings, inside comments, as part of larger numbers.
+Examples: port=8042, year=2042, fn process1337data(), const MAX=49999.
+Evidence: test script returned 5 false positive failures for this pattern.
+Every Rust codebase will have port numbers, version numbers, sizes, hashes,
+and test values that happen to contain these digits. This pattern would generate
+constant false BLOCKs from day one, breaking the entire enforcement system's
+credibility. The configurable magic number list needs a complete redesign — at
+minimum require word boundaries AND only match numeric literals in assignment
+context (use AST-based detection, not regex).
+Correct fix: Remove this pattern entirely from the regex set. Move magic number
+detection to the T2 hook (tree-sitter literal value analysis), where it can
+distinguish numeric literals from substrings in strings/identifiers.
+
+B-3: TEST FILE EXEMPTION IS AMBIGUOUS AND WILL MISS PRODUCTION LAZY CODE
+Section: 3.1 (test file exemption), integration with Rust's #[cfg(test)] convention
+Problem: The design says "In test files (#[cfg(test)], test_, _test): patterns
+are ALLOWED." This implies a FILE-LEVEL exemption. But Rust's standard idiom puts
+#[cfg(test)] modules at the bottom of PRODUCTION source files (e.g. src/auth/validate.rs
+has both the production function AND the test module). If the exemption is
+file-level (any file containing #[cfg(test)] is exempt), then todo!() in the
+production function body is invisible to the pattern checker.
+Evidence: test script shows 2 matches of todo!() in a mixed prod/test file,
+both in production code. File-level exemption suppresses both.
+Correct fix: Exemption must be BLOCK-LEVEL, not file-level. The T1 regex hook
+cannot do block-level scoping (that requires T2 AST parsing). Therefore: the
+T1 hook must NOT exempt files that merely contain #[cfg(test)] — it must match
+regardless. The T2 hook uses tree-sitter to check whether a todo!() is inside
+a #[cfg(test)] block, and only then suppress. This changes the T1/T2 interaction
+design for the test exemption — the design currently places test exemption in
+the T1 regex layer where it CANNOT be correctly implemented.
+
+B-4: AUTOMATIC FILE SPLITTER (5.2) HAS NO INTERFACE FOR THE REJECTED CONTENT
+Section: 5.2 (File-size-specific BubbleUp)
+Problem: The splitter "Takes the too-large file content" — but where does this
+content come from? The T1 hook BLOCKS the write operation. The content that was
+attempted never reaches the filesystem. The design does not specify:
+(a) whether the T1 hook captures and stores the rejected write payload,
+(b) what data structure holds the rejected content between the hook and the BubbleUpHandler,
+(c) whether the BubbleUpHandler has access to the rejected payload at all.
+Without this interface, step 1 of the splitter algorithm ("takes the too-large
+file content") has no implementation path. The splitter cannot operate on
+content it cannot access.
+Additionally, step 4 "generates new file names based on function purposes (from DKG)"
+is incoherent: the DKG contains only code that has been WRITTEN to disk. A file
+that was blocked from writing is NOT in the DKG. The DKG cannot provide naming
+suggestions for unwritten functions.
+Correct fix: (a) Define a RejectedWrite struct in the hook system that captures
+the blocked payload. (b) Route it to BubbleUpHandler via SSB or a direct channel.
+(c) Replace "from DKG" with "from tree-sitter parsed AST of rejected content"
+for naming suggestions.
+
+B-5: MISSING TOCTOU RACE: DECOMPOSER LOC ESTIMATES STALE AT EXECUTION TIME
+Section: 1.2 (LOC budget per baby step)
+Problem: The decomposer validates at DESIGN TIME: "current_lines from DKG file
+metadata" + "estimated_added_lines <= 100". This validation uses stale data.
+Between decomposition (when DKG is queried) and execution (when the baby step
+runs), other baby steps can modify the same file. A file at 80 lines at
+decomposition time could be at 98 lines when this baby step executes. The baby
+step adds 15 lines (within its MICRO budget), pushing the file to 113 lines.
+The T1 hook BLOCKS this write. The baby step executor has no mechanism to detect
+this situation, no retry strategy for it, and the BubbleUp handler for file size
+is designed for a different case (model wrote a monolith, not: model wrote
+correctly but file grew from other steps).
+This TOCTOU creates phantom failures for correctly-written baby steps.
+Correct fix: At execution time, re-fetch current_lines from the filesystem (not DKG),
+recompute the post-edit estimate, and if it would exceed 100 lines, trigger an
+extraction step BEFORE execution rather than BLOCKING after.
+
+B-6: LAYER 2 SKELETON-FIRST GENERATION MISSING FILL-EXTRACTION SPEC
+Section: 2.1 (Skeleton-first generation)
+Problem: The design describes ___BLANK_1___ and ___BLANK_2___ markers in the
+skeleton and says "the model fills BLANK_1 and BLANK_2 in separate LLM calls."
+No specification exists for:
+(a) What the model outputs per call: the full file with one blank filled, or
+    only the content for that blank?
+(b) How the system extracts the filled content and patches it into the skeleton?
+(c) What happens if the model fills multiple blanks in one response?
+(d) Which blank gets the T1 file size check: the delta, or the cumulative file?
+If the model outputs the full file per call, then after filling BLANK_1, the file
+(skeleton + BLANK_1 content) is written. After filling BLANK_2, the full file
+(with both filled) is written again. The T1 hook sees TWO writes of the full file.
+If the skeleton + BLANK_1 + BLANK_2 together exceed 100 lines, the SECOND write
+is blocked — but the first (partial) write was allowed, leaving the file in an
+inconsistent state.
+Correct fix: Specify the fill extraction contract: model outputs ONLY the function
+body (no signature, no surrounding context). The skeleton has precisely-located
+markers. The orchestrator patches the skeleton with the extracted body. The T1
+hook fires only on the final assembled file, not on intermediate fills.
+
+B-7: "100 LINES = ~70 TOKENS" IS PHYSICALLY IMPOSSIBLE (invalidates design rationale)
+Section: Principle section (lines ~54-55): "A 100-line file is ~70 tokens of
+code context."
+Problem: This is wrong by an order of magnitude. A single Rust identifier is 1
+token. A blank line is 1 token (the newline). A 100-line Rust source file with
+reasonable code density contains 500-2000 tokens. At 0.7 tokens/line, a 100-line
+file would consist almost entirely of empty lines, which is not code. The MICRO
+tier usable context is 3000 tokens. If the "70 token" claim were true, the model
+could attend to 43 100-line files simultaneously — which contradicts the entire
+motivation for the 100-line limit.
+Evidence: standard tokenizer behavior (any subword tokenizer). Rust code tokens:
+keywords (fn, let, pub, use), identifiers (each is 1-3 tokens), punctuation
+(each is 1 token), types (e.g. Result<Claims, AuthError> is ~8 tokens).
+Average Rust file: ~8-12 tokens/line = 800-1200 tokens per 100-line file.
+Impact: the "Why 100" justification is numerically invalid. The 100-line limit
+may still be correct on other grounds, but the token arithmetic used to justify
+it is wrong and will mislead any implementer who uses it to size context budgets.
+Correct fix: Either remove the token claim, or replace it with a measured value
+from the benchmark harness defined in token-efficiency-design.txt section 1.
+
+B-8: NEW PREDICATE TYPES ARE UNJUSTIFIED DUPLICATES OF EXISTING TYPES
+Section: Predicate Types section; cross-reference: actual rules/src/predicate.rs
+Problem: The design adds two new predicate types: LAZY_CODE_PATTERN and
+FILE_SIZE_GATE. The existing implemented system already has:
+- GrepPattern: regex matching with scope — LAZY_CODE_PATTERN is identical in
+  function (it is also regex matching). The only difference proposed is a
+  "language" and "context" (production/test) metadata field.
+- MetricGate: numeric threshold comparison — FILE_SIZE_GATE is identical in
+  function (file line count vs threshold). MetricGate already supports Lt/Gt
+  operators and both File and Runtime metric sources.
+Additionally, the design doc claims "rules.db has 5 predicate types" but the
+actual implementation (rules/src/predicate.rs line 3 comment + enum definition)
+has 6 types: AstPattern, GrepPattern, SchemaRequired, MetricGate, Composite,
+GraphReachability. The count is wrong by 1.
+Adding new predicate types requires: schema migration (rules.db), new CompiledPredicate
+variants (rules/src/rule_engine.rs), new evaluation paths in DefaultRuleEngine,
+schema_version bump, new tests. This work is unnecessary if GrepPattern and
+MetricGate are extended with language/context metadata fields.
+The design must justify why new types are required instead of extending
+GrepPattern with {language: Option<Language>, file_context: FileContext} and
+MetricGate with {metric_name = "file_line_count"}.
+
+B-9: TASKSPEC HAS SINGULAR target_file — FILE_PLAN REQUIRES STRUCT REPLACEMENT, NOT EXTENSION
+Section: 1.1 (FILE_PLAN block in BabyStepSpec); cross-reference: phase-4D.txt line 437
+Problem: The existing BabyStepSpec (defined in phase-4D.txt, struct BabyStepSpec)
+contains TaskSpec which has target_file: String — a SINGLE file path. The design
+proposes adding a "9th block: FILE_PLAN" containing creates: Vec<FileSpec> and
+modifies: Vec<FileModSpec> for multi-file specifications. But the existing
+TaskSpec.target_file = String is a contradictory field — it implies one file per
+baby step. Adding FILE_PLAN while keeping target_file creates two conflicting
+specifications of where code should go.
+Furthermore, the existing MICRO tier constraint (from token-efficiency-design.txt
+section 3 table): Max Files Touched = 1 file. FILE_PLAN defines creates: Vec
+(plural files). For MICRO tier baby steps, FILE_PLAN with multiple CREATE entries
+violates the single-file constraint. The design does not specify how FILE_PLAN
+interacts with the per-tier file count limits.
+Correct fix: Replace TaskSpec.target_file: String with TaskSpec.file_plan: FilePlan.
+Remove the singular field. Enforce that MICRO tier FilePlan.creates.len() == 1
+and FilePlan.modifies.len() <= 1. Document this in the tier constraint table.
+
+
+========================================================================
+WARN FINDINGS (should fix before implementation)
+========================================================================
+
+W-1: INFORMATION LEAKAGE SELF-CONTRADICTION IN RETRY STRATEGY
+Section: 3.1 (pattern gaming prevention) vs 5.1 (BubbleUp retry messages)
+Section 3.1 states: "The agent does NOT know which specific pattern triggered.
+This prevents gaming." Section 5.1 then specifies the retry message: "Your
+previous output contained incomplete implementations. Write COMPLETE function
+bodies." This message reveals the CATEGORY of violation (lazy/incomplete code),
+which is exactly the type of information 3.1 claims to suppress. An agent
+that adapts across retries will learn to avoid the patterns that trigger this
+specific message. The "gaming prevention" rationale is undermined.
+Additionally, Retry 3 adds a few-shot example from DKG. The DKG may contain
+existing code that predates this enforcement system and contains todo!() or
+unimplemented!() macros (e.g., legitimate stub implementations in the codebase).
+Including such examples in the retry prompt would teach the model to write the
+exact patterns being blocked.
+Fix: Define exactly what is allowed in retry error messages. If the goal is to
+prevent gaming, the retry message must be generic ("your output was rejected,
+try again") with no category information. If semantic guidance is needed, accept
+that some gaming is possible and design accordingly.
+
+W-2: BRIDGE FILE TEMPLATE ENGINE IS UNSCHEDULED WORK ON COMPLETED PHASES
+Section: 2.2 (Bridge file templates); Phase Impact section
+The design assigns bridge file generation to "ORCHESTRATOR, not the executor agent"
+and says "Bridge files are written by the ORCHESTRATOR." But Phase 3C (agent system,
+COMPLETED) and Phase 3J (wiring, COMPLETED) have no bridge file generation capability.
+The design proposes retroactively adding new generation logic to COMPLETED phases
+(3C, 3E, 3J). This means the implementation work is not scheduled — it's not in
+Phase 4D or 4E either. The Phase Impact section for 3E says "Add FILE_PLAN block
+in baby step prompt assembly" (small change) but does not mention the orchestrator
+gaining deterministic file assembly capability.
+Bridge file generation is non-trivial. It requires: reading MODULE_TREE, formatting
+the mod.rs template, handling re-export selection, writing to disk via the tool
+system. This is a new orchestrator capability, not a "small" change.
+Fix: Add a concrete implementation slot for bridge file generation. Either Phase 4B
+(tools) or Phase 4C (plugins), with explicit deliverables.
+
+W-3: PHASE 3J.10 CITED AS A SEPARATE PHASE — IT IS DELIVERABLE #10 OF PHASE 3J
+Section: Phase Impact section (all references to "Phase 3J.10")
+The design consistently writes "Phase 3J.10 (tiered hooks)" as if 3J.10 is a
+standalone phase. The phase-index-3A-4J.txt lists it as deliverable number 10
+within Phase 3J's deliverables list. Phase 3J is now COMPLETED per progress.md
+(3J.1-2, 3J.4, 3J.UNIFIED, 3J.WIRE.* all marked COMPLETE). The note "T1 and T2
+hooks are currently stubs (BLOCK-3 from anti-staleness)" is STALE. Verified:
+T1Hook in plugins/src/tiered_analysis.rs has full rule evaluation (with_rules path
+wired in 3J.WIRE.RULES), T2Hook has actual tree-sitter parsing (776 lines, no TODOs).
+The stale stub status claim in the design doc will mislead implementers into
+"fixing stubs" that are already fixed.
+Fix: Remove the parenthetical "(NOTE: T1 and T2 hooks are currently stubs)" and
+update all "Phase 3J.10" references to "Phase 3J deliverable 10 (complete)".
+
+W-4: SURGICAL MODE FILE EXTRACTION PREREQUISITE HAS NO IMPLEMENTATION PLAN
+Section: 1.3 (Surgical mode interaction)
+The design says: "if a surgical modification would push a file over 100 lines,
+the step must first EXTRACT a sub-module." This extraction is described as a
+prerequisite step that must happen before the modification. But no implementation
+plan exists for how the extraction happens in surgical mode. The extraction tool
+(described in section 5.2) is classified as Priority 3 — meaning it will not
+exist when Priority 1 work (the LOC limit enforcement) is first implemented.
+This creates a window where surgical mode modifications to near-limit files will
+be BLOCKED with no recovery path. Users in surgical mode will see unexpected
+BLOCKs with no actionable guidance.
+Fix: Either (a) delay LOC enforcement for surgical mode until the extraction
+tool exists, or (b) change the BLOCK to a WARN in surgical mode until 5.2 is
+implemented, clearly documenting this as a graduated rollout.
+
+W-5: CONTEXT (PatternContext) FIELD IN LazyCodePattern IS UNUSED IN T1 EVALUATION
+Section: New Types section (LazyCodePattern struct), section 3.1
+The LazyCodePattern struct has a context: PatternContext field with values
+{Production, Test, SkeletonOnly, Any}. The T1 hook evaluation in section 3.1
+describes the test exemption as file-level (check if file name contains "_test"
+or "#[cfg(test)]"). But file-level context detection in T1 is a regex on the
+ENTIRE file content or file path — it cannot determine whether a specific MATCH
+is in a production or test context. The context field in LazyCodePattern implies
+per-match context awareness, but the T1 hook architecture (regex scan of full
+file) cannot provide it. This field will be set but never meaningfully used.
+Fix: Remove context: PatternContext from LazyCodePattern, or move it to the
+T2 AST check where block-level context is actually available. Document that T1
+patterns apply to the full file without context discrimination.
+
+W-6: CHECK 3 IN T2 HOOK (FUNCTION COUNT vs FILE_PLAN) REQUIRES RUNTIME ACCESS TO FILE_PLAN
+Section: 3.3, Check 3
+The T2 hook is described as a post-generation check on the written file. But
+Check 3 says "The FILE_PLAN said this file should contain N functions. Count
+function declarations in the AST. If AST count < FILE_PLAN count: WARN."
+The T2 hook as currently implemented (plugins/src/tiered_analysis.rs) takes
+only source code and file path as input. It has no access to the FILE_PLAN
+(which lives in the BabyStepSpec, managed by the orchestrator). For the T2 hook
+to execute Check 3, the FILE_PLAN data must be threaded through from the
+orchestrator to the hook evaluation context. This is a new interface requirement
+not acknowledged in the design.
+Fix: Either (a) add FILE_PLAN to the T2 hook's EvaluationContext, requiring
+changes to T2Hook.evaluate() signature and all callers, or (b) move Check 3 to
+the deterministic auditor checks (4.1) which DO have access to the DecompositionTree.
+
+W-7: MODULE TREE IS NOT IN ANY EXISTING OR UPCOMING PHASE TYPE LIST
+Section: 1.3 (ModuleTree type definition); Phase Impact section
+The design introduces ModuleTree, ModuleNode, and ModuleKind as new types. The
+Phase Impact section says Phase 4D "Add: ModuleTree generation for greenfield
+projects" and Phase 4E "Add: ModuleTree as a first-class struct in DecompositionTree."
+But the phase-4D.txt deliverables and the phase-4E.txt struct definitions (verified
+by grepping both files) contain NO mention of ModuleTree. Adding ModuleTree to
+DecompositionTree is not a trivial addition — it changes the primary execution
+artifact, the serialization format (msgpack), and the checkpoint format. This
+means the phase-4D.txt and phase-4E.txt step files need updates before
+implementation begins. Implementing ModuleTree without updating the phase specs
+will create specification drift.
+Fix: Before any implementation, update phase-4D.txt to include ModuleTree generation
+in its deliverables list, and update phase-4E.txt to add ModuleTree to the
+DecompositionTree struct definition.
+
+W-8: NO DECISION DOC FOR THIS DESIGN
+CLAUDE.md / orchestrator convention: "before EXECUTING, write
+workflow/reasoning/phase-X-decisions.md (what, key decision, expected test outcome,
+unknowns)."
+No decisions doc exists for the code completeness enforcement design. The design
+touches 6 phases (3C, 3E, 3F, 3J.10, 4B, 4C, 4D, 4E) and introduces new
+predicate types, struct extensions, and hook behavior. The decisions doc is needed
+to record: (a) whether new predicate types are created vs existing types extended
+(B-8 above), (b) whether test exemption is file-level or block-level (B-3 above),
+(c) how the rejected-write pipeline works (B-4 above).
+Fix: Create workflow/reasoning/phase-completeness-decisions.md before any
+implementation session begins.
+
+
+========================================================================
+INFO FINDINGS (noted, no action required)
+========================================================================
+
+I-1: T1 EVALUATION ORDER CLAIM NOT ENFORCED IN CURRENT IMPLEMENTATION
+Section: Integration section (LAZY_CODE_PATTERN vs VERSION_GATE ordering)
+The design says "LAZY_CODE_PATTERN should be evaluated BEFORE VERSION_GATE."
+The current T1Hook.evaluate() uses a fold() that processes all rules and finds
+the most severe verdict, with no early termination. This is not a correctness
+bug (the most severe verdict is still found), but the claimed performance
+optimization (skip VERSION_GATE if LAZY_CODE_PATTERN already blocks) is not
+implemented and the design provides no mechanism to specify rule evaluation order.
+Observation: for <1ms T1 targets with 25 lazy-code rules + 10 version rules,
+all 35 evaluations likely complete within budget anyway.
+
+I-2: ENTRY POINT TEMPLATE USES Box<dyn std::error::Error> — VIOLATES HARD RULE
+Section: 2.3 (Entry point template), lines 223-231
+The example main.rs in the entry point template uses:
+    fn main() -> Result<(), Box<dyn std::error::Error>>
+CLAUDE.md hard rule: "thiserror/anyhow (never Box<dyn Error>)". The template
+code the design proposes generating violates the project's own coding standards.
+Every generated entry point using this template would trigger T1 VERSION_GATE
+rules for Box<dyn Error> (if such a rule is seeded). Fix: use anyhow::Result or
+a project-specific MainError type in the template.
+
+I-3: RESEARCH PROMPTS SECTION HAS NO FOLLOW-THROUGH
+Section: Research Prompts (lines 686-705)
+The three research queries are provided as suggestions with no grounding of
+whether they were actually executed. The design claims in the Principle section
+that 100 lines is optimal and describes attention ceilings — but the basis for
+these claims is described as needing external validation via the queries. If the
+queries were not executed, the 100-line limit is an ungrounded assertion. The
+token-efficiency-design.txt itself explicitly labels all its numbers as ESTIMATES
+requiring replacement from the benchmark harness. The completeness design relies
+on the same unvalidated numbers.
+
+I-4: CONSOLE.LOG BLOCKING IN TYPESCRIPT — TEST FILE EXEMPTION UNDEFINED
+Section: 3.1 (TypeScript patterns: console.log)
+The design lists r"console\.log\(" as a BLOCK pattern for TypeScript/JavaScript.
+The test file exemption uses the convention "test_, _test" to identify test files.
+But Jest/Vitest test files commonly use *.test.ts, *.spec.ts naming. More
+importantly, console.log is the only commonly-used debug output mechanism in
+Node.js test runners before jest.fn() or custom matchers are set up. The exemption
+criteria for TypeScript test files is not defined (unlike Rust's #[cfg(test)]).
+No action required as TypeScript is not currently used in the ELAI codebase,
+but the gap should be documented.
+
+
+========================================================================
+SUMMARY
+========================================================================
+
+The design has a strong motivational core and the layered enforcement strategy
+is architecturally sound. However, 9 BLOCKs prevent implementation from beginning:
+
+Critical blockers before any code is written:
+  B-1, B-2: The T1 regex patterns are broken. Deploying them causes constant
+    false BLOCKs that would immediately discredit the enforcement system.
+  B-3: Test exemption ambiguity causes the system to miss the primary problem
+    (production todo!() in files with inline tests).
+  B-4: Automatic file splitter has no data source — the rejected write content
+    is not captured anywhere.
+  B-6: Skeleton-first generation has no fill-extraction contract.
+  B-7: The "70 tokens per 100 lines" claim is wrong by a factor of 10+,
+    invalidating the mathematical justification in the Principle section.
+  B-8: Two new predicate types duplicate existing functionality without justification,
+    requiring unnecessary schema migrations.
+  B-9: BabyStepSpec.TaskSpec.target_file conflicts with FILE_PLAN's multi-file model.
+    The struct change is a breaking change to the primary execution artifact.
+
+The highest-priority fixes: B-1/B-2 (fix the regexes), B-3 (define exemption
+granularity), B-9 (resolve TaskSpec conflict), B-7 (remove false token count).
+These can be fixed in the design doc in one session. B-4 and B-6 require a new
+design session to specify the interfaces.

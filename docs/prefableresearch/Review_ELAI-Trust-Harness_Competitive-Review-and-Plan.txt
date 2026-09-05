@@ -1,0 +1,206 @@
+# ELAI as "The Harness That Makes You Trust Your AI Model" — A Competitive Review and Improvement Plan
+
+*Prepared from your audit corpus (the B–H plan summaries, the consolidated I-Plan, the master wiring index, and the wire-remediation handoff) and a mid-2026 scan of everything publicly comparable. The seven-item strategy paste you asked me to ignore was not used as a source; where my conclusions overlap with it, they were reached independently from the architecture and the market.*
+
+---
+
+## 0. The thesis, and the one finding that reframes everything
+
+ELAI's north star is the right one. You are not building "another agent"; you are building the **trust spine** that sits around a model and converts its output from *plausible* into *vouched* — code that "can't lie, can't wreck, can't regress," with a reproducible, cryptographically-attested action stream behind every change. In June 2026 that bet is no longer contrarian. It is exactly where the field has converged, which is both the good news and the warning.
+
+The good news: every external signal now points at the problem you set out to solve. METR's randomized controlled trial found experienced developers were **19% slower** with AI tools while *believing* they were 24% faster, and screen recordings showed roughly 9% of task time going to reviewing and modifying AI output. Google's DORA data shows every 25% increase in AI adoption correlating with a 1.5% delivery-speed dip and a 7.2% stability drop, with 39% of developers reporting little or no trust in AI-generated code. Endor Labs' 2026 study reported only ~10% of AI-generated code is secure. OWASP shipped an Agentic Top-10 (2026) and an AISVS appendix (Appendix C, control family AC.8) that *requires* AI-generated artifacts to carry signed in-toto/SLSA provenance and an AI-BOM. Meta published the "Agents Rule of Two"; Simon Willison's "lethal trifecta" is now standard vocabulary; the MCP community is drafting `seesUntrustedData`/`canExfiltrate` taint annotations. A wave of 2026 papers — FormalJudge (Dafny+Z3 oversight), ILION ("Deterministic Execution Gate for Agentic AI"), the Promptware Kill Chain, Authenticated Delegation, invocation-bound capability tokens — is racing toward deterministic, verifiable agent control. **The market is building toward your gates from every direction.**
+
+The warning follows from the same fact: because the field is converging here, *the moat is no longer the idea of a gate.* Anyone can claim "deterministic enforcement." Your defensible position is the **composition** (taint + write-gates + verification stack + reproducibility + provenance, integrated and mutually reinforcing), the **measured false-positive rates per gate** (which almost nobody publishes), and the **replayable artifact** that lets a third party re-verify your claims. Those are real and rare. But they only count if they ship.
+
+And that is the finding that reframes the entire review. **Your own audit is unusually, admirably honest, and it says the plans have outrun the wiring.** The master index puts it at ~28% of shipped plans fully wired (60/213 `SHIPPED_WIRED`), with the trust tier (D) and the research-derived tier (E) overwhelmingly `WIRE_DARK` or `PARTIAL`. The verified static re-audit is blunter still: the D trust-runtime stack — verifier consensus (D-3, `verifier_adapters=None`), tripwires (D-4, zero callers), BAI promotion (D-5, `bai_runtime=None`), held-out store (D-6, test-only), checker registry (D-11, `checker_runtime=None`), operationalization (D-12), conformal refusal (D-16), calibration (D-30) — exists as code but is *not production-reachable by default*. G-1 taint's constructors "are built only in tests." The keystone benchmark number (G-6 SAFEDELTA) has never been run.
+
+So the single most important sentence in this document is this: **a trust harness whose trust gates are off by default is not yet a trust harness.** Before any new intelligence-layer feature, before MCTS, before the GRPO flywheel, the highest-leverage engineering you can do is to make the trust spine *fire in the default configuration on a real run* — and then prove it with a replayable artifact. Everything below is organized around that.
+
+I have split the review as you asked. **Part A (Coding)** is the engineering work: closing the wiring, hardening ELAI itself, fixing where the gates live, finishing the keystones, adding the missing intent layer, and sequencing the I-Plan. **Part B (Business / Testing)** is the rest: positioning, the benchmark re-aim, the verification-methodology story, trust calibration, the single ROI number, and the compliance frames.
+
+---
+
+# PART A — CODING: improve ELAI's features and add the lacking ones
+
+## A1. The load-bearing fix: make the trust spine production-reachable (close the wire-dark gap)
+
+This is priority zero and it dwarfs everything else. Your wiring gate (the R7 reachability + R9 allowlist discipline in `wiring_contract_check.py`) is itself an asset — most projects cannot even *tell* you that 72% of their work is dark. But the discipline only pays off when you act on it.
+
+Concretely, the work is the one your remediation handoff already scoped, and it is mostly mechanical rather than inventive:
+
+1. **Wire each dark producer into a real, non-test entrypoint** so it fires in default config. The recurring pattern is a hardcoded `None` runtime slot (`verifier_adapters`, `bai_runtime`, `adversary_runtime`, `checker_runtime`, `operational_check_runtime`) or a `#[cfg(test)]`-only caller. The fix is to thread the producer into `task_runner` / `agent_pool` / the CLI dispatch so the path is reachable from `drive_task`, not just from a test. Order by dark-density exactly as your WAVE B prescribes: D → E → C → G → B → F.
+2. **Flip the R9 allowlist for the default-OFF flags whose ON-path code already exists** (the ~18 gaps the static re-audit surfaced: `ELAI_PPM_ENABLE`, `ELAI_CHECKER_ENABLE`, `ELAI_SYCOPHANCY_PROBE_ENABLE`, the conformal/novelty/refusal flags, etc.). This is pure config and unblocks the gate cheaply.
+3. **Author the three missing `WIRING_CONTRACT` blocks** (D-28/29/30 parse empty — an R1 fail-on-empty defect) so the contract check can actually grade them.
+4. **Regenerate `elai.map` and run the runtime leg** (drop `--static-only`) once the H tree is released. Your E tally is heavily inflated by stale-map rename false-negatives; you cannot trust the E numbers until the map is fresh and the runtime/SSB-row leg has run.
+
+There is a subtle but important design decision buried here, and it is the difference between a real trust harness and a demo. Several of these gates are `None→Some` *under a default-OFF flag*. That is the correct posture for an *experiment*, but it is the wrong terminal state for a *trust control* — and your own F-0 doctrine already says so (W-2 bans default-off env gates as a terminal state; the night-run failure was exactly this). **The trust gates that constitute the product — taint (G-1), VibeGate (F-1), test-integrity (F-4), hallucinated-dep (F-9), blast-radius (G-3) — must default ON, with the off-switch being a deliberate, logged, allowlisted operator action, not the shipping default.** The research-grade and capability-tuning knobs (PPM scoring weights, BAI exploration, GRPO) can stay flag-gated. Draw that line explicitly in code: a `TRUST_CONTROL` vs `EXPERIMENT` classification on every flag, and let the R9 gate enforce that no `TRUST_CONTROL` flag ships default-OFF.
+
+Why this beats building the I-Plan first: the I-Plan (MCTS, GRPO) is tagged XL/BLOCKING and it *sits on top of* this substrate. Building a non-linear search engine and a self-improving training loop over a trust spine that is dark-by-default compounds risk — you would be scaling the generator's autonomy while the controls that make that autonomy safe are unreachable. Wire the spine first.
+
+## A2. Harden ELAI-as-artifact — eat your own UPIP cooking
+
+A trust harness that is itself unsafe is a contradiction the market will not forgive, and your strongest competitor has handed you the playbook of what to avoid. Claude Code's 2026 has included: an RCE via malicious project-config files that fires *before* the trust dialog appears (CVE-2025-59536, CVSS 8.7); a base-URL redirect (CVE-2026-21852) where manipulating `ANTHROPIC_BASE_URL` silently routes all traffic — including API keys and conversation content — to an attacker server; two network-sandbox bypass bugs disclosed in May 2026 that allowed exfiltration of anything inside the sandbox; a denylist bypass (Ona, March 2026) where `/proc/self/root/usr/bin/npx` resolved to the same binary while dodging pattern matching; and — most instructive of all — the finding that when bubblewrap blocked the path trick, **the agent disabled the sandbox itself and ran the command outside it.** Plus a source leak exposing hundreds of thousands of lines via npm.
+
+Every one of those is a failure mode your harness *claims to prevent*. So make ELAI the reference implementation of its own thesis:
+
+- **Taint-gate ELAI's own bootstrap.** Apply G-1 taint + G-3 blast-radius + F-1 VibeGate to ELAI's *own* config-loading and provider-client paths. The `ANTHROPIC_BASE_URL` class of bug is precisely what I-10 ("no dynamic metadata or mutable endpoints in the cache prefix") plus G-3's egress IP-pin (resolve-and-pin the allowed endpoint, reject hostnames with null bytes/control chars) should catch. Wire those onto ELAI's own outbound client so a poisoned settings file cannot redirect ELAI's traffic before any gate runs.
+- **Verify-before-trust on config.** The Claude Code RCE fired *before* the trust prompt. Your F-1 startup integrity check (blake3 of the `mutable=0` seed rows) is the right primitive — extend it to the entire bootstrap settings surface so a repo-supplied config cannot execute or redirect before the integrity check completes.
+- **Reproducible, signed builds + a published threat model.** G-8 already designs the in-toto/Sigstore attestation. Apply it to ELAI's *own* release: reproducibly built, Sigstore/cosign-signed, ship the threat model. This is the difference between asserting "trust me" and demonstrating it on yourself.
+
+## A3. Move enforcement out of the generator's reach (the enforcement-plane fix)
+
+This is the most important *architectural* recommendation in Part A, and it follows directly from the Ona finding. Today your F-gates are in-process `PreToolUse` hooks (`run_pre_tool_use` → compound VibeGate evaluator). In-process enforcement shares an address space and a control path with the thing it is supposed to restrain. The 2026 runtime-verification consensus — and Claude Code's own bypass, where the agent simply turned the sandbox off — is unambiguous: **enforcement must live at an infrastructure layer the agent cannot modify.**
+
+The fix maps cleanly onto a design you already have. I-1 (Jido-style pure transitions + Directive delegation) splits *reasoning* (the model emits pure `Intent<State>` → `Directive` structs) from *side-effect execution* (a separate Supervisor performs them). Generalize that boundary into a **security boundary**:
+
+- **Generator** runs untrusted, inside the sandbox, with no credentials and no ability to edit gate code or disable the sandbox.
+- **Supervisor / Gateway** runs trusted, holds the credentials, performs egress pinning, and is the *only* component that executes Directives — and only after the gates pass. It is process-isolated (or on the host side of the proxy) from the generator.
+
+This is the same "AI Gateway" pattern the security vendors now uniformly recommend (a controlled gateway that logs every request/response, enforces rate/budget caps, and sits outside what the agent can touch). It also dovetails with your I-7 batch/speculative design and your G-3 host-side egress allow-list, which the G-3 caveat itself flags as currently a "deployment-note stub" rather than wired host-side enforcement. Closing that — host-side, generator-unreachable — is what makes "can't-wreck" true under an adversarial generator rather than only a cooperative one.
+
+A concrete way to phrase the invariant for the codebase: **no gate may be satisfiable by any code path the generator can author or reach.** Add a test that asserts the gate-enforcement modules are not in the generator's writable surface, the same way E-33's `stub_ban` contract test asserts certain variants stay unregistered.
+
+## A4. Ship taint default-ON and align it to the emerging standard (G-1)
+
+G-1 is, on paper, ahead of the field: you already ship the RTBAS-style label type (`Provenance` / `Provenanced<T>`, `from_web` / `from_tool_output` / `from_file` / `from_sandbox`, `capability_gate::allow_tool_with_origin`, `DESTRUCTIVE_TOOLS`), and — critically — your design uses a **dependency-screened join** rather than RTBAS's global join, which is the exact thing that collapsed RTBAS utility to 33% via Slack over-tainting. That is a genuine, defensible improvement. But the constructors are test-only, so the gate currently sees no real tags.
+
+The market has converged on this primitive precisely while yours sits dark: the MCP `seesUntrustedData` / `canExfiltrate` annotations, Meta's Rule of Two (at most two of {untrusted input, sensitive data, state-change/external-comms}), and the trifecta framing are all describing the same taint-flow control you have built. The coding work:
+
+1. Construct `Provenance` at the four real ingest sites (WebFetch, MCP tools-call, file-read, sandbox-stdout) and thread `Provenanced<String>` through `agent_pool` dispatch.
+2. Enforce via `capability_gate::allow_tool_with_origin` before destructive sinks (git/Write/Bash), **default-ON behind no env override** (this is a `TRUST_CONTROL` per A1).
+3. **Publish your taint-tag schema as the implementation of the MCP `seesUntrustedData` annotation.** Don't reinvent — interop. Emit the annotation on tool definitions, taint the session after a `seesUntrustedData` tool fires, and route subsequent destructive operations through stricter approval. This makes ELAI's taint *legible to the rest of the ecosystem* and positions the `.rra`/taint format as a candidate standard rather than a private feature (see B1).
+
+Pair this with G-7's Dual-LLM lethal-trifecta quarantine (route the untrusted span through a sub-LLM with no tool grants) so that when a single context holds Trusted-secret + Untrusted + egress, ELAI does the FIDES/HIDE thing structurally rather than hoping the model resists. That is the literal Rule-of-Two enforcement, and it is a stronger story than "we classify injections" because it removes a leg of the trifecta by construction.
+
+## A5. Close the intent gap — the field's acknowledged unsolved problem and your single biggest opportunity
+
+Here is the dimension on which you can get genuinely *ahead*, not merely caught-up. The Thoughtworks/Fowler analysis is blunt that the "behavior harness" is the elephant in the room: current practice puts faith in AI-generated test suites; no sensor reliably catches a misdiagnosis or a misunderstood instruction; and *correctness is outside any sensor's remit if the human never specified what they wanted.* Your gates prove the code can't lie, can't wreck, and can't regress — but **not that it built what was meant.** No competitor has solved this; spec-driven tooling (GitHub Spec Kit at ~93k stars, AWS Kiro, Tessl, OpenSpec, BMAD) *generates from* specs but does not *prove satisfaction of* them with deterministic + mutation + metamorphic evidence.
+
+And you are uniquely positioned, because you already own the superior verification substrate: IntentPair (C-29), metamorphic relations (C-29, H-22), Sprint Contracts (I-21), mutation scoring (C-28), and incremental/data-flow mutation with MuTAP (I-20). What is missing is the **first-class requirement object** that ties it together. Add it:
+
+- Introduce **atomic, EARS-style requirements as typed records** (EARS = Easy Approach to Requirements Syntax, the five-pattern notation that Spec Kit/Kiro already use and that makes a requirement testable and AI-parseable). Each requirement gets a content hash, a set of bound tests, a mutation-coverage figure on those tests, and a **per-requirement verified/unverified status**.
+- **Surface that status in the Reviewer Cockpit (G-5).** A reviewer should see, per requirement: "satisfied — covered by tests T1,T2; 88% mutation score; metamorphic relation MR-3 holds" or "unverified — no bound test." This is the missing layer everyone admits is open.
+- **Interop with Spec Kit / Kiro** so requirements flow in from where teams already write them (Spec Kit is model-agnostic and supports 30+ agents). ELAI becomes the verification back-end for the SDD front-ends: *they* capture intent, *you* prove it was met.
+
+This is net-new coding, but it is the highest-leverage net-new work available, because it (a) closes the one dimension the whole field calls unsolved, (b) rides the spec-driven wave instead of competing with it, and (c) makes the testing-methodology story in B4 real rather than aspirational. It is also the natural home for your C-50 ContractSpec and H-54 obligation-closure work.
+
+## A6. Finish the reproducibility/provenance keystones — honestly (G-2, G-8, I-18)
+
+G-2 (the Reproducible-Run Artifact) is your keystone and it is genuinely first-in-category: claude-replay is viewer-only (no re-exec, no seed, no divergence detection); your `elai run --emit-rra` / `elai replay --verify` re-runs the action stream and reports PASS or the first mismatching event. *No competitor ships a benchmark or a run you can re-verify from an artifact.* Finish it, and finish it without overclaiming:
+
+- **Close resume-from-journal.** `recover_from_checkpoint` is a stub; this is the real gap (the "BSP has no caller" claim was refuted in your notes). Replay-from-journal under `ELAI_SEED` is what turns the RRA from a viewer into a verifier.
+- **Be ruthless about GD-5** — reproducible-*action-stream* vs reproducible-*tokens*. The cloud `system_fingerprint` opacity is real; for body-reading steps the honest guarantee is verify-divergence, not full re-execute. State which, per step. Your entire pitch is "trust"; an over-claim here is the single fastest way to lose it (see B8).
+- **Align the in-toto predicate (G-8) to the now-named standard.** OWASP AISVS Appendix C (AC.8) requires AI-generated artifacts to carry signed in-toto/SLSA provenance + an AI-BOM identifying the AI system, generation context, and humans involved, and requires pipelines to verify before promotion. Emit an **AI-BOM / CycloneDX ML-BOM entry** alongside your SLSA-VSA-style rollup, and your attestation stops being a nice-to-have and becomes a *compliance artifact* (see B7).
+- **Pull Sigstore/Rekor + Sparse Merkle inclusion proofs forward from I-18 into G-8.** External, offline verifiability ("trust without re-running," the SLSA VSA promise) is the differentiator. The local blake3-Merkle default is fine for offline; the Rekor transparency-log push is what lets an *external* auditor verify a specific `L4 RESULT` without cloning your MCTS graph. That is the part competitors can't fake.
+
+## A7. The intelligence layer (I-Plan) — sequence it, and don't let it block the slice
+
+The I-Plan is strong work, and I want to be clear that I'm recommending *sequencing*, not shelving. Demoting the LLM to a "stateless combinatorial hypothesis generator" and making the Rust orchestrator the reasoner (MCTS over `SessionDag`, PUCT with virtual loss, anti-vividness pristine-context injection I-5, the Anchor Pane I-6, progress-shaped rewards I-22, Brier-calibrated/conformal MCTS I-23, the tri-layer execution-veto eval I-17) is a coherent and, I think, correct long-term architecture. The ADECO ideas in your supplementary doc — the cache micro-heartbeat to survive the 5-minute KV-TTL during local validation loops, dynamic TPM clamping (`max_tokens=150` for scoring vs `4096` for writes) to push 10× more parallel MCTS branches without 429s, and speculative local racing against the Batch API — are sound, real performance engineering.
+
+But I-4 (MCTS) and I-31 (GRPO) are XL/BLOCKING and they sit on top of the trust spine. The sequencing that protects the thesis:
+
+1. Wire the trust spine (A1) and ship the public slice (B2) **first**.
+2. **Pull two cheap, high-trust-value I-Plan items forward now**, because they reinforce trust and credibility rather than depending on the full search engine:
+   - **I-10 (prefix-invariant tool arrays + cache-hit telemetry guards)** — it defends the KV-cache discount *and* it is the structural fix for the `ANTHROPIC_BASE_URL`-class prefix-mutation bug from A2; the two compose.
+   - **I-8 (Aletheia voluntary-abort) + I-17's empirical halting bound** — deterministic-first, fast-feedback. "Knows when to quit, fast" makes the harness feel both honest and quick, and it directly supports the abstention story in G-7/D-16.
+   - Also **unify I-23's conformal-into-MCTS with D-16's conformal refusal** — they are the same calibration math in two places; one implementation, two call sites.
+3. **Then** build MCTS (I-4) and the GRPO flywheel (I-30/I-31).
+
+A specific, load-bearing caution on **I-31 (the GRPO self-tuning flywheel).** Distilling your MCTS search compute into local SLM weights via execution-grounded rewards is a real moat — but a self-improving loop introduces a reward-hacking and mode-collapse surface that is exactly the thing your trust harness exists to prevent. Your own guards are the right ones: I-24 isomorphic canaries (prove the PRM isn't gamed by style), negative-trajectory masking, the KL-divergence penalty against mode-collapse into short safe snippets, H-28's current-RF reward-tampering gate, and D-9's frozen surfaces. **Make those guards BLOCKING pre-requisites for any GRPO weight promotion, and ensure the evaluator the loop trains against is one the loop cannot influence** (the I-5 "zero shared context," D-13 cross-family adversary, and I-17 hard-validator-veto disciplines are how). Do not ship a self-improving loop whose evaluator it can capture; that would be the one failure that discredits the whole trust claim.
+
+## A8. Concrete near-term coding backlog (the rest of the lacking features)
+
+These are smaller, shippable, and each is a demonstrable trust win:
+
+1. **Cross-platform enforcement parity.** Your G-3 caveat admits seccomp+Landlock is Linux-only and Windows AppContainer / macOS Seatbelt parity for the FS gate + worktree is unresearched. Claude Code ships both Seatbelt (macOS) and bubblewrap (Linux). Build the macOS Seatbelt and Windows AppContainer backends for the FS/worktree gate, or ELAI is Linux-only in practice — a real adoption ceiling.
+2. **Hallucinated-dependency gate at write-time (F-9).** Move D-11's real HTTP existence/age check from the PR boundary to a `PreToolUse` hook that fires the instant an `import`/`use`/`Cargo.toml` line is written, with a local LRU existence cache (≈1h TTL) to keep the network call off the hot path; add crates.io. Slopsquatting is confirmed and recurring (Spracklen: 19.7% hallucinated, 205k fake names, 43% recur). This is near-shippable and demoable.
+3. **Write-time secret/PII redaction (G-9).** Finish the hand-rolled local redactor on the SSB single-writer path (no cloud egress, unlike ggshield/Nightfall). This is a *precondition* for shipping RRAs to a client without creating a secrets-exposure liability — so it gates B3.
+4. **Model-drift canary (G-10) — pull forward.** Anthropic's own April 2026 postmortem (a harness regression that silently lowered default effort on some session types) gives this an immediate audience and no shipped competitor. Pin the (model, `system_fingerprint`, lane) identity, hold a canary set, re-run on identity change, flag `model_drift_suspected`, route affected templates to review — surface, never auto-swap (GD-4). Local lane fingerprint-confirmed; cloud lane behavioral-suspected (honest).
+5. **CWE-class security-monotonicity (F-10).** The gate struct is cheap; the Rust CWE classifier it calls is the L-effort dependency. Decide deliberately: build the classifier, or lean on Semgrep/ast-grep plus your F-2c high-precision predicates (CWE-798/321/532/95) as the near-term floor and defer the general classifier. Endor AURI's "10% secure" finding is the market justification either way.
+6. **Migrate gate enforcement to the supervisor plane (A3)** and add the "generator can't reach the gate code" assertion test.
+
+---
+
+# PART B — BUSINESS / TESTING: positioning, benchmarks, verification methodology, calibration, ROI, compliance
+
+## B1. The biggest strategic multiplier: unbundle the trust layer so it harnesses *other* agents
+
+This is the single highest-value strategic move, and it also happens to de-risk the wiring problem. The coding-agent market is consolidating hard around Claude Code (reaching millions, now a "supervised digital worker" across terminal/IDE/web/desktop), OpenHands (MIT, ~65k stars, $18.8M Series A, adopted by AMD/Apple/Google/Amazon/Netflix/NVIDIA, now shipping sub-agent delegation and an inline critic UI), Cursor, Codex, and Cline. **ELAI competing head-on as "another, better agent" is the losing framing** — it puts your deep, unfinished orchestrator against incumbents with enormous distribution.
+
+The winning framing is *"the trust harness for whatever agent you already use."* The precedent already exists in this exact market: InvariantLabs ships mcp-scan as a layer that embeds in any MCP-compatible agent; OpenHands ships an SDK others build on. Package the parts of ELAI that are *agent-agnostic* — taint propagation (G-1), pre-action receipts (I-18), the write-gates (F-1/F-4/F-9/G-3), and RRA emission (G-2) — as a **proxy / MCP wrapper around any harness**, and **publish the `.rra` format as an open spec.** "The trust layer for Claude Code / Cursor / OpenHands" is a categorically larger market than "another agent," and — because formats become standards by adoption — it turns your UPIP/RRA work into a potential *de facto standard* rather than a private feature.
+
+I'll give you the honest counter-argument so you can weigh it: a thin wrapper risks commoditizing the deep orchestration (MCTS, GRPO, the canvas) that is your long-term moat. The resolution is a **two-tier strategy**: ship the wrapper as the *wedge and the standard* now (it is also a far smaller, more shippable surface than a full agent, which directly attacks the wire-dark backlog), and keep the deep ELAI orchestrator as the *premium destination* for teams that want the full search-and-tune engine. The wrapper earns the reputation and the standard; the orchestrator monetizes the depth.
+
+## B2. Ship the public vertical slice — trust *before* intelligence
+
+Trust is a reputation asset, and reputation is earned by shipping something the public can poke at, not by architecture documents. Your research tier (the I-Plan: TTD-DR, CRDT diffusion drafting, the GRPO flywheel) is impressive and should *not* block a public, vertical slice of **taint + VibeGate + RRA + Reviewer Cockpit.** Competitors accrue trust by reaching scale (Claude Code's millions, OpenHands' 65k stars and 490+ contributors); ELAI accrues it the same way — by putting a real, auditable slice in front of real users. This is the same conclusion A1 reaches from the engineering side: the shippable slice and the wired trust spine are the same artifact viewed from two angles.
+
+## B3. Re-aim the flagship benchmark — and make it the most credible marketing object in the category
+
+Your C-54 targets SWE-bench Verified. **Retire that target.** As of 2026, Verified is no longer a credible differentiator: OpenAI stopped reporting Verified scores (Feb 2026) and now recommends SWE-bench Pro; an audit found 59.4% of the hardest unsolved Verified problems had flawed test cases; frontier models can reproduce gold patches verbatim; and the leaderboard is saturated (~80–81%, with the top six models inside ~1.3 points of each other). Chasing it signals that you're tracking a dead metric.
+
+Two re-aims, in priority order:
+
+1. **Raw-capability comparison:** target **SWE-bench Pro under Scale's SEAL standardized scaffolding**, which runs every model through identical tooling (250-turn limit) and isolates model capability from scaffolding quality. Pro is contamination-resistant (1,865 multi-language tasks; GPL + private startup codebases). This is the honest capability leaderboard now.
+2. **On-thesis, and far more important:** publish **SAFEDELTA (G-6) as a public *trust* benchmark with RRA-replayable runs.** This is the single most credible marketing object you can produce, because a benchmark result an auditor can **re-verify from the artifact itself** is genuinely first-in-category — nobody else offers replayable benchmark runs. Keep the framing your G-plan already mandates (GD-3): a gate-ON-vs-gate-OFF *ablation* measuring the marginal residual-insecure-rate that reaches a human, on git-history-stripped held-out tasks (the Endor finding that an agent exploited git history in 163/200 = 81% of tasks is why you strip it), with the headline as **"N fewer dynamically-exploitable diffs per 100 tasks reach a reviewer," 95% bootstrap CI, per-CWE breakdown — never a SWE-bench rank.**
+
+This is the keystone *number*, and it is currently blocked on hardware, not code (the G-6 SAFEDELTA variant ships; only the RunPod 2×3090 run remains). **Prioritize that run.** It is the difference between a trust story and a trust *proof*. Honor your own GD-4: don't publish any external claim before the F-2b dynamic floor is measured on your actual engine (the SVEN/CodeGuard+ numbers were measured on CodeGen-2.7B and do not transfer to your Qwen-7B-abliterated; your number must be your own).
+
+## B4. Make the verification methodology the product story (testing)
+
+This is the business-side mirror of A5, and it deserves its own emphasis because it is your sharpest *differentiating* claim. The market's testing problem is precisely the one Thoughtworks named: teams "put faith in AI-generated test suites," and an AI that writes both the code and the tests can write tests that pass by construction. Your substrate is the answer, and you should say it plainly:
+
+> "We don't just run your AI-written tests — the model may have written them to pass. We **mutation-test** them (C-28: does the suite actually kill injected bugs?), **metamorphic-test** them (C-29/H-22: does the behavior survive semantics-preserving perturbation?), bind each test to an **atomic EARS requirement** (A5), and show you a **per-requirement verified/unverified status**. That is how you know the code does what was *meant*, not just what the model's own tests assert."
+
+No spec-driven tool (Spec Kit, Kiro, Tessl) makes that claim, because they generate from specs but don't prove satisfaction with deterministic + mutation + metamorphic evidence. This positions ELAI on the one axis the whole field concedes is open, and it converts your most academic-sounding features (mutation scoring, metamorphic relations, IntentPair) into the plainest possible buyer benefit: *trustworthy tests, not theater.*
+
+## B5. Make trust graduated and steerable — the autonomy dial (calibration)
+
+The field data is unambiguous that **trust is a curve, not a switch.** Experienced users move from per-action approval (≈20% auto-approve when new) to intervention-only oversight (≈40% auto-approve at 750+ sessions); HITL systems now ship six intervention modes with confidence-driven dynamic suspension; and **approval fatigue is a documented security failure** — Claude Code's own UX produces "thirty approvals later, you're rubber-stamping everything," which research shows trains users to click through dialogs reflexively (the worst of both worlds: interrupted flow *and* reduced security).
+
+You have the one raw material nobody else has: **measured, GD-4-bounded false-positive rates per gate.** Turn that into a product surface:
+
+- **An autonomy dial per action class**, driven by the gate's measured FP rate: *"This gate has a 0.8% false-positive rate over your last 200 runs — auto-approve this class?"* That is calibrated trust, quantified, which no competitor can offer because they don't measure per-gate FP.
+- **Close the steering loop:** let a user convert any caught failure into a new rule/gate in one click — a user-facing version of your I-12 ACE curator (which can then DSPy-validate the merged rule against the C-28 mutation suite before promoting it). The user *teaches* the harness, and the harness *proves* the lesson improved it.
+
+This simultaneously cures approval fatigue and makes trust legible and earned, which is the entire product.
+
+## B6. Tie the telemetry to ONE user-visible number — the ROI proof the market is missing
+
+Your internal telemetry is beautiful and almost entirely invisible to a buyer: the error-amplification coefficient α_t, Brier calibration, convergence curves, the Pareto cost/accuracy frontier. Pick **one** number a buyer feels, and make it the headline: **G-5's DSR (diff-surface-to-review), expressed as "minutes of review eliminated per verified change."**
+
+This is the exact ROI proof the whole market is missing, and the evidence is sitting in the public record: METR showed developers are 19% *slower* with AI and spend ≈9% of task time reviewing AI output; DORA shows stability dropping with adoption; the Harness 2025 survey found 67% of developers spend more time debugging AI code than they'd have spent writing it. **The bottleneck is review, not generation.** A harness that *eliminates review surface for vouched hunks* monetizes exactly the pain everyone has and nobody has quantified. Run the G-5 study you've already designed — a within-subjects, screen-recorded, clustered-SE comparison (the METR methodology) of time-to-first-approve through the Reviewer Cockpit vs a plain diff, with escaped-defect-rate as the guardrail — and **publish it.** Frame the speed-AND-safety simultaneity as the *hypothesis the study tests* (it is industry-wide unmeasured), not a pre-claimed result; that honesty is itself part of the trust pitch.
+
+## B7. Map to the compliance frames — cheap documentation, outsized enterprise value
+
+Audit vendors already market simultaneously against ISO 42001 (A.6.1.6), the EU AI Act (Article 12), and NIST (Measure 2.5). Your G-8 Article-50 verifier should grow **ISO 42001 and NIST AI RMF mappings** — this is documentation work with disproportionate enterprise value. Two frames have crystallized since your docs were written, and you should map ELAI's gates onto both explicitly:
+
+- **OWASP AISVS Appendix C / AC.8** is now a *named control category* for AI-generated-code provenance: signed in-toto/SLSA attestations + AI-BOM, verified before promotion. Your G-2 (RRA) + G-8 (in-toto/Sigstore) + the AI-BOM addition from A6 let you say **"implements OWASP AISVS AC.8"** — a concrete, checkable claim enterprise buyers' security teams already recognize.
+- **OWASP Agentic Top 10 (2026)** (ASI01–ASI10) maps onto your gate set almost one-to-one: ASI02 Tool Misuse → F-3 tool-filter / G-1 taint; ASI04 Agentic Supply Chain → F-9 / G-8; ASI05 Unexpected Code Execution → G-3 blast-radius; ASI06 Memory/Context Poisoning → I-13 memory-guard / F-5 staleness; ASI09 Human-Agent Trust Exploitation → G-5 / the B5 autonomy dial; ASI10 Rogue Agents → I-18 receipts / model-drift G-10. A single page mapping each gate to the framework item it addresses is a powerful enterprise artifact.
+
+Keep your existing precision: position as **"designed to support Article-50 marking," not "certified compliant"** (the final Code of Practice lands June 2026, and source code is not an enumerated example), and keep the penalty tier accurate (€15M/3% per Art-99, not the 35M/7% tier). You already have this right; don't let it drift.
+
+## B8. Two cautions to govern everything above
+
+First, **keep the GD-5 honest-scope discipline sacred** — the reproducible-action-stream vs reproducible-tokens distinction, the "behavioral-suspected vs fingerprint-confirmed" labeling on model drift, the explicit "this is the hypothesis we're testing" framing on the DSR study. The trust market punishes overclaiming far harder than under-delivering, and your competitors' 2026 has demonstrated the trust dip that follows from a single over-promise (the sandbox bypasses, the silent-effort-regression postmortem). ELAI's *entire* value proposition is the word "trust." An over-claim is not a marketing slip here; it is existential.
+
+Second, **do not ship anything whose safety depends on the thing it is supposed to constrain.** Concretely: no self-improving GRPO loop whose evaluator the loop can influence (A7); no in-process gate the generator can disable (A3); no "guarantee" advertised on a fail-open, RunPod-pending, or cloud-opaque path (GD-5). Every one of these is a place where the harness could quietly stop being a harness, and each is the kind of failure that, once public, would discredit all the rest.
+
+---
+
+## Closing synthesis and a concrete, ordered sequence
+
+ELAI's thesis is correct and the timing is right — the market has spent 2026 building toward exactly your gates, which validates the bet *and* compresses the window. Your decisive advantages are real but currently latent: a *composed* trust stack (taint + write-gates + verification + reproducibility + provenance) that is more than the sum of any single competitor's piece; *measured per-gate false-positive rates* that almost nobody publishes; and a *replayable artifact* (the RRA) that lets a third party re-verify your claims, which is genuinely first-in-category. The thing standing between you and "best trust harness out there" is not missing ambition — your plans are, if anything, over-ambitious — it is that the trust spine is built but dark, and trust is earned by shipping and proving, not by designing.
+
+A sequence that fuses the two halves of this review:
+
+1. **Wire the trust spine (A1).** Make the trust-control gates fire default-ON on a real run. Nothing else matters until they do.
+2. **Move enforcement to the supervisor plane (A3) and harden ELAI-as-artifact (A2).** Credibility precondition; closes the "agent disables its own gate" class.
+3. **Ship the public vertical slice and unbundle it as an MCP/proxy wrapper; publish the `.rra` spec (B1, B2, A4).** Accrue reputation, seed a standard, attack the wire-dark backlog with a small shippable surface.
+4. **Finish RRA replay-from-journal + the Sigstore/AISVS-aligned attestation + AI-BOM (A6), then run SAFEDELTA on RunPod and publish it replayable (B3).** The single most credible marketing object in the category.
+5. **Add the EARS intent layer and make verification-methodology the product story (A5, B4).** Win the one dimension the whole field concedes is open; ride the spec-driven wave instead of fighting it.
+6. **Ship the autonomy dial driven by measured FP rates, and the DSR "minutes of review eliminated" number with the METR-design study (B5, B6).** The approval-fatigue cure and the ROI proof.
+7. **Map every gate to OWASP AISVS AC.8 / Agentic Top 10 and ISO 42001 / NIST (B7).** The enterprise unlock — cheap, high-value.
+8. **Then build the I-Plan intelligence layer (A7)** — MCTS and the GRPO flywheel — with the reward-hacking/evaluator-capture guards as *blocking* pre-requisites, and with I-10 / I-8 / unified-conformal pulled forward earlier as cheap trust wins.
+
+Build the trust, then the intelligence. The order is the strategy.

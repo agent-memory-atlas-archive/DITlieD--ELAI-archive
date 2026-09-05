@@ -1,0 +1,531 @@
+PHASE 1C: VECTOR SEARCH (dual-model ONNX)
+Prerequisites: Phase 1B complete
+
+SCOPE: see docs/specs/guide/implementation-guide.txt
+
+GOAL
+Semantic code search via dual embedding models (GraphCodeBERT for code, Granite for text)
+using ONNX Runtime. Vector cache in SQLite keyed by content hash. Circuit breakers per
+model with graceful degradation cascade. Startup readiness gate with canary query.
+
+READ BEFORE IMPLEMENTING
+  docs/specs/crates/knowledge.txt             Sections 2, 3, 5, 6, 7, 11, 13
+  docs/specs/crates/providers.txt             Sections 2, 9 (embed trait + ONNX health protocol)
+  docs/specs/architecture-overview.txt        Section 10 (dependencies — ort, EVALUATE usearch)
+    NOTE: usearch EVALUATE decision finalized in phase-1C-decisions.md (use usearch).
+    The EVALUATE flag in architecture-overview.txt Section 10 is outdated.
+  docs/specs/decisions/risk-register.txt      R22, R26, R27, R29
+
+RISKS TO WATCH
+  R22 (MEDIUM): ONNX Runtime GPU contention with main model.
+    Embedding on GPU1 only when executor/auditor on GPU0.
+    Fallback: all ONNX models CPU-only (slower, zero contention).
+    Mitigation in code: ModelPool.can_fit_onnx(model_size) before GPU allocation.
+
+  R26 (MEDIUM): Single ONNX model failure cascading to total knowledge engine outage.
+    Mitigation: per-model circuit breaker (knowledge.txt section 6).
+    Degradation: HYBRID -> SPARSE_ONLY -> BM25_ONLY. Never total failure.
+
+  R27 (LOW): ONNX startup delay blocking FSM.
+    Mitigation: startup readiness gate with canary query embed("fn main()") within 5s.
+
+  R29 (LOW): Cross-encoder concurrency under parallel agents.
+    Mitigation: tokio::Semaphore(1) + max queue depth 4.
+
+SCOPE DECISIONS
+
+  SPLADE: DEFERRED to Phase 1G measurement cycle.
+    knowledge.txt Section 3 defines pipeline as "BM25 + SPLADE (RRF fused) -> dual-vector rerank".
+    knowledge.txt Section 3.25 marks SPLADE as "EVALUATE: measure retrieval improvement vs ONNX dep cost.
+    Drop if <5% gain." Phase 1C implements the core dual-vector pipeline without SPLADE.
+    Rationale: SPLADE adds a third ONNX model (additional GPU/CPU contention, R22 risk amplified).
+    The EVALUATE decision requires measurement data that Phase 1C Step 5 will begin to produce.
+    Phase 1G will have throughput baselines to measure SPLADE's incremental gain.
+    Impact on Phase 1C: RRF fusion in Step 4 merges BM25 + code_vec + text_vec (3 rankers).
+    If SPLADE is added later (Phase 1G), it becomes a 4th RRF ranker — additive, not breaking.
+    Circuit breaker scope: Phase 1C implements per-model circuit breakers for GraphCodeBERT and
+    Granite only. SPLADE circuit breaker (knowledge.txt Section 6) deferred with SPLADE itself.
+
+GROUNDING SECTION
+
+  Claims verified from spec source (not yet from compiled code):
+  [VERIFIED-SPEC] CODE vector: GraphCodeBERT 768d | source: knowledge.txt Section 2 Layer 3
+  [VERIFIED-SPEC] TEXT vector: Granite-embedding-small 384d | source: knowledge.txt Section 2 Layer 3
+  [VERIFIED-SPEC] embed() -> Vec<f32> trait signature | source: providers.txt Section 2
+  [VERIFIED-SPEC] vector_cache schema (content_blake2s BLOB PK, code_vec BLOB, text_vec BLOB, cached_at INTEGER) | source: knowledge.txt Section 2 Layer 3
+  [VERIFIED-SPEC] ort listed as ADD dependency | source: architecture-overview.txt Section 10
+  [VERIFIED-SPEC] Circuit breaker threshold: 3 failures in 60s window, half-open after 30s | source: knowledge.txt Section 6
+  [VERIFIED-SPEC] Startup canary: embed("fn main()") must complete within 5s | source: knowledge.txt Section 7
+  [VERIFIED-SPEC] Cross-encoder Semaphore(1) max queue depth 4 | source: knowledge.txt Section 11
+  [VERIFIED-SPEC] Cache hit rate >90% on incremental re-index (testable invariant) | source: knowledge.txt Section 13
+  [VERIFIED-SPEC] Cache invalidation: DELETE on SSB action_type='file_write' | source: knowledge.txt Section 2 Layer 3
+  [VERIFIED-SPEC] GraphCodeBERT fail -> TEXT-only; Granite fail -> CODE-only; both fail -> SPARSE_ONLY | source: knowledge.txt Section 6
+  [VERIFIED-SPEC] ONNX + LLM GPU multiplexing only on dual-GPU config; single GPU = CPU-only ONNX | source: providers.txt Section 9
+
+  Claims verified via crates.io web search (2026-04-06):
+  [VERIFIED-CRATE] ort — exists on crates.io (pykeio/ort). ONNX Runtime 1.24 wrapper.
+    Docs: docs.rs/ort. 166 reverse dependencies. Supports GPU backend selection.
+    Use: ort with version pin. Feature flags for GPU (cuda, tensorrt) per docs.
+  [VERIFIED-CRATE] usearch — exists on crates.io as Rust crate (not Python-only). v2.24.0.
+    HNSW-based ANN search. SIMD-accelerated. Supports f32, f64, i8, f16, binary vectors.
+    Docs: docs.rs/usearch. Decision: USE usearch for HNSW, not a custom stub.
+  [VERIFIED-CRATE] fastembed — exists on crates.io as "fastembed" (NOT "fastembed-rs").
+    Crate slug: fastembed. v5.12.0. Wraps ort internally. 98 reverse dependencies.
+    Note: wraps ort, so importing both may cause version conflicts — pin same ort version.
+  [VERIFIED-CRATE] blake2 — exists on crates.io as "blake2" (NOT "blake2s" which has only
+    1,958 downloads). blake2 crate: 80M+ downloads, supports both blake2b and blake2s variants.
+    Use: blake2 crate with Blake2s256 hasher for content_blake2s column.
+
+  Claims now GROUNDED (originally ungrounded, resolved during improvement):
+  [GROUNDED-PAPER] TurboQuant (arXiv:2504.19874, ICLR 2026). Paper ingested 2026-04-06.
+    Interface map: workflow/papers/turboquant-interface.md. RAG topic: paper-turboquant.
+    Verified distortion (unit-norm): b=2 MSE=0.117, b=3 MSE=0.030, b=4 MSE=0.009.
+    Inner product distortion: b=2 0.56/d, b=3 0.18/d, b=4 0.047/d.
+    For 768d vectors at b=3: ~3 bits/dim, ~10.7x compression vs f32, InProd error ~0.00023.
+    For 384d vectors at b=3: ~3 bits/dim, ~10.7x compression vs f32, InProd error ~0.00047.
+    Indexing: ~0.001s vs PQ ~494s at 100k vectors (Table 2, 4-bit).
+    Requirements: unit-norm input (store norms externally), QR rotation (NOT Hadamard),
+    codebook precomputed per (b,d) via Lloyd-Max. O(d^2) space for rotation matrix.
+    Implementation pitfalls: no Hadamard shortcut, no codebook reuse across dimensions,
+    no MSE variant for NN search (biased), d must be >=64 for Beta-Gaussian approximation.
+    Status: GROUNDED but implementation still deferred to after Phase 1C.
+    Phase 1C stores raw f32 vectors. Quantization target: Phase 1G or dedicated phase.
+
+  Claims still UNGROUNDED (no evidence yet, must not be acted on):
+  [UNGROUNDED] GraphCodeBERT and Granite ONNX model input tensor format (tokenizer,
+    input_ids shape, attention_mask shape). Must verify from model card or ONNX export
+    before writing tensor construction code.
+  [UNGROUNDED] Embedding throughput for 100 code chunks (latency estimate).
+    No measurement data exists. MEASURE step will produce the first data point.
+  [UNGROUNDED] Dual-vector accuracy vs BM25. No benchmark data yet. MEASURE produces first data.
+
+
+STEPS
+
+STEP 1: DEPENDENCY VERIFICATION AND CARGO SETUP
+
+  PRE_GATE
+    - Phase 1B exit criteria met: knowledge.txt DKG module compiles and graph queries pass.
+      Check: cd .elai_cc && cargo check --package knowledge 2>&1 | grep -c "^error" returns 0
+    - rusqlite already present (Phase 1A/1B requirement): grep -r "rusqlite" .elai_cc/Cargo.toml returns hit
+    - No prior ort entry in Cargo.toml (to avoid version conflict): grep "^ort" .elai_cc/knowledge/Cargo.toml returns no match
+
+  ACTIONS
+    - Crate verification DONE (2026-04-06 web search). Crate slugs resolved:
+      ort (pykeio/ort), usearch (v2.24.0), fastembed (v5.12.0, wraps ort), blake2 (Blake2s256).
+    - Run: cargo add ort --package knowledge — pin exact version from crates.io at execution time.
+      Add GPU feature flag if dual-GPU config detected.
+    - Run: cargo add usearch --package knowledge — pin exact version.
+    - Run: cargo add blake2 --package knowledge — pin exact version.
+    - Do NOT add fastembed — it wraps ort internally and may conflict. Use ort directly.
+      If fastembed convenience is needed later, evaluate version alignment with our ort pin.
+    - Record HNSW decision (usearch confirmed) in workflow/reasoning/phase-1C-decisions.md
+
+  DETERMINISTIC_CHECK
+    - cd .elai_cc && cargo check --package knowledge 2>&1 | grep "^error" | wc -l returns 0
+    - grep "ort" .elai_cc/knowledge/Cargo.toml returns a version-pinned entry
+    - workflow/reasoning/phase-1C-decisions.md exists and contains HNSW decision line
+
+  ADVERSARIAL
+    - If ort crate does not exist under that name: cargo check will fail with "no matching package".
+      Test: cargo search ort before adding. If absent, search "ort-sys" or "onnxruntime".
+      Consequence: all ONNX loading code must be rewritten against actual crate API.
+      Guard: never write ort API calls before verifying crate API surface from its docs.
+    - If usearch Rust API differs from expected (e.g., missing f32 index or cosine metric):
+      Test: cargo doc --package usearch after adding; verify Index::new accepts MetricKind::Cos.
+      Consequence: must adapt index construction to actual usearch API surface.
+      Guard: read usearch docs.rs before writing any index code.
+    - If blake2 crate API changed (Blake2s256 type missing or renamed):
+      Test: after cargo add blake2, grep docs.rs/blake2 for Blake2s256 type.
+      Consequence: must adapt hasher type name; schema column name "content_blake2s" stays.
+      Guard: use blake2::Blake2s256 (confirmed in docs.rs).
+
+  ACCEPTANCE
+    - PASS: cargo check --package knowledge exits 0 with ort entry in Cargo.toml.
+    - PASS: HNSW implementation decision recorded in decisions file.
+    - FAIL: any cargo error after adding ort dependency.
+    - FAIL: ort version not pinned (floating "ort = \"*\"" is a FAIL).
+
+
+STEP 2: SKELETON — module stubs, ort session stub, vector cache table
+
+  PRE_GATE
+    - Step 1 ACCEPTANCE passed: cargo check --package knowledge returns 0 with ort present.
+    - workflow/reasoning/phase-1C-decisions.md contains HNSW decision.
+
+  ACTIONS
+    - Create knowledge/src/vector/mod.rs: define VectorModule trait and DualVector struct
+      (code_vec: Vec<f32> 768d, text_vec: Vec<f32> 384d). No placeholder returns — stub panics
+      with unimplemented!() only if behind a feature flag, otherwise returns Err(NotReady).
+    - Create knowledge/src/vector/cache.rs: SQLite vector cache CRUD (insert, lookup by blake2s,
+      invalidate by file_path). Schema: content_blake2s BLOB PK, code_vec BLOB, text_vec BLOB,
+      cached_at INTEGER.
+    - Create knowledge/src/vector/ort_session.rs: OrtSession struct wrapping Arc<Mutex<ort::Session>>.
+      ort::Session::run() takes &mut self (docs.rs/ort/session/struct.Session), so concurrent
+      access requires Mutex. Arc<Mutex<Session>> enables sharing across tokio tasks with
+      serialized inference per model. Single Session instance per model; Mutex contention is
+      acceptable because embed() is CPU/GPU-bound (not I/O-bound), so concurrent calls would
+      not benefit from parallelism on the same model anyway.
+      ONNX models loaded from canonical path .elai_cc/models/onnx/ (pre-staged via setup script,
+      not auto-downloaded). Missing model file -> return Err(ModelNotFound), which triggers
+      DEGRADED mode (BM25_ONLY fallback), not crash. Source: core.txt S4, technical-analysis-v3.txt
+      Concern 1. Canonical path configurable in elai_cc.toml [knowledge.onnx_model_path].
+      Loads model from path. Exposes embed(text: &str) -> Result<Vec<f32>, OrtError>.
+      Two instances: code_model (GraphCodeBERT, 768d output), text_model (Granite, 384d output).
+      IMPORTANT: tokenizer max_seq_len = 512 tokens for GraphCodeBERT (HuggingFace model card:
+      microsoft/graphcodebert-base). Inputs longer than 512 tokens MUST be truncated by the
+      tokenizer BEFORE tensor construction. Log a WARNING when truncation occurs (caller may
+      need to chunk the input). Store max_seq_len as a field on OrtSession for per-model config.
+    - Create knowledge/src/vector/circuit_breaker.rs: CircuitBreaker struct.
+      States: CLOSED, OPEN, HALF_OPEN. Threshold 3 failures / 60s window. Half-open after 30s.
+    - Extend vector_cache SQLite migration in Phase 1B's schema runner (or add migration M3).
+      Table: vector_cache. Ensure SSB file_write event handler calls
+      DELETE FROM vector_cache WHERE file_path = ? for immediate invalidation.
+    - Create knowledge/src/vector/hnsw_index.rs: VectorIndex trait + UsearchIndex impl wrapping
+      usearch::Index. Constructor takes dimension + MetricKind::Cos. Expose add(key, vec),
+      search(query, k) -> Vec<(Key, f32)>, filtered_search(query, k, predicate) for project
+      isolation (usearch Rust API: filtered_search(&query, k, |key| predicate(key))).
+      Expose save(path)/load(path) for index persistence across restarts (docs.rs/usearch:
+      Index::save, Index::load). Do NOT use view() for mutable indexes — view() is read-only.
+      Two index instances: code_index (768d),
+      text_index (384d). Index files stored alongside SQLite DB.
+    - Do NOT write any ONNX tensor construction until VERIFY checks in Step 3 confirm model formats.
+    - INPUT CHUNKING DEPENDENCY: this phase assumes code chunks already exist as input to embed().
+      Chunking strategy (AST-based via tree-sitter vs line-based) is a prerequisite that
+      significantly impacts embedding quality. If not defined in an earlier phase, add a
+      chunking sub-step here. Reference: code-sage (github.com/faxioman/code-sage) uses
+      tree-sitter AST-based chunking for semantic code units (functions, classes, methods).
+
+  DETERMINISTIC_CHECK
+    - cargo check --package knowledge returns 0 (all new files compile).
+    - grep -r "DualVector" .elai_cc/knowledge/src/vector/ returns hit in mod.rs.
+    - grep -r "CircuitBreaker" .elai_cc/knowledge/src/vector/ returns hit in circuit_breaker.rs.
+    - grep -r "vector_cache" .elai_cc/knowledge/src/vector/cache.rs returns hit (table name present).
+    - grep -r "Arc<Mutex<.*Session>>" .elai_cc/knowledge/src/vector/ort_session.rs returns hit (thread-safe wrapper).
+    - grep -r "max_seq_len\|512" .elai_cc/knowledge/src/vector/ort_session.rs returns hit (truncation config).
+    - grep -r "VectorIndex\|UsearchIndex" .elai_cc/knowledge/src/vector/hnsw_index.rs returns hit.
+    - grep -r "filtered_search" .elai_cc/knowledge/src/vector/hnsw_index.rs returns hit.
+    - grep -r "save\|load" .elai_cc/knowledge/src/vector/hnsw_index.rs returns hit (persistence API).
+    - grep -r "TODO\|placeholder\|unimplemented" .elai_cc/knowledge/src/vector/ returns 0 lines
+      (unimplemented!() is acceptable behind error path; TODO comments are not).
+
+  ADVERSARIAL
+    - If OrtSession::new() panics on model path not found (no ONNX files in repo yet):
+      Test: unit test with intentionally wrong path must return Err, not panic.
+      Guard: wrap ort::Session::builder().commit_from_file() in catch_unwind or map to Err.
+      Consequence if not guarded: knowledge engine crashes on first startup in CI.
+    - If SQLite cache migration runs before Phase 1B's SSB migration:
+      Test: run migrations in isolation — verify M3 applies after M1+M2 without error.
+      Guard: migration version table must exist (from Phase 1A/1B); check migration ordering.
+      Consequence: schema inconsistency, FK violations, or partial table creation.
+    - If DualVector struct stores Vec<f32> with wrong dimension at construction:
+      Test: unit test asserts code_vec.len() == 768 and text_vec.len() == 384 after construction.
+      Guard: add dimension assertions in DualVector::new(code_vec, text_vec) -> Result<Self>.
+      Consequence: silently corrupted embeddings stored in cache; wrong similarity scores.
+    - If tokenizer silently truncates input >512 tokens without warning:
+      Test: embed a 1000-token input, assert WARNING log emitted (tracing test subscriber).
+      Guard: check token count after tokenization, log if truncated.
+      Consequence: long functions silently lose suffix context; embeddings represent only first 512
+      tokens. Caller cannot know embedding is partial without the warning.
+      Source: GraphCodeBERT max_seq_len=512 (huggingface.co/microsoft/graphcodebert-base).
+    - If usearch Index::load fails on corrupt/missing file at startup:
+      Test: call load() with nonexistent path, assert returns Err not panic.
+      Guard: if load fails, rebuild index from vector_cache (cache is source of truth).
+      Consequence: startup fails instead of gracefully rebuilding. Index is derived data.
+
+  ACCEPTANCE
+    - PASS: cargo check --package knowledge exits 0 after all stubs created.
+    - PASS: SQLite migration for vector_cache runs without error (integration test).
+    - PASS: DualVector::new validates dimensions (unit test: 768 code, 384 text passes; wrong dims fail).
+    - PASS: OrtSession stores max_seq_len and Arc<Session> (grep checks pass).
+    - PASS: VectorIndex trait with save/load/filtered_search stubs compile.
+    - FAIL: any TODO comment in new files (grep returns hit).
+    - FAIL: OrtSession::new with bad path panics instead of returning Err.
+
+
+STEP 3: TEST — write failing tests before any ONNX model loading
+
+  PRE_GATE
+    - Step 2 ACCEPTANCE passed: cargo check 0 errors, stubs compile.
+    - tests/contracts/ directory exists (from Phase 1A): ls .elai_cc/tests/contracts/ returns listing.
+    - Contract test for knowledge::KnowledgeEngine already exists (or create it now).
+
+  ACTIONS
+    - Write unit tests (no network, no real ONNX models, mock OrtSession):
+        test_dual_vector_dimensions: embed mock returns code_vec.len()==768, text_vec.len()==384.
+        test_vector_cache_insert_lookup: insert DualVector, lookup by same blake2s key returns same vectors.
+        test_vector_cache_invalidation: insert for file A, send file_write event for A, lookup returns None.
+        test_circuit_breaker_opens_after_3_failures: inject 3 errors within 60s, assert state==OPEN.
+        test_circuit_breaker_half_open_probe: advance time 30s after OPEN, assert state==HALF_OPEN.
+        test_graceful_degradation_code_model_fail: code model returns Err -> result uses text_vec only.
+        test_graceful_degradation_both_models_fail: both return Err -> SearchMode==SPARSE_ONLY.
+        test_query_validation_empty: query("") returns Err(ValidationError::EmptyQuery).
+        test_query_validation_oversized: query with 10001 chars returns Err(ValidationError::TooLong).
+        test_query_validation_control_chars: query with null bytes/control chars returns
+          Err(ValidationError::InvalidChars). Source: knowledge.txt Section 5.
+        test_startup_canary_success: mock models return Ok within 5s -> ReadinessStatus::Ready.
+        test_startup_canary_timeout: mock models delay >5s -> ReadinessStatus::Degraded(BM25_ONLY).
+        test_onnx_canonical_path: OrtSession loads model from .elai_cc/models/onnx/{model_name}.onnx.
+          Model path is canonical (not ad-hoc). Source: technical-analysis-v3.txt Concern 1.
+        test_missing_model_degraded: OrtSession::new with path to nonexistent .onnx file ->
+          Err(ModelNotFound). Knowledge engine falls back to DEGRADED (BM25_ONLY), not crash.
+          Source: technical-analysis-v3.txt Concern 1.
+        test_semaphore_queue_overflow: >4 concurrent rerank calls -> 5th returns unranked results.
+        test_cache_hit_skips_embed: insert cache entry, call embed for same content hash -> embed() NOT called.
+        test_truncation_warning_on_long_input: embed input >512 tokens, assert WARNING log emitted.
+          Use tracing-test crate for log assertion. Verify output embedding still has correct dimension
+          (truncation affects input, not output shape).
+        test_hnsw_index_persistence_roundtrip: add 10 vectors to UsearchIndex, save(path), create new
+          index, load(path), search returns same results as before save.
+        test_hnsw_filtered_search_project_isolation: add vectors for project A and B, filtered_search
+          with predicate |key| project_of(key) == A returns only A's vectors.
+        test_concurrent_embed_mutex_session: spawn 4 tokio tasks each calling embed() on same
+          Arc<Mutex<OrtSession>>, all return Ok with correct dimensions (no deadlock under
+          concurrent lock() acquire, serialized inference per model is expected behavior).
+        test_rrf_fusion_formula: given BM25 ranks [1,3,5], code_vec ranks [2,1,4], and
+          text_vec ranks [3,2,1] for 3 docs, assert RRF scores = sum(1/(60+rank)) across
+          all 3 rankers. Matches actual 3-ranker pipeline (Cormack et al. SIGIR'09, k=60).
+    - Write contract tests in tests/contracts/knowledge_vector_contract.rs:
+        test_query_returns_dual_vector_results: query(strategy=HYBRID) -> Vec<CodeChunk> where each
+          chunk has both code_score and text_score populated.
+        test_query_project_isolation: insert for project A, query with project B id -> empty results.
+          NOTE: knowledge.txt Section 13 requires physical file isolation (separate knowledge.db
+          per project). This contract test must verify separate DB files, not just query filtering.
+          If using a single DB with project_id column, this test must FAIL (spec violation).
+    - Every test function decorated with #[cfg(test)] and appropriate pytest marker equivalent
+      (#[test] for unit, mark integration tests requiring SQLite as #[cfg(feature="integration_tests")]).
+    - Do NOT run tests. Auditor runs tests in AUDITING state.
+
+  DETERMINISTIC_CHECK
+    - grep -r "#\[test\]" .elai_cc/knowledge/src/vector/ | wc -l returns >= 20 (unit tests).
+    - grep -r "test_dual_vector_dimensions\|test_vector_cache_invalidation\|test_circuit_breaker_opens" .elai_cc/knowledge/src/vector/ returns hits (named tests present).
+    - grep -r "test_truncation_warning\|test_hnsw_index_persistence\|test_rrf_fusion" .elai_cc/knowledge/src/vector/ returns hits (new tests present).
+    - grep -r "test_query_returns_dual_vector_results\|test_query_project_isolation" .elai_cc/tests/contracts/ returns hits.
+    - cargo test --package knowledge --no-run 2>&1 | grep "^error" | wc -l returns 0
+      (tests compile, even if they would fail at runtime — confirming test structure is valid Rust).
+
+  ADVERSARIAL
+    - If mock OrtSession is not injectable (hard-coded session creation in VectorModule):
+      Test: unit tests will fail to compile or will try to load real ONNX files.
+      Guard: OrtSession must accept a trait object or be injected via constructor.
+      Consequence: tests require ONNX model files in CI — violates "no network in unit tests" rule.
+    - If blake2s key type is Vec<u8> but SQLite stores BLOB differently on retrieval:
+      Test: insert key, retrieve row, assert key bytes round-trip without corruption.
+      Guard: serialize/deserialize consistently (raw bytes, not hex string).
+      Consequence: cache lookups always miss even for identical content.
+    - If circuit breaker uses real std::time::Instant (entropy quarantine violation):
+      Test: grep -r "std::time" .elai_cc/knowledge/src/vector/circuit_breaker.rs returns hit = FAIL.
+      Guard: circuit breaker must use ClockProvider from core/ (from architecture entropy quarantine rule).
+      Consequence: non-deterministic tests; clippy lint violation blocking audit.
+
+  ACCEPTANCE
+    - PASS: cargo test --package knowledge --no-run exits 0 (all test functions compile).
+    - PASS: >= 22 unit tests defined in vector/ module (13 original + 7 new + 2 canonical path/DEGRADED).
+    - PASS: contract tests for dual-vector output and project isolation exist.
+    - FAIL: any test requiring real ONNX model files or network access in unit test suite.
+    - FAIL: std::time usage in circuit_breaker.rs (grep returns hit).
+    - FAIL: cargo test --no-run exits non-zero.
+
+
+STEP 3.5: TENSOR FORMAT VERIFICATION (gate for Step 4)
+
+  PRE_GATE
+    - Step 3 ACCEPTANCE passed.
+    - ONNX model files available locally OR model cards accessible via web.
+
+  ACTIONS
+    - Verify GraphCodeBERT ONNX input tensor format:
+      Check HuggingFace model card (microsoft/graphcodebert-base) for input_ids shape,
+      attention_mask shape, and token_type_ids requirement.
+      Expected: input_ids: (batch, seq_len), attention_mask: (batch, seq_len), max seq_len=512.
+      If ONNX file available: run ort model metadata inspection to confirm input/output shapes.
+    - Verify Granite embedding model ONNX input tensor format:
+      Check model card for input tensor names and shapes. Record max_seq_len.
+    - Record results in workflow/reasoning/phase-1C-decisions.md:
+      Set tensor_format_verified: true with specific shapes for each model.
+    - Add tokenizer crate dependency if not already present (tokenizers or huggingface-hub crate
+      needed for BPE tokenization before tensor construction — this is a missing dependency
+      that will surface in Step 4 implementation).
+
+  DETERMINISTIC_CHECK
+    - grep "tensor_format_verified: true" workflow/reasoning/phase-1C-decisions.md returns hit.
+    - grep "input_ids\|attention_mask" workflow/reasoning/phase-1C-decisions.md returns hit.
+
+  ACCEPTANCE
+    - PASS: decisions file contains tensor_format_verified: true with shape details.
+    - FAIL: tensor shapes not recorded or marked as "unknown".
+
+
+STEP 4: IMPLEMENT — ort ONNX loading, dual-vector embedding, HNSW index, cache
+
+  PRE_GATE
+    - Step 3 ACCEPTANCE passed: tests compile, >= 20 unit tests present, no std::time in circuit_breaker.
+    - Step 3.5 ACCEPTANCE passed: tensor format verified in decisions file.
+      Check: workflow/reasoning/phase-1C-decisions.md contains "tensor_format_verified: true" line.
+    - TurboQuant paper INGESTED (arXiv:2504.19874, interface map in workflow/papers/).
+      Implementation still deferred to Phase 1G. Phase 1C stores raw f32 vectors only.
+      Quantization parameters now grounded — see GROUNDING SECTION above.
+
+  ACTIONS
+    - Implement OrtSession::embed(): build ort tensor from tokenized input, run session, extract
+      output tensor, return Vec<f32> with correct dimension. Use verified tensor format from decisions file.
+      Tokenizer MUST truncate at max_seq_len (512 for GraphCodeBERT) and emit tracing::warn!
+      when truncation occurs, including original token count and truncated count.
+      Source: microsoft/graphcodebert-base model card confirms 512 max position embeddings.
+    - Implement VectorCache (cache.rs): insert_dual, lookup_by_hash, invalidate_by_file.
+      Use single-writer SSB channel for all SQLite writes (knowledge.txt Section 2 invariant).
+    - Implement CircuitBreaker::record_failure(), record_success(), is_open(), probe() using
+      ClockProvider from core/ (NOT std::time::Instant).
+    - Implement HNSW index using usearch crate (confirmed v2.24.0 on crates.io, Rust bindings).
+      Create Index with MetricKind::Cos, dimension=768 for code vectors, dimension=384 for text.
+      Wrap in VectorIndex trait for testability. Verify API surface from docs.rs/usearch before coding.
+      Implement index persistence: save() after bulk add operations, load() at startup.
+      If load() fails (corrupt/missing file), rebuild from vector_cache (cache is source of truth).
+      Implement filtered_search for project isolation: filtered_search(&query, k, |key| project_match(key)).
+      Source: docs.rs/usearch Index::save, Index::load, Index::filtered_search.
+    - Implement KnowledgeEngine::readiness_check(): load both models, run canary embed("fn main()"),
+      assert both succeed within 5s. Return ReadinessStatus::Ready or ReadinessStatus::Degraded(mode).
+      WARMUP: the canary query serves dual purpose — readiness gate AND ONNX warm-up inference.
+      First inference on ONNX models is known-slow due to graph optimization (microsoft/onnxruntime#19177).
+      Run canary BEFORE reporting Ready so first real query is not penalized.
+    - Implement query pipeline fusion using Reciprocal Rank Fusion (RRF):
+      BM25 results (from Phase 1B) + code_vector results + text_vector results -> RRF merge.
+      Formula: rrf_score(doc) = sum over each ranker of 1/(k + rank_in_ranker) where k=60.
+      k=60 is the standard from Cormack, Clarke & Buettcher (SIGIR'09). It prioritizes consensus:
+      a doc ranked #10 in all 3 rankers beats a doc ranked #1 in only one.
+      Return Vec<CodeChunk> with code_score, text_score, bm25_score, and rrf_score fields.
+    - Implement SSB file_write event handler: on event, DELETE FROM vector_cache WHERE file_path=?.
+      Handler must be registered at KnowledgeEngine startup.
+    - Cross-encoder guarded by tokio::Semaphore(1). Queue depth 4. Overflow path returns
+      unranked results (not an error).
+    - Emit SSB action_type='knowledge_degradation' on every SearchMode change.
+      Source: knowledge.txt Section 5 requires "Every mode change logged to SSB."
+      Triggered by: circuit breaker state changes (CLOSED->OPEN, OPEN->HALF_OPEN, HALF_OPEN->CLOSED).
+    - QueryTrace emitted for every query at DEBUG level (tracing crate).
+      Fields: query_id, stages Vec<StageTrace>, total_latency_ms, mode, result_count.
+
+  DETERMINISTIC_CHECK
+    - cargo check --package knowledge 2>&1 | grep "^error" | wc -l returns 0
+    - grep -r "std::time" .elai_cc/knowledge/src/vector/ returns 0 lines (entropy quarantine)
+    - grep -r "unwrap()" .elai_cc/knowledge/src/vector/ returns 0 lines (no silent panics in prod code)
+    - grep -r "TODO\|placeholder" .elai_cc/knowledge/src/vector/ returns 0 lines
+    - grep -r "QueryTrace\|StageTrace" .elai_cc/knowledge/src/ returns hit in query pipeline
+    - grep -r "file_write\|invalidate_by_file" .elai_cc/knowledge/src/ returns hit in SSB handler
+    - grep -r "rrf_score\|1.0.*60" .elai_cc/knowledge/src/ returns hit (RRF formula present)
+    - grep -r "max_seq_len\|truncat" .elai_cc/knowledge/src/vector/ort_session.rs returns hit
+    - grep -r "\.save\|\.load" .elai_cc/knowledge/src/vector/hnsw_index.rs returns hit (persistence)
+    - grep -r "filtered_search" .elai_cc/knowledge/src/vector/hnsw_index.rs returns hit
+
+  ADVERSARIAL
+    - If ort GPU backend initialization fails silently and runs on CPU without warning:
+      Test: after OrtSession::new(), log which execution provider is active. Assert GPU if requested.
+      Guard: check ort session metadata for execution provider name after load.
+      Consequence: embedding runs 10-20x slower than expected; user sees degraded throughput
+      with no diagnostic.
+    - If usearch returns results in non-deterministic order on equal cosine scores:
+      Test: query same embedding twice -> assert result order is identical (sorted by score DESC, then by chunk_id ASC as tiebreaker).
+      Guard: post-sort usearch results with deterministic secondary key before RRF merge.
+      Consequence: non-reproducible search results; RRF rank assignment flakes on ties.
+    - If RRF k parameter differs from 60 (e.g., someone uses k=1):
+      Test: assert k==60 in RRF function signature or constant. Unit test verifies against known scores.
+      Guard: k=60 as const, not configurable (Cormack et al. showed 60 is robust across datasets).
+      Consequence: wrong k biases toward top-ranked items (k=1) or flattens all ranks (k=1000).
+    - If SSB file_write handler fires AFTER a query that was already mid-flight:
+      Test: concurrency test: write file A, immediately query A -> result must not use pre-write embedding.
+      Guard: SSB DELETE must complete before KnowledgeEngine::query() returns for any request
+      that started after the file_write event was emitted.
+      Consequence: auditor sees stale embedding for file just edited by executor (critical correctness violation).
+    - If both ONNX models load but one returns wrong output dimension:
+      Test: after load, assert code_model output == 768 and text_model output == 384 with canary input.
+      Guard: dimension check in readiness_check() before reporting Ready.
+      Consequence: DualVector dimension assertion fires at runtime, crashing first real query.
+
+  ACCEPTANCE
+    - PASS: cargo check --package knowledge exits 0.
+    - PASS: grep for std::time in vector/ returns 0 lines.
+    - PASS: grep for unwrap() in vector/ returns 0 lines.
+    - PASS: SSB file_write handler registered (grep returns hit).
+    - PASS: QueryTrace struct present and emitted in query path.
+    - PASS: RRF fusion with k=60 implemented (grep for rrf_score returns hit).
+    - PASS: tokenizer truncation with warning implemented (grep for max_seq_len returns hit).
+    - PASS: usearch index persistence save/load implemented (grep returns hit).
+    - PASS: usearch filtered_search for project isolation implemented (grep returns hit).
+    - PASS: canary query serves as ONNX warmup (runs before ReadinessStatus::Ready reported).
+    - FAIL: any ONNX API call pattern that differs from verified tensor format in decisions file.
+    - FAIL: TurboQuant quantization code present (deferred to Phase 1G).
+
+
+STEP 5: MEASURE — embedding throughput, dual-vector accuracy, cache hit rate
+
+  PRE_GATE
+    - Step 4 ACCEPTANCE passed: cargo check 0 errors, all implementation checks pass.
+    - Audit has passed (Step 4 audited separately): auditor confirms unit tests pass.
+    - ONNX model files available locally (not in repo): models downloaded to
+      .elai_cc/models/graphcodebert/ and .elai_cc/models/granite-embedding-small/.
+      Check: ls .elai_cc/models/graphcodebert/*.onnx returns at least one file.
+    - This step is OPERATIONAL (requires real ONNX models). Excluded from unit test gate.
+      These measurements do NOT block phase exit. They inform Phase 1G decisions.
+
+  ACTIONS
+    - Embed 100 real code chunks from .elai_cc/src/ with GraphCodeBERT (CODE) and Granite (TEXT).
+      Record: throughput (chunks/sec per model), p50/p99 latency per chunk.
+    - Query by semantic similarity (5 representative queries). Record: are relevant results
+      in top-5 from CODE model? From TEXT model? From combined dual-vector?
+    - Compare dual-vector recall vs BM25 alone on same 5 queries (manual evaluation, log results).
+    - Embed same 100 chunks twice. Second run should be 100% cache hits.
+      Record: actual cache hit rate. Assert >= 90% (knowledge.txt Section 13 invariant).
+    - Log all measurements to workflow/reasoning/phase-1C-measurements.md.
+    - If embedding throughput < 10 chunks/sec on CPU: log as WARNING; note HNSW decision impact.
+    - If cache hit rate < 90%: BLOCK. Investigate cache key computation before exiting phase.
+
+  DETERMINISTIC_CHECK
+    - workflow/reasoning/phase-1C-measurements.md exists and contains entries for:
+      "throughput_code_model", "throughput_text_model", "cache_hit_rate", "dual_vector_vs_bm25".
+    - cache_hit_rate line in measurements file contains value >= 90 (grep for the value).
+    - No "TODO" or "N/A" in measurement values (grep check).
+
+  ADVERSARIAL
+    - If ONNX model files are not in the expected path format:
+      Test: readiness_check() returns degraded (not panics). Log includes model path attempted.
+      Guard: all ONNX load errors must surface as Err with model path in message.
+    - If cache hit rate is computed incorrectly (measuring model calls instead of cache lookups):
+      Test: instrument cache with hit/miss counter. Assert counter increments correctly on lookup.
+      Guard: cache hit rate = hits / (hits + misses) computed from counter, not inferred.
+    - If dual-vector recall is worse than BM25 alone:
+      UNGROUNDED risk: this has not been measured. If confirmed, log in risk-register as new entry.
+      Do NOT block phase exit on this — it is a measurement, not a gate.
+
+  ACCEPTANCE
+    - PASS: measurements file exists with all 4 required entries.
+    - PASS: cache hit rate >= 90% measured.
+    - FAIL: measurements file missing or contains N/A values.
+    - FAIL: cache_hit_rate < 90 (investigate before closing phase).
+    - INFO (not FAIL): dual-vector recall <= BM25 alone. Log and carry to Phase 1G evaluation.
+
+
+EXIT CRITERIA
+  Phase 1C is done when:
+    1. cargo check --package knowledge exits 0 with ort integrated.
+    2. All unit tests in vector/ compile and pass (auditor confirmed). >= 20 unit tests.
+    3. Contract test for dual-vector output format passes.
+    4. Canary embed("fn main()") succeeds for both models within 5s (or degraded mode entered correctly).
+       Canary also serves as ONNX warmup — first real query must not pay cold-start penalty.
+    5. Vector cache insert/lookup/invalidation unit tests pass.
+    6. Circuit breaker opens after 3 failures in 60s (unit test passes).
+    7. std::time usage = 0 in vector/ (entropy quarantine confirmed by grep).
+    8. Measurements file exists with cache_hit_rate >= 90%.
+    9. HNSW implementation uses usearch crate (confirmed v2.24.0). Index persistence via save/load.
+    10. TurboQuant NOT implemented in Phase 1C (paper ingested and grounded, deferred to Phase 1G).
+    11. RRF fusion with k=60 implemented and unit-tested against known scores.
+    12. Tokenizer truncation at max_seq_len=512 with warning log implemented and tested.
+    13. usearch filtered_search for project isolation implemented and contract-tested.
+    14. Arc<Mutex<Session>> concurrency model verified (concurrent embed test passes, no deadlock).
+
+MEASUREMENTS
+  - Embedding throughput: chunks/sec per model (CODE and TEXT separately)
+  - p50/p99 embed latency per model (ms)
+  - RRF hybrid recall vs BM25-only vs vector-only (5-query evaluation, 3 comparisons)
+  - First-query latency after warmup vs without warmup (quantify cold-start penalty)
+  - Cache hit rate on incremental re-index (target: >= 90%)
+  - Startup canary latency (target: < 5s)
+  - Cross-encoder p99 reranking latency for 50 candidates (target: < 50ms, CPU)
