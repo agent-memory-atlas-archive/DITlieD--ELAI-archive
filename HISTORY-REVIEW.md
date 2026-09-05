@@ -1,7 +1,7 @@
 # Retained development history
 
 This edition preserves the real main-branch development timeline. It contains
-883 historical commits plus one new archive-preparation commit: 884 total.
+883 historical commits, followed by archive-preparation commits.
 No backdated commits or replacement activity were invented to inflate that count.
 
 ## What remains
@@ -34,7 +34,7 @@ historical-only files, including some removed source files. It is not a byte-for
 or complete historical source backup.
 
 Ten binary fixture paths were omitted from the historical revisions. Their exact
-reviewed current versions are restored in the final preparation commit, alongside
+reviewed current versions were restored during archive preparation, alongside
 the current README, feature catalog, notices and manifest. This leaves 6,446
 selected historical paths before the preparation commit. Unreviewed binary
 payloads are not silently treated as scanned text.
@@ -48,8 +48,8 @@ No old application version was built or run as part of the review.
 ## Verification
 
 The preparation compared the original and filtered commit graph, dates and
-metadata, in addition to scanning the selected file contents. Before the final
-preparation commit, the full-history scan covered all 883 commits, 11,510 unique
+metadata, in addition to scanning the selected file contents. Before the
+archive-preparation commits, the full-history scan covered all 883 commits, 11,510 unique
 retained file blobs and 6,446 paths. It found zero unresolved known-identity,
 credential-pattern or excluded-artifact findings. The 100 synthetic-pattern
 occurrences across unique historical blobs were covered by the existing exact

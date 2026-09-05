@@ -87,7 +87,7 @@ this snapshot, not old receipts.
 ## Owner review and publication
 
 Review the separate `elai-public-history-review` repository. This edition retains
-883 sanitized main-history commits and one new preparation commit, for 884 total.
+883 sanitized main-history commits, followed by archive-preparation commits.
 Its original dates and parent relationships were verified; no replacement commits
 were invented to inflate the count. Author/committer identities were anonymized,
 private content was filtered and original signatures were stripped. The

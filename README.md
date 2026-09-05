@@ -15,10 +15,12 @@ self-improvement, local models, dashboards, personal software and automation.
 It became an absurdly ambitious, heavily overengineered experiment. There is
 plenty of overengineered slop here, along with ideas that might help someone.
 
-If you arrived looking for something in the same space as OpenClaw, Hermes or
-Oh my Pi, please read the warning first. This archive makes no claim to compete
-with them on usability, correctness or performance. The plans show how far the
-ambition ran; they do not show how much worked.
+ELAI is overengineered slop, as bad as OpenClaw, Hermes and Oh my Pi—and possibly
+worse. They at least finished the UI/UX, lol. I couldn't care less about polishing
+mine: I was testing things headless, not using ELAI to get actual work done.
+I kept piling on experiments, abstractions and grand plans until it became an
+absurdly ambitious mess. Maybe someone can salvage an idea from it. Don't download
+it expecting something that works.
 
 Older files also call the project **LIA**. Both names refer to this experiment.
 
