@@ -15,9 +15,9 @@ self-improvement, local models, dashboards, personal software and automation.
 It became an absurdly ambitious, heavily overengineered experiment. There is
 plenty of overengineered slop here, along with ideas that might help someone.
 
-ELAI is overengineered slop, as bad as OpenClaw, Hermes and Oh my Pi—and possibly
-worse. They at least finished the UI/UX, lol. I couldn't care less about polishing
-mine: I was testing things headless, not using ELAI to get actual work done.
+ELAI is overengineered slop, as bad as OpenClaw, Hermes and Oh my Pi. They at least
+finished the UI/UX, lol. I couldn't care less about polishing mine: I was testing
+things headless, not using ELAI to get actual work done.
 I kept piling on experiments, abstractions and grand plans until it became an
 absurdly ambitious mess. Maybe someone can salvage an idea from it. Don't download
 it expecting something that works.

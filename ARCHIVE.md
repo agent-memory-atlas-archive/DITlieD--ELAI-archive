@@ -76,9 +76,8 @@ are not preserved. See [HISTORY-REVIEW.md](HISTORY-REVIEW.md) for the exact scop
 
 Keep the original development repository private. Its branches, tags, old file
 versions and commit identities were not made safe by editing the working tree.
-Only the separately filtered review copy is the publication candidate; no remote
-or publication action was configured during preparation. Hosting-account identity
-remains visible if that account publishes it.
+Only the separately filtered history is intended for public hosting.
+Hosting-account identity remains visible on the hosting service.
 
 [PUBLICATION-REVIEW.md](PUBLICATION-REVIEW.md) records preparation evidence and
-remaining limits. Publishing remains the owner's decision.
+remaining limits. The owner authorized publication of this filtered edition.

@@ -61,8 +61,8 @@ it detects removed sensitive text, old commit-message identities and content on
 a non-HEAD branch. A shared fixture blob must have an exact allowance for every
 historical path, so moving it cannot silently reuse another path's exception.
 
-The final repository has only its main branch, no remote and no original-history
-backup refs. Temporary rewrite maps and private scan inputs are kept outside the
+The filtered history has only its main branch and no original-history backup refs.
+Temporary rewrite maps and private scan inputs are kept outside the
 review repository. The original source and the older single-commit edition remain
 private and intact.
 
@@ -73,10 +73,10 @@ complete provenance or a functional application. Exact dates and technical desig
 context remain visible. The publishing account's identity is separate from the
 contents of this repository. Old claims and benchmark results remain unverified.
 
-Review [PUBLICATION-REVIEW.md](PUBLICATION-REVIEW.md), [ARCHIVE.md](ARCHIVE.md) and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before publishing. Publish only this
-separately filtered review copy if you want the retained timeline. Do not make the
-original development repository public.
+See [PUBLICATION-REVIEW.md](PUBLICATION-REVIEW.md), [ARCHIVE.md](ARCHIVE.md) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the publication scope and limits.
+Only this separately filtered history edition is authorized for public hosting.
+Do not make the original development repository public.
 
 The rewrite used [git-filter-repo](https://github.com/newren/git-filter-repo/blob/main/Documentation/git-filter-repo.txt)
 with empty-commit and degenerate-merge pruning disabled. `audit_public_history.py`

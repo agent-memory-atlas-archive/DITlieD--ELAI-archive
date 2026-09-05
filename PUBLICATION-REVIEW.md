@@ -1,6 +1,6 @@
 # Publication review — abandoned ELAI archive
 
-Prepared 2026-09-06 for the owner's review. Publication is a separate owner action.
+Prepared 2026-09-06 for public release with the owner's authorization.
 The [README](README.md) describes the project as an abandoned, unsupported research
 playground. Nothing in this review establishes that ELAI builds, runs, is secure,
 or delivers its planned features.
@@ -25,9 +25,9 @@ Original ELAI code and documents use [MIT](LICENSE), with “ELAI contributors�
 the copyright notice. Upstream material retains its own terms and attribution;
 see [third-party notices](THIRD_PARTY_NOTICES.md).
 
-Suggested hosting description:
+Hosting description:
 
-> ABANDONED EXPERIMENT: an overengineered agent research playground, with code and original plans. Do not download expecting a working product. Unsupported; no maintenance planned.
+> ABANDONED: overengineered agent slop and a headless research playground. Do not download expecting a working product. Unsupported; no maintenance planned.
 
 ## Preparation evidence
 
@@ -84,24 +84,24 @@ are intentionally unusable as the former services. Sanitization also invalidates
 historical byte hashes, signatures and line offsets. Use the new manifest for
 this snapshot, not old receipts.
 
-## Owner review and publication
+## Publication boundary
 
-Review the separate `elai-public-history-review` repository. This edition retains
+This separately filtered history edition retains
 883 sanitized main-history commits, followed by archive-preparation commits.
 Its original dates and parent relationships were verified; no replacement commits
 were invented to inflate the count. Author/committer identities were anonymized,
 private content was filtered and original signatures were stripped. The
 [history review](HISTORY-REVIEW.md) describes these changes and emptied commits.
 
-**Keep the original development repository private. Publish the filtered history
-review copy.** The older `elai-public-review` folder remains available as the
-separate single-commit edition. Neither copy has a remote, and nothing was pushed.
-The publishing account's own identity will remain visible on the hosting service.
+**Keep the original development repository private. Only the filtered history
+copy is authorized for publication.** The older single-commit edition remains
+available locally. The publishing account's own identity remains visible on the
+hosting service.
 
-Read the README, catalog, history review and exclusions before publishing.
 Changes to the latest snapshot require regenerating its manifest and repeating
 relevant checks; changing privacy policy also requires reviewing historical
-versions. No remote creation or repository visibility change is part of this work.
+versions. Publishing this edition does not authorize exposing the original
+repository or its other branches and tags.
 
 Archive-only checks, from the history-review root:
 
