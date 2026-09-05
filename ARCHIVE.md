@@ -69,12 +69,16 @@ catalog for its exact coverage and regeneration command.
 
 ## Publication boundary
 
-Review the prepared fresh-history snapshot, not the old development repository's
-visibility switch. The old Git history can contain removed identities, earlier
-file versions, private commit authors, branches and tags. No old `.git` directory,
-remotes or historical commits belong in the public snapshot. Hosting-account
-identity remains visible if that account publishes it; document sanitization
-does not anonymize the publishing account.
+This edition preserves a sanitized version of the main development history.
+The original commit nodes, parents and dates remain, while selected contents
+and commit metadata have been edited for privacy. Hashes and original signatures
+are not preserved. See [HISTORY-REVIEW.md](HISTORY-REVIEW.md) for the exact scope.
 
-`PUBLICATION-REVIEW.md` records the preparation's evidence and remaining limits.
-Publishing remains the owner's decision.
+Keep the original development repository private. Its branches, tags, old file
+versions and commit identities were not made safe by editing the working tree.
+Only the separately filtered review copy is the publication candidate; no remote
+or publication action was configured during preparation. Hosting-account identity
+remains visible if that account publishes it.
+
+[PUBLICATION-REVIEW.md](PUBLICATION-REVIEW.md) records preparation evidence and
+remaining limits. Publishing remains the owner's decision.

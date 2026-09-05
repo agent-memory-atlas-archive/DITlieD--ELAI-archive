@@ -22,6 +22,10 @@ ambition ran; they do not show how much worked.
 
 Older files also call the project **LIA**. Both names refer to this experiment.
 
+This edition retains the real development timeline: 883 historical commits,
+with privacy edits to their contents and metadata, followed by archive-preparation
+work. See the [history review](HISTORY-REVIEW.md) for what was preserved and removed.
+
 ## What it tried to be
 
 The recurring idea was to make the model a replaceable worker inside a harness
@@ -65,7 +69,8 @@ verify those capabilities or reproduce the historical benchmark claims.
 | [Paper interface notes](workflow/papers/) | Research summaries and proposed applications. |
 | [Code](.elai_cc/) | The experimental Rust workspace, Python inference code and desktop UI. |
 | [Archive guide](ARCHIVE.md) | How to interpret the documents and what was excluded. |
-| [Publication review](PUBLICATION-REVIEW.md) | Preparation checks, omissions and the fresh-history publication boundary. |
+| [Publication review](PUBLICATION-REVIEW.md) | Preparation checks, omissions and the publication boundary. |
+| [History review](HISTORY-REVIEW.md) | The retained commit timeline, sanitization and verification. |
 
 ## One phrase per plan unit
 

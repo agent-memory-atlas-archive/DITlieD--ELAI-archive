@@ -7,7 +7,7 @@ or delivers its planned features.
 
 ## Contents
 
-The prepared snapshot contains 6,456 selected files plus
+The prepared snapshot contains 6,459 selected files plus
 `ARCHIVE-MANIFEST.sha256`, approximately 128 MiB in total. It includes experimental
 source and 2,727 Markdown/text documents across the original planning, research,
 historical agent instructions and memory-note directories. Downloaded repositories,
@@ -86,31 +86,35 @@ this snapshot, not old receipts.
 
 ## Owner review and publication
 
-Review the separate `elai-public-review` repository prepared from the selected
-snapshot. It has a new, single neutral-author commit and no remote. It contains
-neither the development repository's `.git` directory nor its earlier commits,
-branches, tags or private local exclusions.
+Review the separate `elai-public-history-review` repository. This edition retains
+883 sanitized main-history commits and one new preparation commit, for 884 total.
+Its original dates and parent relationships were verified; no replacement commits
+were invented to inflate the count. Author/committer identities were anonymized,
+private content was filtered and original signatures were stripped. The
+[history review](HISTORY-REVIEW.md) describes these changes and emptied commits.
 
-**Keep the old development repository private. Publish the fresh review copy.**
-Changing the old repository's visibility would expose historical identities and
-earlier file contents that are absent from the edited snapshot. The publishing
-account's own identity will still be visible on the hosting service.
+**Keep the original development repository private. Publish the filtered history
+review copy.** The older `elai-public-review` folder remains available as the
+separate single-commit edition. Neither copy has a remote, and nothing was pushed.
+The publishing account's own identity will remain visible on the hosting service.
 
-Read the README, catalog coverage and exclusions before publishing. Any edits to
-the review copy require regenerating its manifest and repeating the relevant
-checks. No push, remote creation or repository visibility change is part of this
-preparation.
+Read the README, catalog, history review and exclusions before publishing.
+Changes to the latest snapshot require regenerating its manifest and repeating
+relevant checks; changing privacy policy also requires reviewing historical
+versions. No remote creation or repository visibility change is part of this work.
 
-Archive-only checks, from the snapshot root:
+Archive-only checks, from the history-review root:
 
 ```sh
 python3 scripts/archive/build_feature_catalog.py --check
 python3 scripts/archive/test_export_public_snapshot.py
+python3 scripts/archive/test_audit_public_history.py
 python3 scripts/archive/audit_public_snapshot.py . --terms-file /path/outside/repo/private-terms.json
+python3 scripts/archive/audit_public_history.py . --terms-file /path/outside/repo/private-terms.json
 sha256sum --check ARCHIVE-MANIFEST.sha256
 ```
 
 The optional private-terms file is a JSON array of strings and must remain outside
-the public repository. Without it, the audit checks artifact and credential
-patterns but cannot check owner-specific identifiers. The exporter operates on
-staged files and accepts only a new destination outside its source repository.
+the public repository. Without it, the audits cannot check owner-specific
+identifiers. The snapshot exporter produces files without Git history; it must
+not be used when the intended output needs the preserved commit timeline.
