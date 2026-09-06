@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI signature directions — pick one</title>
+<!-- Mockup note: JetBrains Mono pulled from the Google Fonts CDN so this file is
+     standalone; production bundles it via @fontsource-variable/jetbrains-mono.
+     Offline, it falls back to ui-monospace (acceptable for a decision mockup). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+<style>
+  /* ELAI ramp — role tokens (DESIGN.md §3). One teal accent, near-black, tinted neutrals. */
+  :root{
+    --void:#030404; --bg:#0a0f0e; --panel:#0e1413; --raised:#151c1a; --sink:#070b0a; --row:#0c1211;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --line:rgba(255,255,255,.17); --line2:rgba(255,255,255,.17);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.40); --teal-ghost:rgba(43,187,164,.10); --teal-faint:rgba(43,187,164,.05);
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --r:6px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--mono);
+    font-size:13px; line-height:1.5; -webkit-font-smoothing:antialiased;
+    padding-bottom:80px;
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+  /* ---- page chrome ---- */
+  header.top{
+    position:sticky; top:0; z-index:50; background:var(--bg);
+    border-bottom:1px solid var(--line); padding:14px 24px; display:flex; align-items:baseline; gap:20px; flex-wrap:wrap;
+  }
+  header.top .wm{font-weight:600; letter-spacing:.18em; color:var(--text)}
+  header.top .sub{color:var(--dim); font-size:11px}
+  header.top nav{margin-left:auto; display:flex; gap:6px; flex-wrap:wrap}
+  header.top nav a{
+    color:var(--dim); text-decoration:none; font-size:11px; letter-spacing:.04em;
+    padding:5px 9px; border:1px solid transparent; border-radius:var(--r);
+  }
+  header.top nav a:hover{color:var(--text); border-color:var(--line)}
+
+  main{max-width:1000px; margin:0 auto; padding:0 24px}
+  section.dir{padding:34px 0 10px; border-bottom:1px solid var(--line)}
+  .dir-head{display:flex; align-items:baseline; gap:14px; margin-bottom:4px}
+  .dir-head h2{margin:0; font-size:15px; font-weight:600; color:var(--text); letter-spacing:.01em}
+  .dir-head .tag{font-size:10px; letter-spacing:.22em; text-transform:uppercase; color:var(--teal)}
+  .dir-why{color:var(--read); font-size:12px; margin:0 0 20px; max-width:760px}
+  .dir-why b{color:var(--text); font-weight:600}
+
+  /* ---- the shared work surface (sessions ledger + monitor strip) ---- */
+  .surface{display:grid; grid-template-columns:1.35fr 1fr; gap:20px; align-items:start; margin-bottom:8px}
+  @media (max-width:760px){.surface{grid-template-columns:1fr}}
+  .caplbl{font-size:9.5px; letter-spacing:.2em; text-transform:uppercase; color:var(--dim)}
+  .box{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); overflow:hidden}
+  .box > .bt{ /* box titlebar */
+    display:flex; align-items:center; justify-content:space-between;
+    padding:9px 12px; border-bottom:1px solid var(--line); background:var(--sink);
+  }
+  .box > .bt .t{font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--read)}
+  .box > .bt .c{font-size:11px; color:var(--dim)}
+  .phead{ /* project header */
+    display:flex; align-items:center; gap:8px; padding:9px 12px; color:var(--read); font-size:12px;
+    border-bottom:1px solid var(--line);
+  }
+  .phead .tagpill{font-size:9.5px; color:var(--dim); border:1px solid var(--line); border-radius:3px; padding:1px 6px}
+
+  /* header + rows of the session ledger */
+  .rowh,.row{display:grid; grid-template-columns:1fr auto 74px; gap:10px; align-items:center; padding:8px 12px}
+  .rowh{color:var(--read); font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; border-bottom:1px solid var(--line)}
+  .row{border-bottom:1px solid var(--line); color:var(--text)}
+  .row:last-child{border-bottom:0}
+  .row .nm{display:flex; align-items:center; gap:9px; min-width:0}
+  .row .nm span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .row .st{color:var(--dim); font-size:11px; justify-self:start}
+  .row .pg{font-variant-numeric:tabular-nums; text-align:right; color:var(--read); font-size:12px}
+
+  /* status marks (square language, DESIGN.md §6 no-slop variant) */
+  .mk{width:9px; height:9px; flex:0 0 9px; border-radius:2px; display:inline-block}
+  .mk.run{background:var(--teal)}
+  .mk.done{background:var(--teal-deep)}
+  .mk.pend{background:transparent; border:1px solid var(--line)}
+  .mk.warn{width:0;height:0;border-radius:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid var(--text)}
+  .row.is-done .nm span{color:var(--dim)}
+  .chip{ /* mono-inversion fail chip */
+    background:var(--text); color:var(--void); font-weight:600; font-size:10.5px;
+    padding:1px 7px; border-radius:2px; letter-spacing:.04em;
+  }
+
+  /* monitor tiles */
+  .mtile{padding:10px 12px; border-bottom:1px solid var(--line)}
+  .mtile:last-child{border-bottom:0}
+  .mtile .l1{display:flex; align-items:center; gap:8px; color:var(--text); font-size:12px}
+  .mtile .l2{color:var(--dim); font-size:11px; margin-top:3px; font-variant-numeric:tabular-nums}
+  .seg{display:flex; gap:2px; margin-top:7px}
+  .seg i{height:5px; flex:1; background:var(--ghost); border-radius:1px}
+  .seg i.on{background:var(--teal-deep)}
+  .verdict{color:var(--teal); font-size:11px; letter-spacing:.08em}
+
+  /* the active pulse — the ONE sanctioned motion */
+  .pulse{animation:p 1.8s ease-in-out infinite}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.45}}
+
+  /* ================= SIGNATURE OVERRIDES ================= */
+
+  /* (1) LEDGER — everything ruled, tabular, accounted. Tight rules, header labels
+        brighter, a running total footer. Boxes read as ledger pages. */
+  .d-ledger .box{border-radius:2px}
+  .d-ledger .rowh,.d-ledger .row{grid-template-columns:1fr auto 84px}
+  .d-ledger .row{padding-top:6px; padding-bottom:6px}
+  .d-ledger .rowh{color:var(--read)}
+  .d-ledger .pfoot{ /* the ledger total line */
+    display:flex; justify-content:space-between; padding:8px 12px; border-top:1px solid var(--line2);
+    color:var(--read); font-size:11px; font-variant-numeric:tabular-nums;
+  }
+  .d-ledger .box > .bt{background:var(--sink)}
+  .d-ledger .mtile{display:grid; grid-template-columns:1fr auto; gap:4px 12px; align-items:baseline}
+  .d-ledger .mtile .l2{grid-column:1/-1}
+
+  /* (2) TEAL-AS-EVENT — strip teal from EVERYTHING except the one live element.
+        done/pending/fail carry no accent; only the running-active row is teal. */
+  .d-event .mk.done{background:var(--ghost)}
+  .d-event .mk.run{background:var(--ghost)}
+  .d-event .seg i.on{background:var(--dim)}
+  .d-event .verdict{color:var(--read); letter-spacing:.08em}
+  .d-event .box{background:var(--bg)}
+  .d-event .box > .bt{background:transparent}
+  /* the single event: the live row + the live tile keep teal */
+  .d-event .row.is-live .mk.run{background:var(--teal)}
+  .d-event .row.is-live .nm span{color:var(--teal)}
+  .d-event .mtile.is-live .mk.run{background:var(--teal)}
+  .d-event .mtile.is-live .seg i.on{background:var(--teal-deep)}
+
+  /* (3) HAIRLINE — no fills anywhere; every surface is the same ground, structure
+        is 1px lines only. Marks become outlines. Blueprint austerity. */
+  .d-hairline .box,.d-hairline .box > .bt{background:transparent}
+  .d-hairline .mk.run{background:transparent; border:1px solid var(--teal)}
+  .d-hairline .mk.done{background:transparent; border:1px solid var(--dim)}
+  .d-hairline .seg i{background:transparent; border:1px solid var(--line)}
+  .d-hairline .seg i.on{background:transparent; border-color:var(--teal-soft)}
+  .d-hairline .box{border-radius:0}
+  .d-hairline .verdict{color:var(--read)}
+  .d-hairline .verdict::before{content:"[ "}
+  .d-hairline .verdict::after{content:" ]"}
+
+  /* (4) MONO-INVERSION GESTURE — the single most important element on the surface
+        is a light-on-dark inverted block, used as a repeatable "punch" (here: the
+        fail AND the item that needs attention). Everything else stays quiet. */
+  .d-invert .row.is-punch{background:var(--text)}
+  .d-invert .row.is-punch .nm span{color:var(--void); font-weight:600}
+  .d-invert .row.is-punch .st{color:#333}
+  .d-invert .row.is-punch .mk.warn{border-bottom-color:var(--void)}
+  .d-invert .mtile.is-punch{background:var(--text)}
+  .d-invert .mtile.is-punch .l1{color:var(--void); font-weight:600}
+  .d-invert .mtile.is-punch .l2{color:#3a3a3a}
+  .d-invert .mtile.is-punch .verdict{color:var(--teal-deep)}
+
+  footer.note{max-width:1000px; margin:26px auto 0; padding:0 24px; color:var(--dim); font-size:11px}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="wm">ELAI</span>
+  <span class="sub">signature directions · same work surface, four identities · pick one</span>
+  <nav>
+    <a href="#ledger">1 · Ledger</a>
+    <a href="#event">2 · Teal-as-event</a>
+    <a href="#hairline">3 · Hairline</a>
+    <a href="#invert">4 · Mono-inversion</a>
+  </nav>
+</header>
+
+<main>
+
+  <!-- ============ 1 LEDGER ============ -->
+  <section class="dir d-ledger" id="ledger">
+    <div class="dir-head"><span class="tag">Signature 1</span><h2>Ledger / receipt language</h2></div>
+    <p class="dir-why">Every surface is a ruled, tabular, <b>accounted</b> artifact — the LEDGER idiom already chosen for project-selection, made universal. A ledger is a record of accounted truth, so it IS the trust/evidence wedge made visual. Uncommon in dev tools (they reach for cards). The discipline is austerity, not decoration.</p>
+    <div class="surface">
+      <div>
+        <div class="caplbl" style="margin-bottom:7px">Sessions</div>
+        <div class="box">
+          <div class="bt"><span class="t">Sessions</span><span class="c">elai-core</span></div>
+          <div class="phead"><span>elai-core</span><span class="tagpill">rust · claude-only</span></div>
+          <div class="rowh"><span>Session</span><span>Status</span><span style="text-align:right">Progress</span></div>
+          <div class="row is-live"><div class="nm"><span class="mk run pulse"></span><span>fix-vram-tier</span></div><span class="st">running</span><span class="pg">6 / 9</span></div>
+          <div class="row is-done"><div class="nm"><span class="mk done"></span><span>b40-idea-framer</span></div><span class="st">done</span><span class="pg">12 / 12</span></div>
+          <div class="row"><div class="nm"><span class="mk pend"></span><span>patch-blake3</span></div><span class="st">pending</span><span class="pg">—</span></div>
+          <div class="row"><div class="nm"><span class="mk run"></span><span>sidecar-search</span></div><span class="st">running</span><span class="pg">3 / 8</span></div>
+          <div class="row"><div class="nm"><span class="mk warn"></span><span>dola-eval</span></div><span class="st"></span><span class="pg"><span class="chip">FAIL</span></span></div>
+          <div class="pfoot"><span>5 sessions</span><span>21 / 37 steps</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="caplbl" style="margin-bottom:7px">Monitor</div>
+        <div class="box">
+          <div class="bt"><span class="t">Monitor</span><span class="c">autonomous ops</span></div>
+          <div class="mtile"><div class="l1"><span class="mk run pulse"></span>executor · glm-5.2</div><div class="l2">ctx 18k / 32k &nbsp; · &nbsp; 7 / 11</div><div class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="mtile"><div class="l1"><span class="mk done"></span>auditor · sonnet</div><div class="l2"><span class="verdict">GATE PASS</span></div></div>
+          <div class="mtile"><div class="l1">worker pool</div><div class="l2">3 / 4 free · free-mistral</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 2 TEAL-AS-EVENT ============ -->
+  <section class="dir d-event" id="event">
+    <div class="dir-head"><span class="tag">Signature 2</span><h2>Teal-as-event</h2></div>
+    <p class="dir-why">Push "color spent only where a decision lives" (DESIGN.md §1) to the extreme: near-total graphite, and teal appears <b>only</b> at the one live/active point — so rare it reads as a signal, an event, never decoration. The restraint is the identity. Notice only <b>one</b> thing on this surface is teal.</p>
+    <div class="surface">
+      <div>
+        <div class="caplbl" style="margin-bottom:7px">Sessions</div>
+        <div class="box">
+          <div class="bt"><span class="t">Sessions</span><span class="c">elai-core</span></div>
+          <div class="phead"><span>elai-core</span><span class="tagpill">rust · claude-only</span></div>
+          <div class="rowh"><span>Session</span><span>Status</span><span style="text-align:right">Progress</span></div>
+          <div class="row is-live"><div class="nm"><span class="mk run pulse"></span><span>fix-vram-tier</span></div><span class="st">running</span><span class="pg">6 / 9</span></div>
+          <div class="row is-done"><div class="nm"><span class="mk done"></span><span>b40-idea-framer</span></div><span class="st">done</span><span class="pg">12 / 12</span></div>
+          <div class="row"><div class="nm"><span class="mk pend"></span><span>patch-blake3</span></div><span class="st">pending</span><span class="pg">—</span></div>
+          <div class="row"><div class="nm"><span class="mk run"></span><span>sidecar-search</span></div><span class="st">queued</span><span class="pg">3 / 8</span></div>
+          <div class="row"><div class="nm"><span class="mk warn"></span><span>dola-eval</span></div><span class="st"></span><span class="pg"><span class="chip">FAIL</span></span></div>
+        </div>
+      </div>
+      <div>
+        <div class="caplbl" style="margin-bottom:7px">Monitor</div>
+        <div class="box">
+          <div class="bt"><span class="t">Monitor</span><span class="c">autonomous ops</span></div>
+          <div class="mtile is-live"><div class="l1"><span class="mk run pulse"></span>executor · glm-5.2</div><div class="l2">ctx 18k / 32k &nbsp; · &nbsp; 7 / 11</div><div class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="mtile"><div class="l1"><span class="mk done"></span>auditor · sonnet</div><div class="l2"><span class="verdict">GATE PASS</span></div></div>
+          <div class="mtile"><div class="l1">worker pool</div><div class="l2">3 / 4 free · free-mistral</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3 HAIRLINE ============ -->
+  <section class="dir d-hairline" id="hairline">
+    <div class="dir-head"><span class="tag">Signature 3</span><h2>Hairline architecture</h2></div>
+    <p class="dir-why">No fills anywhere — every surface is the same ground, and structure is carried by <b>1px lines only</b>. DESIGN.md §3 already says "the hairline, not the lightness delta, makes the edge read"; this makes the line the whole identity. A schematic / blueprint austerity.</p>
+    <div class="surface">
+      <div>
+        <div class="caplbl" style="margin-bottom:7px">Sessions</div>
+        <div class="box">
+          <div class="bt"><span class="t">Sessions</span><span class="c">elai-core</span></div>
+          <div class="phead"><span>elai-core</span><span class="tagpill">rust · claude-only</span></div>
+          <div class="rowh"><span>Session</span><span>Status</span><span style="text-align:right">Progress</span></div>
+          <div class="row is-live"><div class="nm"><span class="mk run pulse"></span><span>fix-vram-tier</span></div><span class="st">running</span><span class="pg">6 / 9</span></div>
+          <div class="row is-done"><div class="nm"><span class="mk done"></span><span>b40-idea-framer</span></div><span class="st">done</span><span class="pg">12 / 12</span></div>
+          <div class="row"><div class="nm"><span class="mk pend"></span><span>patch-blake3</span></div><span class="st">pending</span><span class="pg">—</span></div>
+          <div class="row"><div class="nm"><span class="mk run"></span><span>sidecar-search</span></div><span class="st">running</span><span class="pg">3 / 8</span></div>
+          <div class="row"><div class="nm"><span class="mk warn"></span><span>dola-eval</span></div><span class="st"></span><span class="pg"><span class="chip">FAIL</span></span></div>
+        </div>
+      </div>
+      <div>
+        <div class="caplbl" style="margin-bottom:7px">Monitor</div>
+        <div class="box">
+          <div class="bt"><span class="t">Monitor</span><span class="c">autonomous ops</span></div>
+          <div class="mtile"><div class="l1"><span class="mk run pulse"></span>executor · glm-5.2</div><div class="l2">ctx 18k / 32k &nbsp; · &nbsp; 7 / 11</div><div class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="mtile"><div class="l1"><span class="mk done"></span>auditor · sonnet</div><div class="l2"><span class="verdict">GATE PASS</span></div></div>
+          <div class="mtile"><div class="l1">worker pool</div><div class="l2">3 / 4 free · free-mistral</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 4 MONO-INVERSION GESTURE ============ -->
+  <section class="dir d-invert" id="invert">
+    <div class="dir-head"><span class="tag">Signature 4</span><h2>Mono-inversion gesture</h2></div>
+    <p class="dir-why">Elevate the light-on-dark inversion (today only the fail chip) into a repeatable <b>punch</b> — the single most important element on any surface becomes an inverted block. Here it marks the failing session AND the run that needs attention. A recognizable emphatic move nobody else uses (everyone reaches for a color).</p>
+    <div class="surface">
+      <div>
+        <div class="caplbl" style="margin-bottom:7px">Sessions</div>
+        <div class="box">
+          <div class="bt"><span class="t">Sessions</span><span class="c">elai-core</span></div>
+          <div class="phead"><span>elai-core</span><span class="tagpill">rust · claude-only</span></div>
+          <div class="rowh"><span>Session</span><span>Status</span><span style="text-align:right">Progress</span></div>
+          <div class="row"><div class="nm"><span class="mk run pulse"></span><span>fix-vram-tier</span></div><span class="st">running</span><span class="pg">6 / 9</span></div>
+          <div class="row is-done"><div class="nm"><span class="mk done"></span><span>b40-idea-framer</span></div><span class="st">done</span><span class="pg">12 / 12</span></div>
+          <div class="row"><div class="nm"><span class="mk pend"></span><span>patch-blake3</span></div><span class="st">pending</span><span class="pg">—</span></div>
+          <div class="row"><div class="nm"><span class="mk run"></span><span>sidecar-search</span></div><span class="st">running</span><span class="pg">3 / 8</span></div>
+          <div class="row is-punch"><div class="nm"><span class="mk warn"></span><span>dola-eval · needs input</span></div><span class="st">FAIL</span><span class="pg">stopped</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="caplbl" style="margin-bottom:7px">Monitor</div>
+        <div class="box">
+          <div class="bt"><span class="t">Monitor</span><span class="c">autonomous ops</span></div>
+          <div class="mtile"><div class="l1"><span class="mk run pulse"></span>executor · glm-5.2</div><div class="l2">ctx 18k / 32k &nbsp; · &nbsp; 7 / 11</div><div class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="mtile is-punch"><div class="l1">approval required</div><div class="l2">git push · elai-core → main</div></div>
+          <div class="mtile"><div class="l1">worker pool</div><div class="l2">3 / 4 free · free-mistral</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="note">
+  All four share the same floor: near-black --bg #0a0f0e, one teal accent, mono type, mono-inversion fail, no glow / gradient / glassmorphism, segmented n/m progress (never a lone %), the one active pulse as the only motion. They differ ONLY in the signature. Tell me which one (or a pair — e.g. Ledger + Teal-as-event compose well), and I'll write it into design-taste.md's S1/S2 slot and the new DESIGN-ELAI-v2 file.
+</footer>
+</body>
+</html>

@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Layered Topology — interaction study</title>
+<style>
+  :root{
+    --accent: #34e0c8;          /* single locked accent */
+    --accent-dim: #1c7a6e;
+    --bg: #0c0e13;
+    --bg-2: #11141c;
+    --panel: #161a24;
+    --panel-2: #1b2030;
+    --line: #242b3a;
+    --line-2: #2f3850;
+    --ink: #e7ecf4;
+    --ink-2: #9aa6bd;
+    --ink-3: #5f6b82;
+    --sys: #34e0c8;
+    --code: #5aa2ff;
+    --plan: #9b8cff;
+    --step: #b7a9ff;
+    --research: #f0b65a;
+    --contra: #ff6b81;
+    --wired: #4ade80;
+    --planned: #f0b65a;
+    --reserved: #6c7791;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; }
+  body{
+    background:
+      radial-gradient(1200px 700px at 78% -8%, #15202e 0%, rgba(21,32,46,0) 55%),
+      radial-gradient(900px 600px at 0% 110%, #16131f 0%, rgba(22,19,31,0) 50%),
+      var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+    font-size:14px;
+    line-height:1.45;
+  }
+  .wrap{ max-width:1320px; margin:0 auto; padding:26px 28px 40px; }
+
+  header h1{
+    font-size:19px; font-weight:650; letter-spacing:-0.01em; margin:0;
+    display:flex; align-items:center; gap:11px;
+  }
+  header h1 .dot{ width:9px; height:9px; border-radius:50%; background:var(--accent); box-shadow:0 0 14px 1px var(--accent); }
+  header p{ margin:7px 0 0; color:var(--ink-2); max-width:760px; font-size:13px; }
+
+  /* segmented toggle */
+  .controls{ display:flex; align-items:center; gap:18px; margin:20px 0 8px; flex-wrap:wrap; }
+  .seg{ display:inline-flex; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:4px; gap:3px; }
+  .seg button{
+    appearance:none; border:0; background:transparent; color:var(--ink-2);
+    font-family:var(--sans); font-size:13px; font-weight:550; letter-spacing:.01em;
+    padding:7px 16px; border-radius:8px; cursor:pointer; transition:background .18s ease, color .18s ease;
+  }
+  .seg button:hover{ color:var(--ink); }
+  .seg button[aria-pressed="true"]{ background:linear-gradient(180deg,#202637,#1a1f2d); color:var(--ink); box-shadow:inset 0 0 0 1px var(--line-2), 0 1px 0 #2a3140; }
+  .seg button[aria-pressed="true"] span{ color:var(--accent); }
+  .caption{ color:var(--ink-2); font-size:12.5px; min-height:34px; margin:2px 2px 14px; max-width:840px; }
+  .caption b{ color:var(--ink); font-weight:600; }
+
+  .layout{ display:grid; grid-template-columns:1fr 326px; gap:18px; align-items:stretch; }
+  @media (max-width:980px){ .layout{ grid-template-columns:1fr; } }
+
+  /* stage */
+  .stage{
+    position:relative; border:1px solid var(--line); border-radius:16px;
+    background:
+      radial-gradient(900px 400px at 50% -20%, #141b27 0%, rgba(20,27,39,0) 60%),
+      linear-gradient(180deg, var(--bg-2), #0d1017);
+    min-height:560px; overflow:hidden;
+  }
+  .stage::before{ /* faint dot grid for depth */
+    content:""; position:absolute; inset:0; opacity:.5; pointer-events:none;
+    background-image:radial-gradient(rgba(120,140,180,.10) 1px, transparent 1px);
+    background-size:26px 26px; mask-image:radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 78%);
+            -webkit-mask-image:radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 78%);
+  }
+  .bar{
+    position:relative; z-index:5; display:flex; align-items:center; gap:10px;
+    padding:11px 14px; border-bottom:1px solid var(--line); background:rgba(13,16,23,.6);
+    backdrop-filter:blur(6px); flex-wrap:wrap; min-height:48px;
+  }
+  .crumbs{ display:flex; align-items:center; gap:4px; font-family:var(--mono); font-size:11.5px; flex-wrap:wrap; }
+  .crumb{ color:var(--ink-2); background:transparent; border:0; cursor:pointer; padding:4px 8px; border-radius:7px; font-family:inherit; font-size:inherit; transition:background .15s, color .15s; }
+  .crumb:hover{ color:var(--ink); background:#1d2433; }
+  .crumb.cur{ color:var(--accent); }
+  .sep{ color:var(--ink-3); }
+  .ghost-btn{
+    appearance:none; border:1px solid var(--line-2); background:#171c28; color:var(--ink-2);
+    font-family:var(--sans); font-size:12px; padding:5px 11px; border-radius:8px; cursor:pointer; transition:.15s;
+  }
+  .ghost-btn:hover:not(:disabled){ color:var(--ink); border-color:#3b465f; }
+  .ghost-btn:disabled{ opacity:.4; cursor:default; }
+  .spacer{ flex:1; }
+  .mode-tabs{ display:flex; gap:4px; }
+  .mode-tabs button{
+    appearance:none; border:1px solid transparent; background:transparent; color:var(--ink-2);
+    font-family:var(--mono); font-size:11.5px; padding:6px 12px; border-radius:8px; cursor:pointer; transition:.15s;
+  }
+  .mode-tabs button:hover{ color:var(--ink); }
+  .mode-tabs button[aria-pressed="true"]{ color:var(--ink); background:#1b2233; border-color:var(--line-2); }
+  .mode-tabs button[aria-pressed="true"] i{ font-style:normal; color:var(--accent); }
+
+  /* Plan A scene */
+  .scene{ position:relative; perspective:1850px; perspective-origin:50% 26%; padding:40px 24px 30px; height:512px; }
+  .planes{ position:relative; width:100%; height:100%; transform-style:preserve-3d; transform:rotateX(9deg); }
+  .plane{
+    position:absolute; left:50%; top:8px; width:min(720px,92%); height:430px; margin-left:calc(min(720px,92%) / -2);
+    border:1px solid var(--line-2); border-radius:14px;
+    background:linear-gradient(180deg, rgba(27,32,48,.96), rgba(18,22,33,.97));
+    box-shadow:0 26px 60px -28px rgba(0,0,0,.85), inset 0 0 0 1px rgba(255,255,255,.015);
+    transform-style:preserve-3d; transform-origin:50% 0%;
+    transition:transform .52s cubic-bezier(.2,.85,.25,1), opacity .52s ease, filter .52s ease;
+    overflow:hidden;
+  }
+  .plane.active{ border-color:#36506a; box-shadow:0 30px 70px -26px rgba(0,0,0,.9), 0 0 0 1px rgba(52,224,200,.16), 0 0 34px -6px rgba(52,224,200,.10); }
+  .plane .ptab{
+    position:absolute; left:12px; top:10px; z-index:3; display:flex; align-items:center; gap:8px;
+    font-family:var(--mono); font-size:11px; color:var(--ink-2);
+    background:rgba(12,15,22,.7); border:1px solid var(--line); padding:4px 10px; border-radius:8px; cursor:pointer;
+  }
+  .plane.active .ptab{ color:var(--ink); border-color:var(--line-2); }
+  .plane .ptab .kdot{ width:7px; height:7px; border-radius:50%; }
+  .plane svg{ position:absolute; inset:0; width:100%; height:100%; }
+  .plane.ancestor svg{ pointer-events:none; }
+  .plane.ancestor .ptab:hover{ color:var(--accent); border-color:var(--accent-dim); }
+
+  /* Plan B panel */
+  .panel-b{ position:relative; padding:14px; height:512px; }
+  .panel-b .frame{ position:relative; width:100%; height:100%; border:1px solid var(--line); border-radius:13px; overflow:hidden;
+    background:radial-gradient(700px 320px at 50% 0%, #161d2a 0%, rgba(0,0,0,0) 70%), #0f131c; }
+  .panel-b svg{ position:absolute; inset:0; width:100%; height:100%; }
+  .modecard{ position:absolute; left:14px; top:12px; z-index:3; font-family:var(--mono); font-size:11px; color:var(--ink-2);
+    background:rgba(12,15,22,.66); border:1px solid var(--line); padding:5px 11px; border-radius:8px; display:flex; gap:8px; align-items:center; }
+
+  /* shared graph node/edge styling (in SVG via classes) */
+  text{ font-family:var(--mono); fill:var(--ink); }
+  .n-rect{ fill:#1a2030; stroke:#36405a; stroke-width:1; transition:stroke .15s, filter .15s; }
+  .node:hover .n-rect{ stroke:#54627f; }
+  .node.sel .n-rect{ stroke:var(--accent); filter:drop-shadow(0 0 7px rgba(52,224,200,.5)); }
+  .node{ cursor:pointer; }
+  .n-rect.planned{ stroke-dasharray:5 4; }
+  .n-label{ font-size:11.5px; font-weight:500; }
+  .n-sub{ font-size:9.5px; fill:var(--ink-3); }
+  .edge{ fill:none; stroke:#33405c; stroke-width:1.4; opacity:.8; }
+  .edge.contra{ stroke:var(--contra); stroke-dasharray:4 4; opacity:.9; }
+  .e-label{ font-size:9px; fill:var(--ink-3); }
+  .open-badge circle{ fill:#0e1117; stroke:var(--accent); stroke-width:1.3; }
+  .open-badge:hover circle{ fill:var(--accent); }
+  .open-badge:hover path{ stroke:#06231f; }
+  .open-badge path{ stroke:var(--accent); stroke-width:1.6; fill:none; }
+  .open-badge{ cursor:pointer; }
+
+  /* detail pane */
+  .detail{ border:1px solid var(--line); border-radius:16px; background:linear-gradient(180deg,var(--panel),#12151e); padding:18px; display:flex; flex-direction:column; min-height:560px; }
+  .detail .empty{ margin:auto; text-align:center; color:var(--ink-3); font-size:13px; max-width:200px; }
+  .detail .empty .glyph{ font-size:26px; opacity:.5; margin-bottom:8px; }
+  .d-kind{ font-family:var(--mono); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); }
+  .d-title{ font-family:var(--mono); font-size:16px; font-weight:600; margin:5px 0 12px; letter-spacing:-0.01em; line-height:1.3; }
+  .badges{ display:flex; gap:7px; flex-wrap:wrap; margin-bottom:15px; }
+  .badge{ font-family:var(--mono); font-size:10px; letter-spacing:.04em; padding:3px 9px; border-radius:20px; border:1px solid; }
+  .meta{ border-top:1px solid var(--line); padding-top:13px; display:flex; flex-direction:column; gap:9px; }
+  .meta-row{ display:flex; justify-content:space-between; gap:12px; font-size:12.5px; }
+  .meta-row .k{ color:var(--ink-3); font-family:var(--mono); font-size:11.5px; }
+  .meta-row .v{ color:var(--ink); font-family:var(--mono); font-size:11.5px; text-align:right; }
+  .note{ margin-top:14px; color:var(--ink-2); font-size:12.5px; line-height:1.5; }
+  .open-action{ margin-top:auto; }
+  .open-action button{
+    width:100%; appearance:none; border:1px solid var(--accent-dim); cursor:pointer;
+    background:linear-gradient(180deg, rgba(52,224,200,.16), rgba(52,224,200,.06)); color:var(--accent);
+    font-family:var(--mono); font-size:12.5px; font-weight:600; padding:12px; border-radius:10px;
+    display:flex; align-items:center; justify-content:center; gap:9px; transition:.16s;
+  }
+  .open-action button:hover{ background:linear-gradient(180deg, rgba(52,224,200,.26), rgba(52,224,200,.1)); border-color:var(--accent); }
+  .open-action .hint{ text-align:center; color:var(--ink-3); font-size:11px; margin-top:8px; font-family:var(--mono); }
+
+  .toast{
+    position:absolute; left:50%; bottom:18px; transform:translateX(-50%) translateY(10px);
+    background:#11151e; border:1px solid var(--line-2); color:var(--ink-2); font-family:var(--mono); font-size:11.5px;
+    padding:8px 14px; border-radius:9px; opacity:0; pointer-events:none; transition:opacity .25s, transform .25s; z-index:10;
+  }
+  .toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+  .toast b{ color:var(--accent); font-weight:600; }
+  footer{ margin-top:22px; color:var(--ink-3); font-size:11.5px; font-family:var(--mono); }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ transition:none !important; }
+    .plane{ filter:none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="dot"></span> Layered Topology — interaction study</h1>
+    <p>Two ways to navigate a graph whose nodes open into deeper graphs: systems open into their code, plan steps open into their research. The navigation metaphor is borrowed from Chrome DevTools' Layers panel — a stack you descend, a tree that mirrors it, a detail pane on the side.</p>
+  </header>
+
+  <div class="controls">
+    <div class="seg" role="tablist" aria-label="approach">
+      <button id="tabA" aria-pressed="true" onclick="setPlan('A')"><span>Plan A</span> &nbsp;recursive canvas</button>
+      <button id="tabB" aria-pressed="false" onclick="setPlan('B')"><span>Plan B</span> &nbsp;linked modes</button>
+    </div>
+  </div>
+  <div class="caption" id="caption"></div>
+
+  <div class="layout">
+    <div class="stage" id="stage"></div>
+    <aside class="detail" id="detail"></aside>
+  </div>
+
+  <footer>Offline mockup · hand-rolled SVG + vanilla JS · sample data is ELAI-flavored, not wired to live state.</footer>
+</div>
+
+<script>
+/* ----------------------------------------------------------------------------
+   DATA — one shared layer model used by both plans.
+   node: {id,label,kind,status,x,y,w,h, meta:[[k,v]], note, descends, cross}
+   edge: {from,to,kind?,label?,curve?}
+---------------------------------------------------------------------------- */
+const VB = [0,0,760,470];
+const LAYERS = {
+  workspace:{ kind:'Workspace', title:'workspace', accent:'sys', nodes:[
+    {id:'sys', label:'Systems', kind:'sys', status:'WIRED', x:248,y:235,w:158,h:54, descends:'system',
+      meta:[['systems','5'],['contracts','4']], note:'Every software system and the contracts wiring them together.'},
+    {id:'plan', label:'Active Plan', kind:'plan', status:'PLANNED', x:520,y:235,w:178,h:54, descends:'plan',
+      meta:[['concept','C1'],['baby steps','~9']], note:'C1 · Layered Topology Canvas — the decomposition tree being built.'},
+  ], edges:[
+    {from:'sys',to:'plan',label:'shares code',curve:0},
+  ]},
+
+  system:{ kind:'System', title:'systems', accent:'sys', nodes:[
+    {id:'orch', label:'orchestrator', kind:'sys', status:'WIRED', x:380,y:240,w:158,h:50, descends:'code', cross:{mode:'code',label:'Code'},
+      meta:[['modules','28'],['SSB schema','v191']], note:'Planning, routing, the SSB journal. Open it to see its code graph.'},
+    {id:'side', label:'sidecar · inference', kind:'sys', status:'WIRED', x:158,y:120,w:158,h:46,
+      meta:[['runtime','Qwen2.5-Coder'],['transport','Anthropic']], note:'Remote GPU inference, speaks the Anthropic message protocol.'},
+    {id:'prov', label:'providers', kind:'sys', status:'WIRED', x:602,y:120,w:140,h:46,
+      meta:[['lanes','cloud + local']], note:'Runtime routing across Sonnet / Opus / local lanes.'},
+    {id:'dash', label:'dashboard-v2', kind:'sys', status:'WIRED', x:158,y:380,w:158,h:46,
+      meta:[['stack','Tauri + Svelte 5']], note:'9 windows, 10+ drawers, the orbit + the canvas live here.'},
+    {id:'know', label:'knowledge · RAG', kind:'sys', status:'WIRED', x:602,y:380,w:150,h:46,
+      meta:[['index','DKG + vectors']], note:'Dependency knowledge graph and retrieval.'},
+  ], edges:[
+    {from:'orch',to:'side',label:'Anthropic',curve:.7},
+    {from:'orch',to:'prov',label:'routing',curve:-.7},
+    {from:'dash',to:'orch',label:'Tauri IPC',curve:.7},
+    {from:'orch',to:'know',label:'RAG',curve:-.7},
+  ]},
+
+  code:{ kind:'Module', title:'orchestrator / code', accent:'code', nodes:[
+    {id:'ssb', label:'ssb.rs', kind:'code', status:'WIRED', x:380,y:300,w:120,h:42,
+      meta:[['variants','464'],['role','journal hub']], note:'Append-only event store. Almost everything writes a row here.'},
+    {id:'cloud', label:'cloud_mode.rs', kind:'code', status:'WIRED', x:172,y:150,w:150,h:42,
+      meta:[['role','router']], note:'CloudModeRouter::route — picks the lane per turn.'},
+    {id:'compl', label:'compliance.rs', kind:'code', status:'WIRED', x:592,y:150,w:150,h:42,
+      meta:[['gate','PLANNING-to-TESTING']], note:'Producer-side compliance pre-gate.'},
+    {id:'road', label:'roadmap_signals.rs', kind:'code', status:'WIRED', x:160,y:415,w:178,h:42,
+      meta:[['check','posture 90d']], note:'Posture-doc staleness check + RoadmapPanel tile.'},
+    {id:'hand', label:'handoff_digest.rs', kind:'code', status:'WIRED', x:600,y:410,w:166,h:42,
+      meta:[['emits','topic digest']], note:'Cross-session sleep-time handoff digest.'},
+    {id:'scan', label:'system_canvas.rs', kind:'code', status:'PLANNED', x:380,y:118,w:166,h:42, cross:{mode:'system',label:'System'},
+      meta:[['plan','J-31'],['state','new file']], note:'The planned system-composition mode. Re-derives from SSB; no canvas-side runtime.'},
+  ], edges:[
+    {from:'cloud',to:'ssb',curve:.5},{from:'compl',to:'ssb',curve:-.5},
+    {from:'scan',to:'ssb',curve:0},{from:'hand',to:'ssb',curve:-.4},
+    {from:'road',to:'ssb',curve:.4},{from:'compl',to:'cloud',curve:.9},
+  ]},
+
+  plan:{ kind:'Plan', title:'plan / C1', accent:'plan', nodes:[
+    {id:'c1', label:'C1 · Layered Topology', kind:'plan', status:'PLANNED', x:150,y:235,w:188,h:48,
+      meta:[['phases','3'],['risk','medium']], note:'The concept being decomposed into phases.'},
+    {id:'p1', label:'P1 · System mode', kind:'plan', status:'PLANNED', x:470,y:118,w:178,h:44,
+      meta:[['steps','4']], note:'Render systems + contracts (the J-31 anchor).'},
+    {id:'p2', label:'P2 · Recursive descend', kind:'plan', status:'PLANNED', x:470,y:235,w:200,h:44, descends:'steps',
+      meta:[['steps','3'],['key','the hard part']], note:'The open-node-to-descend gesture + the Z-stack. Open it to see its steps.'},
+    {id:'p3', label:'P3 · Research overlay', kind:'plan', status:'RESERVED', x:470,y:352,w:184,h:44,
+      meta:[['steps','2']], note:'Contradiction edges over researcher sources.'},
+  ], edges:[
+    {from:'c1',to:'p1',curve:.8},{from:'c1',to:'p2',curve:0},{from:'c1',to:'p3',curve:-.8},
+  ]},
+
+  steps:{ kind:'Step', title:'P2 / steps', accent:'step', nodes:[
+    {id:'s1', label:'S1 · descends_into edge', kind:'step', status:'PLANNED', x:185,y:140,w:206,h:44,
+      meta:[['files','1']], note:'A typed edge that says "this node opens that layer".'},
+    {id:'s2', label:'S2 · Z-stack render', kind:'step', status:'PLANNED', x:185,y:262,w:206,h:44, descends:'research', cross:{mode:'research',label:'Research'},
+      meta:[['baby steps','3'],['research','running']], note:'The receding stacked-plane render. Has live research — open it.'},
+    {id:'s3', label:'S3 · breadcrumb + backstack', kind:'step', status:'PLANNED', x:185,y:384,w:224,h:44,
+      meta:[['files','2']], note:'Ascend, breadcrumb, history state.'},
+    {id:'b1', label:'B1 · SVG plane stack', kind:'step', status:'PLANNED', x:520,y:160,w:176,h:40,
+      meta:[],note:'Baby step under S2.'},
+    {id:'b2', label:'B2 · depth dim / blur', kind:'step', status:'PLANNED', x:520,y:240,w:176,h:40,
+      meta:[],note:'Baby step under S2.'},
+    {id:'b3', label:'B3 · reduced-motion path', kind:'step', status:'PLANNED', x:520,y:320,w:196,h:40,
+      meta:[],note:'Baby step under S2.'},
+  ], edges:[
+    {from:'s1',to:'s2',curve:.4},{from:'s2',to:'s3',curve:.4},
+    {from:'s2',to:'b1',curve:-.5},{from:'s2',to:'b2',curve:0},{from:'s2',to:'b3',curve:.5},
+  ]},
+
+  research:{ kind:'Source', title:'S2 / research', accent:'research', nodes:[
+    {id:'r1', label:'DevTools Layers doc', kind:'research', status:'WIRED', x:185,y:140,w:206,h:50,
+      meta:[['tier','primary']], note:'z-stack + expandable tree + per-layer detail pane.'},
+    {id:'r2', label:'cytoscape compound nodes', kind:'research', status:'WIRED', x:185,y:295,w:218,h:50,
+      meta:[['tier','impl']], note:'Native parent/child nodes — nesting for free.'},
+    {id:'r3', label:'semantic zoom · LOD', kind:'research', status:'WIRED', x:560,y:140,w:200,h:50,
+      meta:[['tier','pattern']], note:'Detail by depth: blurry / focused / peripheral.'},
+    {id:'r4', label:'expand-collapse ext', kind:'research', status:'RESERVED', x:560,y:300,w:206,h:50,
+      meta:[['tier','impl'],['vendored','NO']], note:'Animated descend gesture — not currently vendored.'},
+  ], edges:[
+    {from:'r1',to:'r3',curve:0,label:'agrees'},
+    {from:'r4',to:'r2',kind:'contra',curve:.3,label:'conflict: ext vs hand-rolled'},
+  ]},
+
+  /* Plan B "Plan" mode shows the full nesting in one view (concept>phase>step). */
+  plan_full:{ kind:'Plan', title:'plan', accent:'plan', nodes:[
+    {id:'c1', label:'C1 · Layered Topology', kind:'plan', status:'PLANNED', x:120,y:235,w:170,h:48,
+      meta:[['phases','3']], note:'The concept.'},
+    {id:'p1', label:'P1 · System mode', kind:'plan', status:'PLANNED', x:340,y:110,w:160,h:42, meta:[],note:'Phase.'},
+    {id:'p2', label:'P2 · Recursive descend', kind:'plan', status:'PLANNED', x:340,y:235,w:180,h:42, meta:[],note:'Phase.'},
+    {id:'p3', label:'P3 · Research overlay', kind:'plan', status:'RESERVED', x:340,y:360,w:170,h:42, meta:[],note:'Phase.'},
+    {id:'s1', label:'S1 · descends_into', kind:'step', status:'PLANNED', x:580,y:170,w:166,h:40, meta:[],note:'Step under P2.'},
+    {id:'s2', label:'S2 · Z-stack render', kind:'step', status:'PLANNED', x:580,y:250,w:166,h:40, cross:{mode:'research',label:'Research'},
+      meta:[['research','running']], note:'Has live research — jump to the Research mode.'},
+    {id:'s3', label:'S3 · breadcrumb', kind:'step', status:'PLANNED', x:580,y:330,w:166,h:40, meta:[],note:'Step under P2.'},
+  ], edges:[
+    {from:'c1',to:'p1',curve:.8},{from:'c1',to:'p2',curve:0},{from:'c1',to:'p3',curve:-.8},
+    {from:'p2',to:'s1',curve:.5},{from:'p2',to:'s2',curve:0},{from:'p2',to:'s3',curve:-.5},
+  ]},
+};
+
+/* raw hex (NOT var()) — CSS custom properties do not resolve inside SVG presentation
+   attributes like fill="". These values feed both SVG fills and HTML inline styles. */
+const KIND_COLOR = { sys:'#34e0c8', code:'#5aa2ff', plan:'#9b8cff', step:'#b7a9ff', research:'#f0b65a' };
+const STATUS = {
+  WIRED:    { c:'#4ade80', bd:'rgba(74,222,128,.4)',  bg:'rgba(74,222,128,.08)' },
+  PLANNED:  { c:'#f0b65a', bd:'rgba(240,182,90,.4)',  bg:'rgba(240,182,90,.08)' },
+  RESERVED: { c:'#6c7791', bd:'rgba(108,119,145,.5)', bg:'rgba(108,119,145,.1)' },
+};
+/* Plan B modes -> layer id */
+const B_MODES = [ ['system','System'], ['code','Code'], ['plan_full','Plan'], ['research','Research'] ];
+
+/* ----------------------------------------------------------------------------
+   SVG graph builder (returns innerHTML string for an <svg>)
+---------------------------------------------------------------------------- */
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function edgePath(a,b,curve){
+  const ax=a.x, ay=a.y, bx=b.x, by=b.y;
+  const mx=(ax+bx)/2, my=(ay+by)/2;
+  const dx=bx-ax, dy=by-ay; const len=Math.hypot(dx,dy)||1;
+  const nx=-dy/len, ny=dx/len; const off=(curve||0)*46;
+  const cx=mx+nx*off, cy=my+ny*off;
+  return `M ${ax} ${ay} Q ${cx} ${cy} ${bx} ${by}`;
+}
+
+function buildGraph(layer, opts){
+  const interactive = opts.interactive;
+  const openProp = opts.openProp; // 'descends' | 'cross' | null
+  const byId = {}; layer.nodes.forEach(n=>byId[n.id]=n);
+  let s = '';
+  // edges first (under nodes)
+  for(const e of layer.edges){
+    const a=byId[e.from], b=byId[e.to]; if(!a||!b) continue;
+    const mid = { x:(a.x+b.x)/2, y:(a.y+b.y)/2 };
+    const nx = -(b.y-a.y), ny=(b.x-a.x); const l=Math.hypot(nx,ny)||1;
+    const off=(e.curve||0)*46;
+    const lx = mid.x + (nx/l)*off, ly = mid.y + (ny/l)*off;
+    s += `<path class="edge ${e.kind==='contra'?'contra':''}" d="${edgePath(a,b,e.curve)}"/>`;
+    if(e.label) s += `<text class="e-label" x="${lx}" y="${ly-3}" text-anchor="middle">${esc(e.label)}</text>`;
+  }
+  // nodes
+  for(const n of layer.nodes){
+    const w=n.w||140, h=n.h||44, x=n.x-w/2, y=n.y-h/2;
+    const col = KIND_COLOR[n.kind]||'var(--ink-3)';
+    const st = STATUS[n.status]||STATUS.WIRED;
+    const planned = (n.status==='PLANNED'||n.status==='RESERVED');
+    const showOpen = interactive && openProp && n[openProp];
+    s += `<g class="node" data-id="${n.id}">`;
+    s += `<rect class="n-rect ${planned?'planned':''}" x="${x}" y="${y}" width="${w}" height="${h}" rx="11"/>`;
+    s += `<rect x="${x}" y="${y}" width="4.5" height="${h}" rx="2" fill="${col}" opacity="${n.status==='RESERVED'?.5:.95}"/>`;
+    s += `<circle cx="${x+16}" cy="${n.y}" r="3.6" fill="${st.c}"/>`;
+    s += `<text class="n-label" x="${x+27}" y="${n.y-2}">${esc(n.label)}</text>`;
+    s += `<text class="n-sub" x="${x+27}" y="${n.y+12}">${esc(n.kind)} · ${esc(n.status)}</text>`;
+    if(showOpen){
+      const bx=x+w, by=n.y;
+      s += `<g class="open-badge" data-open="${n.id}">`+
+           `<circle cx="${bx}" cy="${by}" r="11"/>`+
+           `<path d="M ${bx-3.5} ${by-4.5} L ${bx+3} ${by} L ${bx-3.5} ${by+4.5}"/>`+
+           `</g>`;
+    }
+    s += `</g>`;
+  }
+  return s;
+}
+
+function svgEl(){
+  const el = document.createElementNS('http://www.w3.org/2000/svg','svg');
+  el.setAttribute('viewBox', VB.join(' '));
+  el.setAttribute('preserveAspectRatio','xMidYMid meet');
+  return el;
+}
+
+/* ----------------------------------------------------------------------------
+   STATE + plans
+---------------------------------------------------------------------------- */
+const state = { plan:'A', selected:null, selLayer:null, stackA:['workspace'], modeB:'system', crumbsB:['system'] };
+
+const CAPTIONS = {
+  A:'<b>Plan A · one recursive canvas.</b> Layer kinds are <b>depths of a single Z-stack</b> — descend into a node and its ancestors recede behind you, DevTools-style. One continuous mental model; the hard part is cross-layer node identity and back-stack state.',
+  B:'<b>Plan B · separate mode views, linked by a zoom seam.</b> Each kind (System / Code / Plan / Research) is its own panel. A node deep-links into another mode and drops a breadcrumb. Incremental and low-risk, but it reads as linked views, not one continuous stack.'
+};
+
+function setPlan(p){
+  state.plan=p; state.selected=null; state.selLayer=null;
+  tabA.setAttribute('aria-pressed', p==='A'); tabB.setAttribute('aria-pressed', p==='B');
+  caption.innerHTML = CAPTIONS[p];
+  render();
+}
+
+function render(){ state.plan==='A' ? renderA() : renderB(); renderDetail(); }
+
+/* ---------- Plan A : recursive Z-stack ---------- */
+function renderA(){
+  const stack = state.stackA;
+  const top = stack.length-1;
+  let crumbs = '';
+  stack.forEach((lid,i)=>{
+    const t = LAYERS[lid].title;
+    crumbs += (i? `<span class="sep">/</span>`:'') +
+      `<button class="crumb ${i===top?'cur':''}" onclick="popA(${i})">${esc(t)}</button>`;
+  });
+  stage.innerHTML =
+    `<div class="bar">
+       <div class="crumbs">${crumbs}</div>
+       <div class="spacer"></div>
+       <button class="ghost-btn" onclick="backA()" ${stack.length<2?'disabled':''}>&larr; ascend</button>
+     </div>
+     <div class="scene"><div class="planes" id="planes"></div></div>`;
+
+  const planesEl = document.getElementById('planes');
+  stack.forEach((lid,i)=>{
+    const depth = top - i;                  // 0 = active/front
+    const layer = LAYERS[lid];
+    const plane = document.createElement('div');
+    plane.className = 'plane ' + (depth===0?'active':'ancestor');
+    const lift=46, push=178, sc=0.045;
+    const opacity = depth===0?1:Math.max(.2, .62 - .15*depth);
+    const blur = depth===0?0:Math.min(4, 1.1*depth+0.4);
+    plane.style.transform = `translate3d(0, ${-lift*depth}px, ${-push*depth}px) scale(${1-sc*depth})`;
+    plane.style.opacity = opacity;
+    plane.style.filter = `blur(${blur}px)`;
+    plane.style.zIndex = 60 - depth;
+    const kc = KIND_COLOR[layer.accent]||'var(--accent)';
+    plane.innerHTML = `<div class="ptab" onclick="popA(${i})"><span class="kdot" style="background:${kc}"></span>${esc(layer.title)}</div>`;
+    const svg = svgEl();
+    svg.innerHTML = buildGraph(layer, { interactive: depth===0, openProp:'descends' });
+    plane.appendChild(svg);
+    planesEl.appendChild(plane);
+    if(depth===0) bindGraph(svg, lid, 'descends', openA);
+  });
+}
+function popA(i){ state.stackA = state.stackA.slice(0,i+1); state.selected=null; render(); }
+function backA(){ if(state.stackA.length>1){ state.stackA.pop(); state.selected=null; render(); } }
+function openA(nodeId, layerId){
+  const node = LAYERS[layerId].nodes.find(n=>n.id===nodeId);
+  if(node && node.descends){ state.stackA.push(node.descends); state.selected=null; render(); }
+}
+
+/* ---------- Plan B : linked modes + seam ---------- */
+function renderB(){
+  const lid = state.modeB;
+  const layer = LAYERS[lid];
+  let tabs='';
+  for(const [id,label] of B_MODES){
+    tabs += `<button aria-pressed="${id===lid}" onclick="setModeB('${id}',true)"><i>#</i> ${label}</button>`;
+  }
+  let crumbs='';
+  state.crumbsB.forEach((m,i)=>{
+    const label = (B_MODES.find(x=>x[0]===m)||[,m])[1];
+    crumbs += (i?`<span class="sep">&rsaquo;</span>`:'') +
+      `<button class="crumb ${i===state.crumbsB.length-1?'cur':''}" onclick="popB(${i})">${esc(label)}</button>`;
+  });
+  stage.innerHTML =
+    `<div class="bar">
+       <div class="mode-tabs">${tabs}</div>
+       <div class="spacer"></div>
+       <div class="crumbs">${crumbs}</div>
+     </div>
+     <div class="panel-b"><div class="frame" id="frameB">
+        <div class="modecard"><span class="kdot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${KIND_COLOR[layer.accent]}"></span>${esc(label_for(lid))} mode</div>
+        <div class="toast" id="toastB"></div>
+     </div></div>`;
+  const frame = document.getElementById('frameB');
+  const svg = svgEl();
+  svg.innerHTML = buildGraph(layer, { interactive:true, openProp:'cross' });
+  frame.appendChild(svg);
+  bindGraph(svg, lid, 'cross', openB);
+}
+function label_for(lid){ return (B_MODES.find(x=>x[0]===lid)||[,LAYERS[lid].title])[1]; }
+function setModeB(id, reset){
+  state.modeB=id; state.selected=null;
+  if(reset) state.crumbsB=[id];
+  render();
+}
+function popB(i){ state.crumbsB = state.crumbsB.slice(0,i+1); state.modeB = state.crumbsB[i]; state.selected=null; render(); }
+function openB(nodeId, layerId){
+  const node = LAYERS[layerId].nodes.find(n=>n.id===nodeId);
+  if(node && node.cross){
+    const tgt = node.cross.mode;
+    state.modeB = tgt; state.crumbsB.push(tgt); state.selected=null;
+    render();
+    const t = document.getElementById('toastB');
+    if(t){ t.innerHTML = `seam · jumped to <b>${esc(node.cross.label)}</b> from ${esc(node.label)}`; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1900); }
+  }
+}
+
+/* ---------- shared node binding ---------- */
+function bindGraph(svg, layerId, openProp, openFn){
+  svg.querySelectorAll('g.node').forEach(g=>{
+    g.addEventListener('click', ()=>{
+      svg.querySelectorAll('g.node.sel').forEach(x=>x.classList.remove('sel'));
+      g.classList.add('sel');
+      const id = g.getAttribute('data-id');
+      state.selected = LAYERS[layerId].nodes.find(n=>n.id===id);
+      state.selLayer = layerId; renderDetail();
+    });
+  });
+  svg.querySelectorAll('.open-badge').forEach(b=>{
+    b.addEventListener('click', (ev)=>{ ev.stopPropagation(); openFn(b.getAttribute('data-open'), layerId); });
+  });
+}
+
+/* ---------- detail pane ---------- */
+function renderDetail(){
+  const n = state.selected;
+  if(!n){
+    detail.innerHTML = `<div class="empty"><div class="glyph">&#9671;</div>Select a node.<br/>Its details — and any layer it opens into — appear here.</div>`;
+    return;
+  }
+  const st = STATUS[n.status]||STATUS.WIRED;
+  const kc = KIND_COLOR[n.kind]||'var(--ink-3)';
+  let meta = (n.meta||[]).map(([k,v])=>`<div class="meta-row"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('');
+  if(!meta) meta = `<div class="meta-row"><span class="k">&nbsp;</span><span class="v">&nbsp;</span></div>`;
+
+  let action='';
+  if(state.plan==='A' && n.descends){
+    action = `<div class="open-action">
+        <button onclick="openA('${n.id}','${state.selLayer}')">Open layer &nbsp;&#8627;&nbsp; ${esc(LAYERS[n.descends].title)}</button>
+        <div class="hint">push onto the stack · ancestors recede behind</div></div>`;
+  } else if(state.plan==='B' && n.cross){
+    action = `<div class="open-action">
+        <button onclick="openB('${n.id}','${state.selLayer}')">Open in &nbsp;&#8594;&nbsp; ${esc(n.cross.label)} mode</button>
+        <div class="hint">cross-mode seam · drops a breadcrumb</div></div>`;
+  } else {
+    action = `<div class="open-action"><div class="hint">leaf node — opens into nothing deeper</div></div>`;
+  }
+
+  detail.innerHTML =
+    `<div class="d-kind" style="color:${kc}">${esc(n.kind)}</div>
+     <div class="d-title">${esc(n.label)}</div>
+     <div class="badges">
+       <span class="badge" style="color:${st.c};border-color:${st.bd};background:${st.bg}">${esc(n.status)}</span>
+       ${ (state.plan==='A'&&n.descends)||(state.plan==='B'&&n.cross) ? `<span class="badge" style="color:var(--accent);border-color:var(--accent-dim);background:rgba(52,224,200,.08)">opens a layer</span>`:'' }
+     </div>
+     <div class="meta">${meta}</div>
+     ${ n.note ? `<div class="note">${esc(n.note)}</div>`:'' }
+     ${action}`;
+}
+
+/* boot */
+document.addEventListener('DOMContentLoaded', ()=>{ setPlan('A'); });
+</script>
+</body>
+</html>

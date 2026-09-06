@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-tab="progress">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — dashboard</title>
+<!--
+  DASHBOARD (base shell) — the new dashboard in the settled intro/select-terminal language.
+  Layout per maintainer: chat RIGHT, canvas LEFT, thin persistent icon RAIL far-left, file explorer that
+  slides out LEFT-TO-RIGHT from the rail. Window chrome = solid #0a0f0e surface, one teal accent,
+  Chakra Petch + JetBrains Mono, the sun/moon theme toggle (on every screen).
+  Canvas node/edge/state language is lifted VERBATIM from workflow/design/canvas-progress-example-2026-06-12.html
+  (the locked quinary state language: done/active/pending/warn/fail + curved edges + marching live edge + done capsule).
+  4 tabs PROGRESS / PROJECT / APP / KNOWLEDGE; PROGRESS is fully built, the other 3 + the non-files rail drawers are
+  honest "detailed view lands here" placeholders to be filled in the NEXT pass from CONTRACT-SHEET / HANDLER-SHAPES.
+  Settings opens as a centered MODAL (DESIGN.md: settings is a popup, not a window/tab/drawer).
+  Real data shapes (mission/progress/gates, ProjectSummary, chat) are representative mock; nothing wired. Esc closes overlays.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#0a0f0e; --graph:#0a0f0e; --panel:#0e1413; --surface:#151c1a; --raised:#1b2220; --sink:#070b0a;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --border:rgba(255,255,255,.08); --border2:rgba(255,255,255,.14);
+    --teal:#2BBBA4; --tealb:#34C2AA; --teal-deep:#1B7A6E;
+    --tealsoft:rgba(43,187,164,.35); --tealghost:rgba(43,187,164,.10); --tealfaint:rgba(43,187,164,.05);
+    --disp:'Chakra Petch',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+    --dur-fast:140ms; --dur:240ms; --ease-out:cubic-bezier(0.16,1,0.3,1);
+    --r-sm:5px; --r-md:8px; --r-lg:11px;
+    --rail:48px; --chat:368px; --summary:196px; --drawer:286px;
+  }
+  [data-theme="light"]{
+    --bg:#eef1ef; --graph:#eef1ef; --panel:#ffffff; --surface:#f7f9f7; --raised:#eef1ee; --sink:#e6eae7;
+    --text:#0b0f0e; --read:#2d342f; --dim:#646b66; --ghost:#a9b0ab;
+    --border:rgba(0,0,0,.10); --border2:rgba(0,0,0,.17);
+    --teal:#138a78; --tealb:#0f7e6f; --teal-deep:#0c6256;
+    --tealsoft:rgba(19,138,120,.38); --tealghost:rgba(19,138,120,.12); --tealfaint:rgba(19,138,120,.06);
+  }
+  *{margin:0;box-sizing:border-box;}
+  html,body{height:100%;}
+  body{font-family:var(--mono);background:var(--bg);color:var(--text);height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;}
+  .app{display:grid;grid-template-rows:48px 1fr 24px;height:100vh;}
+
+  /* ─────────────── TOPBAR (identical language to select-terminal) ─────────────── */
+  .topbar{display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--bg);}
+  .brand{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:var(--read);font-weight:600;}
+  .brand .sep{color:var(--ghost);}
+  .brand .title{color:var(--dim);letter-spacing:.1em;font-weight:400;}
+  /* primary nav = segmented control, same shape as select's LOCAL/CLOUD/HYBRID pill */
+  .tabs{display:flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;}
+  .tab{appearance:none;background:transparent;border:0;border-right:1px solid var(--border);cursor:pointer;font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.14em;color:var(--dim);padding:7px 16px;transition:color var(--dur-fast),background var(--dur-fast);}
+  .tab:last-child{border-right:0;}
+  .tab:hover{color:var(--read);background:rgba(255,255,255,.04);}
+  .tab.on{color:var(--tealb);background:var(--tealghost);}
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:18px;}
+  .runbar{display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.14em;color:var(--dim);}
+  .runbar .frac{color:var(--tealb);}
+  .segbar{display:flex;gap:2px;}
+  .seg{width:9px;height:8px;border-radius:1px;background:var(--ghost);}
+  .seg.f{background:var(--teal-deep);}
+  .seg.a{background:var(--tealb);animation:segpulse 1.6s ease-in-out infinite;}
+  @keyframes segpulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+
+  /* theme toggle (sun/moon) — carried verbatim from intro/select */
+  .icon-toggle{appearance:none;cursor:pointer;position:relative;width:32px;height:30px;background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);color:var(--read);transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .icon-toggle:hover{color:var(--teal);border-color:var(--tealsoft);}
+  .icon-toggle .ico{position:absolute;top:50%;left:50%;transition:opacity var(--dur) var(--ease-out),transform var(--dur) var(--ease-out);}
+  .icon-toggle .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  .icon-toggle .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  .icon-toggle:hover .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  .icon-toggle:hover .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+
+  /* ─────────────── BODY GRID: rail | canvas | chat ─────────────── */
+  .body{position:relative;display:grid;grid-template-columns:var(--rail) 1fr var(--chat);min-height:0;}
+
+  /* icon rail */
+  .rail{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0;border-right:1px solid var(--border);background:var(--panel);z-index:30;}
+  .rail .spring{flex:1;}
+  .rbtn{appearance:none;position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:var(--r-sm);color:var(--dim);cursor:pointer;transition:color var(--dur-fast),background var(--dur-fast),border-color var(--dur-fast);}
+  .rbtn:hover{color:var(--read);background:var(--tealfaint);}
+  .rbtn.on{color:var(--tealb);background:var(--tealghost);border-color:var(--tealsoft);}
+  .rbtn svg{width:18px;height:18px;}
+  /* hover tooltip */
+  .rbtn::after{content:attr(data-label);position:absolute;left:42px;top:50%;transform:translateY(-50%) translateX(-4px);white-space:nowrap;font-size:10px;letter-spacing:.08em;color:var(--read);background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:4px 9px;opacity:0;pointer-events:none;transition:opacity var(--dur-fast),transform var(--dur-fast);z-index:50;}
+  .rbtn:hover::after{opacity:1;transform:translateY(-50%) translateX(0);}
+
+  /* ─────────────── CANVAS PANE (top strip · graph · bottom strip) ─────────────── */
+  .canvas-pane{position:relative;display:grid;grid-template-rows:auto 1fr auto;min-width:0;background:var(--graph);}
+
+  /* canvas TOP strip — mission + progress + gates (was the side summary) */
+  .canvas-top{display:flex;align-items:center;gap:18px;min-height:40px;padding:8px 18px;border-bottom:1px solid var(--border);background:var(--bg);}
+  .canvas-top .mission{font-size:11px;color:var(--read);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+  .ck{font-size:8px;letter-spacing:.22em;color:var(--dim);margin-right:9px;}
+  .canvas-top .cright{margin-left:auto;display:flex;align-items:center;gap:22px;font-size:10px;letter-spacing:.1em;color:var(--dim);white-space:nowrap;}
+  .canvas-top .cright b{font-family:var(--disp);font-weight:500;font-size:15px;color:var(--text);letter-spacing:.02em;}
+  .gtl{display:inline-flex;gap:9px;align-items:center;}
+  .gtl .ok{color:var(--tealb);}.gtl .wa{color:var(--text);}
+  .gtl .fa{background:var(--text);color:var(--bg);padding:0 5px;border-radius:3px;font-weight:600;}
+
+  /* canvas BOTTOM strip — last activity + quinary legend */
+  .canvas-bot{display:flex;align-items:center;gap:18px;min-height:30px;padding:6px 18px;border-top:1px solid var(--border);background:var(--bg);}
+  .canvas-bot .lastact{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+  .canvas-bot .lastact::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);flex:none;}
+  .canvas-bot .lastact b{color:var(--read);font-weight:400;}
+  .legend-inline{margin-left:auto;display:flex;gap:13px;font-size:9px;letter-spacing:.05em;color:var(--dim);white-space:nowrap;}
+  .legend-inline b{color:var(--read);font-weight:400;}
+
+  /* graph surface — flat matte, no stars/glow (DESIGN: work surface); pans inside the canvas */
+  .graph{position:relative;overflow:auto;background:var(--graph);}
+  .graphspace{position:relative;width:1140px;height:600px;margin:0 auto;}
+  .graphspace svg.edges{position:absolute;inset:0;width:100%;height:100%;}
+  .edge{stroke:var(--border2);stroke-width:1.5;fill:none;}
+  .edge.live{stroke:var(--tealb);stroke-dasharray:7 9;animation:march 1.1s linear infinite;}
+  @keyframes march{to{stroke-dashoffset:-32;}}
+
+  .node{position:absolute;width:192px;border-radius:var(--r-md);border:1px solid var(--border);background:var(--surface);padding:10px 12px;transition:border-color var(--dur-fast),transform var(--dur-fast);cursor:pointer;}
+  .node:hover{border-color:var(--tealsoft);transform:translateY(-1px);}
+  .node .nhead{display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.14em;color:var(--dim);margin-bottom:6px;}
+  .node .glyph{width:18px;height:18px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;flex:none;}
+  .node .ntitle{font-size:11px;letter-spacing:.03em;margin-bottom:8px;color:var(--text);}
+  .node .chips{display:flex;gap:5px;flex-wrap:wrap;}
+  .node .chipx{font-size:8px;letter-spacing:.1em;padding:2px 7px;border-radius:999px;border:1px solid var(--border);color:var(--dim);}
+  .node .chipx.t{color:var(--tealb);border-color:var(--tealsoft);}
+  .node.done{opacity:.82;border-left:3px solid var(--teal);}
+  .node.done .glyph{background:var(--teal);color:var(--bg);}
+  .node.active{border:1.5px solid var(--tealb);background:var(--tealghost);animation:nodepulse 2.2s ease-in-out infinite;}
+  .node.active .glyph{border:1.5px solid var(--tealb);color:var(--tealb);}
+  @keyframes nodepulse{0%,100%{box-shadow:0 0 0 0 var(--tealghost);}50%{box-shadow:0 0 0 5px var(--tealghost);}}
+  .node.pending{border-style:dashed;}
+  .node.pending .glyph{border:1px solid var(--ghost);color:var(--dim);}
+  .node.pending .ntitle{color:var(--dim);}
+  .node.warn .glyph{border:1px solid var(--text);color:var(--text);}
+  .node.fail{background:var(--text);border-color:var(--text);}
+  .node.fail .nhead,.node.fail .ntitle{color:var(--bg);}
+  .node.fail .glyph{background:var(--bg);color:var(--text);font-weight:700;}
+  .node.fail .chipx{color:var(--bg);border-color:rgba(0,0,0,.3);}
+  .capsule{position:absolute;display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:999px;border:1px solid var(--tealsoft);background:var(--surface);font-size:10px;letter-spacing:.12em;cursor:pointer;}
+  .capsule .cg{color:var(--tealb);}.capsule .cc{color:var(--dim);}
+
+  /* tab placeholder (PROJECT/APP/KNOWLEDGE — filled in detail pass) */
+  .tabhost{display:none;position:absolute;inset:0;align-items:center;justify-content:center;background:var(--graph);}
+  .tabhost .ph{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;color:var(--dim);}
+  .tabhost .ph .pg{width:46px;height:46px;border:1px dashed var(--border2);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;color:var(--ghost);}
+  .tabhost .ph h2{font-family:var(--disp);font-size:18px;font-weight:500;letter-spacing:.04em;color:var(--read);}
+  .tabhost .ph p{font-size:11px;letter-spacing:.04em;max-width:340px;line-height:1.6;}
+  /* tab visibility — the host overlay (opaque) covers the progress chrome on other tabs */
+  [data-tab="project"] #host-project,[data-tab="app"] #host-app,[data-tab="knowledge"] #host-knowledge{display:flex;}
+
+  /* ─────────────── CHAT (right, resizable) ─────────────── */
+  .chat{position:relative;display:flex;flex-direction:column;min-width:0;border-left:1px solid var(--border);background:var(--panel);}
+  /* drag handle on the chat's left edge */
+  .resizer{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:18;display:flex;justify-content:center;}
+  .resizer::before{content:"";width:1px;height:100%;background:transparent;transition:background var(--dur-fast);}
+  .resizer:hover::before,.resizer.drag::before{background:var(--tealsoft);}
+  .chat-head{display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid var(--border);}
+  .chat-head .ct{font-size:10px;letter-spacing:.18em;color:var(--read);}
+  .chat-head .cw{font-size:8.5px;letter-spacing:.06em;color:var(--ghost);}
+  .chat-head .model{margin-left:auto;font-size:9px;letter-spacing:.1em;color:var(--dim);border:1px solid var(--border);border-radius:999px;padding:3px 9px;}
+  .chat-head .model b{color:var(--tealb);font-weight:500;}
+  /* normal block flow (NOT flex) so message text wraps reliably */
+  .chat-log{flex:1;overflow-y:auto;padding:16px 15px;}
+  .chat-log::-webkit-scrollbar{width:8px;}.chat-log::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px;}
+  .msg{font-size:12px;line-height:1.55;}
+  .msg + .msg{margin-top:14px;}
+  .msg.user{margin-left:auto;width:fit-content;max-width:84%;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md) var(--r-md) 2px var(--r-md);padding:9px 12px;color:var(--text);}
+  .msg.elai{max-width:92%;}
+  .msg.elai .who{font-size:8px;letter-spacing:.2em;color:var(--dim);margin-bottom:5px;display:flex;align-items:center;gap:6px;}
+  .msg.elai .who::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);}
+  .msg.elai .mtext{color:var(--read);}
+  /* front-door style ELAI cards (ACK / notice / RESULT) */
+  .card{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);padding:10px 12px;margin-top:8px;}
+  .card .ct{font-size:8px;letter-spacing:.18em;color:var(--dim);margin-bottom:6px;display:flex;align-items:center;gap:7px;}
+  .card .ct .dot{width:6px;height:6px;border-radius:50%;background:var(--tealb);}
+  .card .ct.exec .dot{animation:segpulse 1.6s ease-in-out infinite;}
+  .card .line{font-size:11px;color:var(--text);}
+  .card .deeplink{margin-top:8px;font-size:10px;letter-spacing:.04em;color:var(--tealb);cursor:pointer;display:inline-flex;align-items:center;gap:5px;}
+  .card .deeplink:hover{color:var(--text);}
+  .chat-input{padding:12px 15px;border-top:1px solid var(--border);}
+  /* contained input box with a teal focus ring (Claude-Code style) */
+  .input-box{display:flex;align-items:flex-end;gap:6px;background:var(--sink);border:1px solid var(--border2);border-radius:var(--r-md);padding:7px 7px 7px 11px;transition:border-color var(--dur-fast),box-shadow var(--dur-fast);}
+  .input-box:focus-within{border-color:var(--teal);box-shadow:0 0 0 1px var(--tealsoft);}
+  .input-box textarea{flex:1;resize:none;height:30px;min-height:30px;background:none;border:0;outline:none;padding:5px 0;font-family:var(--mono);font-size:12px;line-height:1.4;color:var(--text);}
+  .input-box textarea::placeholder{color:var(--dim);}
+  .attach,.send{appearance:none;cursor:pointer;height:30px;width:30px;flex:none;background:transparent;border:0;border-radius:var(--r-sm);color:var(--dim);display:flex;align-items:center;justify-content:center;transition:color var(--dur-fast),background var(--dur-fast);}
+  .attach:hover{color:var(--read);background:var(--tealghost);}
+  .send{color:var(--read);}
+  .send:hover{color:var(--tealb);background:var(--tealghost);}
+  /* live usage meter (J-28/29 concept) */
+  .usage{padding:9px 15px 11px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px;}
+  .usage .urow{display:flex;align-items:center;justify-content:space-between;font-size:9px;letter-spacing:.08em;color:var(--dim);}
+  .usage .urow b{color:var(--read);font-weight:400;}
+  .ubar{height:4px;border-radius:2px;background:var(--sink);overflow:hidden;display:flex;}
+  .ubar i{display:block;height:100%;}
+  .ubar .used{width:21%;background:var(--teal-deep);}
+  .ubar .cache{width:6%;background:var(--tealb);}
+
+  /* ─────────────── STATUSBAR ─────────────── */
+  .statusbar{display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 calc(var(--rail) + 8px);font-size:9px;letter-spacing:.12em;color:var(--dim);border-top:1px solid var(--border);background:var(--panel);}
+  .statusbar .fsm{display:inline-flex;align-items:center;gap:7px;}
+  .statusbar .fsm .dot{width:6px;height:6px;border-radius:50%;background:var(--tealb);animation:segpulse 1.6s ease-in-out infinite;}
+  .statusbar .right span+span{margin-left:14px;}
+  .statusbar .ok{color:var(--tealb);}.statusbar .fa{color:var(--text);}
+
+  /* ─────────────── LEFT DRAWERS (slide left-to-right from the rail) ─────────────── */
+  .drawer{position:absolute;top:0;bottom:0;left:var(--rail);width:var(--drawer);background:var(--panel);border-right:1px solid var(--border2);z-index:25;
+    transform:translateX(-100%);opacity:0;pointer-events:none;transition:transform var(--dur) var(--ease-out),opacity var(--dur) var(--ease-out);
+    padding:16px 16px 18px;overflow-y:auto;}
+  .drawer.open{transform:translateX(0);opacity:1;pointer-events:auto;box-shadow:18px 0 46px rgba(0,0,0,.45);}
+  .drawer .dh{font-size:9px;letter-spacing:.22em;color:var(--read);display:flex;align-items:center;gap:7px;margin-bottom:14px;}
+  .drawer .dh::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);}
+  .drawer .dh .x{margin-left:auto;cursor:pointer;color:var(--dim);font-size:13px;}
+  .drawer .dh .x:hover{color:var(--text);}
+  /* file tree */
+  .ftree{font-size:11px;line-height:2;color:var(--dim);}
+  .ftree .row{padding:1px 6px;border-radius:4px;cursor:pointer;white-space:nowrap;}
+  .ftree .row:hover{background:var(--tealfaint);color:var(--read);}
+  .ftree .dir{color:var(--text);}
+  .ftree .hot{color:var(--tealb);}
+  .ftree .ind{padding-left:16px;}.ftree .ind2{padding-left:32px;}
+  /* generic drawer placeholder (filled in detail pass) */
+  .dnote{font-size:10.5px;line-height:1.7;color:var(--dim);border:1px dashed var(--border2);border-radius:var(--r-md);padding:14px;background:var(--sink);}
+  .dnote b{color:var(--read);font-weight:500;}
+  .dlist{margin-top:12px;display:flex;flex-direction:column;gap:7px;}
+  .dlist .di{font-size:10.5px;color:var(--read);border:1px solid var(--border);border-radius:var(--r-sm);padding:9px 11px;display:flex;justify-content:space-between;align-items:center;}
+  .dlist .di .k{font-size:8.5px;color:var(--ghost);letter-spacing:.1em;}
+
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.42);opacity:0;pointer-events:none;transition:opacity var(--dur);z-index:20;}
+  .scrim.on{opacity:1;pointer-events:auto;}
+
+  /* ─────────────── SETTINGS MODAL ─────────────── */
+  .modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:60;opacity:0;pointer-events:none;transition:opacity var(--dur);}
+  .modal.open{opacity:1;pointer-events:auto;}
+  .modal .card2{width:560px;max-width:92vw;max-height:80vh;overflow-y:auto;background:var(--panel);border:1px solid var(--border2);border-radius:var(--r-lg);box-shadow:0 24px 70px rgba(0,0,0,.55);}
+  .modal .mh{display:flex;align-items:center;gap:9px;padding:16px 20px;border-bottom:1px solid var(--border);}
+  .modal .mh h2{font-family:var(--disp);font-size:15px;font-weight:600;letter-spacing:.04em;color:var(--text);}
+  .modal .mh .x{margin-left:auto;cursor:pointer;color:var(--dim);font-size:16px;}
+  .modal .mh .x:hover{color:var(--text);}
+  .modal .mbody{padding:18px 20px;}
+  .modal .mnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;}
+  .modal .mnav button{appearance:none;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 12px;cursor:pointer;transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .modal .mnav button.on{color:var(--tealb);border-color:var(--tealsoft);background:var(--tealghost);}
+  .modal .mnav button:hover{color:var(--read);}
+
+  @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important;}}
+</style>
+</head>
+<body>
+  <main class="app">
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div class="brand">ELAI <span class="sep">·</span> <span class="title">.elai_cc</span></div>
+      <div class="tabs" role="group" aria-label="View">
+        <button class="tab on" data-tab="progress" type="button">PROGRESS</button>
+        <button class="tab" data-tab="project" type="button">PROJECT</button>
+        <button class="tab" data-tab="app" type="button">APP</button>
+        <button class="tab" data-tab="knowledge" type="button">KNOWLEDGE</button>
+      </div>
+      <div class="tb-right">
+        <div class="runbar">RUNNING
+          <span class="segbar">
+            <span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span>
+            <span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg a"></span>
+            <span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span>
+          </span>
+          <span class="frac">9/14</span>
+        </div>
+        <button class="icon-toggle" id="themeToggle" type="button" title="Toggle light / dark" aria-label="Toggle light / dark mode">
+          <svg class="ico ico-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/>
+            <line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/>
+            <line x1="5.2" y1="5.2" x2="6.9" y2="6.9"/><line x1="17.1" y1="17.1" x2="18.8" y2="18.8"/>
+            <line x1="18.8" y1="5.2" x2="17.1" y2="6.9"/><line x1="6.9" y1="17.1" x2="5.2" y2="18.8"/>
+          </svg>
+          <svg class="ico ico-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 14.6A8 8 0 0 1 9.4 4 7 7 0 1 0 20 14.6Z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- BODY: rail | canvas | chat -->
+    <div class="body">
+      <!-- icon rail -->
+      <nav class="rail" aria-label="Workspace">
+        <button class="rbtn" data-drawer="files" data-label="Files" type="button" aria-label="Files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="intel" data-label="Project intel" type="button" aria-label="Project intelligence">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="13" cy="18" r="2.4"/><path d="M8 8.5 11 16M16 8 13.6 15.6M8.2 6.6 15.6 6.2"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="sessions" data-label="Sessions / branches" type="button" aria-label="Sessions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M6 7.2v9.6M6 12h6a4 4 0 0 0 4-2.4"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="receipts" data-label="Receipts / RRA" type="button" aria-label="Receipts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l3 3v15l-2.2-1.4L13.6 21l-2.2-1.4L9.2 21 7 19.6 4 21V5a2 2 0 0 1 2-2Z"/><path d="M8 8h7M8 11.5h7M8 15h4"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="monitors" data-label="Monitors" type="button" aria-label="Monitors">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h3l2.5-6 4 13 2.5-8 1.6 4H21"/></svg>
+        </button>
+        <span class="spring"></span>
+        <button class="rbtn" data-modal="settings" data-label="Settings" type="button" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6"/></svg>
+        </button>
+      </nav>
+
+      <!-- canvas pane -->
+      <section class="canvas-pane">
+        <!-- canvas TOP strip (was the side summary) -->
+        <div class="canvas-top">
+          <div class="mission"><span class="ck">MISSION</span>zero-knowledge password manager — sharing milestone</div>
+          <div class="cright">
+            <span>PROGRESS <b>9</b> / 14 steps</span>
+            <span class="gtl">GATES <span class="ok">12 ✓</span> <span class="wa">1 ▲</span> <span class="fa">1 ✕</span></span>
+          </div>
+        </div>
+
+        <!-- graph (PROGRESS) -->
+        <div class="graph">
+          <div class="graphspace">
+          <svg class="edges">
+            <path class="edge" d="M 232 272 C 280 272, 280 146, 318 146"/>
+            <path class="edge" d="M 232 272 C 280 272, 280 384, 318 384"/>
+            <path class="edge live" d="M 510 146 C 560 146, 560 150, 608 150"/>
+            <path class="edge" d="M 510 384 C 560 384, 560 388, 608 388"/>
+            <path class="edge" d="M 800 150 C 850 150, 850 154, 898 154"/>
+            <path class="edge" d="M 800 388 C 850 388, 850 392, 898 392"/>
+          </svg>
+          <div class="capsule" style="left:42px;top:250px" title="5 finished steps, collapsed — click to expand"><span class="cg">✓</span> FOUNDATION <span class="cc">· 5 STEPS</span></div>
+          <div class="node done" style="left:318px;top:106px"><div class="nhead"><span class="glyph">✓</span>B-12 · STEP</div><div class="ntitle">google sso auth flow</div><div class="chips"><span class="chipx t">3 GATES ✓</span><span class="chipx">receipt</span></div></div>
+          <div class="node done" style="left:318px;top:344px"><div class="nhead"><span class="glyph">✓</span>B-13 · STEP</div><div class="ntitle">master key derivation (PBKDF2)</div><div class="chips"><span class="chipx t">2 GATES ✓</span><span class="chipx">receipt</span></div></div>
+          <div class="node active" style="left:608px;top:106px"><div class="nhead"><span class="glyph">●</span>B-14 · STEP</div><div class="ntitle">vault entry crud, client-side AES-GCM</div><div class="chips"><span class="chipx t">EXECUTOR · sonnet</span><span class="chipx">2/3 gates</span><span class="chipx">conf 91%</span></div></div>
+          <div class="node warn" style="left:608px;top:344px"><div class="nhead"><span class="glyph">▲</span>B-15 · STEP</div><div class="ntitle">encrypted search index</div><div class="chips"><span class="chipx">1 registered stub</span><span class="chipx">resolves in B-18</span></div></div>
+          <div class="node pending" style="left:898px;top:110px"><div class="nhead"><span class="glyph">○</span>B-16 · STEP</div><div class="ntitle">sharing core</div><div class="chips"><span class="chipx">queued</span></div></div>
+          <div class="node fail" style="left:898px;top:348px"><div class="nhead"><span class="glyph">✕</span>B-17 · STEP</div><div class="ntitle">ipc bridge contract</div><div class="chips"><span class="chipx">gate FAIL · evidence missing</span></div></div>
+          </div>
+        </div>
+
+        <!-- canvas BOTTOM strip (last activity + quinary legend) -->
+        <div class="canvas-bot">
+          <div class="lastact">LAST ACTIVITY: <b>executor writing vault_crud.rs</b> · 12s ago · sonnet · 41k tok</div>
+          <div class="legend-inline"><span><b>✓</b> done</span><span><b>●</b> active</span><span><b>○</b> pending</span><span><b>▲</b> warn</span><span><b>✕</b> fail</span></div>
+        </div>
+
+        <!-- PROJECT / APP / KNOWLEDGE hosts (filled in the detail pass) -->
+        <div class="tabhost" id="host-project"><div class="ph"><div class="pg"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="7" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="13" cy="18" r="2.2"/><path d="M8 8.5 11 16M16 8 13.6 15.6"/></svg></div><h2>PROJECT — code-graph</h2><p>the DKG / SCIP symbol graph + lens bar (structure / security / history / cost / dead-code) + impact cone. Built next from get_graph_view_data · symbol_graph_query · get_impact_overlay.</p></div></div>
+        <div class="tabhost" id="host-app"><div class="ph"><div class="pg"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 8h18M7 21h10"/></svg></div><h2>APP — preview &amp; recast</h2><p>app pages + live dev-preview proxy + before/after design recast. Built next from the APP-tab handlers (resolve_oid · apply_recast_patch).</p></div></div>
+        <div class="tabhost" id="host-knowledge"><div class="ph"><div class="pg"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V4Z"/><path d="M9 8h6M9 11h6"/></svg></div><h2>KNOWLEDGE — memory &amp; research</h2><p>memory facts (Tier-A/B) + provenance + research orchestrator + RAG cascade + cosmos artifacts. Built next from get_memory_facts · get_memory_notes · research handlers.</p></div></div>
+      </section>
+
+      <!-- CHAT (right) -->
+      <aside class="chat" aria-label="Chat">
+        <div class="resizer" id="chatResizer" title="Drag to resize chat"></div>
+        <div class="chat-head">
+          <span class="ct">CHAT</span>
+          <span class="cw" id="cwReadout">—</span>
+        </div>
+        <div class="chat-log">
+          <div class="msg user">add client-side AES-GCM encryption to the vault entry crud, keep the key in memory only</div>
+          <div class="msg elai">
+            <div class="who">ELAI</div>
+            <div class="mtext">Routing this into the active plan. It maps to step B-14 (vault entry crud) which is mid-execution.</div>
+            <div class="card"><div class="ct exec"><span class="dot"></span>ACK · INTENT ROUTED</div><div class="line">classified as <b>scoped edit</b> → folded into B-14, executor on sonnet</div></div>
+          </div>
+          <div class="msg elai">
+            <div class="who">ELAI</div>
+            <div class="mtext">Wrote the AES-GCM seal/open path and wired it into the crud handler. 2 of 3 gates green; the wiring gate is verifying the production caller now.</div>
+            <div class="card"><div class="ct"><span class="dot"></span>RESULT · B-14</div><div class="line">vault_crud.rs · +84 / −6 · conf 91% · 2/3 gates</div><span class="deeplink">open in canvas →</span></div>
+          </div>
+        </div>
+        <div class="chat-input">
+          <div class="input-box">
+            <button class="attach" type="button" aria-label="Attach"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+            <textarea placeholder="message ELAI"></textarea>
+            <button class="send" type="button" aria-label="Send"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg></button>
+          </div>
+        </div>
+        <div class="usage">
+          <div class="urow"><span>CONTEXT WINDOW</span><span><b>41.2k</b> / 200k</span></div>
+          <div class="ubar"><i class="used"></i><i class="cache"></i></div>
+          <div class="urow"><span>this turn <b>1.24k tok</b> · 6% cached</span><span>cloud · $0.04</span></div>
+        </div>
+      </aside>
+
+      <!-- LEFT DRAWERS -->
+      <div class="drawer" id="drawer-files">
+        <div class="dh">FILES <span class="x" data-close>✕</span></div>
+        <div class="ftree">
+          <div class="row dir">crates/</div>
+          <div class="row ind dir">orchestrator/</div>
+          <div class="row ind2 hot">vault_crud.rs ●</div>
+          <div class="row ind2">key_derive.rs</div>
+          <div class="row ind2">ssb.rs</div>
+          <div class="row ind dir">dashboard-v2/</div>
+          <div class="row ind2">CockpitWindow.svelte</div>
+          <div class="row ind2">CanvasWindow.svelte</div>
+          <div class="row ind dir">knowledge/</div>
+          <div class="row dir">python/</div>
+          <div class="row ind dir">elai_inference/</div>
+          <div class="row ind2">server.py</div>
+          <div class="row dir">docs/</div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-intel">
+        <div class="dh">PROJECT INTELLIGENCE <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>code-intelligence overview.</b> repo map, PageRank hotspots, dead-code islands, security &amp; cost lenses. Detailed surface lands here in the next pass.</div>
+        <div class="dlist">
+          <div class="di">symbols indexed<span class="k">1,284</span></div>
+          <div class="di">top hotspot<span class="k">ssb.rs</span></div>
+          <div class="di">dead-code islands<span class="k">3</span></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-sessions">
+        <div class="dh">SESSIONS / BRANCHES <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>session DAG + branch / merge.</b> fork, merge, close, progress sparkline per branch. Built next from get_session_branches.</div>
+        <div class="dlist">
+          <div class="di">main<span class="k">HEAD · 9/14</span></div>
+          <div class="di">try/aes-gcm<span class="k">+2 ahead</span></div>
+          <div class="di">archive/keys<span class="k">closed</span></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-receipts">
+        <div class="dh">RECEIPTS / RRA <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>reproducible-run artifacts + attestation.</b> root hash, guarantee level, gate count, objective-hash chain. Built next from get_run_artifact · get_attestations.</div>
+        <div class="dlist">
+          <div class="di">B-13 receipt<span class="k">reproducible</span></div>
+          <div class="di">B-12 receipt<span class="k">verified · 3 gates</span></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-monitors">
+        <div class="dh">MONITORS <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>the telemetry long-tail.</b> cost cockpit, trust/taint, SSB transcript, critic decisions, benches, gates. Each becomes a real panel in the next pass (CONTRACT-SHEET §2).</div>
+        <div class="dlist">
+          <div class="di">cost · velocity cap<span class="k">live</span></div>
+          <div class="di">trust telemetry<span class="k">flag-dark</span></div>
+          <div class="di">SAFEDELTA<span class="k">bench-pending</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATUSBAR -->
+    <footer class="statusbar">
+      <span class="fsm"><span class="dot"></span>FSM EXECUTING · s-7f3a · one fix per loop</span>
+      <span class="right"><span>cloud · sonnet 4.6</span><span>ctx 21%</span></span>
+    </footer>
+
+    <div class="scrim" id="scrim"></div>
+
+    <!-- SETTINGS MODAL -->
+    <div class="modal" id="modal-settings">
+      <div class="card2">
+        <div class="mh"><h2>Settings</h2><span class="x" data-close>✕</span></div>
+        <div class="mbody">
+          <div class="mnav">
+            <button class="on" type="button">Models</button><button type="button">Sidecar</button><button type="button">Gates</button>
+            <button type="button">Cloud</button><button type="button">Runtime</button><button type="button">Skills</button><button type="button">UX</button>
+          </div>
+          <div class="dnote"><b>model routing &amp; runtime.</b> per-role targets, gate mode, sidecar boot/quantization, cloud ceiling / BYOK, calibrated routing tier matrix. Detailed controls land here in the next pass (SettingsWindow handlers).</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const root=document.documentElement;
+
+    // theme toggle (sun/moon)
+    document.getElementById('themeToggle').addEventListener('click',()=>{
+      const light=root.getAttribute('data-theme')==='light';
+      root.setAttribute('data-theme', light?'dark':'light');});
+
+    // tab switching
+    const tabs=[...document.querySelectorAll('.tab')];
+    tabs.forEach(t=>t.addEventListener('click',()=>{
+      root.setAttribute('data-tab',t.dataset.tab);
+      tabs.forEach(x=>x.classList.toggle('on',x===t));}));
+
+    // drawers + scrim
+    const scrim=document.getElementById('scrim');
+    const railBtns=[...document.querySelectorAll('.rbtn[data-drawer]')];
+    function closeAll(){
+      document.querySelectorAll('.drawer.open').forEach(d=>d.classList.remove('open'));
+      document.querySelectorAll('.modal.open').forEach(m=>m.classList.remove('open'));
+      railBtns.forEach(b=>b.classList.remove('on'));
+      scrim.classList.remove('on');
+    }
+    railBtns.forEach(b=>b.addEventListener('click',()=>{
+      const id='drawer-'+b.dataset.drawer; const d=document.getElementById(id);
+      const wasOpen=d.classList.contains('open');
+      closeAll();
+      if(!wasOpen){d.classList.add('open');b.classList.add('on');scrim.classList.add('on');}
+    }));
+    // settings modal
+    document.querySelector('.rbtn[data-modal]').addEventListener('click',()=>{
+      const m=document.getElementById('modal-settings');const wasOpen=m.classList.contains('open');
+      closeAll(); if(!wasOpen){m.classList.add('open');scrim.classList.add('on');}
+    });
+    document.querySelectorAll('[data-close]').forEach(x=>x.addEventListener('click',closeAll));
+    scrim.addEventListener('click',closeAll);
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')closeAll();});
+
+    // settings mnav toggle
+    document.querySelectorAll('.modal .mnav button').forEach(b=>b.addEventListener('click',()=>{
+      document.querySelectorAll('.modal .mnav button').forEach(x=>x.classList.toggle('on',x===b));}));
+
+    // canvas node -> (mock) focus; deep-link from chat
+    document.querySelectorAll('.node').forEach(n=>n.addEventListener('click',()=>{
+      document.querySelectorAll('.node').forEach(x=>x.style.outline='');
+      n.style.outline='1px solid var(--tealsoft)';n.style.outlineOffset='2px';}));
+    document.querySelector('.card .deeplink')?.addEventListener('click',()=>{
+      root.setAttribute('data-tab','progress');tabs.forEach(x=>x.classList.toggle('on',x.dataset.tab==='progress'));
+      const active=document.querySelector('.node.active');if(active){active.style.outline='1px solid var(--tealsoft)';active.style.outlineOffset='2px';}});
+
+    // chat resize — drag the left edge; default ~47% of the free area (rail excluded), just under half
+    const RAIL=48, MINCHAT=340, MINCANVAS=380;
+    const cwReadout=document.getElementById('cwReadout');
+    function setChat(px){const free=window.innerWidth-RAIL;px=Math.round(Math.max(MINCHAT,Math.min(px,free-MINCANVAS)));root.style.setProperty('--chat',px+'px');if(cwReadout)cwReadout.textContent=px+'px';}
+    const rz=document.getElementById('chatResizer');let drag=false;
+    rz.addEventListener('pointerdown',e=>{drag=true;rz.classList.add('drag');rz.setPointerCapture(e.pointerId);e.preventDefault();});
+    rz.addEventListener('pointermove',e=>{if(drag)setChat(window.innerWidth-e.clientX);});
+    rz.addEventListener('pointerup',()=>{drag=false;rz.classList.remove('drag');});
+    setChat(Math.round((window.innerWidth-RAIL)*0.47));
+    window.addEventListener('resize',()=>setChat(parseInt(getComputedStyle(root).getPropertyValue('--chat'))||400));
+  </script>
+</body>
+</html>

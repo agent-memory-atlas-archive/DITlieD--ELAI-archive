@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — project selection (mock v3 · stellar cartography)</title>
+<!--
+  V3 (rev2) — "stellar cartography". Recent projects = VERIFIED NODES on a vertical star-track (a constellation / orbital
+  timeline), NOT cards and NOT a CLI window. Brief: minimal + trust + futuristic AI + galaxy, angular (less round/modern).
+  Design read: brand/boot surface; dials SV8 / MO4 / VD3 (editorial, spatial, airy). Grounded in DESIGN.md:
+    - data-as-design (§8): the node-track IS the imagery (the product's own graph metaphor), not decoration.
+    - quinary state language (§6): diamond markers = done/verified (teal-deep) and active (teal, pulsing = most-recent);
+      error = mono inversion; warn = shape only. NO ✓/❯/bracket symbol clutter.
+    - LOCKS: white hairline logo + per-stroke draw (teal never colors it); ONE teal accent; tinted near-black; centered
+      bloom (maintainer's "never follows the logo" rule); radical negative space + asymmetry.
+    - angular: radius 0 everywhere, diamonds (rotated squares) for markers, hairline dividers, underline-draw affordances.
+    - galaxy: centered bloom + drifting/twinkling starfield + tilted orbital rings + one slow satellite + the meridian track.
+  Type: Chakra Petch (display/names, angular) + JetBrains Mono (technical meta/trust readouts).
+  STATE switcher (dev, top-right): DATA (filter+scroll) / ONE / EMPTY / LOADING / ERROR / OFFLINE.
+  Pure mock. Real fields: ProjectSummary{name, path, last_opened_iso} (ProjectSelector.svelte).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --void:#030404; --panel:#0a1012; --raised:#161c1b;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --border:rgba(255,255,255,.09); --border-bright:rgba(255,255,255,.16);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.40); --teal-line:rgba(43,187,164,.22); --teal-faint:rgba(43,187,164,.06);
+    --disp:'Chakra Petch',system-ui,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --dur-fast:130ms; --dur:260ms; --ease-out:cubic-bezier(0.16,1,0.3,1); --ease-draw:cubic-bezier(0.3,0,0.2,1);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;font-family:var(--disp);color:var(--text);background:var(--void);-webkit-font-smoothing:antialiased;overflow:hidden;}
+
+  /* ───── stage: void + centered bloom + drifting starfield + orbital rings ───── */
+  .stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:
+      radial-gradient(ellipse 60% 46% at 50% 36%,
+        rgba(43,187,164,.15) 0%, rgba(43,187,164,.06) 32%, rgba(43,187,164,.018) 52%, rgba(43,187,164,0) 70%),
+      radial-gradient(ellipse 140% 126% at 50% 38%,
+        rgba(4,13,17,1) 0%,rgba(4,13,17,.94) 14%,rgba(4,13,17,.82) 30%,rgba(4,13,17,.64) 44%,
+        rgba(4,13,17,.44) 58%,rgba(4,13,17,.24) 74%,rgba(4,13,17,.08) 90%,rgba(4,13,17,0) 100%),
+      var(--void);
+    overflow:hidden;}
+  .stars{position:absolute;inset:-6%;z-index:0;pointer-events:none;}
+  .stars::before,.stars::after{content:"";position:absolute;inset:0;}
+  .stars::before{animation:drift-a 150s ease-in-out infinite;
+    background-image:
+      radial-gradient(1.3px 1.3px at 8% 16%,rgba(255,255,255,.5),transparent 64%),
+      radial-gradient(1.3px 1.3px at 19% 61%,rgba(255,255,255,.42),transparent 64%),
+      radial-gradient(1.3px 1.3px at 34% 82%,rgba(255,255,255,.4),transparent 64%),
+      radial-gradient(1.3px 1.3px at 43% 11%,rgba(255,255,255,.48),transparent 64%),
+      radial-gradient(1.3px 1.3px at 57% 73%,rgba(255,255,255,.42),transparent 64%),
+      radial-gradient(1.3px 1.3px at 71% 55%,rgba(255,255,255,.44),transparent 64%),
+      radial-gradient(1.3px 1.3px at 84% 34%,rgba(255,255,255,.5),transparent 64%),
+      radial-gradient(1.3px 1.3px at 91% 67%,rgba(255,255,255,.4),transparent 64%),
+      radial-gradient(1.3px 1.3px at 96% 14%,rgba(255,255,255,.42),transparent 64%),
+      radial-gradient(1.3px 1.3px at 14% 92%,rgba(255,255,255,.38),transparent 64%),
+      radial-gradient(1.1px 1.1px at 27% 38%,rgba(255,255,255,.3),transparent 64%),
+      radial-gradient(1.1px 1.1px at 63% 28%,rgba(255,255,255,.3),transparent 64%);}
+  .stars::after{animation:drift-b 110s ease-in-out infinite, twinkle 5.5s ease-in-out infinite;
+    background-image:
+      radial-gradient(2.4px 2.4px at 12% 30%,rgba(255,255,255,.96),transparent 58%),
+      radial-gradient(2px 2px at 31% 78%,rgba(255,255,255,.88),transparent 58%),
+      radial-gradient(2.4px 2.4px at 68% 18%,rgba(255,255,255,.92),transparent 58%),
+      radial-gradient(2px 2px at 82% 58%,rgba(255,255,255,.88),transparent 58%),
+      radial-gradient(2.8px 2.8px at 47% 89%,rgba(255,255,255,.9),transparent 58%),
+      radial-gradient(2.4px 2.4px at 6% 48%,rgba(255,255,255,.9),transparent 58%),
+      radial-gradient(2px 2px at 73% 84%,rgba(52,194,170,.7),transparent 58%);}
+
+  /* tilted orbital rings + a slow satellite (galaxy/tech, felt-not-seen) */
+  .orbit{position:absolute;left:50%;top:38%;z-index:0;pointer-events:none;width:1240px;height:1240px;
+    transform:translate(-50%,-50%) rotate(-14deg) scaleY(.62);}
+  .orbit .ring{position:absolute;inset:0;border:1px solid var(--teal-faint);border-radius:50%;}
+  .orbit .ring.r2{inset:150px;border-color:rgba(43,187,164,.045);}
+  .orbit .ring.r3{inset:330px;border-color:rgba(43,187,164,.035);}
+  .sat-track{position:absolute;left:50%;top:38%;z-index:0;pointer-events:none;width:1240px;height:1240px;
+    transform:translate(-50%,-50%) rotate(-14deg) scaleY(.62);animation:orbit 90s linear infinite;}
+  .sat{position:absolute;left:50%;top:0;width:5px;height:5px;background:var(--teal);transform:translateX(-50%) rotate(45deg);box-shadow:0 0 12px var(--teal-soft);}
+
+  @keyframes drift-a{0%,100%{transform:translate(0,0)}50%{transform:translate(-16px,9px)}}
+  @keyframes drift-b{0%,100%{transform:translate(0,0)}50%{transform:translate(13px,-8px)}}
+  @keyframes twinkle{0%,100%{opacity:.95}50%{opacity:.55}}
+  @keyframes orbit{to{transform:translate(-50%,-50%) rotate(346deg) scaleY(.62);}}
+
+  /* corner system tag */
+  .sys-tag{position:fixed;top:20px;left:22px;z-index:5;font-family:var(--mono);font-size:9.5px;letter-spacing:.26em;color:var(--ghost);text-transform:uppercase;}
+  .sys-tag b{color:var(--teal);font-weight:500;}
+
+  /* ───── layout: fixed-height row so the panel TOP is anchored (states never re-center) ───── */
+  .boot-inner{position:relative;z-index:1;width:100%;max-width:1300px;margin:0 auto;padding:0 60px;height:520px;
+    display:grid;grid-template-columns:0.92fr 1.08fr;gap:78px;align-items:start;}
+
+  /* brand beacon */
+  .brand{align-self:center;display:flex;flex-direction:column;align-items:flex-start;gap:18px;}
+  .logo-wrap{cursor:pointer;line-height:0;filter:drop-shadow(0 0 38px rgba(43,187,164,.34)) drop-shadow(0 0 10px rgba(43,187,164,.24));}
+  .logo{width:404px;max-width:100%;height:auto;display:block;}
+  .logo line{fill:none;stroke:var(--text);stroke-width:2.4;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1400ms var(--ease-draw) forwards;}
+  .logo line:nth-child(1){animation-delay:300ms}.logo line:nth-child(2){animation-delay:640ms}.logo line:nth-child(3){animation-delay:980ms}
+  .logo line:nth-child(4){animation-delay:1320ms}.logo line:nth-child(5){animation-delay:1660ms}.logo line:nth-child(6){animation-delay:2000ms}
+  .logo line:nth-child(7){animation-delay:2340ms}.logo line:nth-child(8){animation-delay:2680ms}.logo line:nth-child(9){animation-delay:3020ms}.logo line:nth-child(10){animation-delay:3360ms}
+  @keyframes draw{to{stroke-dashoffset:0;}}
+  .tagline{margin:0;padding-left:3px;font-family:var(--disp);font-weight:300;font-size:13px;letter-spacing:.16em;color:#9aa39e;opacity:0;animation:fadeIn 320ms var(--ease-out) 700ms forwards;}
+  .coord{padding-left:3px;font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--ghost);opacity:0;animation:fadeIn 280ms linear 1000ms forwards;}
+  .coord .v{color:var(--teal-deep);}
+
+  /* ───── right panel: frameless star-track ───── */
+  .panel{align-self:start;width:560px;justify-self:end;opacity:0;animation:fadeUp 560ms var(--ease-out) 460ms forwards;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+
+  /* runtime mode — underline-draw segments, sharp */
+  .modes{display:flex;margin-bottom:30px;}
+  .mode{position:relative;appearance:none;background:none;border:0;cursor:pointer;font-family:var(--disp);font-weight:500;font-size:13px;letter-spacing:.2em;color:var(--dim);padding:6px 20px 13px;transition:color var(--dur-fast) var(--ease-out);}
+  .mode:first-child{padding-left:2px;}
+  .mode::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:var(--teal);transform:scaleX(0);transform-origin:left;transition:transform var(--dur) var(--ease-out);}
+  .mode:hover{color:var(--read);}
+  .mode.on{color:var(--teal-bright);}
+  .mode.on::after{transform:scaleX(1);}
+
+  /* section label — diamond dot (angular) */
+  .sec{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:500;font-size:10px;letter-spacing:.28em;color:var(--read);margin-bottom:20px;}
+  .sec::before{content:"";width:5px;height:5px;background:var(--teal);transform:rotate(45deg);}
+  .sec .ct{color:var(--dim);letter-spacing:.18em;}
+
+  /* filter — underline only, no box (shown only when >3) */
+  .filter{display:flex;align-items:center;border-bottom:1px solid var(--border);padding:7px 2px;margin-bottom:18px;transition:border-color var(--dur-fast) var(--ease-out);}
+  .filter:focus-within{border-color:var(--teal-soft);}
+  .filter input{flex:1;background:none;border:0;outline:none;font-family:var(--mono);font-size:12px;letter-spacing:.03em;color:var(--text);}
+  .filter input::placeholder{color:var(--dim);letter-spacing:.12em;}
+
+  /* the star-track */
+  .axis{position:relative;padding-left:26px;}
+  .axis::before{content:"";position:absolute;left:4px;top:12px;bottom:12px;width:1px;
+    background:linear-gradient(180deg,transparent,var(--teal-line) 14%,var(--teal-line) 86%,transparent);}
+  .track{max-height:300px;overflow-y:auto;}
+  .track::-webkit-scrollbar{width:5px;}
+  .track::-webkit-scrollbar-thumb{background:var(--border-bright);}
+  .track::-webkit-scrollbar-track{background:transparent;}
+  .node{position:relative;display:grid;grid-template-columns:1fr auto;align-items:center;column-gap:18px;padding:15px 2px;cursor:pointer;}
+  .node+.node{border-top:1px solid var(--border);}
+  .node::before{content:"";position:absolute;left:-22px;top:50%;width:7px;height:7px;background:var(--teal-deep);
+    transform:translate(-50%,-50%) rotate(45deg);box-shadow:0 0 0 4px var(--void);
+    transition:background var(--dur-fast) var(--ease-out),width var(--dur-fast) var(--ease-out),height var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out);}
+  .node.recent::before{background:var(--teal);box-shadow:0 0 0 4px var(--void),0 0 13px var(--teal-soft);animation:pulse 2.6s ease-in-out infinite;}
+  .node:hover::before{background:var(--teal-bright);width:9px;height:9px;}
+  .node:focus-visible{outline:none;}
+  .node:focus-visible::before{background:var(--teal-bright);width:9px;height:9px;}
+  .n-name{font-family:var(--disp);font-weight:500;font-size:17px;letter-spacing:.01em;color:var(--text);transition:color var(--dur-fast) var(--ease-out);}
+  .node:hover .n-name,.node:focus-visible .n-name{color:var(--teal-bright);}
+  .n-meta{font-family:var(--mono);font-weight:300;font-size:11px;letter-spacing:.02em;color:var(--dim);margin-top:7px;}
+  .n-time{font-family:var(--mono);font-size:12px;letter-spacing:.04em;color:var(--read);justify-self:end;}
+
+  /* trust readout — one quiet diamond mark, no ✓ */
+  .trust{margin-top:24px;padding-top:15px;border-top:1px solid var(--border);font-family:var(--mono);font-weight:300;font-size:11px;letter-spacing:.05em;color:var(--dim);display:flex;align-items:center;gap:10px;}
+  .trust::before{content:"";width:5px;height:5px;background:var(--teal);transform:rotate(45deg);box-shadow:0 0 8px var(--teal-soft);}
+  .trust b{color:var(--read);font-weight:400;}
+
+  /* new project — sharp, hover draws a teal baseline */
+  .np{position:relative;width:100%;margin-top:22px;appearance:none;cursor:pointer;background:transparent;border:1px solid var(--border);border-radius:0;
+    font-family:var(--disp);font-weight:500;font-size:13px;letter-spacing:.2em;color:var(--read);padding:15px 0;overflow:hidden;
+    transition:color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out);}
+  .np:hover{color:var(--teal-bright);border-color:var(--teal-soft);}
+  .np::after{content:"";position:absolute;left:0;bottom:0;height:1px;width:100%;background:var(--teal);transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .np:hover::after{transform:scaleX(1);}
+
+  /* ───── states ───── */
+  .state{display:none;}
+  [data-state="populated"] .st-data,[data-state="single"] .st-single,[data-state="empty"] .st-empty,
+  [data-state="loading"] .st-loading,[data-state="error"] .st-error,[data-state="offline"] .st-offline{display:block;}
+
+  .empty{display:flex;flex-direction:column;align-items:flex-start;gap:12px;padding:14px 0 4px;}
+  .empty .dia{width:13px;height:13px;border:1px solid var(--ghost);transform:rotate(45deg);}
+  .empty .big{font-family:var(--disp);font-weight:500;font-size:16px;letter-spacing:.02em;color:var(--text);}
+  .empty .sub{font-family:var(--mono);font-weight:300;font-size:12px;letter-spacing:.03em;color:var(--dim);}
+
+  .loadline{font-family:var(--mono);font-weight:300;font-size:12px;letter-spacing:.06em;color:var(--teal);margin:2px 0 16px;}
+  .sk{position:relative;height:46px;padding-left:26px;display:flex;flex-direction:column;justify-content:center;gap:8px;}
+  .sk+.sk{border-top:1px solid var(--border);}
+  .sk::before{content:"";position:absolute;left:4px;top:50%;width:6px;height:6px;background:var(--border-bright);transform:translate(-50%,-50%) rotate(45deg);animation:skelpulse 1.5s ease-in-out infinite;}
+  .sk .b{height:11px;background:var(--panel);animation:skelpulse 1.5s ease-in-out infinite;}
+  .sk .b1{width:42%;}.sk .b2{width:66%;height:8px;}
+  @keyframes skelpulse{0%,100%{opacity:.4}50%{opacity:.8}}
+
+  .fail{display:inline-flex;align-items:center;gap:11px;background:var(--text);color:var(--void);font-family:var(--disp);font-weight:600;font-size:13px;letter-spacing:.04em;padding:13px 17px;}
+  .fail .d{width:6px;height:6px;background:var(--void);transform:rotate(45deg);}
+  .warn{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-size:13px;letter-spacing:.02em;color:var(--text);border-left:1px solid var(--teal-line);padding:6px 0 6px 15px;}
+  .warn .tri{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:10px solid var(--text);}
+
+  /* ───── dev state switcher ───── */
+  .switcher{position:fixed;top:16px;right:18px;z-index:5;display:flex;flex-direction:column;align-items:flex-end;gap:7px;opacity:0;animation:fadeIn 320ms var(--ease-out) 400ms forwards;}
+  .switcher .lbl{font-family:var(--mono);font-size:8px;letter-spacing:.26em;color:var(--ghost);}
+  .switcher .btns{display:flex;border:1px solid var(--border);}
+  .vbtn{appearance:none;background:none;border:0;border-right:1px solid var(--border);padding:7px 11px;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--read);cursor:pointer;transition:background var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);}
+  .vbtn:last-child{border-right:0;}
+  .vbtn:hover{color:var(--text);}
+  .vbtn.active{background:var(--teal-faint);color:var(--teal);}
+
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  @keyframes fadeIn{to{opacity:1;}}
+  @media (prefers-reduced-motion:reduce){
+    .logo line{animation:none;stroke-dashoffset:0;}
+    .stars::before,.stars::after,.sat-track{animation:none;}
+    .tagline,.coord,.panel,.switcher{animation:none;opacity:1;transform:none;}
+    .node.recent::before,.sk::before,.sk .b{animation:none;}
+  }
+</style>
+</head>
+<body>
+  <main class="stage" aria-label="ELAI project selection">
+    <div class="stars" aria-hidden="true"></div>
+    <div class="orbit" aria-hidden="true"><div class="ring"></div><div class="ring r2"></div><div class="ring r3"></div></div>
+    <div class="sat-track" aria-hidden="true"><div class="sat"></div></div>
+    <div class="sys-tag"><b>ELAI</b> · evidence engine</div>
+
+    <div class="switcher state-switcher" aria-label="State preview">
+      <span class="lbl">STATE</span>
+      <div class="btns" role="group">
+        <button class="vbtn active" data-state="populated" type="button">DATA</button>
+        <button class="vbtn" data-state="single" type="button">ONE</button>
+        <button class="vbtn" data-state="empty" type="button">EMPTY</button>
+        <button class="vbtn" data-state="loading" type="button">LOADING</button>
+        <button class="vbtn" data-state="error" type="button">ERROR</button>
+        <button class="vbtn" data-state="offline" type="button">OFFLINE</button>
+      </div>
+    </div>
+
+    <div class="boot-inner">
+      <div class="brand">
+        <div class="logo-wrap" id="logo" title="ELAI — click to replay" aria-label="ELAI">
+          <svg class="logo" viewBox="-3 -3 236 66" role="img" aria-label="ELAI logo">
+            <line pathLength="1" x1="0" y1="0" x2="0" y2="60"/><line pathLength="1" x1="0" y1="0" x2="34" y2="0"/>
+            <line pathLength="1" x1="0" y1="30" x2="25" y2="30"/><line pathLength="1" x1="0" y1="60" x2="34" y2="60"/>
+            <line pathLength="1" x1="76" y1="0" x2="76" y2="60"/><line pathLength="1" x1="76" y1="60" x2="106" y2="60"/>
+            <line pathLength="1" x1="150" y1="60" x2="170" y2="0"/><line pathLength="1" x1="170" y1="0" x2="190" y2="60"/>
+            <line pathLength="1" x1="162.7" y1="38" x2="177.3" y2="38"/><line pathLength="1" x1="228" y1="0" x2="228" y2="60"/>
+          </svg>
+        </div>
+        <p class="tagline">Evidence Logic for Autonomous Intelligence</p>
+        <div class="coord">SESSIONS CHARTED · <span class="v">6 SIGNED</span></div>
+      </div>
+
+      <section class="panel" aria-label="Session select">
+        <div class="modes" role="group" aria-label="Execution mode">
+          <button class="mode on" type="button">LOCAL</button>
+          <button class="mode" type="button">CLOUD</button>
+          <button class="mode" type="button">HYBRID</button>
+        </div>
+
+        <!-- ═══ DATA ═══ -->
+        <div class="state st-data">
+          <div class="sec">RECENT SESSIONS <span class="ct">· 6</span></div>
+          <div class="filter">
+            <input type="text" placeholder="filter sessions" aria-label="Filter projects" />
+          </div>
+          <div class="track">
+            <div class="axis">
+              <div class="node recent" role="button" tabindex="0" data-name=".elai_cc">
+                <div><div class="n-name">.elai_cc</div><div class="n-meta">rust + ts · 14 sessions · 1,284 symbols · main</div></div>
+                <div class="n-time">4m</div>
+              </div>
+              <div class="node" role="button" tabindex="0" data-name="liteGAME">
+                <div><div class="n-name">liteGAME</div><div class="n-meta">rust + unity · 9 sessions · 612 symbols · dev</div></div>
+                <div class="n-time">2h</div>
+              </div>
+              <div class="node" role="button" tabindex="0" data-name="apps_workflow">
+                <div><div class="n-name">apps_workflow</div><div class="n-meta">ts · 5 sessions · 340 symbols · main</div></div>
+                <div class="n-time">1d</div>
+              </div>
+              <div class="node" role="button" tabindex="0" data-name="regret">
+                <div><div class="n-name">regret</div><div class="n-meta">rust · 3 sessions · 188 symbols · main</div></div>
+                <div class="n-time">3d</div>
+              </div>
+              <div class="node" role="button" tabindex="0" data-name="sidecar-infra">
+                <div><div class="n-name">sidecar-infra</div><div class="n-meta">python · 7 sessions · 421 symbols · main</div></div>
+                <div class="n-time">5d</div>
+              </div>
+              <div class="node" role="button" tabindex="0" data-name="canvas-mcp">
+                <div><div class="n-name">canvas-mcp</div><div class="n-meta">ts · 2 sessions · 96 symbols · dev</div></div>
+                <div class="n-time">1w</div>
+              </div>
+            </div>
+          </div>
+          <div class="trust"><b>integrity verified</b> · 6 sessions signed · evidence-logic v1</div>
+          <button class="np" type="button">+ NEW PROJECT</button>
+        </div>
+
+        <!-- ═══ ONE ═══ -->
+        <div class="state st-single">
+          <div class="sec">RECENT SESSIONS <span class="ct">· 1</span></div>
+          <div class="axis">
+            <div class="node recent" role="button" tabindex="0" data-name=".elai_cc">
+              <div><div class="n-name">.elai_cc</div><div class="n-meta">rust + ts · 14 sessions · 1,284 symbols · main</div></div>
+              <div class="n-time">4m</div>
+            </div>
+          </div>
+          <div class="trust"><b>integrity verified</b> · 1 session signed · evidence-logic v1</div>
+          <button class="np" type="button">+ NEW PROJECT</button>
+        </div>
+
+        <!-- ═══ EMPTY ═══ -->
+        <div class="state st-empty">
+          <div class="sec">RECENT SESSIONS <span class="ct">· 0</span></div>
+          <div class="empty">
+            <span class="dia"></span>
+            <div class="big">No sessions charted</div>
+            <div class="sub">Open a folder to begin your first evidence run.</div>
+          </div>
+          <button class="np" type="button">+ NEW PROJECT</button>
+        </div>
+
+        <!-- ═══ LOADING ═══ -->
+        <div class="state st-loading" aria-busy="true">
+          <div class="sec">RECENT SESSIONS</div>
+          <p class="loadline">plotting sessions</p>
+          <div class="axis">
+            <div class="sk"><div class="b b1"></div><div class="b b2"></div></div>
+            <div class="sk"><div class="b b1"></div><div class="b b2"></div></div>
+            <div class="sk"><div class="b b1"></div><div class="b b2"></div></div>
+          </div>
+        </div>
+
+        <!-- ═══ ERROR (mono inversion) ═══ -->
+        <div class="state st-error">
+          <div class="sec">RECENT SESSIONS</div>
+          <div class="fail"><span class="d"></span> Session store unreadable</div>
+          <button class="np" type="button">RETRY</button>
+        </div>
+
+        <!-- ═══ OFFLINE ═══ -->
+        <div class="state st-offline">
+          <div class="sec">RECENT SESSIONS</div>
+          <div class="warn"><span class="tri"></span><span>Engine link down — the local sidecar is unreachable.</span></div>
+          <button class="np" type="button">RECONNECT</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const root=document.documentElement;
+
+    // state preview switcher
+    function setState(s){root.setAttribute('data-state',s);
+      document.querySelectorAll('.state-switcher .vbtn').forEach(b=>b.classList.toggle('active',b.dataset.state===s));}
+    document.querySelectorAll('.state-switcher .vbtn').forEach(b=>b.addEventListener('click',()=>setState(b.dataset.state)));
+    setState('populated');
+
+    // logo replay
+    document.getElementById('logo').addEventListener('click',()=>{
+      document.querySelectorAll('.logo line').forEach(ln=>{ln.style.animation='none';void ln.getBoundingClientRect();ln.style.animation='';});});
+
+    // runtime mode (underline-draw)
+    const modes=[...document.querySelectorAll('.mode')];
+    modes.forEach(b=>b.addEventListener('click',()=>modes.forEach(x=>x.classList.toggle('on',x===b))));
+    function activeMode(){const on=document.querySelector('.mode.on');return on?on.textContent.trim():'LOCAL';}
+
+    // open a session
+    function openProject(name){sessionStorage.setItem('elai.project',name||'');sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?'+new URLSearchParams({project:name||'',mode:activeMode()});}
+    document.querySelectorAll('[data-name]').forEach(row=>{const name=row.getAttribute('data-name');
+      row.addEventListener('click',()=>openProject(name));row.addEventListener('keydown',e=>{if(e.key==='Enter')openProject(name);});});
+
+    // new project / retry
+    document.querySelectorAll('.st-data .np, .st-single .np, .st-empty .np').forEach(b=>b.addEventListener('click',()=>{sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?new=1&mode='+encodeURIComponent(activeMode());}));
+    document.querySelectorAll('.st-error .np, .st-offline .np').forEach(b=>b.addEventListener('click',()=>setState('populated')));
+
+    // live filter (DATA; real impl renders it only when >3 sessions)
+    const search=document.querySelector('.st-data .filter input');
+    if(search) search.addEventListener('input',()=>{const q=search.value.trim().toLowerCase();
+      document.querySelectorAll('.st-data .node').forEach(n=>{n.style.display=n.getAttribute('data-name').toLowerCase().includes(q)?'':'none';});});
+  </script>
+</body>
+</html>

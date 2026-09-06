@@ -1,0 +1,48 @@
+# E-12 Tier-B framework manifest: T3 (create-t3-app) — Next.js + tRPC + Prisma + NextAuth
+#
+# Anti-slopsquatting verification (CLAUDE.md HARD RULE):
+#   * canonical repo: https://github.com/t3-oss/create-t3-app (org
+#     "t3-oss" verified via WebFetch 2026-05-31)
+#   * canonical docs: https://create.t3.gg / https://t3.gg
+#   * npm install surface: `npm create t3-app@latest` (registry metadata
+#     at registry.npmjs.org/create-t3-app confirms `latest` dist-tag
+#     = 7.40.0 with license MIT).
+#   * canonical version tag returned by GitHub Releases on 2026-05-31:
+#     7.40.0 (released 2024-11-05 per github.com/t3-oss/create-t3-app/releases/latest;
+#     within 24-month freshness window per CLAUDE.md anti-slopsquatting
+#     protocol — note that T3 is a scaffold project where the release
+#     cadence is intentionally slow; the per-stack components in the
+#     generated package.json carry their own version pins and are
+#     checked by `npm_audit` at deploy time).
+#   * license: MIT (verified via registry.npmjs.org/create-t3-app 2026-05-31).
+#   * T3 is a scaffold, not a runtime — the manifest pins the scaffold
+#     version. Per-stack components (Next.js, tRPC, Prisma, NextAuth)
+#     carry their own version pins inside the generated package.json
+#     and are checked by `npm_audit` at deploy time.
+#
+# VERIFIED 2026-05-31 via github.com/t3-oss/create-t3-app/releases/latest +
+# registry.npmjs.org/create-t3-app per s-22600 Tranche A ITEM 5
+# anti-slopsquat sweep.
+
+name = "t3"
+version_pin = "7.40.0"
+language = "typescript"
+package_manager = "pnpm"
+lint_config_path = "biome.json"
+test_runner = "vitest"
+
+# T3 ships a SaasDashboard archetype with Next.js App Router + auth +
+# data layer; the manifest mirrors nextjs15 except adds sentry_check
+# (T3's NextAuth integration commonly exports a Sentry trace surface).
+# Order matters — runners dispatch in this sequence.
+security_checks = [
+    "secrets_scan",
+    "trufflehog_scan",
+    "owasp_static",
+    "npm_audit",
+    "biome",
+    "lighthouse",
+    "otel_check",
+    "sentry_check",
+    "lsof_port",
+]

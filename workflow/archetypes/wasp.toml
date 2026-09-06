@@ -1,0 +1,42 @@
+# E-12 Tier-B framework manifest: Wasp (wasp-lang) — full-stack scaffold
+#
+# Anti-slopsquatting verification (CLAUDE.md HARD RULE):
+#   * canonical repo: https://github.com/wasp-lang/wasp (org "wasp-lang" verified
+#     via WebFetch 2026-05-31)
+#   * canonical docs: https://wasp.sh / https://wasp-lang.dev
+#   * install surface: `wasp` CLI installer (the project ships a native
+#     CLI binary, NOT an npm package; per-app scaffolds are emitted by the
+#     CLI but the CLI itself is the install surface)
+#   * canonical version tag returned by GitHub Releases on 2026-05-31:
+#     v0.23.0 (released 2025-04-15 per github.com/wasp-lang/wasp/releases/latest;
+#     117 commits to main since this release, indicating active maintenance;
+#     within 24-month freshness window per CLAUDE.md anti-slopsquatting protocol).
+#   * license: MIT (verified via github.com/wasp-lang/wasp README badge 2026-05-31).
+#
+# VERIFIED 2026-05-31 via github.com/wasp-lang/wasp/releases/latest +
+# github.com/wasp-lang/wasp README (license badge) per s-22600 Tranche A
+# ITEM 5 anti-slopsquat sweep.
+
+name = "wasp"
+version_pin = "v0.23.0"
+language = "typescript"
+package_manager = "npm"
+lint_config_path = "biome.json"
+test_runner = "vitest"
+
+# Subset of the 15 universal SecurityCheckId values (per
+# crates/orchestrator/src/framework_profile/registry.rs:67-81). Wasp ships
+# a JS/TS surface so npm_audit + biome + lighthouse + sentry/otel +
+# secrets-scan family apply. owasp_static covers the Node entry layer.
+# Order matters — runners dispatch in this sequence.
+security_checks = [
+    "secrets_scan",
+    "trufflehog_scan",
+    "owasp_static",
+    "npm_audit",
+    "biome",
+    "lighthouse",
+    "otel_check",
+    "sentry_check",
+    "lsof_port",
+]

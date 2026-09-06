@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en" data-version="1">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — project selection (mock · strip / table)</title>
+<!--
+  SPLIT layout, logo left. Recent panel pushed further right (off the logo). Two card variations:
+    01 STRIP — name + divider-separated stat cells (preferred)
+    02 TABLE — header row + aligned columns, columns CENTER-aligned (short values sit under their headers)
+  Mode buttons = square with rounded corners (no full pill). Time compact (4m/2h/1d), left in strip / centered in table.
+  Centered bloom bg, white stars, white teal-lit logo. Grounding: DESIGN.md · design-taste.md · elai-mockup.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --void:#030404; --haze:#040d11; --panel:#0a1012; --raised:#161c1b;
+    --text:#f2f5f4; --read:#c9cecb; --ghost:#3a423f;
+    --border:rgba(255,255,255,.12); --border-bright:rgba(255,255,255,.20);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.40); --teal-ghost:rgba(43,187,164,.10);
+    --font:'Chakra Petch',system-ui,sans-serif;
+    --dur-fast:120ms; --ease-out:cubic-bezier(0.16,1,0.3,1); --ease-draw:cubic-bezier(0.3,0,0.2,1);
+    --r-sm:4px; --r-md:6px;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;font-family:var(--font);color:var(--text);background:var(--void);-webkit-font-smoothing:antialiased;overflow:hidden;}
+
+  .stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:
+      radial-gradient(ellipse 64% 46% at 50% 32%,
+        rgba(43,187,164,.13) 0%, rgba(43,187,164,.06) 32%, rgba(43,187,164,.018) 52%, rgba(43,187,164,0) 68%),
+      radial-gradient(ellipse 138% 120% at 50% 34%,
+        rgba(4,13,17,1) 0%,rgba(4,13,17,.94) 14%,rgba(4,13,17,.84) 28%,rgba(4,13,17,.70) 40%,
+        rgba(4,13,17,.54) 52%,rgba(4,13,17,.38) 64%,rgba(4,13,17,.24) 75%,rgba(4,13,17,.12) 85%,
+        rgba(4,13,17,.04) 93%,rgba(4,13,17,0) 100%),
+      var(--void);
+    overflow:hidden;}
+  .stage::before{content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:
+      radial-gradient(1.5px 1.5px at 8% 16%,rgba(255,255,255,.60),transparent 64%),
+      radial-gradient(1.5px 1.5px at 19% 61%,rgba(255,255,255,.50),transparent 64%),
+      radial-gradient(1.5px 1.5px at 34% 82%,rgba(255,255,255,.45),transparent 64%),
+      radial-gradient(1.5px 1.5px at 43% 11%,rgba(255,255,255,.58),transparent 64%),
+      radial-gradient(1.5px 1.5px at 57% 73%,rgba(255,255,255,.50),transparent 64%),
+      radial-gradient(1.5px 1.5px at 71% 55%,rgba(255,255,255,.52),transparent 64%),
+      radial-gradient(1.5px 1.5px at 84% 34%,rgba(255,255,255,.60),transparent 64%),
+      radial-gradient(1.5px 1.5px at 91% 67%,rgba(255,255,255,.48),transparent 64%),
+      radial-gradient(1.5px 1.5px at 96% 14%,rgba(255,255,255,.50),transparent 64%),
+      radial-gradient(1.5px 1.5px at 14% 92%,rgba(255,255,255,.44),transparent 64%);}
+  .stage::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:
+      radial-gradient(3px 3px at 12% 30%,rgba(255,255,255,1),transparent 58%),
+      radial-gradient(2.5px 2.5px at 31% 78%,rgba(255,255,255,.92),transparent 58%),
+      radial-gradient(3px 3px at 68% 18%,rgba(255,255,255,.98),transparent 58%),
+      radial-gradient(2.5px 2.5px at 82% 58%,rgba(255,255,255,.92),transparent 58%),
+      radial-gradient(3.5px 3.5px at 47% 89%,rgba(255,255,255,.95),transparent 58%),
+      radial-gradient(3px 3px at 6% 48%,rgba(255,255,255,.95),transparent 58%);}
+
+  /* split — logo left, recent panel pushed further right (bigger gap) */
+  .boot-inner{position:relative;z-index:1;width:100%;max-width:1240px;margin:0 auto;padding:0 48px 0 44px;
+    display:grid;grid-template-columns:0.7fr 1.3fr;gap:118px;align-items:center;}
+  .brand-group{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:18px;}
+  .logo-wrap{cursor:pointer;line-height:0;filter:drop-shadow(0 0 30px rgba(43,187,164,.34)) drop-shadow(0 0 8px rgba(43,187,164,.26));}
+  .logo{width:372px;max-width:100%;height:auto;display:block;}
+  .logo line{fill:none;stroke:var(--text);stroke-width:2.4;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1400ms var(--ease-draw) forwards;}
+  .logo line:nth-child(1){animation-delay:300ms}.logo line:nth-child(2){animation-delay:640ms}.logo line:nth-child(3){animation-delay:980ms}
+  .logo line:nth-child(4){animation-delay:1320ms}.logo line:nth-child(5){animation-delay:1660ms}.logo line:nth-child(6){animation-delay:2000ms}
+  .logo line:nth-child(7){animation-delay:2340ms}.logo line:nth-child(8){animation-delay:2680ms}.logo line:nth-child(9){animation-delay:3020ms}.logo line:nth-child(10){animation-delay:3360ms}
+  @keyframes draw{to{stroke-dashoffset:0;}}
+  .tagline{margin:0;padding-left:2px;font-size:14px;font-weight:400;letter-spacing:.10em;color:var(--read);opacity:0;animation:fadeIn 320ms var(--ease-out) 700ms forwards;}
+
+  .recent-group{width:max-content;transform:translateX(168px);}
+  .var{display:none;}
+  [data-version="1"] .v1,[data-version="2"] .v2{display:block;}
+  .recent-label{display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:.22em;color:var(--read);margin-bottom:12px;}
+  .recent-label::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--teal);}
+  .k{font-size:8.5px;letter-spacing:.16em;color:var(--read);}
+  .new-project{appearance:none;width:100%;cursor:pointer;font-family:var(--font);background:transparent;border:1px solid var(--border);border-radius:var(--r-md);
+    padding:13px 0;font-size:13px;font-weight:500;letter-spacing:.14em;color:var(--text);margin-top:9px;transition:background var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out);}
+  .new-project:hover{background:var(--teal-ghost);border-color:var(--teal-soft);color:var(--teal-bright);}
+  .recent{display:flex;flex-direction:column;gap:8px;}
+
+  /* mode buttons — square with rounded corners (NOT a full pill), centered above */
+  .mode-row{display:flex;width:max-content;margin:0 auto 22px;border:1px solid var(--border-bright);border-radius:var(--r-md);overflow:hidden;}
+  .mode-seg{appearance:none;background:transparent;border:0;border-right:1px solid var(--border);cursor:pointer;font-family:var(--font);
+    font-size:14px;font-weight:500;letter-spacing:.14em;color:var(--read);padding:10px 24px;transition:background var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);}
+  .mode-seg:last-child{border-right:0;}
+  .mode-seg:hover{color:var(--text);background:rgba(255,255,255,.05);}
+  .v1 .mode-seg.on{color:var(--teal-bright);background:var(--teal-ghost);}
+  .v2 .mode-seg.on{color:var(--text);background:var(--teal-deep);}   /* filled active, still square-round */
+
+  /* ════ V1 · STRIP ════ */
+  .card-strip{border:1px solid var(--border);border-radius:var(--r-md);padding:14px 18px;display:flex;flex-direction:column;gap:13px;cursor:pointer;
+    transition:border-color var(--dur-fast) var(--ease-out),background var(--dur-fast) var(--ease-out);}
+  .card-strip:hover{border-color:var(--teal-soft);background:var(--raised);}
+  .cs-name{font-size:15px;font-weight:600;color:var(--text);white-space:nowrap;}
+  .cs-stats{display:grid;grid-template-columns:130px 122px 84px 86px 78px 60px;}
+  .cs-stats .cell{display:flex;flex-direction:column;gap:4px;padding:0 16px;}
+  .cs-stats .cell:first-child{padding-left:0;}
+  .cs-stats .cell:nth-child(n+3){align-items:center;text-align:center;}
+  .cs-stats .cell:not(:last-child){border-right:1px solid var(--border);}
+  .cs-stats .v{font-size:13px;color:var(--text);}
+
+  /* ════ V2 · TABLE (centered columns) ════ */
+  .table{border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;}
+  .thead,.trow{display:grid;grid-template-columns:1.5fr 1.1fr 0.9fr 1fr 0.9fr 0.8fr;align-items:center;gap:14px;padding:12px 18px;}
+  .thead{background:var(--panel);border-bottom:1px solid var(--border);}
+  .thead span{font-size:8.5px;letter-spacing:.16em;color:var(--read);text-align:center;}
+  .trow{cursor:pointer;border-bottom:1px solid var(--border);transition:background var(--dur-fast) var(--ease-out);}
+  .trow:last-child{border-bottom:0;}
+  .trow:hover{background:var(--raised);}
+  .trow span{font-size:13px;color:var(--read);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .trow .tn{font-weight:600;color:var(--text);}
+
+  /* switcher */
+  .switcher{position:fixed;top:16px;right:18px;z-index:5;display:flex;flex-direction:column;align-items:flex-end;gap:7px;opacity:0;animation:fadeIn 320ms var(--ease-out) 400ms forwards;}
+  .switcher .lbl{font-size:8px;letter-spacing:.26em;color:var(--ghost);}
+  .switcher .btns{display:flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;}
+  .vbtn{appearance:none;background:none;border:0;border-right:1px solid var(--border);padding:7px 13px;font-family:var(--font);font-size:10px;letter-spacing:.1em;color:var(--read);cursor:pointer;transition:background var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);}
+  .vbtn:last-child{border-right:0;}
+  .vbtn:hover{color:var(--text);}
+  .vbtn.active{background:var(--teal-ghost);color:var(--teal);}
+
+  @keyframes fadeIn{to{opacity:1;}}
+  @media (prefers-reduced-motion:reduce){.logo line{animation:none;stroke-dashoffset:0;}.tagline,.switcher{animation:none;opacity:1;}}
+</style>
+</head>
+<body>
+  <main class="stage" aria-label="ELAI project selection">
+
+    <div class="switcher" aria-label="Card variation">
+      <span class="lbl">CARD</span>
+      <div class="btns" role="group">
+        <button class="vbtn active" data-set="1" type="button">01 STRIP</button>
+        <button class="vbtn" data-set="2" type="button">02 TABLE</button>
+      </div>
+    </div>
+
+    <div class="boot-inner">
+      <div class="brand-group">
+        <div class="logo-wrap" id="logo" title="ELAI — click to replay" aria-label="ELAI">
+          <svg class="logo" viewBox="-3 -3 236 66" role="img" aria-label="ELAI logo">
+            <line pathLength="1" x1="0" y1="0" x2="0" y2="60"/><line pathLength="1" x1="0" y1="0" x2="34" y2="0"/>
+            <line pathLength="1" x1="0" y1="30" x2="25" y2="30"/><line pathLength="1" x1="0" y1="60" x2="34" y2="60"/>
+            <line pathLength="1" x1="76" y1="0" x2="76" y2="60"/><line pathLength="1" x1="76" y1="60" x2="106" y2="60"/>
+            <line pathLength="1" x1="150" y1="60" x2="170" y2="0"/><line pathLength="1" x1="170" y1="0" x2="190" y2="60"/>
+            <line pathLength="1" x1="162.7" y1="38" x2="177.3" y2="38"/><line pathLength="1" x1="228" y1="0" x2="228" y2="60"/>
+          </svg>
+        </div>
+        <p class="tagline">Evidence Logic for Autonomous Intelligence</p>
+      </div>
+
+      <div class="recent-group">
+
+        <!-- ═══ V1 · STRIP ═══ -->
+        <section class="var v1">
+          <div class="mode-row" role="group" aria-label="Execution mode">
+            <button class="mode-seg on" type="button">LOCAL</button><button class="mode-seg" type="button">CLOUD</button><button class="mode-seg" type="button">HYBRID</button>
+          </div>
+          <div class="recent-label">RECENT PROJECTS</div>
+          <div class="recent">
+            <div class="card-strip" role="button" tabindex="0" data-name=".elai_cc">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">.elai_cc</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">rust + ts</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">14</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">1,284</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">main</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">4m</span></div>
+              </div>
+            </div>
+            <div class="card-strip" role="button" tabindex="0" data-name="liteGAME">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">liteGAME</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">rust + unity</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">9</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">612</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">dev</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">2h</span></div>
+              </div>
+            </div>
+            <div class="card-strip" role="button" tabindex="0" data-name="apps_workflow">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">apps_workflow</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">ts</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">5</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">340</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">main</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">1d</span></div>
+              </div>
+            </div>
+          </div>
+          <button class="new-project" type="button">+ NEW PROJECT</button>
+        </section>
+
+        <!-- ═══ V2 · TABLE ═══ -->
+        <section class="var v2">
+          <div class="mode-row" role="group" aria-label="Execution mode">
+            <button class="mode-seg on" type="button">LOCAL</button><button class="mode-seg" type="button">CLOUD</button><button class="mode-seg" type="button">HYBRID</button>
+          </div>
+          <div class="recent-label">RECENT PROJECTS</div>
+          <div class="table">
+            <div class="thead"><span>NAME</span><span>STACK</span><span>SESSIONS</span><span>SYMBOLS</span><span>BRANCH</span><span>UPDATED</span></div>
+            <div class="trow" role="button" tabindex="0" data-name=".elai_cc"><span class="tn">.elai_cc</span><span>rust + ts</span><span>14</span><span>1,284</span><span>main</span><span>4m</span></div>
+            <div class="trow" role="button" tabindex="0" data-name="liteGAME"><span class="tn">liteGAME</span><span>rust + unity</span><span>9</span><span>612</span><span>dev</span><span>2h</span></div>
+            <div class="trow" role="button" tabindex="0" data-name="apps_workflow"><span class="tn">apps_workflow</span><span>ts</span><span>5</span><span>340</span><span>main</span><span>1d</span></div>
+          </div>
+          <button class="new-project" type="button">+ NEW PROJECT</button>
+        </section>
+
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const root=document.documentElement;
+    const saved=sessionStorage.getItem('elai.version'); if(saved) setVersion(saved);
+    function setVersion(v){root.setAttribute('data-version',v);sessionStorage.setItem('elai.version',v);
+      document.querySelectorAll('.vbtn').forEach(b=>b.classList.toggle('active',b.dataset.set===v));}
+    document.querySelectorAll('.vbtn').forEach(b=>b.addEventListener('click',()=>setVersion(b.dataset.set)));
+
+    document.getElementById('logo').addEventListener('click',()=>{
+      document.querySelectorAll('.logo line').forEach(ln=>{ln.style.animation='none';void ln.getBoundingClientRect();ln.style.animation='';});});
+
+    document.querySelectorAll('.mode-row').forEach(group=>{
+      const btns=[...group.querySelectorAll('button')];
+      btns.forEach(b=>b.addEventListener('click',()=>btns.forEach(x=>x.classList.toggle('on',x===b))));
+    });
+    function activeMode(){const on=document.querySelector('.v'+root.getAttribute('data-version')+' .mode-seg.on');return on?on.textContent.trim():'LOCAL';}
+    function openProject(name){sessionStorage.setItem('elai.project',name||'');sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?'+new URLSearchParams({project:name||'',mode:activeMode()});}
+    document.querySelectorAll('[data-name]').forEach(row=>{const name=row.getAttribute('data-name');
+      row.addEventListener('click',()=>openProject(name));row.addEventListener('keydown',e=>{if(e.key==='Enter')openProject(name);});});
+    document.querySelectorAll('.new-project').forEach(b=>b.addEventListener('click',()=>{sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?new=1&mode='+encodeURIComponent(activeMode());}));
+  </script>
+</body>
+</html>

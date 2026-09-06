@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en" data-ground="slate">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — project selection (GITS)</title>
+<!-- GITS filmic multi-tone palette, non-black ground. Locked: white mono-inversion for
+     errors (never red/yellow). No teal, no scanlines. Fonts via Google CDN (standalone). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --cyan:#63aab2; --cyan-hi:#82c8d0; --sage:#93a884; --slate:#6d8ca2; --mauve:#9585a8; --amber:#c99a5b;
+    --invert-bg:#e7ede9; --invert-fg:#121e1b;
+    --disp:'Chakra Petch',sans-serif; --ui:'IBM Plex Sans',system-ui,sans-serif; --data:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  html[data-ground="slate"]{--ground:#19221f;--panel:#212b28;--raised:#2b3630;--sink:#131a18;--text:#e2e8e4;--read:#a7b5af;--dim:#6c7a74;--ghost:#3a453f;--line:rgba(224,234,229,.14);--line2:rgba(224,234,229,.07)}
+  html[data-ground="lavender"]{--ground:#272531;--panel:#302d3b;--raised:#3a3749;--sink:#1e1c26;--text:#e7e4ee;--read:#b0abbd;--dim:#77728b;--ghost:#453f54;--line:rgba(232,228,240,.15);--line2:rgba(232,228,240,.07)}
+  html[data-ground="deep"]{--ground:#0f1413;--panel:#161d1b;--raised:#1f2724;--sink:#0a0f0e;--text:#e2e8e4;--read:#a7b5af;--dim:#6c7a74;--ghost:#333d39;--line:rgba(224,234,229,.13);--line2:rgba(224,234,229,.06)}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--ground);color:var(--text);font-family:var(--ui);font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased;
+    min-height:100vh;display:flex;flex-direction:column;
+    background-image:radial-gradient(130% 80% at 50% -8%, rgba(255,255,255,.035), transparent 55%)}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  button{font-family:inherit}
+
+  /* ---- window chrome ---- */
+  .chrome{display:flex;align-items:center;padding:14px 22px;border-bottom:1px solid var(--line)}
+  .chrome .wm{font-family:var(--disp);font-weight:700;letter-spacing:.36em;font-size:15px}
+  .chrome .wm .sub{font-family:var(--ui);font-weight:400;letter-spacing:.02em;font-size:11px;color:var(--dim);margin-left:14px}
+  .winctl{margin-left:auto;display:flex;gap:8px}
+  .winctl b{width:26px;height:24px;border:1px solid var(--line);display:grid;place-items:center;color:var(--dim);font-size:11px;cursor:pointer;border-radius:2px}
+  .winctl b:hover{color:var(--text)}
+  .winctl b.x:hover{background:var(--invert-bg);color:var(--invert-fg);border-color:var(--invert-bg)}
+  .grounds{display:flex;border:1px solid var(--line);margin-right:14px;border-radius:2px;overflow:hidden}
+  .grounds button{background:transparent;color:var(--dim);border:0;border-left:1px solid var(--line);padding:5px 11px;font-size:10.5px;cursor:pointer}
+  .grounds button:first-child{border-left:0}
+  .grounds button[aria-pressed="true"]{background:var(--raised);color:var(--text)}
+
+  /* ---- centered content column ---- */
+  .wrap{flex:1;display:flex;justify-content:center;padding:40px 22px 30px}
+  .col{width:100%;max-width:760px}
+
+  /* mode selector — a first-class decision on this screen */
+  .mode{display:flex;align-items:center;gap:16px;margin-bottom:30px;flex-wrap:wrap}
+  .modeseg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden}
+  .modeseg button{background:transparent;color:var(--dim);border:0;border-left:1px solid var(--line);padding:9px 20px;font-family:var(--disp);font-size:12px;letter-spacing:.14em;cursor:pointer}
+  .modeseg button:first-child{border-left:0}
+  .modeseg button[aria-pressed="true"]{background:color-mix(in oklab,var(--cyan) 16%,transparent);color:var(--cyan-hi)}
+  .modedesc{font-family:var(--data);font-size:11.5px;color:var(--dim)}
+  .modedesc b{color:var(--read);font-weight:400}
+
+  /* command / open bar — the primary action, keyboard-first */
+  .openbar{display:flex;align-items:center;gap:12px;background:var(--sink);border:1px solid var(--line);border-radius:3px;padding:13px 16px;margin-bottom:34px}
+  .openbar:focus-within{border-color:color-mix(in oklab,var(--cyan) 55%,var(--line))}
+  .openbar .kbd{font-family:var(--data);font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:3px;padding:2px 7px}
+  .openbar input{flex:1;background:transparent;border:0;outline:0;color:var(--text);font-family:var(--ui);font-size:14px}
+  .openbar input::placeholder{color:var(--dim)}
+
+  /* section head */
+  .sh{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px}
+  .sh .lbl{font-family:var(--disp);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)}
+  .newbtn{background:transparent;border:1px solid var(--line);border-radius:3px;color:var(--read);padding:7px 13px;font-size:12px;cursor:pointer}
+  .newbtn:hover{background:var(--raised);color:var(--text);border-color:color-mix(in oklab,var(--cyan) 40%,var(--line))}
+
+  /* ---- project CARDS (not a table row) ---- */
+  .cards{display:flex;flex-direction:column;gap:10px}
+  .card{display:grid;grid-template-columns:1fr auto;gap:6px 18px;align-items:center;
+    background:var(--panel);border:1px solid var(--line);border-left:2px solid transparent;border-radius:3px;
+    padding:15px 18px;cursor:pointer;transition:background .12s ease,border-color .12s ease}
+  .card:hover{background:var(--raised)}
+  .card.active{border-left-color:var(--cyan);background:color-mix(in oklab,var(--cyan) 7%,var(--panel))}
+  .card .name{font-family:var(--disp);font-weight:600;font-size:16px;color:var(--text);letter-spacing:.01em}
+  .card.active .name{color:var(--cyan-hi)}
+  .card .path{grid-column:1;font-family:var(--data);font-size:11.5px;color:var(--dim);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .meta{grid-column:1;display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center}
+  .chip{font-family:var(--data);font-size:10.5px;color:var(--read);border:1px solid var(--line);border-radius:2px;padding:1px 7px}
+  .chip.src{color:var(--mauve);border-color:color-mix(in oklab,var(--mauve) 45%,transparent)}
+  .meta .when{font-family:var(--data);font-size:11px;color:var(--dim);margin-left:2px}
+  .stat{grid-row:1/3;grid-column:2;justify-self:end;align-self:center;text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+  .run{display:flex;align-items:center;gap:8px;color:var(--cyan);font-size:12px}
+  .run .bar{width:3px;height:13px;background:var(--cyan);border-radius:1px;animation:br 2.6s ease-in-out infinite}
+  @keyframes br{0%,100%{opacity:1}50%{opacity:.5}}
+  .pass{color:var(--sage);font-size:11.5px;letter-spacing:.04em}
+  .failchip{background:var(--invert-bg);color:var(--invert-fg);font-family:var(--data);font-weight:600;font-size:10px;padding:2px 7px;border-radius:2px}
+  .cnt{font-family:var(--data);font-size:11px;color:var(--dim)}
+
+  /* ---- status bar ---- */
+  .statusbar{border-top:1px solid var(--line);padding:8px 22px;display:flex;gap:18px;font-family:var(--data);font-size:11px;color:var(--dim);flex-wrap:wrap}
+  .statusbar .ok{color:var(--sage)}
+  .statusbar .r{margin-left:auto}
+
+  /* ---- state-set reference strip ---- */
+  .states{max-width:760px;margin:44px auto 0;padding:0 22px}
+  .states .lbl{font-family:var(--disp);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+  .stgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+  @media (max-width:640px){.stgrid{grid-template-columns:1fr}}
+  .st{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:16px;min-height:118px}
+  .st .cap{font-family:var(--data);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:12px}
+  .st .focal{color:var(--read);font-size:13px}
+  .st .newmini{margin-top:10px;display:inline-block;border:1px dashed var(--line);border-radius:3px;color:var(--read);padding:8px 14px;font-size:12.5px}
+  .sk{height:11px;background:var(--raised);border-radius:2px;margin-bottom:9px}
+  .sk.w1{width:60%}.sk.w2{width:88%}.sk.w3{width:44%}
+  .sk.pulse{animation:sk 1.4s ease-in-out infinite}
+  @keyframes sk{0%,100%{opacity:1}50%{opacity:.4}}
+  .st .err{background:var(--invert-bg);color:var(--invert-fg);font-family:var(--data);font-weight:600;font-size:11px;padding:3px 9px;border-radius:2px;display:inline-block;margin-bottom:10px}
+  .st .warn{color:var(--amber);font-size:13px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .st .warn .bar{width:3px;height:14px;background:var(--amber);border-radius:1px}
+  .st .retry{border:1px solid var(--line);border-radius:3px;color:var(--read);padding:6px 12px;font-size:12px;background:transparent;cursor:pointer;margin-top:4px}
+  .st .msg{color:var(--dim);font-size:12px;margin-top:4px}
+</style>
+</head>
+<body>
+  <div class="chrome">
+    <span class="wm">ELAI<span class="sub">session select</span></span>
+    <div class="grounds" role="group" aria-label="ground">
+      <button aria-pressed="true"  onclick="setG('slate',this)">slate-green</button>
+      <button aria-pressed="false" onclick="setG('lavender',this)">lavender</button>
+      <button aria-pressed="false" onclick="setG('deep',this)">deep</button>
+    </div>
+    <div class="winctl"><b>&#8211;</b><b>&#9634;</b><b class="x">&#10005;</b></div>
+  </div>
+
+  <div class="wrap">
+    <div class="col">
+
+      <!-- runtime mode -->
+      <div class="mode">
+        <div class="modeseg" role="group" aria-label="runtime mode">
+          <button onclick="setM(this,'everything on your box, no cloud calls')">LOCAL</button>
+          <button onclick="setM(this,'planning + execution on the remote model')">CLOUD</button>
+          <button aria-pressed="true" onclick="setM(this,'cloud planning, local execution')">HYBRID</button>
+        </div>
+        <span class="modedesc" id="md"><b>HYBRID</b> · cloud planning, local execution · the default</span>
+      </div>
+
+      <!-- open / command bar -->
+      <label class="openbar">
+        <span class="kbd">&#8984;K</span>
+        <input placeholder="open a project, paste a path, or jump to a session…" />
+      </label>
+
+      <!-- recent projects -->
+      <div class="sh">
+        <span class="lbl">Recent projects</span>
+        <button class="newbtn">+ new project</button>
+      </div>
+
+      <div class="cards">
+        <div class="card active">
+          <div class="name">elai-core</div>
+          <div class="path">/workspace/ELAI\.elai_cc</div>
+          <div class="meta"><span class="chip">rust</span><span class="chip src">claude-only</span><span class="when">updated 4m ago</span></div>
+          <div class="stat"><span class="run"><span class="bar"></span>2 running</span><span class="cnt">34 sessions</span></div>
+        </div>
+
+        <div class="card">
+          <div class="name">teikoku</div>
+          <div class="path">F:\central-workflow\.teikoku</div>
+          <div class="meta"><span class="chip">rust · svelte</span><span class="chip src">free-api</span><span class="when">updated 2h ago</span></div>
+          <div class="stat"><span class="pass">gate pass</span><span class="cnt">18 sessions</span></div>
+        </div>
+
+        <div class="card">
+          <div class="name">litegame</div>
+          <div class="path">D:\.liteGAME_workflow</div>
+          <div class="meta"><span class="chip">unity</span><span class="chip src">devin</span><span class="when">updated yesterday</span></div>
+          <div class="stat"><span class="failchip">1 FAIL</span><span class="cnt">27 sessions</span></div>
+        </div>
+
+        <div class="card">
+          <div class="name">dashboard-v2</div>
+          <div class="path">/workspace/ELAI\.elai_cc\crates\dashboard-v2</div>
+          <div class="meta"><span class="chip">svelte</span><span class="chip src">claude-only</span><span class="when">updated 3d ago</span></div>
+          <div class="stat"><span class="cnt">9 sessions</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span>4 projects</span>
+    <span>HYBRID</span>
+    <span class="ok">sidecar 192.0.2.10 · connected</span>
+    <span class="ok">searxng ready</span>
+    <span class="r">v0.1 · elai</span>
+  </div>
+
+  <!-- the state set (this screen is the worked reference for state coverage) -->
+  <div class="states">
+    <div class="lbl">States (design coverage)</div>
+    <div class="stgrid">
+      <div class="st">
+        <div class="cap">Empty · first run</div>
+        <div class="focal">No projects yet.</div>
+        <span class="newmini">+ open your first project</span>
+      </div>
+      <div class="st">
+        <div class="cap">Loading</div>
+        <div class="sk w2 pulse"></div><div class="sk w1 pulse"></div><div class="sk w3 pulse"></div>
+      </div>
+      <div class="st">
+        <div class="cap">Error · store unreadable</div>
+        <span class="err">READ FAILED</span>
+        <div class="msg">couldn't read the session store</div>
+        <button class="retry">retry</button>
+      </div>
+      <div class="st">
+        <div class="cap">Offline · sidecar down</div>
+        <div class="warn"><span class="bar"></span>sidecar unreachable</div>
+        <div class="msg">local + cloud planning still work</div>
+        <button class="retry">reconnect</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function setG(g,btn){document.documentElement.setAttribute('data-ground',g);
+      document.querySelectorAll('.grounds button').forEach(b=>b.setAttribute('aria-pressed',b===btn?'true':'false'))}
+    function setM(btn,desc){document.querySelectorAll('.modeseg button').forEach(b=>b.removeAttribute('aria-pressed'));
+      btn.setAttribute('aria-pressed','true');
+      document.getElementById('md').innerHTML='<b>'+btn.textContent+'</b> · '+desc}
+  </script>
+</body>
+</html>

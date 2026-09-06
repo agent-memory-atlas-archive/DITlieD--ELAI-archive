@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — Project selection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:          #0a0f0e;
+    --sink:        #070b0a;
+    --panel:       #0e1413;
+    --raised:      #151c1a;
+    --row:         #0c1211;
+    --text:        #f2f5f4;
+    --read:        #c9cecb;
+    --dim:         #79827e;
+    --ghost:       #3a423f;
+    --teal:        #2BBBA4;
+    --teal-bright: #34C2AA;
+    --teal-deep:   #1B7A6E;
+    --line:        rgba(255,255,255,.17);
+    --line2:       rgba(255,255,255,.22);
+    --font-ui:      'Hanken Grotesk', sans-serif;
+    --font-data:    'JetBrains Mono', monospace;
+    --font-display: 'Hanken Grotesk', sans-serif;
+    --r: 2px;
+  }
+  [data-theme="light"] {
+    --bg:          #eef1ef;
+    --sink:        #e6eae7;
+    --panel:       #ffffff;
+    --raised:      #f4f6f4;
+    --row:         #f7f9f7;
+    --text:        #0b0f0e;
+    --read:        #2d342f;
+    --dim:         #646b66;
+    --ghost:       #aab1ac;
+    --teal:        #138a78;
+    --teal-bright: #0f7e6f;
+    --teal-deep:   #0c6256;
+    --line:        rgba(0,0,0,.30);
+    --line2:       rgba(0,0,0,.40);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 13.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+  /* ---------- §16-chrome topbar ---------- */
+  .topbar {
+    height: 44px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+  }
+  .brand-cluster {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .back-chevron {
+    width: 22px; height: 22px;
+    display: grid; place-items: center;
+    color: var(--dim);
+    border-radius: var(--r);
+    transition: color 120ms ease-out, background 120ms ease-out;
+  }
+  .back-chevron:hover { color: var(--text); background: var(--raised); }
+  .back-chevron svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+  .wordmark {
+    font-family: var(--font-data);
+    font-weight: 500;
+    font-size: 14px;
+    letter-spacing: .18em;
+    color: var(--text);
+    padding-left: .18em;
+  }
+
+  /* mode selector — segmented control, SOLID fill on active, 2px --teal edge */
+  .mode-seg {
+    display: inline-flex;
+    border: 1px solid var(--line2);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .mode-seg button {
+    padding: 6px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--read);
+    border-left: 1px solid var(--line);
+    transition: background 120ms ease-out, color 120ms ease-out;
+  }
+  .mode-seg button:first-child { border-left: 0; }
+  .mode-seg button:hover { background: var(--raised); color: var(--text); }
+  .mode-seg button[aria-pressed="true"] {
+    background: var(--teal);
+    color: var(--bg);
+    /* 2px square --teal edge via inset ring on the active segment */
+    box-shadow: inset 0 0 0 2px var(--teal-bright);
+  }
+
+  .chrome-right {
+    display: flex; align-items: center; gap: 10px;
+    justify-self: end;
+  }
+  .icon-btn {
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    color: var(--dim);
+    border: 1px solid transparent;
+    border-radius: var(--r);
+    transition: color 120ms ease-out, background 120ms ease-out;
+  }
+  .icon-btn:hover { color: var(--text); background: var(--raised); }
+  .icon-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.4; }
+  .chrome-sep { width: 1px; height: 16px; background: var(--line); }
+  .win-btn { width: 26px; height: 26px; color: var(--dim); display: grid; place-items: center; }
+  .win-btn:hover { color: var(--text); }
+  .win-btn svg { width: 11px; height: 11px; stroke: currentColor; fill: none; stroke-width: 1.4; }
+  .win-btn.close:hover { background: var(--raised); }
+
+  /* ---------- content column ---------- */
+  .content-wrap {
+    flex: 1 1 auto;
+    display: grid;
+    place-items: start center;
+    padding: 40px 24px 0;
+    overflow: auto;
+  }
+  .content {
+    width: 100%;
+    max-width: 840px;
+    display: flex; flex-direction: column; gap: 18px;
+  }
+  .page-title {
+    font-weight: 600;
+    font-size: 17px;
+    color: var(--text);
+  }
+  .page-sub {
+    font-size: 12px;
+    color: var(--dim);
+  }
+
+  /* ledger sub-window */
+  .ledger {
+    border: 1px solid var(--line2);
+    border-radius: var(--r);
+    background: var(--panel);
+    overflow: hidden;
+  }
+  .ledger-titlebar {
+    height: 30px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px;
+    background: var(--raised);
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--read);
+  }
+  .ledger-titlebar .ledger-meta {
+    font-family: var(--font-data);
+    font-size: 10px;
+    color: var(--dim);
+    font-weight: 400;
+  }
+  .ledger-head {
+    display: grid;
+    grid-template-columns: 1.6fr 2.4fr 1fr 90px;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--read);
+    background: var(--row);
+  }
+  .ledger-head .col-updated { text-align: right; }
+
+  .ledger-body { display: flex; flex-direction: column; }
+  .row {
+    display: grid;
+    grid-template-columns: 1.6fr 2.4fr 1fr 90px;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--read);
+    position: relative;
+    cursor: pointer;
+    transition: background 120ms ease-out, color 120ms ease-out;
+  }
+  .row:last-child { border-bottom: 0; }
+  .row::before {
+    /* 2px square --teal LEFT EDGE on selected/hover (B-01: solid edge, not drawn line) */
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: transparent;
+    transition: background 120ms ease-out;
+  }
+  .row:hover { background: var(--raised); }
+  .row:hover::before { background: var(--teal); }
+  .row:hover .name { color: var(--teal); }
+  .row.selected { background: var(--raised); }
+  .row.selected::before { background: var(--teal); }
+  .row.selected .name { color: var(--teal); }
+
+  .name {
+    font-weight: 600;
+    font-size: 13.5px;
+    color: var(--text);
+    transition: color 120ms ease-out;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .name .tag {
+    font-family: var(--font-data);
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--dim);
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    padding: 1px 5px;
+  }
+  .path {
+    font-family: var(--font-data);
+    font-size: 11px;
+    color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .status-cell {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--read);
+  }
+  /* §6 square marks */
+  .mark { width: 9px; height: 9px; flex: 0 0 auto; }
+  .mark.live   { background: var(--teal); }
+  .mark.done   { background: var(--teal-deep); }
+  .mark.pending{ border: 1px solid var(--line2); }
+  .mark.warn   { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid var(--text); background: none; }
+  .mark.fail   { background: var(--text); }
+  .chip-fail {
+    background: var(--text); color: var(--bg);
+    font-family: var(--font-data);
+    font-size: 10px; font-weight: 500;
+    padding: 1px 6px; border-radius: var(--r);
+    letter-spacing: .04em;
+  }
+  .updated {
+    font-family: var(--font-data);
+    font-size: 11px;
+    color: var(--dim);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* new-project control — square hairline button, solid hover fill */
+  .new-project {
+    align-self: flex-start;
+    padding: 8px 14px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r);
+    color: var(--read);
+    font-size: 12.5px;
+    font-weight: 500;
+    transition: background 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .new-project:hover { background: var(--raised); color: var(--text); border-color: var(--teal); }
+  .new-project .plus { color: var(--teal); font-weight: 600; }
+
+  /* ---------- state variants (§10) ---------- */
+  .state-block { border: 1px dashed var(--line2); border-radius: var(--r); padding: 20px; color: var(--dim); font-size: 12px; }
+  .state-empty {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; min-height: 220px;
+    border: 1px dashed var(--line2);
+    border-radius: var(--r);
+  }
+  .state-empty .focal-action {
+    padding: 10px 22px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r);
+    color: var(--read);
+    background: transparent;
+    font-weight: 500;
+    transition: background 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
+  }
+  .state-empty .focal-action:hover { background: var(--teal); color: var(--bg); border-color: var(--teal); }
+  .state-empty .hint { color: var(--dim); font-size: 11px; }
+
+  .skeleton-row { height: 38px; border-bottom: 1px solid var(--line); background: linear-gradient(90deg, var(--panel) 0%, var(--raised) 50%, var(--panel) 100%); background-size: 200% 100%; animation: sk 1.4s ease-in-out infinite; }
+  @keyframes sk { 0%{background-position: 200% 0} 100%{background-position:-200% 0} }
+  @media (prefers-reduced-motion: reduce){ .skeleton-row { animation: none; background: var(--raised); } }
+
+  .state-error, .state-offline {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r);
+    background: var(--panel);
+  }
+  .retry-btn {
+    margin-left: auto;
+    padding: 5px 12px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r);
+    color: var(--read);
+    font-size: 11px;
+    transition: background 120ms ease-out, color 120ms ease-out;
+  }
+  .retry-btn:hover { background: var(--raised); color: var(--text); }
+
+  .state-section-label {
+    font-size: 10px; color: var(--dim); font-weight: 500;
+    letter-spacing: .04em; margin-top: 18px; margin-bottom: 6px;
+  }
+
+  /* ---------- statusbar ---------- */
+  .statusbar {
+    height: 22px;
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 14px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    font-family: var(--font-data);
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: .02em;
+  }
+  .statusbar .sep { width: 1px; height: 10px; background: var(--line); }
+  .statusbar .live-dot { width: 7px; height: 7px; background: var(--teal); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+  <!-- §16-chrome topbar -->
+  <header class="topbar">
+    <div class="brand-cluster">
+      <button class="back-chevron" title="Back" aria-label="Back">
+        <svg viewBox="0 0 24 24"><polyline points="15 6 9 12 15 18"/></svg>
+      </button>
+      <span class="wordmark">ELAI</span>
+    </div>
+
+    <div class="mode-seg" role="tablist" aria-label="Source mode">
+      <button aria-pressed="true"  data-mode="local">Local</button>
+      <button aria-pressed="false" data-mode="cloud">Cloud</button>
+      <button aria-pressed="false" data-mode="hybrid">Hybrid</button>
+    </div>
+
+    <div class="chrome-right">
+      <button class="icon-btn" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" id="themeIcon"><path d="M20 14.5A8 8 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>
+      </button>
+      <span class="chrome-sep"></span>
+      <button class="win-btn" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6"/></svg></button>
+      <button class="win-btn" title="Restore" aria-label="Restore"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7"/></svg></button>
+      <button class="win-btn close" title="Close" aria-label="Close"><svg viewBox="0 0 12 12"><line x1="2.5" y1="2.5" x2="9.5" y2="9.5"/><line x1="9.5" y1="2.5" x2="2.5" y2="9.5"/></svg></button>
+    </div>
+  </header>
+
+  <div class="content-wrap">
+    <div class="content">
+
+      <div>
+        <div class="page-title">Recent sessions</div>
+        <div class="page-sub">Pick a project to resume, or start a new one.</div>
+      </div>
+
+      <!-- POPULATED ledger -->
+      <div class="ledger">
+        <div class="ledger-titlebar">
+          <span>Recent — Local</span>
+          <span class="ledger-meta">5 sessions · sorted by updated</span>
+        </div>
+        <div class="ledger-head">
+          <div class="col-name">Project</div>
+          <div class="col-path">Path</div>
+          <div class="col-status">Status</div>
+          <div class="col-updated">Updated</div>
+        </div>
+        <div class="ledger-body">
+          <div class="row selected">
+            <div class="name">ELAI <span class="tag">rust · claude-only</span></div>
+            <div class="path">/workspace/ELAI\.elai_cc</div>
+            <div class="status-cell"><span class="mark live"></span>live</div>
+            <div class="updated">2026-06-20 22:14</div>
+          </div>
+          <div class="row">
+            <div class="name">liteGAME <span class="tag">unity · free-api</span></div>
+            <div class="path">D:\.liteGAME_workflow</div>
+            <div class="status-cell"><span class="mark done"></span>done</div>
+            <div class="updated">2026-06-19 18:02</div>
+          </div>
+          <div class="row">
+            <div class="name">conductor-step4 <span class="tag">rust · claude-only</span></div>
+            <div class="path">/workspace/ELAI\conductor</div>
+            <div class="status-cell"><span class="mark pending"></span>pending</div>
+            <div class="updated">2026-06-19 14:47</div>
+          </div>
+          <div class="row">
+            <div class="name">teikoku-signal <span class="tag">rust · free-api</span></div>
+            <div class="path">/workspace/ELAI\.elai_cc</div>
+            <div class="status-cell"><span class="mark warn"></span>warn</div>
+            <div class="updated">2026-06-18 09:31</div>
+          </div>
+          <div class="row">
+            <div class="name">discord-dm-cleanup <span class="tag">python · free-api</span></div>
+            <div class="path">/workspace/ELAI</div>
+            <div class="status-cell"><span class="chip-fail">FAIL</span></div>
+            <div class="updated">2026-06-17 23:08</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="new-project"><span class="plus">+</span> New project</button>
+
+      <!-- state coverage reference (§10) — shown collapsed below -->
+      <div class="state-section-label">State coverage reference</div>
+
+      <!-- SINGLE RESULT -->
+      <div class="ledger">
+        <div class="ledger-titlebar"><span>Single result</span><span class="ledger-meta">1 session · filtered</span></div>
+        <div class="ledger-head">
+          <div>Project</div><div>Path</div><div>Status</div><div class="col-updated">Updated</div>
+        </div>
+        <div class="ledger-body">
+          <div class="row">
+            <div class="name">ELAI <span class="tag">rust · claude-only</span></div>
+            <div class="path">/workspace/ELAI\.elai_cc</div>
+            <div class="status-cell"><span class="mark live"></span>live</div>
+            <div class="updated">2026-06-20 22:14</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EMPTY -->
+      <div class="state-empty">
+        <div class="hint">No sessions yet on this mode.</div>
+        <button class="focal-action">+ New project</button>
+      </div>
+
+      <!-- LOADING -->
+      <div class="ledger">
+        <div class="ledger-titlebar"><span>Loading</span><span class="ledger-meta">fetching…</span></div>
+        <div class="ledger-head">
+          <div>Project</div><div>Path</div><div>Status</div><div class="col-updated">Updated</div>
+        </div>
+        <div class="ledger-body">
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+        </div>
+      </div>
+
+      <!-- ERROR -->
+      <div class="state-error">
+        <span class="chip-fail">FAIL</span>
+        <span style="color: var(--read); font-size: 12px;">Could not load sessions — index read returned EIO.</span>
+        <button class="retry-btn">Retry</button>
+      </div>
+
+      <!-- OFFLINE -->
+      <div class="state-offline">
+        <span class="mark warn"></span>
+        <span style="color: var(--read); font-size: 12px;">Offline — cloud mode needs a connection.</span>
+        <button class="retry-btn">Retry connection</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- statusbar with REAL info -->
+  <footer class="statusbar">
+    <span>session s-proj-select-2026-06-20</span>
+    <span class="sep"></span>
+    <span>mode: local</span>
+    <span class="sep"></span>
+    <span class="live-dot"></span>
+    <span>status: ready</span>
+    <span style="margin-left: auto;">5 sessions · 1 selected</span>
+  </footer>
+
+<script>
+  const root = document.documentElement;
+  const themeBtn = document.getElementById('themeToggle');
+  const themeIcon = document.getElementById('themeIcon');
+  function setTheme(t) {
+    root.setAttribute('data-theme', t);
+    themeIcon.innerHTML = t === 'dark'
+      ? '<path d="M20 14.5A8 8 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/>'
+      : '<circle cx="12" cy="12" r="4.2"/><line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/><line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/><line x1="5.1" y1="5.1" x2="6.8" y2="6.8"/><line x1="17.2" y1="17.2" x2="18.9" y2="18.9"/><line x1="5.1" y1="18.9" x2="6.8" y2="17.2"/><line x1="17.2" y1="6.8" x2="18.9" y2="5.1"/>';
+  }
+  themeBtn.addEventListener('click', () => setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+
+  // mode segmented control
+  document.querySelectorAll('.mode-seg button').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('.mode-seg button').forEach(x => x.setAttribute('aria-pressed','false'));
+      b.setAttribute('aria-pressed','true');
+    });
+  });
+
+  // row select
+  document.querySelectorAll('.row').forEach(r => {
+    r.addEventListener('click', () => {
+      document.querySelectorAll('.row').forEach(x => x.classList.remove('selected'));
+      r.classList.add('selected');
+    });
+  });
+
+  // new project / row double-click -> workspace
+  document.querySelector('.new-project').addEventListener('click', () => window.location.href = 'noslop-workspace.html');
+  document.querySelectorAll('.row').forEach(r => r.addEventListener('dblclick', () => window.location.href = 'noslop-workspace.html'));
+</script>
+</body>
+</html>

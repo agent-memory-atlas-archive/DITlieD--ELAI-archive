@@ -1,0 +1,24 @@
+# E-12 Tier-B framework manifest: Hono — edge-runtime CLI + API backend
+#
+# Version_pin refresh requires WebSearch verification on npm view hono
+# version before edit (anti-slopsquatting CLAUDE.md HARD RULE).
+# Source-grounding via https://hono.dev/docs and the Hono 4.x migration
+# guide.
+
+name = "hono"
+version_pin = "4.0.0"
+language = "typescript"
+package_manager = "pnpm"
+lint_config_path = "biome.json"
+test_runner = "vitest"
+
+security_checks = [
+    "secrets_scan",
+    "trufflehog_scan",
+    "owasp_static",
+    "npm_audit",
+    "biome",
+    "otel_check",
+    "sentry_check",
+    "lsof_port",
+]

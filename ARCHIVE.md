@@ -12,6 +12,12 @@ exhaustive feature list, B–Q plan waves, summaries and extraction ledgers.
 research notes. Historical agent-role and skill Markdown and selected
 `memory-bank/` notes preserve how the experiments were developed.
 
+The [documentation recovery index](docs/RECOVERED-DOCUMENTS.md) covers additional
+authored material missed by the initial directory selection: dashboard design and
+flow documents, visual prototypes, research sweeps, experiment reports and
+historical workflow instructions. The [design guide](workflow/design/README.md)
+is the entry point for the recovered dashboard material.
+
 The selected [Conductor snapshot](CONDUCTOR.md) adds external development
 automation and its supporting code. It includes later changes to that tooling;
 it is not a reconstruction of the exact automation used for each ELAI commit.

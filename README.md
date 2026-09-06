@@ -46,6 +46,7 @@ relationships were retained; see the [history review](HISTORY-REVIEW.md).
 - [Benchmark guide](BENCHMARKS.md) — what was committed and what the results actually cover.
 - [Conductor](CONDUCTOR.md) — the external automation that coordinated ELAI's development, with a guide to the selected source.
 - [Detailed research overview](RESEARCH-OVERVIEW.md) — the former long README, including the full catalog.
+- [Recovered documentation](docs/RECOVERED-DOCUMENTS.md) — dashboard designs, mockups, research sweeps, experiment reports and workflow guides.
 - [Systems specification](docs/thefinalglance/ELAI-SPEC-OVERVIEW.md) — the intended architecture.
 - [Archive guide](ARCHIVE.md) and [publication review](PUBLICATION-REVIEW.md) — selection, privacy edits and limitations.
 

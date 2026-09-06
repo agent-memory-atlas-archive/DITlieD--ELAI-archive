@@ -1,0 +1,1983 @@
+{
+  "version": 1,
+  "prepared_on": "2026-09-06",
+  "compared_public_commit": "daf14d78492e611edf2dcd3e430bf951f7b1500c",
+  "scope": "Missing documentation and supporting design artifacts, including hidden and ignored locations. Source-private path inventories are not published.",
+  "candidate_counts": {
+    "existing_public_paths": 3440,
+    "missing_candidates_accounted": 31151,
+    "recovered_originals": 303,
+    "equivalent_documents_already_public": 23,
+    "deliberate_exclusions": 30825
+  },
+  "limitations": [
+    "Dependency/build/source-download trees were pruned before text enumeration.",
+    "This inventories documentation candidates, not every source file or historical revision.",
+    "Exclusions preserve private conversations, runtime state, local setup, unpinned data and third-party media.",
+    "Historical claims and measurements were not rerun or independently verified."
+  ],
+  "exclusion_counts": {
+    "downloaded third-party material": 3836,
+    "local configuration or non-document artifact": 3255,
+    "mixed project memory and live progress": 11,
+    "personal context or live authentication setup": 9,
+    "private collaboration correspondence": 1,
+    "private conversations, infrastructure or separate projects": 267,
+    "private/mixed project memory, live handoffs or temporary output": 192,
+    "raw benchmark run state and generated artifacts": 3594,
+    "raw experimental data or unpinned inputs": 6,
+    "raw experimental inputs, runtime evidence or worktree copies": 56,
+    "runtime state, handoffs, worktree copies or out-of-selection components": 19513,
+    "scratch, logs or local development dependency list": 13,
+    "separate project design": 6,
+    "third-party screenshot redistribution not established": 31,
+    "unselected tooling, runtime or copied text": 35
+  },
+  "files": [
+    {
+      "path": ".claude/commands/canvas-mode.md",
+      "category": "Historical development instructions",
+      "bytes": 3281,
+      "sha256": "a6866c75e432e12ef43b74ff4c4ff9e6f014985ed2a8d58b12ad38503aa68ea8"
+    },
+    {
+      "path": ".claude/commands/skill-audit.md",
+      "category": "Historical development instructions",
+      "bytes": 4022,
+      "sha256": "892a1e22239023dad2680673b4190415c836685937edd242b3b28695fff66f8d"
+    },
+    {
+      "path": ".claude/gate-manifest.txt",
+      "category": "Historical development instructions",
+      "bytes": 27321,
+      "sha256": "ffd78f4f9d7458a1cbc8b7de2de5937f598e819dd00961b0f82484d50071adaa"
+    },
+    {
+      "path": ".claude/immune-tier-membership.txt",
+      "category": "Historical development instructions",
+      "bytes": 1536,
+      "sha256": "d96b9494a03df6b91a7a261fcc42cadfdcefb3d3ac9778c86a88d1a591adf888"
+    },
+    {
+      "path": ".claude/rulebook/agent-spawning.md",
+      "category": "Historical development instructions",
+      "bytes": 13609,
+      "sha256": "a0c79c8724137562d969b870593d98b301f5d46dc3af90b65cb7779b106fbd6b"
+    },
+    {
+      "path": ".claude/rulebook/bubble-up.md",
+      "category": "Historical development instructions",
+      "bytes": 22286,
+      "sha256": "73bd161cdd347d046c1d8c79f0fe04b659a903a5fec0c5c999ea56a330c46b5c"
+    },
+    {
+      "path": ".claude/rulebook/canvas-image-regen.md",
+      "category": "Historical development instructions",
+      "bytes": 8807,
+      "sha256": "45a4da80c3754dd206aa84305b2ab67ee82e951578c4fb294b896a6e1c2c279e"
+    },
+    {
+      "path": ".claude/rulebook/codegraph-vs-map.md",
+      "category": "Historical development instructions",
+      "bytes": 4736,
+      "sha256": "5d2f9cd88064ec8d6a3c1aa6d5ee7eb456108ac4714fa4785e429d4b3f2b285d"
+    },
+    {
+      "path": ".claude/rulebook/coding-standards.md",
+      "category": "Historical development instructions",
+      "bytes": 702,
+      "sha256": "dfe8ae0d7ffe3e78197004e72648ac7cf8fbdb5940ba6aced203be9f7d1ac593"
+    },
+    {
+      "path": ".claude/rulebook/design-taste.md",
+      "category": "Historical development instructions",
+      "bytes": 16576,
+      "sha256": "b50d28a1ebeec8f94d1a64b537c51303ef28d4b4a9b7754293340e43676fc0e4"
+    },
+    {
+      "path": ".claude/rulebook/file-discipline.md",
+      "category": "Historical development instructions",
+      "bytes": 3524,
+      "sha256": "f8968eac5e0bab6d66c79379e241451d06a1124791c93f5e0599163910cd8fc5"
+    },
+    {
+      "path": ".claude/rulebook/folder-ownership.md",
+      "category": "Historical development instructions",
+      "bytes": 1173,
+      "sha256": "14891e9120369f3e8c6d8163aea6f9e7865f397905158a37cf300cdd2af97af4"
+    },
+    {
+      "path": ".claude/rulebook/gpt-image-prompting.md",
+      "category": "Historical development instructions",
+      "bytes": 10119,
+      "sha256": "551950fea0d099c8381693e39274f777104256cfe565e1f5cba9d1f5e356ec0f"
+    },
+    {
+      "path": ".claude/rulebook/gpt-second-opinion.md",
+      "category": "Historical development instructions",
+      "bytes": 5651,
+      "sha256": "b2e0e580559cdc838210f889e0fa9600948c6a47088b3a4070b868df634f1b3d"
+    },
+    {
+      "path": ".claude/rulebook/integration-exploration.md",
+      "category": "Historical development instructions",
+      "bytes": 5410,
+      "sha256": "469403c2dca85bb78c4e24872cee7e99e960319bd2cdbf8b3b5a393d093b00d6"
+    },
+    {
+      "path": ".claude/rulebook/memorizing-and-audit.md",
+      "category": "Historical development instructions",
+      "bytes": 3348,
+      "sha256": "e58e4a8233a6dc0eba8e8e72570e9b84af7aad145dfdbebe1704e3a52b19a942"
+    },
+    {
+      "path": ".claude/rulebook/multi-session.md",
+      "category": "Historical development instructions",
+      "bytes": 1091,
+      "sha256": "fea930f22a4e496f4d6bafc8d57917174310a4c9a1133f37e1d907772dd537aa"
+    },
+    {
+      "path": ".claude/rulebook/orchestrate-protocol.md",
+      "category": "Historical development instructions",
+      "bytes": 5712,
+      "sha256": "4e0bad261582dc4e6db558bf7d150990eb4492ccb002444830ac82b11d5d2c80"
+    },
+    {
+      "path": ".claude/rulebook/risk-levels.md",
+      "category": "Historical development instructions",
+      "bytes": 4585,
+      "sha256": "ff4ba3a10b4690b70325fa7471633fd2f03a92f31bb4909e43fcd71b2f8fee72"
+    },
+    {
+      "path": ".claude/rulebook/session-protocol.md",
+      "category": "Historical development instructions",
+      "bytes": 2601,
+      "sha256": "b2b12a92db7127d015273823623cd37527ffbad0799de752ebee27ddcae38a40"
+    },
+    {
+      "path": ".claude/rulebook/source-tiers.md",
+      "category": "Historical development instructions",
+      "bytes": 4492,
+      "sha256": "f510e6b5b0c8b715566492cffc2cbd876fb859198af0f5297a8ddb2763b3e0b2"
+    },
+    {
+      "path": ".claude/rulebook/stub-tracking.md",
+      "category": "Historical development instructions",
+      "bytes": 6408,
+      "sha256": "d111503f1218646ad79318177efd3c80b6d55952339ee3c83f23ddb592257a3c"
+    },
+    {
+      "path": ".claude/skills/anti-spiral/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 5488,
+      "sha256": "e3b794d4361fc36fd25507ef3021b688efe4e05b870d607ca363af820fc2ebf6"
+    },
+    {
+      "path": ".claude/skills/auto-orchestrate/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 7841,
+      "sha256": "ad6f7cf11df12cb4007061951dd02b74b23c62058470508a85fbf6e75171bdde"
+    },
+    {
+      "path": ".claude/skills/b-plan-runner/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 14384,
+      "sha256": "c3088538506712b5f3045000db57cbadadfdb8df89a62486b7c4c621cd125556"
+    },
+    {
+      "path": ".claude/skills/cook/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 11818,
+      "sha256": "b9f9bc4477f5828497ea5387013c1c7b270cff1b0523972fa5291d5a4f05dd3c"
+    },
+    {
+      "path": ".claude/skills/dashboard-handoff/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 3120,
+      "sha256": "2900e96a333036f04c5afa27d9fb97ccde4ee569155ee111c8d7a2327a378831"
+    },
+    {
+      "path": ".claude/skills/glm-orchestrate/prompts/S10-commit.md",
+      "category": "Historical development instructions",
+      "bytes": 2640,
+      "sha256": "2ea326b287c71cb96a0f3faff211ef1f3b2b9cb1e06182301f3537c92d3a5b63"
+    },
+    {
+      "path": ".claude/skills/glm-orchestrate/prompts/S3-doneprobe.md",
+      "category": "Historical development instructions",
+      "bytes": 3579,
+      "sha256": "2a3087372f5e3948c47eb895d59a09ee6c3c1eeb04660f916a605be27df91282"
+    },
+    {
+      "path": ".claude/skills/glm-orchestrate/prompts/wiring-frontend.md",
+      "category": "Historical development instructions",
+      "bytes": 3593,
+      "sha256": "c4bad032845f15c28ca5cb29b4004f776e7dd8d09fcc6b731137c2954ee462fc"
+    },
+    {
+      "path": ".claude/skills/grill/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 12472,
+      "sha256": "9760a17c003451834c12a8241b420be13639c67496ecd5db36a4b85d0151a7f2"
+    },
+    {
+      "path": ".claude/skills/idea-intake/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 28064,
+      "sha256": "a9d3b0b2a09964b38c6136afad90278503298ec7e7fdfd0b2dfb5fbdf3645588"
+    },
+    {
+      "path": ".claude/skills/impact-check/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 3725,
+      "sha256": "39c808cfb364e41ec6f41ae19d5e36e5876349f68336ad658704fa9e66380f9f"
+    },
+    {
+      "path": ".claude/skills/improvement-conjecture/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 18722,
+      "sha256": "cd204a99c5f79718e80f297332bf6cece281b35fc93a4e3676cb0c3c0d28884a"
+    },
+    {
+      "path": ".claude/skills/incremental-eval/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 6161,
+      "sha256": "30dc60fc23b15b97abb48727812f97b3cf5a5f6c0b130f58de441abdd1100bce"
+    },
+    {
+      "path": ".claude/skills/operator/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 36333,
+      "sha256": "32761ca388a5050519e26d5468148f636419ee6af3c37c4fe4d1cb7b59b0006e"
+    },
+    {
+      "path": ".claude/skills/oracle/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 7875,
+      "sha256": "e0e09f9cfaaafe30ddceb25692941c0dca09276774bdcb1c225ff6536dac5cb1"
+    },
+    {
+      "path": ".claude/skills/orchestrate/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 11006,
+      "sha256": "15d7e0b12310b93e12607e41110a7d2053ab86b172345a8e08bdb90197e19259"
+    },
+    {
+      "path": ".claude/skills/orchestrate/compat/ELAI.md",
+      "category": "Historical development instructions",
+      "bytes": 12142,
+      "sha256": "d534b996fad602140d8bf12f4e9b024532ae21543d28a2217acf3758fc1ed0b4"
+    },
+    {
+      "path": ".claude/skills/orchestrate/protocol.md",
+      "category": "Historical development instructions",
+      "bytes": 18505,
+      "sha256": "0e17fc342f2525e926b49c23f1cb1e506b44fc5232b88179cb10431e2bed1c5b"
+    },
+    {
+      "path": ".claude/skills/orchestrate/stack-adapters/rust.md",
+      "category": "Historical development instructions",
+      "bytes": 7523,
+      "sha256": "c840b577b11c62df1994d456070e2d0c2cf187df8afbe3f033f25f9d955cd8be"
+    },
+    {
+      "path": ".claude/skills/orchestrate/stack-adapters/swift.md",
+      "category": "Historical development instructions",
+      "bytes": 2195,
+      "sha256": "781ef28356afbb3a6577c5b87d20b154e3d139626b4e8ad88667b0a36e3687e9"
+    },
+    {
+      "path": ".claude/skills/paper-to-plan/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 11531,
+      "sha256": "4db596a6becb08ad5d2361fb9fe4162fd68c6766922bbdfc7467b29d9bac1872"
+    },
+    {
+      "path": ".claude/skills/pdf/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 4348,
+      "sha256": "c1339293aecc56a5bc5c27e15b3020526e94dc41c728c16ac88a15a37e06bea9"
+    },
+    {
+      "path": ".claude/skills/planning-workflow/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 25936,
+      "sha256": "add082b30c3ab44e8fa8e0f5a6e04314da09962d7bd5acef2d3dc0b56bce0033"
+    },
+    {
+      "path": ".claude/skills/prompt-transform/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 2096,
+      "sha256": "7ca25cb0d0ca949d4093005e0c312c02774509e9c3f1441499c9bb6efabe2393"
+    },
+    {
+      "path": ".claude/skills/see/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 6393,
+      "sha256": "794bef17db9c65f10c334c6f055692e8edc57363841452d6d3bbf0983d0172e3"
+    },
+    {
+      "path": ".claude/skills/sequential-opus-orchestrator/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 11651,
+      "sha256": "b945bf11575d076211cece3196fff7c73798422ae68ae572469c394744730450"
+    },
+    {
+      "path": ".claude/skills/teach/SKILL.md",
+      "category": "Historical development instructions",
+      "bytes": 18141,
+      "sha256": "2a2b79fb1c35417317d334f57eb0ed688520edc39d3b4dc307deaabfa593ac7f"
+    },
+    {
+      "path": ".claude/tools/README.md",
+      "category": "Historical development instructions",
+      "bytes": 3864,
+      "sha256": "0e8f8e3cb4eee4c19fe6036e2c785ec4bac276490c50222eaada825e1b1d42a2"
+    },
+    {
+      "path": ".codex/agents/auditor.toml",
+      "category": "Historical development instructions",
+      "bytes": 34356,
+      "sha256": "092fbbb5d6b5d6f10af4b440f2eb4c346d413ca04ed4b9673b90fd86e3ff6050"
+    },
+    {
+      "path": ".codex/agents/executor.toml",
+      "category": "Historical development instructions",
+      "bytes": 5150,
+      "sha256": "60c454986648a6cd7baf0e33f2fb9a67a2ff8d7bc0ddbc4900cca740c94a7d6c"
+    },
+    {
+      "path": ".codex/agents/impact-mapper.toml",
+      "category": "Historical development instructions",
+      "bytes": 7097,
+      "sha256": "614c0ee33fc34b432be741b3b1a0bf5bb6f171d5c32fce90b8bcd4151f1d9273"
+    },
+    {
+      "path": ".codex/agents/paper-ingestor.toml",
+      "category": "Historical development instructions",
+      "bytes": 7523,
+      "sha256": "d3c85011f1761cda6e708d52e4264a38e0b98419659122522b8388f116cd848a"
+    },
+    {
+      "path": ".codex/agents/persona-architect.toml",
+      "category": "Historical development instructions",
+      "bytes": 3034,
+      "sha256": "364353c15edd48f0acbae08f5ea163a790de88669d8c7d924fee6835bc8ac35b"
+    },
+    {
+      "path": ".codex/agents/persona-contrarian.toml",
+      "category": "Historical development instructions",
+      "bytes": 3091,
+      "sha256": "be0e09b97a4c757ca3bcfe7e9dcc7574a167ccc785eb5985205ffbbf5a4aae80"
+    },
+    {
+      "path": ".codex/agents/persona-hacker.toml",
+      "category": "Historical development instructions",
+      "bytes": 2266,
+      "sha256": "46d1927df69f863c78c873845a1959fb12193b8b59bbcee6e2852727d0a8f235"
+    },
+    {
+      "path": ".codex/agents/persona-researcher.toml",
+      "category": "Historical development instructions",
+      "bytes": 2377,
+      "sha256": "0095aab57a3dc34fae148a459a8a21b1c29155f2c8e4e11e540656f555e14f3e"
+    },
+    {
+      "path": ".codex/agents/persona-simplifier.toml",
+      "category": "Historical development instructions",
+      "bytes": 2778,
+      "sha256": "4019e04a7b18189f06200289c44681c1df8bf5500ef4ab7686f34e5140c1e12b"
+    },
+    {
+      "path": ".codex/agents/spec-grounder.toml",
+      "category": "Historical development instructions",
+      "bytes": 8453,
+      "sha256": "9fd7d35b0c9c4e17ebf99887fb8dd15290acca47758867955cd302c45237b4f7"
+    },
+    {
+      "path": ".devin/README.md",
+      "category": "Historical development instructions",
+      "bytes": 3045,
+      "sha256": "05d4c19059cfba87a1afcf96485800d49a22b235570140716d62b55c6fb9d6dd"
+    },
+    {
+      "path": ".devin/agents/auditor/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 1632,
+      "sha256": "318e8529046c39cdf6656c90ea8df021ba7631143e6a2e56ae36e169a8b8c345"
+    },
+    {
+      "path": ".devin/agents/context-compiler/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 1067,
+      "sha256": "3e5ad9ad130a800a0164efc46c6af0bd39f554f1f31e1d79d345390a932736e1"
+    },
+    {
+      "path": ".devin/agents/dashboard-smoker/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 906,
+      "sha256": "6ff4fddec89f9077ee18067f7cd56fd8561b255b7e0a8bc615bbd411bf018d3c"
+    },
+    {
+      "path": ".devin/agents/executor/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 2126,
+      "sha256": "8581209588aa54c82cce6c598137711009c8ea826acaebc7566262d118e8ab9d"
+    },
+    {
+      "path": ".devin/agents/fixer/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 1237,
+      "sha256": "9c44c5e0824ebf8d2eaffa634f12da21faeefb9b02db52a243b4dfb8b654043c"
+    },
+    {
+      "path": ".devin/agents/impact-mapper/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 836,
+      "sha256": "cd8b612203bc8d263d6e7a085ad985fdb52eaae5185384cd4c750d24805e37c3"
+    },
+    {
+      "path": ".devin/agents/integration-explorer-elai/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 1122,
+      "sha256": "63f56c2a98e33576746a3901621360d3676a26530bc204d41bcaa778d820316f"
+    },
+    {
+      "path": ".devin/agents/memory-writer/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 1055,
+      "sha256": "c20239ea43408316cf3cf9f9f337ce63661cde998231d3ee88eb863cd8a0274b"
+    },
+    {
+      "path": ".devin/agents/paper-ingestor/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 833,
+      "sha256": "e96ba6e6f3f3afe2e76dc0d18a381ce5f263c38ef1f39063a3632b21555e288a"
+    },
+    {
+      "path": ".devin/agents/prompt-engineer/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 873,
+      "sha256": "b770c79fda13546a461446b6cce40da8d69bc7adbb28916e44b1893ec5eb5482"
+    },
+    {
+      "path": ".devin/agents/scope-planner-elai/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 1015,
+      "sha256": "222c018bf33afd5740a2a78a266fecb0ca08d2def58e3dac0f39c8a2a0de313e"
+    },
+    {
+      "path": ".devin/agents/spec-grounder/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 818,
+      "sha256": "eefd120516d756ff6ac5dc2a4ca5a8f14d50a815db266334055637e8601a785d"
+    },
+    {
+      "path": ".devin/agents/synthesizer-elai/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 766,
+      "sha256": "4083bfada765718c07eb5a4a9a41c1e871404abfcb0778538c3ad636e0261af3"
+    },
+    {
+      "path": ".devin/agents/test-attributer/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 826,
+      "sha256": "e26b49983ff2a2e3b2121527952c8a1a0f81a60c445cbf395eb479156bc5157a"
+    },
+    {
+      "path": ".devin/agents/wiring-contract-validator/AGENT.md",
+      "category": "Historical development instructions",
+      "bytes": 851,
+      "sha256": "bd7a786eda29418ab1112c7cabf46c3b68e856930159940e569ce0e97c8a45f2"
+    },
+    {
+      "path": ".elai_cc/crates/dashboard-v2/DESIGN-BRIEF.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 15323,
+      "sha256": "5ae239afd498c45aa436650220b2c4dfb9d77b44441dd57719744e7739a10b00"
+    },
+    {
+      "path": ".elai_cc/crates/dashboard-v2/DESIGN.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 20351,
+      "sha256": "455f12e3befa12f66c3396c54a6b3c798d28a2e51b56c1d9cbebfef00c164c32"
+    },
+    {
+      "path": ".elai_cc/crates/dashboard-v2/DOMAIN-CONTEXT.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 18654,
+      "sha256": "199f00dc651daac77c86e5ae8743d26311640dd445ea1a82e73a09ab7118d092"
+    },
+    {
+      "path": ".elai_cc/crates/dashboard-v2/README.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 419,
+      "sha256": "840df8db931e097b4f99be4a5700486aca4ced9acf983993c6e7adb5012f9e0e"
+    },
+    {
+      "path": ".elai_cc/crates/dashboard-v2/design-refs/REFERENCES.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 38424,
+      "sha256": "6284d534395db42c792ec6b85ac7b142417f2011272d81f69c9a23ed3196d7cf"
+    },
+    {
+      "path": ".elai_cc/dashboard-v2-wiring-inventory.txt",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 13704,
+      "sha256": "6055af51cade2a842e882849e647186a70cb72200afcad1b220984ea82bc38d2"
+    },
+    {
+      "path": ".elai_cc/dashboard-wiring-inventory.txt",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 33215,
+      "sha256": "cafe5978a0d66ab94bc2f9944eac63df026c59834767ea63f6fdefac3f61f5a9"
+    },
+    {
+      "path": ".elai_cc/dashboard-wiring-plan.txt",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 118381,
+      "sha256": "dbf32881de488dda0c2a8fc74a874c4f1bc7fd0fd090245e1a2f01c056753803"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/B-11-decisions.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 3967,
+      "sha256": "56533ec653d55fa82795c794047c048b6d6a6d8fc82043841e60aa8d09c5747d",
+      "original_document_location": ".elai_cc/workflow/reasoning/B-11-decisions.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/B-29.5-decisions.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 4475,
+      "sha256": "7d26aff95f0d082c645a2c4481c76ab44ed5d44986a804f3d269e2d741dc94a6",
+      "original_document_location": ".elai_cc/workflow/reasoning/B-29.5-decisions.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/H-46-decisions.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 4606,
+      "sha256": "e9f0502f7f05a4a62e6a8d0dff8df5310908d04fcae816346a100b916481b914",
+      "original_document_location": ".elai_cc/workflow/reasoning/H-46-decisions.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/J-31-refined-plan.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 13988,
+      "sha256": "0ce076695628ac04dfc158e7f8c542cdf8094e0cfb1ae1c5311cb27bdbeed7d9",
+      "original_document_location": ".elai_cc/workflow/reasoning/J-31-refined-plan.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/adversarial-review-steering-vectors.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 8843,
+      "sha256": "7417f430c55ef986fd55b1d98e36a1520780d89328f4d3403c7e1243a7b58f1a",
+      "original_document_location": ".elai_cc/workflow/reasoning/adversarial-review-steering-vectors.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/harness-trust-benchmark-plan.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 9225,
+      "sha256": "b9b4c9544c6b287e2792139c1ecbc97e8adc19160dd1132681627d79e7681e66",
+      "original_document_location": ".elai_cc/workflow/reasoning/harness-trust-benchmark-plan.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/phase-1-decisions.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 1906,
+      "sha256": "125613984a65b0636aaf0a1f97c317b620fb44b4bb3514eefe297ba5a6d3456a",
+      "original_document_location": ".elai_cc/workflow/reasoning/phase-1-decisions.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/phase-2-decisions.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 1460,
+      "sha256": "20624cd23a7c5204cacfad024d7717daaaeb5abc2de3b8d5812dc806f950ad7b",
+      "original_document_location": ".elai_cc/workflow/reasoning/phase-2-decisions.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/phase-3-decisions.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 1470,
+      "sha256": "62851f43ed310cf9b9ee76d5c9458d5fac1b188c339b968d9a59cf8ac3e882fe",
+      "original_document_location": ".elai_cc/workflow/reasoning/phase-3-decisions.md"
+    },
+    {
+      "path": "docs/recovered/code-workflow-reasoning/phase-3J-milp.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 10394,
+      "sha256": "09506c8778bc8988e14cb9bc12ec6ecbebd5cf3a0a867426361945b690e58046",
+      "original_document_location": ".elai_cc/workflow/reasoning/phase-3J-milp.md"
+    },
+    {
+      "path": "conductor/ACP-IMPORT-NOTES.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 13157,
+      "sha256": "2636d610eba774e694691c3501ecc1c8af04a1fa2d8ce7169520a600ff010efc"
+    },
+    {
+      "path": "conductor/IMPLEMENTATION_PLAN.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 25906,
+      "sha256": "765cb48f40f5cbd9f513eda08a514c27e1f1a0be69fe93dc3dc350795eb90d0a"
+    },
+    {
+      "path": "design-references/factory-ai-design.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 6766,
+      "sha256": "c492b579ca88f4a87297f1ee0c614aec68542121f2eba009f5241d1d02a43627"
+    },
+    {
+      "path": "scripts/call_graph_README.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 2039,
+      "sha256": "9b437f77f9181df7953ecb7327defb5425b6bb1e71042a40df6946adcea074c4"
+    },
+    {
+      "path": "workflow/archetypes/README.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 2088,
+      "sha256": "f96b9604962e71500513fd8c82562e92a523a12001a79fccb2387f2f67aa635d"
+    },
+    {
+      "path": "workflow/archetypes/encore.toml",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 1763,
+      "sha256": "5cae136f97313fdda9e827e1ffc5dfd258847b6f88376ee8f99d201e842b888a"
+    },
+    {
+      "path": "workflow/archetypes/fastapi-modern.toml",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 623,
+      "sha256": "e9bf9cb7a5709490c53cb1afb639d035d494826ca0b6d8bd41da57d465ab5ee8"
+    },
+    {
+      "path": "workflow/archetypes/hono.toml",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 604,
+      "sha256": "d9aa2569bd511b85709fb32f875cd6852d5dbdbd30a0b186e90e150da0484dd4"
+    },
+    {
+      "path": "workflow/archetypes/nextjs15.toml",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 854,
+      "sha256": "aa402bd8354bc802debb7a4dcbe531946659f26696f23191fe499b96916f6381"
+    },
+    {
+      "path": "workflow/archetypes/svelte5.toml",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 603,
+      "sha256": "8a9b9c8ff9fa40c3fd2c6e175ae59ee1b63f996a75012d2fc871dc88dfc666de"
+    },
+    {
+      "path": "workflow/archetypes/t3.toml",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 2089,
+      "sha256": "13807f7d418835871676b546334e8575d2a795103b516225489be4ed31accc56"
+    },
+    {
+      "path": "workflow/archetypes/wasp.toml",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 1740,
+      "sha256": "8047f7c17a4838228fdfee9fd8cdb40e0f6599a170b67a575736f33ca501c541"
+    },
+    {
+      "path": "workflow/audits/12-factor-audit-2026-05-28.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 5972,
+      "sha256": "caa80ca798377c4d607246b8859abaf43dcaf75c751036cdc1981f30e568df80"
+    },
+    {
+      "path": "workflow/audits/E-42-grammar-versions-2026-05-28.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 5968,
+      "sha256": "e475736ba4b14f714313b298c43ac9eee6b64d7e2c988f84435c2466071afc5c"
+    },
+    {
+      "path": "workflow/audits/E-43-publish-readiness-2026-05-27.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 3006,
+      "sha256": "3b2627a652405aaa8f454cd6f3abb95438bc713ee0f62db2bf0ea31661f423f6"
+    },
+    {
+      "path": "workflow/audits/E-43-scope-creep-audit-2026-05-27.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 2795,
+      "sha256": "38bdd304173f05ea99683cae9a2910f1b195a9ea3e10578afd7541029b102b3c"
+    },
+    {
+      "path": "workflow/audits/E-43-skill-eval-2026-05-27.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 1506,
+      "sha256": "059c3a921ae74cb2f1d45bfe1ebca33542c408649b0f8e3bd0cb6197489df177"
+    },
+    {
+      "path": "workflow/audits/E-44-checkpoint-format-bench-2026-05-19.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 1291,
+      "sha256": "f21ce669f8c9f128039b0f00e4c7d323f57af29cffddf28916f894ff3b6f495d"
+    },
+    {
+      "path": "workflow/audits/E-45-ts-rs-revisit.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 4782,
+      "sha256": "ab8a9d0ca89fe311ef69b1483fd5bd24ebf49c5eaaae33be511a572eae1bb85d"
+    },
+    {
+      "path": "workflow/audits/aci-tool-shape-2026-05-28.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 5845,
+      "sha256": "52698b80c1b5ba0b31dc5a211c309c822ebfcb08804a9bc632cad5c363c3073e"
+    },
+    {
+      "path": "workflow/audits/elai-map-vs-claude-context-2026-05-28.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 6310,
+      "sha256": "741927869a155860fa027195b67e7cd76a9ea6e1b34c06f8cb9641287b10a0c1"
+    },
+    {
+      "path": "workflow/audits/productivity-baseline-2026-05-19.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 5205,
+      "sha256": "b2bd7928f714550dde4dfe28881f4cea25b0140b8271f54da35a929b82f04146"
+    },
+    {
+      "path": "workflow/backups/canvas-orbit-2026-06-14/orbit/node-panel-variants.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 6830,
+      "sha256": "538e6cb5a639bef595856d10e966ce68ae630bb68f91aabe58a7cd8724f9eecc"
+    },
+    {
+      "path": "workflow/benchmarks/autoresearch-synergy-b-syn-1-2026-07-17/replay.json/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 672,
+      "sha256": "e8ee3fc785b634f823a794d093feb2383be4d59907e35aadd168c85d76a49989"
+    },
+    {
+      "path": "workflow/benchmarks/conjecture-v11-selector-ab-k10-2026-07-12/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 888,
+      "sha256": "be14fa9f5a299407f3ac4dc6011761dc1e483873358137320428306ab72b95fa"
+    },
+    {
+      "path": "workflow/benchmarks/conjecture-v11-selector-ab-smoke-2026-07-12/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 882,
+      "sha256": "a3fe57f3cece401d1d16f812af9cbe120983b9586a941f8282ac00963dceec23"
+    },
+    {
+      "path": "workflow/benchmarks/frontier-discriminator-b0-k20-2026-07-12/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 1305,
+      "sha256": "e7607554555fe2c2e2602b85a2402322b99177bbf44036748d16f57368bd4fe7"
+    },
+    {
+      "path": "workflow/benchmarks/frontier-discriminator-b0-probe-smoke-2026-07-12/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 1202,
+      "sha256": "14127d84c7b0b783539eb1b187f9aefc661737ea2c229d15c04d602f4c511c5f"
+    },
+    {
+      "path": "workflow/benchmarks/frontier-multicycle-b3-k30-2026-07-12/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 1506,
+      "sha256": "ca82274fd6a458dd3c703113f25fa9729faa29d21d7a39cbee619e8d7b26653a"
+    },
+    {
+      "path": "workflow/benchmarks/frontier-multicycle-b3-smoke-2026-07-12/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 1476,
+      "sha256": "9f15e8c34827bf009a237f3c5386c4668e9b0775860f224125a737d6019ea9b3"
+    },
+    {
+      "path": "workflow/benchmarks/frontier-multicycle-b3-smoke-final-2026-07-12/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 1496,
+      "sha256": "d80cf0488b513165abb82f569a75ec30e2f4fd69ede614f786c9a84cef39c99d"
+    },
+    {
+      "path": "workflow/benchmarks/frontier-multicycle-b3-smoke-strong-baseline-2026-07-12/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 1484,
+      "sha256": "f6120e785f53d31cf2a1645ed49b55ae3dcc3d86c88aca876801088a35b28846"
+    },
+    {
+      "path": "workflow/benchmarks/research-creativity-b0-2026-07-13/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 3164,
+      "sha256": "482b85fac0ef595382cd7f22da6dde44b37bbb23f15ab89d2942faa3051af2a4"
+    },
+    {
+      "path": "workflow/benchmarks/research-creativity-b0v2-2026-07-13/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 3943,
+      "sha256": "019a0ce04267403db9ce31ca2e7246277172013142e88f13df571c5cc7aea9d8"
+    },
+    {
+      "path": "workflow/benchmarks/research-creativity-b0v3-2026-07-14/report.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 6524,
+      "sha256": "6808740d76805da609fe10d11cf901de60f2096c5a5c8c0b7fcba5fb4eb806ab"
+    },
+    {
+      "path": "workflow/decisions/E-47-flip-runbook.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 3767,
+      "sha256": "7198bf59b0b371b397b9b34f6c20bbf83fcef55584701336b4ac1942800a058b"
+    },
+    {
+      "path": "workflow/design-mockups/layer-topology-showcase.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 32324,
+      "sha256": "8e021f70cafad09de2c531364a4dab0020243d3fff481b572cb6638f15e534b3"
+    },
+    {
+      "path": "workflow/design/DESIGN-ELAI-NOSLOP.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 29623,
+      "sha256": "26592e0c40099e4a0cc3c708199b19ed1835ce340f4d45ad72d91accab3e07bf"
+    },
+    {
+      "path": "workflow/design/DESIGN.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 37000,
+      "sha256": "fd10390b4bfdb8ee6dfb806eefd0ea063cd046a401616314a109032ec1bef0b6"
+    },
+    {
+      "path": "workflow/design/canvas-progress-example-2026-06-12.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 15619,
+      "sha256": "9466cbfee6dfa7912b0cc80c63d2e483e99109bc3e863fceffa48c5efdb8a306"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/PLAN.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 11382,
+      "sha256": "71749555cd2dd5b0c503763fccd44a1260175bbf29c7e4b1659a5996e14fb15c"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/USER-FLOWS.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 63924,
+      "sha256": "e3189486ea23f69672be84ef050dcb28aeef52247e809838c5dcf3f22555a7aa"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/design-lint-baseline.json",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 173652,
+      "sha256": "b76680ea0a29df4422631eadc8f96e8de160072190093932bc979a98c0e275fd"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/surface-digests/01-synergy-phase-d-b.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 44407,
+      "sha256": "c1bd644a3d7bc3e7cb19e2faa7b32ac5f807de0393aed5d4f72eb303765ac8e7"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/surface-digests/02-c-e0-e32.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 53579,
+      "sha256": "3740eb6e6ac68ead7cd0374030acdf63f01679bfb0ada35371f542942015b4e0"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/surface-digests/03-e33-e49.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 25839,
+      "sha256": "aa91c9e928ddfc79dd108058acdeca9868e0ad7f8633e154545355bdfb4d3b53"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/surface-digests/04-f-g-h.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 41417,
+      "sha256": "3c709a7f230f9f45b809f8c3edd75b7a2e1211cb9d85e8ba49258df2e3a87175"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/surface-digests/05-i-j.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 41972,
+      "sha256": "a71142e8bb1534069ed78227f77a07bb5147505e81a655bffd597d03053ded4a"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/surface-digests/06-k-l-m.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 38463,
+      "sha256": "8cbaf05457817a4450d0f8a8b84dd5a2a3ba0031d14e00a543cb5c0646bf24ba"
+    },
+    {
+      "path": "workflow/design/dashboard-design-system/surface-digests/07-n-o-p-q.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 45667,
+      "sha256": "11f9f49123172d5c4da1a4b424ce6f37f2ab7ee4226e394ba6fef54d9ae67cd3"
+    },
+    {
+      "path": "workflow/design/elai-design-ideas-2026-06-12.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 8560,
+      "sha256": "ccd7720540718671a3b3b46bc74abaa489264407b800fc632efe55ab1c592b12"
+    },
+    {
+      "path": "workflow/design/gpt-brand-icon-prompts-2026-06-15.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 6570,
+      "sha256": "840cd7d2c45bec0144c2dc15d768ed3e8d16a236925d6446e10b84023d2d4462"
+    },
+    {
+      "path": "workflow/design/gpt-brand-logo-creative-prompts-2026-06-15.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 16443,
+      "sha256": "aaee1472965c86b32db74096df071e8b2851a2173c34aa3a61c1155b6b8eee36"
+    },
+    {
+      "path": "workflow/design/gpt-idea-prompts-2026-06-12.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 12620,
+      "sha256": "e425dd21e57c0dd5ef16519a2440077abeccb22321a393e34c365aec4ca5e061"
+    },
+    {
+      "path": "workflow/design/harness-references/INDEX.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 15735,
+      "sha256": "864a938ddd4d6c088ec7d6746eb646fe8bead7689fb4332059ffd91d06fadde8"
+    },
+    {
+      "path": "workflow/design/harness-ui/01-lain-wired.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 24942,
+      "sha256": "d283364afa685b2979a65b187132fbec65b680bddc5d14502807bf16bac0a2b8"
+    },
+    {
+      "path": "workflow/design/harness-ui/02-gits-section9.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 26215,
+      "sha256": "2245096590eb461f4b33fdcd3eb5fade8a41f1365e4d136884cc2a386a0c5351"
+    },
+    {
+      "path": "workflow/design/harness-ui/03-eliza-phosphor.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 23814,
+      "sha256": "3edc4159005ad5dfc0d32b6b5a93b7411cd811dd7c6b2636eb57ea3a02b317d0"
+    },
+    {
+      "path": "workflow/design/main-windows-redesign-brief-2026-06-15.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 8313,
+      "sha256": "e4e173304f50a1b907ebc86aa99aa2213492072a49c04c993362b2ae683a363f"
+    },
+    {
+      "path": "workflow/design/mockup/INVENTORY.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 8089,
+      "sha256": "10169b028eaefb0431b5242f42a56e1b6db2aba96bc57e10fad0f7feda3ecc3b"
+    },
+    {
+      "path": "workflow/design/mockup/brand-icon-orbit-rings.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 6864,
+      "sha256": "539f77ea6a7afd6c6f0b3ff86ea7050295323bc8133b078b5839fbfe05d5fef4"
+    },
+    {
+      "path": "workflow/design/mockup/dashboard-app.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 41909,
+      "sha256": "1605e684a5f4954302f4e37431092f019616e5276bd2c223fd52c77bec0d41b3"
+    },
+    {
+      "path": "workflow/design/mockup/dashboard.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 21761,
+      "sha256": "663dae51530b70e15e6bff0ec168220080a103f1970d12e947e32e1f420a4047"
+    },
+    {
+      "path": "workflow/design/mockup/elai-mockup.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 45447,
+      "sha256": "d3ba7aaec144b7d6de898edcc74d8e2bd96a5b1ed2cbfd427fd9bd3f209081f8"
+    },
+    {
+      "path": "workflow/design/mockup/elai-status-mind-1.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 18411,
+      "sha256": "22fafc7e4f8f8d949cb7edc4dda68770668bfb5b5136dcc6e448e5f58586b0a6"
+    },
+    {
+      "path": "workflow/design/mockup/elai-status-mind-2.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 17083,
+      "sha256": "367cf32705b13762cb6e0f9376adffe2879dcc684de4e5c7ff2711ccfed9bf1f"
+    },
+    {
+      "path": "workflow/design/mockup/elai-status-mind-3.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 17559,
+      "sha256": "3458cec82c3b7c927f7a7689dedf92eadd4e8a5133720eb6c6e745aae7682cc4"
+    },
+    {
+      "path": "workflow/design/mockup/elai-status-mind-4.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 17475,
+      "sha256": "56f93b518a5202af94bfc1a493324a9f016eeab5fa0d1d219fd40af2816ba119"
+    },
+    {
+      "path": "workflow/design/mockup/gits-design.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 12154,
+      "sha256": "87a8f85a31856e5af3300aae9f5b1c98da26c04d07a42f2800e10a2a55507062"
+    },
+    {
+      "path": "workflow/design/mockup/intro.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 30386,
+      "sha256": "02d66f0c785dd13d022b2b049f6b05e0ea1bbe8016b82be74c1de50d6a6c432f"
+    },
+    {
+      "path": "workflow/design/mockup/noslop-entrance.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 7362,
+      "sha256": "b9fe22cd3d3eeec7ac895cdc4415a3da9df3dff357272f69f31c0366f4449e2d"
+    },
+    {
+      "path": "workflow/design/mockup/noslop-project-selection.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 19538,
+      "sha256": "340883fe23f088c434204703bbfdfed09bd927b592f7d24cdafb416156437074"
+    },
+    {
+      "path": "workflow/design/mockup/noslop-workspace.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 45387,
+      "sha256": "51943e5ddd3051a87baf7a24d008a6d11b6a977d11f58102dcdaeca524222cbf"
+    },
+    {
+      "path": "workflow/design/mockup/project-selection-classic.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 10831,
+      "sha256": "124ff1fa5e9956febe3fd6b52919aebf388c24b1e5da7f805499dcb742ed4474"
+    },
+    {
+      "path": "workflow/design/mockup/project-selection-gits.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 14080,
+      "sha256": "cb4a7b7a248dcc2ffbc0241e5a1933cfbe5421c06aa1a48b0d1115505b7965e9"
+    },
+    {
+      "path": "workflow/design/mockup/project-selection-v2.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 24522,
+      "sha256": "140f25551855721d3887564f849bb1a40f9b40fc8ec09bc845f1c67c1da6fad6"
+    },
+    {
+      "path": "workflow/design/mockup/project-selection-v3.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 25868,
+      "sha256": "d7ab3a06ef16366af4ff6d3e2fd2b1a5b23cdce6a30ca8ac7c3504120c2d9441"
+    },
+    {
+      "path": "workflow/design/mockup/project-selection-v4.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 13785,
+      "sha256": "d994c4305da578e867c4e0c0e6791d783ff0c7654df443659ca326b227da8ca3"
+    },
+    {
+      "path": "workflow/design/mockup/project-selection-v5.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 16838,
+      "sha256": "04d980257195f8e355d93d8f476db7a5558fdfb9fcc51bc6842c9dfd821d7443"
+    },
+    {
+      "path": "workflow/design/mockup/project-selection-v6.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 15703,
+      "sha256": "6fab840233f275eafcfd464624b2fda59ef9930aaa340be1805828ab4f8f11e6"
+    },
+    {
+      "path": "workflow/design/mockup/project-selection.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 17102,
+      "sha256": "dd0081d66110aff803cebab328f20e8c012c1c230765cc22bb55277d7d4f7abb"
+    },
+    {
+      "path": "workflow/design/mockup/retro-directions.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 17963,
+      "sha256": "5e44c3005a640d2fb9ed38dc22208ead482837784d8c18e02117810a49309d98"
+    },
+    {
+      "path": "workflow/design/mockup/select-galaxy.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 29511,
+      "sha256": "50f96d02a58d53640ee6133f87c6651f24cb6e657ca9d0ef0db30276f870950e"
+    },
+    {
+      "path": "workflow/design/mockup/select-solid.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 29177,
+      "sha256": "d11afe016fa4f113544260d7f0ad1774cbd6be39edd24d721f5988551cb57878"
+    },
+    {
+      "path": "workflow/design/mockup/select-terminal-styles.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 41003,
+      "sha256": "675e5f5753efd8d051eb6913256bbac4164d1338443103c29aa9677d3257924f"
+    },
+    {
+      "path": "workflow/design/mockup/select-terminal.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 13925,
+      "sha256": "3541e8b0f2b4857de7add4cf363ed1ea751cabcd50eba12c22ab5b3422de86ab"
+    },
+    {
+      "path": "workflow/design/mockup/select.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 29511,
+      "sha256": "50f96d02a58d53640ee6133f87c6651f24cb6e657ca9d0ef0db30276f870950e"
+    },
+    {
+      "path": "workflow/design/mockup/signature-directions.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 21129,
+      "sha256": "06ec856110de3dfeaa7a661da99935ff6adfb8893aef0076755f50b461b51e0e"
+    },
+    {
+      "path": "workflow/design/mockup/tab-app.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 75620,
+      "sha256": "5691ae1f00c3ccd7457e918cdfa697be3dfc4f8a918dbebaff35e3e4c1c837a0"
+    },
+    {
+      "path": "workflow/design/mockup/tab-knowledge.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 80889,
+      "sha256": "973db8feac5fd90ae9d93f2ca5169fda5fa2a03bf3949e476c2b55ffeb9e4b7c"
+    },
+    {
+      "path": "workflow/design/mockup/tab-project.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 83515,
+      "sha256": "ba1d1d174e15da2fc5b6d708ba745c0714f74f4656ee66abead18b48cc0bc417"
+    },
+    {
+      "path": "workflow/design/palette-boards-2026-06-12.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 24356,
+      "sha256": "caf75c92494b3fbd7451c7c06fa18f82645a792a254d84aa09a7148e327310ce"
+    },
+    {
+      "path": "workflow/design/redesign-brief-2026-06-14.md",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 14357,
+      "sha256": "c0aeafe1d38f7e86adfffeae025591d736c67297bdf0e65b31ad313e74fbb6f0"
+    },
+    {
+      "path": "workflow/experiments/RLM-MERGE-ELAI-IMPLEMENTATION-2026-06-26.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 12685,
+      "sha256": "ca1451637def3f47c9fc54115ae074b0e1931b056a18a14a4fdda6b4f10530ed"
+    },
+    {
+      "path": "workflow/experiments/RLM-VS-ELAI-RESULTS-2026-06-26.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 11539,
+      "sha256": "6465f5792893a6f1e89f5a3a7b83df674a6e2dc5831a695adff06e68bc5789e3"
+    },
+    {
+      "path": "workflow/experiments/cgg_bench/CGG-BENCH-FINDINGS.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 28747,
+      "sha256": "05946a73ddda6c58eb103a6e725778e517a3423f876b7e14c76d3b71a63151ce"
+    },
+    {
+      "path": "workflow/experiments/cgg_bench/CGG-BENCH-RESULTS.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 4371,
+      "sha256": "745b084731dc50f88b94e29c00219f885ca9c9796af4eb4653ca2b6d02be6604"
+    },
+    {
+      "path": "workflow/experiments/cgg_bench/NEXT-SESSION-REPAIR-BENCHMARK-PROMPT.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 10047,
+      "sha256": "d768d7908ccf85c81f7ea1a9a14cde7cf76e74537c01012f225712f4d72be7c4"
+    },
+    {
+      "path": "workflow/experiments/rlm-vs-elai-retrieval-2026-06-26.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 17903,
+      "sha256": "232374a7c43ff9d505c21fe4d440ac2cb8be3ebf0f451f6c84b51be218e26aa1"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/README.md",
+      "category": "Improvement sweep",
+      "bytes": 20472,
+      "sha256": "dd2caf87a0bf5204c96213efc9061ac8ea44dd14e439858123d5e06c3b624f40"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/01-infinite-context-chat-illusion.md",
+      "category": "Improvement sweep",
+      "bytes": 15988,
+      "sha256": "fb064733e30b0e8f019bd7f6af80d0300c4cfe26e94a4c049b93bd653297a8e4"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/02-local-llm-speed-tricks.md",
+      "category": "Improvement sweep",
+      "bytes": 19501,
+      "sha256": "b0a7b97799e0e84a42681f986e0ef7f2532620446f375b79dfff932126d7b19c"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/03-model-handoff-ux.md",
+      "category": "Improvement sweep",
+      "bytes": 16882,
+      "sha256": "4827dd49e5bd26d463745fa2493962f09bc919d852dae76f96d61f3df3e18545"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/04-chat-ux-critique.md",
+      "category": "Improvement sweep",
+      "bytes": 18870,
+      "sha256": "9bff7bdf99375efc7f2fcd63a33020af07e3855c307a772bc1c65fe3cefe5f06"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/05-user-modeling-and-memory.md",
+      "category": "Improvement sweep",
+      "bytes": 26402,
+      "sha256": "2a09fd751d28225c16e75f6798c93dde4522ddedc7bfa054d1d288ffc2d2d7b7"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/06-multi-agent-failure-modes.md",
+      "category": "Improvement sweep",
+      "bytes": 20439,
+      "sha256": "04475cf742ce9e6dc7fda43a2b4608eb904a01d8d20c2a34117071ae75e6be1b"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/07-darwinian-self-improvement.md",
+      "category": "Improvement sweep",
+      "bytes": 24747,
+      "sha256": "b7ddb42037a748de8c348d2dd153264c52029d7cb01d186a6184b23fe1c2cc92"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/08-self-evolving-prompts.md",
+      "category": "Improvement sweep",
+      "bytes": 17081,
+      "sha256": "caae4c2ed0cb9e60673fe5620a4b782f7ce7cd20356f6aafe9614eb05ad2e2bd"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/09-agent-eval-benchmarks.md",
+      "category": "Improvement sweep",
+      "bytes": 15945,
+      "sha256": "a7d71c86ac7231abe33d9a43d1b00b12c26b79fc48a15af64b73fad26483d00a"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/10-critic-of-elai-design.md",
+      "category": "Improvement sweep",
+      "bytes": 32039,
+      "sha256": "45289d42038b015b2cf1e6782dd58ef20c8924ed819c7c6dc3145fb54e965e0a"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/11-idea-to-saas-prior-art.md",
+      "category": "Improvement sweep",
+      "bytes": 25968,
+      "sha256": "9371d834d12c820c53c2dfdc51cac842113610829380bb4f1f1b278bd664de18"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/12-production-fullstack-codegen.md",
+      "category": "Improvement sweep",
+      "bytes": 27127,
+      "sha256": "471ea93092c32b89f11d76f36a55604d08ca2b9c4e7e8bca3f0e21f5710eabd2"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/13-tdd-verification-agents.md",
+      "category": "Improvement sweep",
+      "bytes": 15524,
+      "sha256": "bac084cc262b9110884317894251553be8eef9fda90b1ca7349314474b7ffbe0"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/14-browser-e2e-agents.md",
+      "category": "Improvement sweep",
+      "bytes": 20257,
+      "sha256": "f4138cc71b48d1dfc0d193c4fca68fd2ed8a7313fe645485f735bc099b088a26"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/15-sandboxed-exec.md",
+      "category": "Improvement sweep",
+      "bytes": 16855,
+      "sha256": "90a24c33dbadcf29a15cbb047c2544472179b500d17030025bcdbba9edc47cd9"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/16-vlm-image-validation.md",
+      "category": "Improvement sweep",
+      "bytes": 16809,
+      "sha256": "831c3888c05cb59db944536f194bddf35ef2b97785401aa9b0f50320be82d749"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/17-rag-retrieval-quality.md",
+      "category": "Improvement sweep",
+      "bytes": 17463,
+      "sha256": "ccbe98388cc8b3d91e0d37f8ae8ca5d23027a33391311202e7586dd6b55d96e9"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/18-tool-use-reliability.md",
+      "category": "Improvement sweep",
+      "bytes": 18704,
+      "sha256": "2cb579dd64a04df46024abf6fc08fac4619f397a151d84b5b06762a8306ba339"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/19-reasoning-quality.md",
+      "category": "Improvement sweep",
+      "bytes": 19019,
+      "sha256": "dafac42c45dbfbbe73badd81913d3d6abff20356379f2e4c9dbf5760ed628343"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/20-local-cloud-routing.md",
+      "category": "Improvement sweep",
+      "bytes": 22787,
+      "sha256": "2eef32e647d4b8f6f1d59130090f7581a4a6783c67ad92302e240d050525a380"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/21-peer-systems-llm-as-worker.md",
+      "category": "Improvement sweep",
+      "bytes": 26383,
+      "sha256": "4313c313bff242d19a2a942b977e655e6a77950933b5b729358394f0e3382c85"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/22-github-trending-may2026.md",
+      "category": "Improvement sweep",
+      "bytes": 24085,
+      "sha256": "ec25a157160914099d428cd21a9569453b3df3a4f7a5d29ae5ded9ff258f94ce"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/23-developer-discourse-2026.md",
+      "category": "Improvement sweep",
+      "bytes": 22807,
+      "sha256": "ee9b07a6d2ae5f6060050d0adcff9f5d451bf530a6eb630130dff2f30d4814f9"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/24-agent-protocols-mcp.md",
+      "category": "Improvement sweep",
+      "bytes": 25469,
+      "sha256": "3329ae8cce160ae51f125f6d81388492079abd559fa1f6485791adf131b95eb2"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/25-claude-code-architecture.md",
+      "category": "Improvement sweep",
+      "bytes": 47794,
+      "sha256": "7377684a7e751291bd2c908033d8505162d63d0f64e3fb5fd855a8627a4c272f"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/26-inference-engines-2026.md",
+      "category": "Improvement sweep",
+      "bytes": 20986,
+      "sha256": "2f03d8646c2c4172c0253ea0a17f21093c78484b3e52ac91c50ea1cc1da6f17a"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/27-quantization-2026.md",
+      "category": "Improvement sweep",
+      "bytes": 13530,
+      "sha256": "0ced9a7fab8254ba8a7cb52f2ead96e3d9c7ed5ae9b181ab2ece5077c028007d"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/28-attention-kernels-2026.md",
+      "category": "Improvement sweep",
+      "bytes": 18168,
+      "sha256": "14431843f6d6fe09269770b4009591ac88db910e6a1a231a44529bc6e53635f7"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/29-agentic-observability.md",
+      "category": "Improvement sweep",
+      "bytes": 19099,
+      "sha256": "ebf5023fc2ec080a67137f16b4f4b16d008530a7d9ff4f44dd6c8ba007a1321c"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/30-public-agent-incidents.md",
+      "category": "Improvement sweep",
+      "bytes": 24206,
+      "sha256": "a5aec1c66bbbbe46fa78d0b363d3ca528e30f46b5cb470da46b5bba1d02853b2"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/31-coding-model-leaderboard.md",
+      "category": "Improvement sweep",
+      "bytes": 14533,
+      "sha256": "a432a2b60c7ec38d5baf09767103eae782489784090ba1485025825ad8cdec8a"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/32-context-window-extension.md",
+      "category": "Improvement sweep",
+      "bytes": 14206,
+      "sha256": "483691f8f352858a49790c35ac054b20261c79d712f6b70e87a2725d12189119"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/33-dashboard-ux-agentic.md",
+      "category": "Improvement sweep",
+      "bytes": 26155,
+      "sha256": "3ee75db1b4c97bcc0155db0f9cc583ffa3719dac3ba8a8a1fef6dffaba560a17"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/34-rust-ai-ecosystem-2026.md",
+      "category": "Improvement sweep",
+      "bytes": 14593,
+      "sha256": "ac7fe05caf44ab190ea704ca2f59162f16d84c81eb205f88bee81ee88740c0d9"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/35-structured-output-2026.md",
+      "category": "Improvement sweep",
+      "bytes": 13134,
+      "sha256": "3d43c9795c1298c89db1f4db0bec7614f02eb7e393c309d590752ed733c1719b"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/36-document-vision-rag.md",
+      "category": "Improvement sweep",
+      "bytes": 20994,
+      "sha256": "dcae825283a666257519d405a610e24a55b2b858260c53301d7c3d432ced9583"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/37-prompt-injection-defense.md",
+      "category": "Improvement sweep",
+      "bytes": 22764,
+      "sha256": "54d5fb7dbf11e2fb12061372c388ee23ac6b8fd543c5517c25b5142f03c9b397"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/38-ai-roadmap-2026-signals.md",
+      "category": "Improvement sweep",
+      "bytes": 19060,
+      "sha256": "74f296ab70bd43bb332b9ded7b07e61ceb5577ce3725099964fa57fddc27c956"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/39-cost-token-economics.md",
+      "category": "Improvement sweep",
+      "bytes": 20238,
+      "sha256": "76627ccd139f04020035a02202d4a17c600ded495e330794df7a61951efc2891"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/40-symbol-graph-tools.md",
+      "category": "Improvement sweep",
+      "bytes": 17841,
+      "sha256": "12721918373f7a786b21389c79c79c3efc65aa39231670c38190c2b8a8d73453"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/41-ci-cd-pr-review.md",
+      "category": "Improvement sweep",
+      "bytes": 20546,
+      "sha256": "421605fb2011bfd1b49034969cc0db23c96155aa51d1eec37bb502b7c81fe5af"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/42-tree-sitter-grammars-2026.md",
+      "category": "Improvement sweep",
+      "bytes": 22101,
+      "sha256": "9dacedcc39cfa6fd348564375c4b7efee3bbdc6b4d7f74cbe307b0a8e2d3c27b"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/43-agent-skill-systems.md",
+      "category": "Improvement sweep",
+      "bytes": 19515,
+      "sha256": "63523d239fd4484a4b42f2464fe63925f2684e6aabbd8548716fa5b4b77666ce"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/44-checkpointing-durability.md",
+      "category": "Improvement sweep",
+      "bytes": 22812,
+      "sha256": "5c77f81c5a9911c262f70e6ba9a85d8948f7d23b5f09c237dc62e7ebca2de1a4"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/45-cross-language-drift.md",
+      "category": "Improvement sweep",
+      "bytes": 19662,
+      "sha256": "1cbe91ff41284f79edb981584cd14023141e9ba7f3bbfadc3059660fca0b5f9c"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/46-planning-decomposition.md",
+      "category": "Improvement sweep",
+      "bytes": 18086,
+      "sha256": "1be70c4c5b12308c6c4e908c304d4b7f9a49bbf7078bf7163643eb33a26456a8"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/47-lora-finetuning.md",
+      "category": "Improvement sweep",
+      "bytes": 13437,
+      "sha256": "541f99da8334217bc79ef471c7ef98af80f1eac38ceb4872265c3fd8e77e9449"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/48-web-research-orchestrator.md",
+      "category": "Improvement sweep",
+      "bytes": 18984,
+      "sha256": "198aa864dcd9916a2d0d1064687b0ee517a02bc8ff56c27918b7d73586ee3fe5"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/49-coding-agent-metrics.md",
+      "category": "Improvement sweep",
+      "bytes": 17663,
+      "sha256": "43e7d4c60f90ab32d4712c5e09e6c8feade67f7e1b5d7c33babd6fe3c776aa5e"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/50-saas-architecture-patterns.md",
+      "category": "Improvement sweep",
+      "bytes": 22376,
+      "sha256": "284925a4bf818c924f60cb815ef1006be141363c961e672ec64c1901bee05047"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/51-edge-inference-and-mlx.md",
+      "category": "Improvement sweep",
+      "bytes": 17272,
+      "sha256": "ab9010b17db0a54737f155baa25c9ab651a91e075293c350c520530ec71dc2da"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/52-lsp-integration.md",
+      "category": "Improvement sweep",
+      "bytes": 16054,
+      "sha256": "9dd79cdbfb43ca4c9d66045be62e580519acfe690afacfaff3640a208c472886"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/53-formal-verification-codegen.md",
+      "category": "Improvement sweep",
+      "bytes": 16533,
+      "sha256": "817b172f38b49cbcaffe2ecfd942f712f2cf853c2516417b21de2a88e6e7f0e4"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/54-eval-corpus-design.md",
+      "category": "Improvement sweep",
+      "bytes": 16077,
+      "sha256": "a5e885ccb94f7b1583b67ba17b98da18682c3b997d41d2042d6b6d1c7118751b"
+    },
+    {
+      "path": "workflow/improvement-sweep-2026-05-19/reports/55-agentic-rl-and-reward.md",
+      "category": "Improvement sweep",
+      "bytes": 16894,
+      "sha256": "5e3068fc8ec954b94eb2560f2537a0e072275419cd5c14e84dc436f1cd6228b7"
+    },
+    {
+      "path": "workflow/incident-postmortem-template.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 991,
+      "sha256": "60015084b0c4d5f903ea7b5208a4d277a91e3e8c5e5c635ae2bc135ea6b48eb9"
+    },
+    {
+      "path": "workflow/memory-bank/applicationRules.md",
+      "category": "Historical development instructions",
+      "bytes": 8960,
+      "sha256": "ba2dab31a9f1625c7234ce80e6342acdec6337770c10c470031148036b3b1795"
+    },
+    {
+      "path": "workflow/memory-bank/codeRules.md",
+      "category": "Historical development instructions",
+      "bytes": 4918,
+      "sha256": "8f81e9d53f6fb1cfeec2938366fd8f2fa70e0beb02b4d4a19ade4db8973f9b05"
+    },
+    {
+      "path": "workflow/memory-bank/dashboardRules.md",
+      "category": "Historical development instructions",
+      "bytes": 8156,
+      "sha256": "6115e91258184e720a8411786fd055f031b64e2e4f2524a36825b499a3a5916a"
+    },
+    {
+      "path": "workflow/memory-bank/operatingManual.md",
+      "category": "Historical development instructions",
+      "bytes": 4116,
+      "sha256": "e6e8b277aabb8c5623125e2d862cb3a5ce712036efbde9d1370e1cfdceab4856"
+    },
+    {
+      "path": "workflow/memory-bank/projectBrief.md",
+      "category": "Historical development instructions",
+      "bytes": 4061,
+      "sha256": "e78f4ec5600ad405402d5789f34659a9191966ab987616bb938a3d3c3aa34cab"
+    },
+    {
+      "path": "workflow/orchestrate-prompts/dashboard-qol.prompt.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 10369,
+      "sha256": "d2fd2bcc3ee36ffcd0e823dc72d34925c5f1234e3258a84112771dd3dd145c1d"
+    },
+    {
+      "path": "workflow/orchestrate-prompts/elai-wiring.prompt.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 12222,
+      "sha256": "f1ed1d385d29f71d8727de4244a9bbe9fa93307c43d08756e14c4ec5d842a457"
+    },
+    {
+      "path": "workflow/phase-reports/I-1-audit.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 10598,
+      "sha256": "42b30d2e4f25701ffe3c0762904f08b9c5613f3ac56c1db2ce14295efdfb42df"
+    },
+    {
+      "path": "workflow/phase-reports/I-33-audit.md",
+      "category": "Experiments and recorded audits",
+      "bytes": 11809,
+      "sha256": "c562abe5d08a93a0f88a740abd3dbf620456a8b37e7a356504949f3882092fa7"
+    },
+    {
+      "path": "workflow/research/F-plan-next/00-RECOMMENDATIONS.md",
+      "category": "Research and prior art",
+      "bytes": 23863,
+      "sha256": "7f25422eaa9915f1c7691939ec6ff4a8b6ad58cb92f750e6252d9808e9658b84"
+    },
+    {
+      "path": "workflow/research/F-plan-next/F-NEXT-dgm.md",
+      "category": "Research and prior art",
+      "bytes": 50299,
+      "sha256": "ca00b65c55f5f6f53cac95068c91429d3cb58082ef3df59304271085b972830b"
+    },
+    {
+      "path": "workflow/research/F-plan-next/F-NEXT-f2-ruleset.md",
+      "category": "Research and prior art",
+      "bytes": 48371,
+      "sha256": "9827a8344c84f743e265d6342f8f36485107e8ed6028293ff76247972a1aae86"
+    },
+    {
+      "path": "workflow/research/F-plan-next/F-NEXT-graphiti-contradiction.md",
+      "category": "Research and prior art",
+      "bytes": 55529,
+      "sha256": "75628d434b3019c3fd35f6987eaf458a7d0df0bd3c8b6aef072b227ae39b5bb0"
+    },
+    {
+      "path": "workflow/research/F-plan-next/F-NEXT-springdrift-recovery.md",
+      "category": "Research and prior art",
+      "bytes": 39564,
+      "sha256": "42079031ce42919fa2e2fc20df1a839ec15b5d7252d1ccdfaed6ae39b3955c49"
+    },
+    {
+      "path": "workflow/research/ascii-rendering-repos.md",
+      "category": "Research and prior art",
+      "bytes": 14080,
+      "sha256": "f6974bf0b1c58caba52d4df1552a8c707fb38804c679e704267dbec7907aecbc"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/00-PROMPT.md",
+      "category": "Research and prior art",
+      "bytes": 6383,
+      "sha256": "2b3b8f53ce38bf1a8dce5fe8cb9f845b666db8518f037906cf46a4722ba28a25"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/06-research-distilled-bundle.md",
+      "category": "Research and prior art",
+      "bytes": 12106,
+      "sha256": "d8e021c25c2940232dfd27274c9ce97c407ec0578518555c643a4adf2de109a6"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/ELAI-CRITIQUE-LENSES.md",
+      "category": "Research and prior art",
+      "bytes": 12936,
+      "sha256": "6e581278ae98b4266f7715b4ecb28d8c91136f0a38f78088139517d38bae19fd"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/ELAI-F-plan-summary.md",
+      "category": "Research and prior art",
+      "bytes": 24492,
+      "sha256": "bda97d2087adc5a8646e8ed587c3fd765b4a68857082e18b27467709e3e280c6"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/ELAI-G-plan-summary.md",
+      "category": "Research and prior art",
+      "bytes": 20993,
+      "sha256": "6be054812447b7559118ea500440c9d9dbbe4af3f77bcf9631f92028d07b0391"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/ELAI-H-plan-summary.md",
+      "category": "Research and prior art",
+      "bytes": 128990,
+      "sha256": "01302eea045c4de0ac3651d4dd220b47c4f49630dfcf27b8435864e4c489670d"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/ELAI-IMPROVEMENT-PLAN.md",
+      "category": "Research and prior art",
+      "bytes": 17234,
+      "sha256": "595eb4ab4d5c83456526f645de483f548c7dc490e2ed151a853f421f4bee71d7"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/R1-demand-gtm.md",
+      "category": "Research and prior art",
+      "bytes": 23027,
+      "sha256": "722e1f2bd031ce3bad70416ca33450c9bb7ee734dd309b5b424664b8f0e8d872"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/R2-technical-trust-spine.md",
+      "category": "Research and prior art",
+      "bytes": 29757,
+      "sha256": "d047f264e85816da1eacb382a7a3fd310e7e01acff856fa0818d6f690eed9330"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/R3-measurement-safetydelta.md",
+      "category": "Research and prior art",
+      "bytes": 20153,
+      "sha256": "a54c96ef31d65a000cac8d6d0a8a0997181c304c94043f8a76afd6478ea47510"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/R4-competitive-landscape.md",
+      "category": "Research and prior art",
+      "bytes": 23568,
+      "sha256": "75faba6bea335170e0ccf4ea63a53f5851b6aec516ec1a5949bbd9d024c339f9"
+    },
+    {
+      "path": "workflow/research/grok-elai-trust/R5-human-as-verifier.md",
+      "category": "Research and prior art",
+      "bytes": 20321,
+      "sha256": "30671c4d5e52fd8cf59aded69b9bc95b8b86efbcf5d23fc86e92905969926d96"
+    },
+    {
+      "path": "workflow/research/harness-as-pipe-prior-art-2026-06-14.md",
+      "category": "Research and prior art",
+      "bytes": 25649,
+      "sha256": "80310a1cbb33ac7115298c140b047d08e50542c28bcca6cabd1f5325f576c146"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/00-COMPARISON-shard-vs-priorart.md",
+      "category": "Research and prior art",
+      "bytes": 17750,
+      "sha256": "ffb18eb917fc4d849d7c3dfc5430597367a82b13627a8002357e0cdc8b44fd5d"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/01-letta-memgpt.md",
+      "category": "Research and prior art",
+      "bytes": 23071,
+      "sha256": "b2e8fc902026150c21d9f7911adce5559af7a0c9d19ffaf24789cf81016ce5cd"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/02-mem0.md",
+      "category": "Research and prior art",
+      "bytes": 22473,
+      "sha256": "8ecb96e9fb595265ddb711d1a82297c5290c458100140bbb1f913a0142610a3a"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/03-zep-graphiti.md",
+      "category": "Research and prior art",
+      "bytes": 28846,
+      "sha256": "4a6934b7dc456cd3183e59fd48b11465da78b04123bd72df751d98d98d0d2329"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/04-semantic-consensus.md",
+      "category": "Research and prior art",
+      "bytes": 24062,
+      "sha256": "29211b9d95033aae710519f28d0e8b71836ad943928d00476ded3e37c6e7ce86"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/05-voyager.md",
+      "category": "Research and prior art",
+      "bytes": 24497,
+      "sha256": "8dc325ac8f2f8510fd7f4506ad2964145f0a44f8a57c450c8f0565cb499d40c7"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/06-darwin-godel-machine.md",
+      "category": "Research and prior art",
+      "bytes": 22921,
+      "sha256": "c2694425ec8baa20aa26c1322f185cf7b37f323243176f4496dbabb164a2e271"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/07-springdrift.md",
+      "category": "Research and prior art",
+      "bytes": 23750,
+      "sha256": "4ccc88a1b5d71176eeef742b52d8cb17a1ed027f9524d9b481275ad472a97738"
+    },
+    {
+      "path": "workflow/research/shard-prior-art/INDEX.md",
+      "category": "Research and prior art",
+      "bytes": 6228,
+      "sha256": "337e378586bb43bfe562d5c066eb4fb2acfbf5336a363b0a86e979f4a5dd8cae"
+    },
+    {
+      "path": "workflow/research/small-models-long-horizon-findings.md",
+      "category": "Research and prior art",
+      "bytes": 7293,
+      "sha256": "71588cd7acdedfb58eea713fd498a2b8aae0c760e818f9ea69d418d5d9f21307"
+    },
+    {
+      "path": "workflow/research/token-efficiency/01-prompt-caching-context.md",
+      "category": "Research and prior art",
+      "bytes": 24539,
+      "sha256": "f3ab389e31a8e616b46a5b6928956e8a0fc507c4d95a82d2b1159e0db9ae4274"
+    },
+    {
+      "path": "workflow/research/token-efficiency/02-output-token-reduction.md",
+      "category": "Research and prior art",
+      "bytes": 23427,
+      "sha256": "2ad19142bdf07441f63ae409532ad72a26ca62a2b47a79ba10d14af5e2681687"
+    },
+    {
+      "path": "workflow/research/token-efficiency/03-multi-agent-context-cost.md",
+      "category": "Research and prior art",
+      "bytes": 20634,
+      "sha256": "26dbb632ee807d79c6c95a61c96de675bcc40663815b2cefd4bf5872c27699ea"
+    },
+    {
+      "path": "workflow/research/token-efficiency/04-model-routing-cascades.md",
+      "category": "Research and prior art",
+      "bytes": 27919,
+      "sha256": "71e8fd986068bf142d71db6cb564b5f97db1143b7aec225759ae16f5b63a1932"
+    },
+    {
+      "path": "workflow/research/token-efficiency/05-retrieval-context-selection.md",
+      "category": "Research and prior art",
+      "bytes": 25082,
+      "sha256": "62cb7b3cf8214f955f2a6cb1c584cd0c1f9fbdb94d9845eb64364dc415b9524e"
+    },
+    {
+      "path": "workflow/research/token-efficiency/ELAI-H-plan-efficiency-index.md",
+      "category": "Research and prior art",
+      "bytes": 128990,
+      "sha256": "01302eea045c4de0ac3651d4dd220b47c4f49630dfcf27b8435864e4c489670d"
+    },
+    {
+      "path": "workflow/research/token-efficiency/GROK-PROMPT.md",
+      "category": "Research and prior art",
+      "bytes": 8878,
+      "sha256": "5482b2bfcdf9a87c8d7969e49bba1551277c602cbede4408bd0187e4d3b30709"
+    },
+    {
+      "path": "workflow/spikes/ascii-ui/elai-workspace-alive.html",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 62354,
+      "sha256": "eaf55d93491861efa0cd5474b76b08c87dce99bbeb53ffcc546ea20e9f4427c1"
+    },
+    {
+      "path": "workflow/system-health-audit-checklist.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 2649,
+      "sha256": "fdf4c1b734ca16da15c4b486b52d1f12ed48acb1f69e79c2cfe89d703a669b5d"
+    },
+    {
+      "path": "workflow/tooling/mutant-hunter.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 7831,
+      "sha256": "cfd198cfc2c65b49294f76810712f6fd90387d7fb1c1b63ffbf9d97f3709286a"
+    },
+    {
+      "path": "workflow/vision_rag/README.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 852,
+      "sha256": "361bbbec4eaa23efa9ad29c9eb2e008b3e8f3af57720661be9dac61a08357baf"
+    },
+    {
+      "path": "workflow/website/DESIGN.md",
+      "category": "Plans, wiring and supporting guides",
+      "bytes": 12649,
+      "sha256": "1d8931bdb8eb366684770ddfa630e879e48a61fc34bf5a1a85aa484286e9bdfb"
+    },
+    {
+      "path": "workflow/design/cook-elai-renders/direction-A-phosphor-instrument.png",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 1496036,
+      "sha256": "90945e641f57581c345a34619e9a6e3ee9fd9d27e0b0042273724cc3fa8afce7"
+    },
+    {
+      "path": "workflow/design/cook-elai-renders/direction-B-engineers-ledger.png",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 1654263,
+      "sha256": "b2011e4b62bebc6f3fcb3f9ea6305bdcc4a07a787205f782c3a0afb81d105c60"
+    },
+    {
+      "path": "workflow/design/cook-elai-renders/direction-C-deep-chart.png",
+      "category": "Dashboard design and visual experiments",
+      "bytes": 1649823,
+      "sha256": "f6b96836173e9dfc0b5ee476bd1c375427240ed7b536e9e38378e1c8644810b9"
+    }
+  ],
+  "equivalent_documents": [
+    {
+      "original_document": ".claude/skills/glm-orchestrate/guardrail.md",
+      "public_document": ".agents/skills/glm-orchestrate/guardrail.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/README.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/README.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S1-context.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S1-context.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S11-memory.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S11-memory.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S2-integration.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S2-integration.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S4-prompt-eng.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S4-prompt-eng.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S5-execution.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S5-execution.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S6-audit.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S6-audit.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S6b-fixer.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S6b-fixer.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S8-review.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S8-review.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/S9-polish.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/S9-polish.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/precheck-route.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/precheck-route.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/tester-dispatch.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/tester-dispatch.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/glm-orchestrate/prompts/wiring-backend.md",
+      "public_document": ".agents/skills/glm-orchestrate/prompts/wiring-backend.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/orchestrate/compat/apps_workflow.md",
+      "public_document": ".agents/skills/orchestrate/compat/apps_workflow.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/orchestrate/overrides-template.md",
+      "public_document": ".agents/skills/orchestrate/overrides-template.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/orchestrate/stack-adapters/cross-stack-rust-ts.md",
+      "public_document": ".agents/skills/orchestrate/stack-adapters/cross-stack-rust-ts.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/orchestrate/stack-adapters/typescript.md",
+      "public_document": ".agents/skills/orchestrate/stack-adapters/typescript.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/orchestrate/templates/phase-report.md",
+      "public_document": ".agents/skills/orchestrate/templates/phase-report.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/paper-to-plan/feature-map-regen.md",
+      "public_document": ".agents/skills/paper-to-plan/feature-map-regen.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/rag-tools/SKILL.md",
+      "public_document": ".agents/skills/rag-tools/SKILL.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/spec-eval/SKILL.md",
+      "public_document": ".agents/skills/spec-eval/SKILL.md",
+      "comparison": "identical source already represented"
+    },
+    {
+      "original_document": ".claude/skills/teach/elai-concept-map.md",
+      "public_document": ".agents/skills/teach/elai-concept-map.md",
+      "comparison": "identical source already represented"
+    }
+  ]
+}

@@ -104,3 +104,15 @@ benchmarks/gate_tax/
 # PS-READINESS E2ERUNNER: generated local-lane-e2e bench run reports (.rra) are runtime output, not source.
 benchmarks/local_lane_e2e/
 crates/*/benchmarks/
+
+
+# Reviewed historical dashboard documentation recovered for the public archive.
+!/crates/dashboard-v2/DESIGN-BRIEF.md
+!/crates/dashboard-v2/DESIGN.md
+!/crates/dashboard-v2/DOMAIN-CONTEXT.md
+!/crates/dashboard-v2/README.md
+!/crates/dashboard-v2/design-refs/
+!/crates/dashboard-v2/design-refs/REFERENCES.md
+!/dashboard-v2-wiring-inventory.txt
+!/dashboard-wiring-inventory.txt
+!/dashboard-wiring-plan.txt

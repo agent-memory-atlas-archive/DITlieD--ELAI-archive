@@ -1,0 +1,393 @@
+<!--
+  design read: full-bleed VAULT-HUD status console for the owner, a living AI mind as the whole interface, leaning aesthetic over system. the particle brain IS the screen; data panels are sparse instruments pinned to the edges; the open-count is the one huge number.
+  dials: STRUCTURE_VARIANCE 8 / MOTION_INTENSITY 6 / VISUAL_DENSITY 4
+-->
+<title>ELAI status // the mind</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+
+  :root{
+    --ground:#060a12;
+    --sink:#04070d;
+    --panel:#080d16;
+    --panel-2:#0b1220;
+    --line:rgba(140,200,220,.10);
+    --line-2:rgba(150,210,230,.18);
+    --text:#e9f1f8;
+    --text-2:#c3d0dd;
+    --dim:#8494a6;
+    --dim-2:#5f6d7e;
+    --teal:#35f1e2;
+    --teal-deep:#0c4a46;
+    --chip:#eaf7f4;
+    --chip-ink:#06120f;
+    --font-ui:'Hanken Grotesk',system-ui,sans-serif;
+    --font-data:'JetBrains Mono',monospace;
+    --r:2px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:var(--ground);
+    color:var(--text);
+    font-family:var(--font-ui);
+    font-size:13.5px;
+    overflow:hidden;
+    position:relative;
+  }
+  #mind{position:fixed;inset:0;display:block;z-index:0}
+
+  /* faint deep vignette so the mind sits in a well of near-black */
+  .vignette{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 48%,transparent 40%,rgba(3,5,9,.55) 100%)}
+
+  .stage{position:fixed;inset:0;z-index:2;pointer-events:none}
+  .panel{
+    position:absolute;pointer-events:auto;width:288px;
+    background:linear-gradient(180deg,rgba(9,15,25,.86),rgba(6,10,18,.78));
+    border:1px solid var(--line);border-radius:var(--r);
+    padding:13px 14px 14px;backdrop-filter:none;
+  }
+  .p-tl{top:20px;left:20px}
+  .p-tr{top:20px;right:20px}
+  .p-ml{top:250px;left:20px;width:246px}
+  .p-mr{top:214px;right:20px}
+  .p-br{bottom:20px;right:20px}
+
+  .phead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:10px}
+  .ptitle{font-weight:600;font-size:12.5px;color:var(--text);letter-spacing:.01em}
+  .pstamp{font-family:var(--font-data);font-size:9.5px;color:var(--dim-2);white-space:nowrap}
+  .pstamp.stale{color:var(--chip-ink);background:var(--chip);padding:1px 5px;border-radius:var(--r);font-weight:500}
+
+  /* square status marks — never circles, never checks */
+  .mk{width:8px;height:8px;flex:none;display:inline-block;margin-top:4px}
+  .mk-open{background:transparent;border:1px solid var(--teal);box-shadow:inset 0 0 0 1px rgba(53,241,226,.25)}
+  .mk-open.susp{border-style:dashed;border-color:var(--dim)}
+  .mk-dark{border:1px solid var(--line-2);background:transparent}
+  .mk-run{background:var(--teal)}
+
+  .row{display:flex;gap:9px;padding:5px 0;border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:0}
+  .row .id{font-family:var(--font-data);font-size:11px;color:var(--teal);flex:none;width:54px;font-weight:500}
+  .row .body{flex:1;min-width:0}
+  .row .t{font-size:12px;color:var(--text-2);line-height:1.3}
+  .row .meta{font-family:var(--font-data);font-size:9.5px;color:var(--dim);margin-top:2px;letter-spacing:.02em}
+  .deadtag{color:var(--teal);font-weight:500}
+  .deadtag.susp{color:var(--dim)}
+
+  .buckets{display:grid;grid-template-columns:1fr 1fr;gap:1px;margin-top:11px;
+    background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  .bkt{background:var(--sink);padding:7px 9px}
+  .bkt .n{font-family:var(--font-data);font-size:15px;color:var(--text-2);font-weight:500}
+  .bkt .l{font-size:10px;color:var(--dim);margin-top:1px}
+
+  .brow{display:flex;align-items:center;gap:9px;padding:4px 0;border-bottom:1px solid var(--line)}
+  .brow:last-child{border-bottom:0}
+  .brow .bn{font-size:12px;color:var(--text-2);flex:1}
+  .brow .val{font-family:var(--font-data);font-size:11px;color:var(--dim);letter-spacing:.02em}
+  .brow .val.err{background:var(--chip);color:var(--chip-ink);padding:1px 6px;border-radius:var(--r);font-weight:700}
+  .brow .val.gpu{color:var(--dim-2)}
+
+  .hline{display:flex;align-items:baseline;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line)}
+  .hline:last-child{border-bottom:0}
+  .hline .hl{font-size:12px;color:var(--text-2)}
+  .hline .hv{font-family:var(--font-data);font-size:13px;color:var(--text)}
+  .hline .hv.err{background:var(--chip);color:var(--chip-ink);padding:1px 6px;border-radius:var(--r);font-weight:700;font-size:10px}
+
+  .rework{display:flex;flex-wrap:wrap;gap:5px;margin-top:2px}
+  .rchip{font-size:11px;padding:3px 8px 3px 6px;border:1px solid var(--line-2);border-radius:var(--r);
+    display:flex;align-items:center;gap:6px;color:var(--text-2)}
+  .rbar{width:3px;height:11px;flex:none}
+  .rbar.keep{background:var(--teal-deep)}
+  .rbar.redo{background:var(--teal)}
+  .rbar.ns{background:transparent;border:1px solid var(--line-2)}
+  .rchip .st{font-family:var(--font-data);font-size:9px;color:var(--dim)}
+
+  .meter{margin-top:2px}
+  .mline{display:flex;align-items:center;gap:10px;padding:5px 0}
+  .mlab{font-size:11.5px;color:var(--text-2);width:96px;flex:none}
+  .track{flex:1;height:6px;background:var(--sink);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  .fill{height:100%;background:var(--teal-deep);border-right:1px solid var(--teal)}
+  .mpct{font-family:var(--font-data);font-size:11px;color:var(--text);width:34px;text-align:right;flex:none}
+  .lanes{margin-top:9px;border-top:1px solid var(--line);padding-top:8px}
+  .lane{display:flex;align-items:center;gap:8px;padding:2px 0}
+  .lane .ln{font-size:11px;color:var(--dim);flex:1}
+  .lane .tok{font-family:var(--font-data);font-size:10px;color:var(--text-2)}
+  .lane .tok .a{color:var(--dim-2)}
+
+  /* the headline — bottom center, huge, mono because it is data */
+  .headline{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:2;
+    text-align:center;pointer-events:none}
+  .hl-num{font-family:var(--font-data);font-weight:700;font-size:132px;line-height:.8;color:var(--text);
+    letter-spacing:-.04em;text-shadow:0 0 34px rgba(53,241,226,.16)}
+  .hl-lab{font-size:14px;color:var(--dim);margin-top:6px;letter-spacing:.02em}
+  .hl-sub{font-family:var(--font-data);font-size:10px;color:var(--dim-2);margin-top:5px;letter-spacing:.06em}
+
+  /* the vault edge caption — the lain instrument label */
+  .edge{position:fixed;right:16px;top:50%;transform:translateY(-50%) rotate(90deg);transform-origin:right center;
+    z-index:2;font-family:var(--font-data);font-size:10px;letter-spacing:.42em;color:var(--dim-2);pointer-events:none}
+  .brand{position:fixed;top:22px;left:50%;transform:translateX(-50%);z-index:2;pointer-events:none;text-align:center}
+  .brand .w{font-weight:700;font-size:14px;letter-spacing:.06em;color:var(--text-2)}
+  .brand .s{font-family:var(--font-data);font-size:9.5px;color:var(--dim-2);letter-spacing:.28em;margin-top:2px}
+
+  @media (max-width:1180px){
+    .panel{position:static;width:auto;margin:8px}
+    .stage{position:static;pointer-events:auto;display:grid;grid-template-columns:1fr 1fr;padding:8px;
+      background:rgba(4,7,13,.6);max-height:100vh;overflow:auto}
+    #mind{opacity:.35}
+    .headline{position:static;transform:none;margin:16px auto;grid-column:1/-1}
+    .hl-num{font-size:88px}
+    .edge{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .hl-num{text-shadow:none}
+  }
+</style>
+
+<canvas id="mind"></canvas>
+<div class="vignette"></div>
+
+<div class="brand"><div class="w">TEIKOKU</div><div class="s">ELAI · STATUS</div></div>
+<div class="edge">present day. present time.</div>
+
+<div class="stage">
+  <section class="panel p-tl" id="pan-burndown"></section>
+  <section class="panel p-tr" id="pan-bench"></section>
+  <section class="panel p-ml" id="pan-rework"></section>
+  <section class="panel p-mr" id="pan-health"></section>
+  <section class="panel p-br" id="pan-usage"></section>
+</div>
+
+<div class="headline">
+  <div class="hl-num" id="hl-num">0</div>
+  <div class="hl-lab">open</div>
+  <div class="hl-sub" id="hl-stamp">as of —</div>
+</div>
+
+<script>
+const status = {
+  generated_at_ago:"4m",
+  open_count:7,
+  open_items:[
+    {id:"I-33",t:"zero-caller symbol",meta:"production_caller_check · P0",dead:"CONFIRMED"},
+    {id:"H-10",t:"PagerankPanel orphan",meta:"svelte_mount_reachability · P0",dead:"CONFIRMED"},
+    {id:"C-15",t:"entropy-gate regression",meta:"wiring_contract_check · P1",dead:"CONFIRMED"},
+    {id:"B-4",t:"stale doc-comment",meta:"doc_freshness · P1",dead:"SUSPECTED"},
+    {id:"H-Tr3",t:"gates built, not intercepting",meta:"gate_freeze_check · P1",dead:"SUSPECTED"},
+    {id:"I-41",t:"dead framing surface",meta:"python_wire_check · P1",dead:"SUSPECTED"},
+    {id:"D-17",t:"verifier retention unproven",meta:"ssb_journal · P1",dead:"SUSPECTED"},
+  ],
+  buckets:{registered_dark:41,gpu_blocked:12,user_deferred:8,verify_debt:11},
+  letters:[
+    {L:"B",total:45,wired:40},{L:"C",total:45,wired:37},{L:"D",total:30,wired:19},
+    {L:"E",total:55,wired:47},{L:"F",total:13,wired:13},{L:"G",total:9,wired:7},
+    {L:"H",total:52,wired:41},{L:"I",total:54,wired:38},{L:"J",total:30,wired:22},
+    {L:"K",total:18,wired:9},{L:"L",total:14,wired:6},{L:"M",total:12,wired:3},{L:"N",total:8,wired:1},
+  ],
+  benchmarks:[
+    {name:"SAFEDELTA",harness:true,run:false,gpu:true},
+    {name:"QDELTA",harness:true,run:false,gpu:false},
+    {name:"gate-tax",harness:true,run:false,gpu:false},
+    {name:"routing-economics",harness:true,run:false,gpu:false},
+    {name:"hallucination-delta",harness:false,run:false,gpu:false,error:true},
+  ],
+  health:{dead_ipc:5,orphan_error:"svelte_mount_reachability: exit 2"},
+  ui_rework:[
+    {v:"Command",s:"keep"},{v:"Activity",s:"redo"},{v:"Monitor",s:"redo"},
+    {v:"Explore",s:"not-started"},{v:"Review",s:"keep"},{v:"Plan",s:"redo"},{v:"Settings",s:"keep"},
+  ],
+  usage:{five_hour:45,weekly:48,weekly_model:36,lanes:[
+    {lane:"claude",tin:"2.1M",tout:"340K"},
+    {lane:"free-gemini",tin:"8.4M",tout:"1.2M"},
+    {lane:"codex",tin:"900K",tout:"210K"},
+  ]},
+  stamps:{burndown:"4m",bench:"6m",rework:"2h 40m",health:"4m",usage:"31s"},
+};
+
+const HUE0=150, HUE1=270;
+function letterHue(i,n){ return HUE0 + (HUE1-HUE0)*(i/Math.max(1,n-1)); }
+
+/* ---- build the node population from the letters ---- */
+function buildNodes(){
+  const nodes=[];
+  const n=status.letters.length;
+  status.letters.forEach((L,li)=>{
+    const hue=letterHue(li,n);
+    for(let k=0;k<L.total;k++){
+      nodes.push({hue, lit:k<L.wired, letter:L.L, open:false, defer:false});
+    }
+  });
+  // mark deferred among the unlit (all unlit except a reserved 7 = intentional dark)
+  const unlit=nodes.filter(x=>!x.lit);
+  unlit.forEach(x=>x.defer=true);
+  // reserve exactly open_count nodes as the genuine open gaps (spread across unlit)
+  const step=Math.max(1,Math.floor(unlit.length/status.open_count));
+  for(let j=0;j<status.open_count;j++){ const t=unlit[j*step]; if(t){t.open=true;t.defer=false;} }
+  return nodes;
+}
+
+/* ---- fibonacci sphere placement ---- */
+function placeSphere(nodes){
+  const N=nodes.length, GA=Math.PI*(3-Math.sqrt(5));
+  nodes.forEach((nd,i)=>{
+    const y=1-(i/(N-1))*2, r=Math.sqrt(Math.max(0,1-y*y)), th=i*GA;
+    nd.p=[Math.cos(th)*r, y, Math.sin(th)*r];
+  });
+}
+
+/* ---- nearest-neighbour edges among lit nodes ---- */
+function buildEdges(nodes){
+  const lit=nodes.filter(x=>x.lit);
+  const edges=[];
+  for(let i=0;i<lit.length;i++){
+    let best=-1,bd=1e9,best2=-1,bd2=1e9;
+    const a=lit[i].p;
+    for(let j=0;j<lit.length;j++){ if(i===j)continue;
+      const b=lit[j].p, dx=a[0]-b[0],dy=a[1]-b[1],dz=a[2]-b[2], d=dx*dx+dy*dy+dz*dz;
+      if(d<bd){bd2=bd;best2=best;bd=d;best=j;} else if(d<bd2){bd2=d;best2=j;}
+    }
+    if(best>i) edges.push([lit[i],lit[best]]);
+    if(best2>i&&Math.random()<.5) edges.push([lit[i],lit[best2]]);
+  }
+  return edges;
+}
+
+const nodes=buildNodes();
+placeSphere(nodes);
+const edges=buildEdges(nodes);
+
+/* ---- canvas render ---- */
+const cv=document.getElementById('mind'), ctx=cv.getContext('2d');
+let W,H,DPR;
+function resize(){ DPR=Math.min(2,devicePixelRatio||1); W=innerWidth;H=innerHeight;
+  cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0); }
+resize(); addEventListener('resize',resize);
+
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+function rotY(p,a){ const c=Math.cos(a),s=Math.sin(a); return [p[0]*c+p[2]*s, p[1], -p[0]*s+p[2]*c]; }
+function rotX(p,a){ const c=Math.cos(a),s=Math.sin(a); return [p[0], p[1]*c-p[2]*s, p[1]*s+p[2]*c]; }
+
+function frame(t){
+  const cx=W/2, cy=H*0.47;
+  const R=Math.min(W,H)*0.33;
+  const breathe=reduce?1:(1+0.018*Math.sin(t*0.0011));
+  const ang=reduce?-0.5:t*0.00022;
+  const tilt=-0.33;
+  ctx.clearRect(0,0,W,H);
+
+  // project
+  const proj=nodes.map(nd=>{
+    let q=rotX(nd.p,tilt); q=rotY(q,ang);
+    const z=q[2];
+    const persp=1.9/(1.9+z);
+    return {nd, x:cx+q[0]*R*breathe*persp, y:cy+q[1]*R*breathe*persp, z, persp};
+  });
+  const pmap=new Map(); nodes.forEach((nd,i)=>pmap.set(nd,proj[i]));
+
+  // edges (behind), depth-faded
+  ctx.lineWidth=1;
+  edges.forEach(([a,b])=>{
+    const pa=pmap.get(a), pb=pmap.get(b);
+    const zAvg=(pa.z+pb.z)/2;
+    const al=Math.max(0,0.16-zAvg*0.12)* (a.hue!=null?1:1);
+    if(al<=0.01)return;
+    ctx.strokeStyle=`hsla(${(a.hue+b.hue)/2},82%,60%,${al})`;
+    ctx.beginPath();ctx.moveTo(pa.x,pa.y);ctx.lineTo(pb.x,pb.y);ctx.stroke();
+  });
+
+  // nodes back-to-front
+  proj.sort((u,v)=>v.z-u.z);
+  proj.forEach(pt=>{
+    const nd=pt.nd, depth=(pt.z+1)/2; // 0 far .. 1 near
+    const s=(nd.open?3.4:2.2)*pt.persp;
+    const near=1-Math.min(1,Math.max(0,pt.z*0.5+0.5));
+    if(nd.lit){
+      const l=34+near*34;
+      const a=0.42+near*0.5;
+      if(!reduce){ // rare ignition flicker
+        const flick=Math.sin(t*0.004 + nd.p[0]*40 + nd.p[1]*22);
+        if(flick>0.985){ ctx.fillStyle=`hsla(${nd.hue},90%,86%,.95)`; ctx.fillRect(pt.x-s,pt.y-s,s*2.4,s*2.4); }
+      }
+      ctx.fillStyle=`hsla(${nd.hue},85%,${l}%,${a})`;
+      ctx.fillRect(pt.x-s/2,pt.y-s/2,s,s);
+      if(near>0.6){ ctx.fillStyle=`hsla(${nd.hue},95%,80%,${(near-0.6)*0.7})`; ctx.fillRect(pt.x-1,pt.y-1,2,2); }
+    } else if(nd.open){
+      // the genuine gaps — hollow bright squares that flicker unlit
+      const pulse=reduce?0.6:(0.4+0.4*Math.abs(Math.sin(t*0.002+nd.p[1]*9)));
+      ctx.strokeStyle=`rgba(233,241,248,${0.35+pulse*0.5})`;
+      ctx.lineWidth=1.2;
+      ctx.strokeRect(pt.x-s/2,pt.y-s/2,s,s);
+    } else {
+      // intentional dark — dim outline, receded
+      ctx.strokeStyle=`hsla(${nd.hue},30%,42%,${0.10+near*0.16})`;
+      ctx.lineWidth=1;
+      ctx.strokeRect(pt.x-s/2,pt.y-s/2,s,s);
+    }
+  });
+
+  if(!reduce) requestAnimationFrame(frame);
+}
+
+/* ---- panels ---- */
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
+function head(title,stamp,stale){
+  return `<div class="phead"><div class="ptitle">${title}</div>
+    <div class="pstamp${stale?' stale':''}">${stale?'STALE · ':''}as of ${stamp} ago</div></div>`;
+}
+
+document.getElementById('pan-burndown').innerHTML =
+  head('punch-list burndown',status.stamps.burndown) +
+  status.open_items.map(o=>{
+    const susp=o.dead==='SUSPECTED';
+    return `<div class="row"><span class="mk mk-open${susp?' susp':''}"></span>
+      <div class="id">${o.id}</div><div class="body"><div class="t">${o.t}</div>
+      <div class="meta">${o.meta} · <span class="deadtag${susp?' susp':''}">${o.dead}-DEAD</span></div></div></div>`;
+  }).join('') +
+  `<div class="buckets">
+    <div class="bkt"><div class="n">${status.buckets.registered_dark}</div><div class="l">registered-dark</div></div>
+    <div class="bkt"><div class="n">${status.buckets.gpu_blocked}</div><div class="l">gpu-blocked</div></div>
+    <div class="bkt"><div class="n">${status.buckets.user_deferred}</div><div class="l">user-deferred</div></div>
+    <div class="bkt"><div class="n">${status.buckets.verify_debt}</div><div class="l">verify-debt</div></div>
+  </div>`;
+
+document.getElementById('pan-bench').innerHTML =
+  head('benchmarks',status.stamps.bench) +
+  status.benchmarks.map(b=>{
+    let cls='',val;
+    if(b.error){cls=' err';val='ERROR · no harness';}
+    else if(b.gpu){cls=' gpu';val='NOT RUN · gpu';}
+    else{val='NOT RUN';}
+    return `<div class="brow"><span class="bn">${b.name}</span><span class="val${cls}">${val}</span></div>`;
+  }).join('');
+
+document.getElementById('pan-rework').innerHTML =
+  head('ui-rework backlog',status.stamps.rework,true) +
+  `<div class="rework">` + status.ui_rework.map(r=>{
+    const cl=r.s==='keep'?'keep':r.s==='redo'?'redo':'ns';
+    return `<span class="rchip"><span class="rbar ${cl}"></span>${r.v}<span class="st">${r.s}</span></span>`;
+  }).join('') + `</div>`;
+
+document.getElementById('pan-health').innerHTML =
+  head('dashboard health',status.stamps.health) +
+  `<div class="hline"><span class="hl">dead IPC wires</span><span class="hv">${status.health.dead_ipc}</span></div>
+   <div class="hline"><span class="hl">orphan components</span><span class="hv err">ERROR · exit 2</span></div>
+   <div class="row" style="border:0;padding-top:8px"><div class="body"><div class="meta">${status.health.orphan_error}</div></div></div>`;
+
+const u=status.usage;
+document.getElementById('pan-usage').innerHTML =
+  head('usage · max plan',status.stamps.usage) +
+  `<div class="meter">
+    <div class="mline"><span class="mlab">5h window</span><span class="track"><span class="fill" style="width:${u.five_hour}%"></span></span><span class="mpct">${u.five_hour}%</span></div>
+    <div class="mline"><span class="mlab">weekly</span><span class="track"><span class="fill" style="width:${u.weekly}%"></span></span><span class="mpct">${u.weekly}%</span></div>
+    <div class="mline"><span class="mlab">weekly · model</span><span class="track"><span class="fill" style="width:${u.weekly_model}%"></span></span><span class="mpct">${u.weekly_model}%</span></div>
+   </div>
+   <div class="lanes">` + u.lanes.map(l=>
+     `<div class="lane"><span class="ln">${l.lane}</span><span class="tok">${l.tin} in <span class="a">/</span> ${l.tout} out</span></div>`
+   ).join('') + `</div>`;
+
+document.getElementById('hl-num').textContent=status.open_count;
+document.getElementById('hl-stamp').textContent='as of '+status.generated_at_ago+' ago';
+
+requestAnimationFrame(frame);
+</script>

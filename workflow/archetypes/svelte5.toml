@@ -1,0 +1,23 @@
+# E-12 Tier-B framework manifest: Svelte 5 / SvelteKit — generic web-app archetype
+#
+# Version pin requires anti-slopsquatting WebSearch verification before
+# bump (CLAUDE.md HARD RULE). Refresh source-grounding via
+# https://svelte.dev/docs/kit and the SvelteKit 2.x migration notes.
+
+name = "svelte5"
+version_pin = "5.0.0"
+language = "typescript"
+package_manager = "pnpm"
+lint_config_path = "biome.json"
+test_runner = "vitest"
+
+security_checks = [
+    "secrets_scan",
+    "trufflehog_scan",
+    "owasp_static",
+    "npm_audit",
+    "biome",
+    "lighthouse",
+    "otel_check",
+    "sentry_check",
+]

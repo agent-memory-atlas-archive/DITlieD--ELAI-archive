@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — project selection (mock v6 · boot handoff)</title>
+<!--
+  V6 — keeps the v4 identity (rings + galaxy) with a BOOT HANDOFF: the white hairline logo draws in dead-center (the hero
+  moment), then condenses up into a small crown and the project-selection panel materialises in its place at center, inside
+  the rings. The rings + galaxy persist as the backdrop. Auto-fires ~2.8s after load (or click the logo to skip in).
+  Grounded: DESIGN.md (logo draw is the one sanctioned hero moment §7; one focal element; centered bloom lock; quinary
+  diamond markers §6; one teal accent). Panel is a real searchable + scrollable list (scales to any count).
+  Pure mock. Real fields: ProjectSummary{name, path, last_opened_iso}.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --void:#030404; --panel:#0a1012; --raised:#161c1b;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --border:rgba(255,255,255,.09); --border-bright:rgba(255,255,255,.16);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.40); --teal-ghost:rgba(43,187,164,.10); --ring:rgba(43,187,164,.07); --ring-faint:rgba(43,187,164,.045);
+    --disp:'Chakra Petch',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+    --dur-fast:140ms; --dur:280ms; --ease-out:cubic-bezier(0.16,1,0.3,1); --ease-draw:cubic-bezier(0.3,0,0.2,1);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;font-family:var(--disp);color:var(--text);background:var(--void);-webkit-font-smoothing:antialiased;overflow:hidden;}
+
+  .stage{position:fixed;inset:0;overflow:hidden;
+    background:
+      radial-gradient(ellipse 54% 54% at 50% 50%, rgba(43,187,164,.15) 0%, rgba(43,187,164,.06) 30%, rgba(43,187,164,.018) 50%, rgba(43,187,164,0) 68%),
+      radial-gradient(ellipse 135% 135% at 50% 50%, rgba(4,13,17,1) 0%,rgba(4,13,17,.92) 18%,rgba(4,13,17,.74) 36%,rgba(4,13,17,.52) 54%,rgba(4,13,17,.28) 72%,rgba(4,13,17,.08) 90%,rgba(4,13,17,0) 100%),
+      var(--void);}
+  .stars{position:absolute;inset:-6%;z-index:0;pointer-events:none;}
+  .stars::before,.stars::after{content:"";position:absolute;inset:0;}
+  .stars::before{animation:drift-a 150s ease-in-out infinite;
+    background-image:
+      radial-gradient(1.3px 1.3px at 8% 16%,rgba(255,255,255,.5),transparent 64%),radial-gradient(1.3px 1.3px at 19% 61%,rgba(255,255,255,.42),transparent 64%),
+      radial-gradient(1.3px 1.3px at 34% 82%,rgba(255,255,255,.4),transparent 64%),radial-gradient(1.3px 1.3px at 43% 11%,rgba(255,255,255,.48),transparent 64%),
+      radial-gradient(1.3px 1.3px at 57% 73%,rgba(255,255,255,.42),transparent 64%),radial-gradient(1.3px 1.3px at 71% 55%,rgba(255,255,255,.44),transparent 64%),
+      radial-gradient(1.3px 1.3px at 84% 34%,rgba(255,255,255,.5),transparent 64%),radial-gradient(1.3px 1.3px at 91% 67%,rgba(255,255,255,.4),transparent 64%),
+      radial-gradient(1.3px 1.3px at 96% 14%,rgba(255,255,255,.42),transparent 64%),radial-gradient(1.3px 1.3px at 14% 92%,rgba(255,255,255,.38),transparent 64%);}
+  .stars::after{animation:drift-b 110s ease-in-out infinite, twinkle 5.5s ease-in-out infinite;
+    background-image:
+      radial-gradient(2.4px 2.4px at 12% 30%,rgba(255,255,255,.96),transparent 58%),radial-gradient(2px 2px at 31% 78%,rgba(255,255,255,.88),transparent 58%),
+      radial-gradient(2.4px 2.4px at 88% 22%,rgba(255,255,255,.92),transparent 58%),radial-gradient(2px 2px at 82% 70%,rgba(255,255,255,.88),transparent 58%),
+      radial-gradient(2.8px 2.8px at 18% 88%,rgba(255,255,255,.9),transparent 58%),radial-gradient(2.4px 2.4px at 6% 48%,rgba(255,255,255,.9),transparent 58%);}
+  @keyframes drift-a{0%,100%{transform:translate(0,0)}50%{transform:translate(-15px,9px)}}
+  @keyframes drift-b{0%,100%{transform:translate(0,0)}50%{transform:translate(12px,-8px)}}
+  @keyframes twinkle{0%,100%{opacity:.95}50%{opacity:.55}}
+  .sat-track{position:absolute;left:50%;top:50%;z-index:0;pointer-events:none;width:0;height:0;animation:spin 90s linear infinite;}
+  .sat{position:absolute;left:0;top:-408px;width:5px;height:5px;background:var(--teal);transform:translate(-50%,-50%) rotate(45deg);box-shadow:0 0 12px var(--teal-soft);}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* rings */
+  .system{position:absolute;inset:0;z-index:1;pointer-events:none;}
+  .ring{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:1px solid var(--ring);border-radius:50%;}
+  .ring.r1{width:370px;height:370px;}.ring.r2{width:560px;height:560px;}.ring.r3{width:750px;height:750px;border-color:var(--ring-faint);}
+
+  /* modes + new project fade in only after boot */
+  .modes{position:fixed;left:50%;top:30px;transform:translateX(-50%);z-index:6;display:flex;opacity:0;pointer-events:none;transition:opacity 420ms var(--ease-out);}
+  .booted .modes{opacity:1;pointer-events:auto;}
+  .mode{position:relative;appearance:none;background:none;border:0;cursor:pointer;font-family:var(--disp);font-weight:500;font-size:12px;letter-spacing:.2em;color:var(--dim);padding:6px 18px 12px;transition:color var(--dur-fast) var(--ease-out);}
+  .mode::after{content:"";position:absolute;left:18px;right:18px;bottom:0;height:1px;background:var(--teal);transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .mode:hover{color:var(--read);}.mode.on{color:var(--teal-bright);}.mode.on::after{transform:scaleX(1);}
+
+  /* the logo: hero center -> condenses to a small top crown on boot */
+  .core{position:absolute;left:50%;top:50%;z-index:4;transform:translate(-50%,-50%);transform-origin:center;
+    transition:transform 760ms var(--ease-out);}
+  .booted .core{transform:translate(-50%,-50%) translateY(-272px) scale(.46);}
+  .logo-wrap{cursor:pointer;line-height:0;filter:drop-shadow(0 0 40px rgba(43,187,164,.34)) drop-shadow(0 0 11px rgba(43,187,164,.25));}
+  .logo{width:300px;height:auto;display:block;}
+  .logo line{fill:none;stroke:var(--text);stroke-width:2.4;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1400ms var(--ease-draw) forwards;}
+  .logo line:nth-child(1){animation-delay:200ms}.logo line:nth-child(2){animation-delay:440ms}.logo line:nth-child(3){animation-delay:680ms}
+  .logo line:nth-child(4){animation-delay:920ms}.logo line:nth-child(5){animation-delay:1160ms}.logo line:nth-child(6){animation-delay:1400ms}
+  .logo line:nth-child(7){animation-delay:1640ms}.logo line:nth-child(8){animation-delay:1880ms}.logo line:nth-child(9){animation-delay:2120ms}.logo line:nth-child(10){animation-delay:2360ms}
+  @keyframes draw{to{stroke-dashoffset:0;}}
+
+  /* the panel: hidden during boot, materialises at center afterwards */
+  .panel{position:absolute;left:50%;top:50%;z-index:3;transform:translate(-50%,-50%) scale(.97);width:480px;
+    opacity:0;pointer-events:none;transition:opacity 520ms var(--ease-out) 180ms, transform 520ms var(--ease-out) 180ms;}
+  .booted .panel{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1);}
+  .p-label{display:flex;align-items:center;justify-content:center;gap:10px;font-family:var(--disp);font-weight:500;font-size:10px;letter-spacing:.28em;color:var(--read);margin-bottom:16px;}
+  .p-label::before{content:"";width:5px;height:5px;background:var(--teal);transform:rotate(45deg);}
+  .p-label .ct{color:var(--dim);letter-spacing:.16em;}
+  .search{display:flex;align-items:center;border-bottom:1px solid var(--border);padding:8px 2px;margin-bottom:14px;transition:border-color var(--dur-fast) var(--ease-out);}
+  .search:focus-within{border-color:var(--teal-soft);}
+  .search input{flex:1;background:none;border:0;outline:none;font-family:var(--mono);font-size:12px;letter-spacing:.03em;color:var(--text);text-align:center;}
+  .search input::placeholder{color:var(--dim);letter-spacing:.1em;}
+  .list{max-height:248px;overflow-y:auto;}
+  .list::-webkit-scrollbar{width:5px;}.list::-webkit-scrollbar-thumb{background:var(--border-bright);}.list::-webkit-scrollbar-track{background:transparent;}
+  .row{position:relative;display:grid;grid-template-columns:auto 1fr auto;align-items:center;column-gap:13px;padding:12px 6px;cursor:pointer;}
+  .row+.row{border-top:1px solid var(--border);}
+  .row .dia{width:7px;height:7px;background:var(--teal-deep);transform:rotate(45deg);transition:background var(--dur-fast),box-shadow var(--dur-fast);}
+  .row.recent .dia{background:var(--teal);box-shadow:0 0 11px var(--teal-soft);animation:pulse 2.6s ease-in-out infinite;}
+  .row:hover .dia{background:var(--teal-bright);}
+  .r-name{font-family:var(--disp);font-weight:500;font-size:14px;color:var(--text);transition:color var(--dur-fast);}
+  .r-meta{font-family:var(--mono);font-weight:300;font-size:10px;color:var(--dim);margin-top:4px;}
+  .row:hover .r-name{color:var(--teal-bright);}
+  .r-time{font-family:var(--mono);font-size:11px;color:var(--read);}
+  .np{position:relative;width:100%;margin-top:18px;appearance:none;cursor:pointer;background:transparent;border:1px solid var(--border);border-radius:0;
+    font-family:var(--disp);font-weight:500;font-size:12px;letter-spacing:.2em;color:var(--read);padding:13px 0;overflow:hidden;transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .np:hover{color:var(--teal-bright);border-color:var(--teal-soft);}
+  .np::after{content:"";position:absolute;left:0;bottom:0;height:1px;width:100%;background:var(--teal);transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .np:hover::after{transform:scaleX(1);}
+  .trust{margin-top:16px;text-align:center;font-family:var(--mono);font-weight:300;font-size:10.5px;letter-spacing:.05em;color:var(--dim);}
+  .trust b{color:var(--teal);font-weight:400;}
+
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  @keyframes fadeIn{to{opacity:1;}}
+  @media (prefers-reduced-motion:reduce){
+    .logo line{animation:none;stroke-dashoffset:0;}
+    .stars::before,.stars::after,.sat-track{animation:none;}
+    .core,.panel{transition:none;}
+    .row.recent .dia{animation:none;}
+  }
+</style>
+</head>
+<body>
+  <main class="stage" aria-label="ELAI project selection">
+    <div class="stars" aria-hidden="true"></div>
+    <div class="sat-track" aria-hidden="true"><span class="sat"></span></div>
+
+    <div class="modes" role="group" aria-label="Execution mode">
+      <button class="mode on" type="button">LOCAL</button>
+      <button class="mode" type="button">CLOUD</button>
+      <button class="mode" type="button">HYBRID</button>
+    </div>
+
+    <div class="system">
+      <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+    </div>
+
+    <div class="core">
+      <div class="logo-wrap" id="logo" title="ELAI" aria-label="ELAI">
+        <svg class="logo" viewBox="-3 -3 236 66" role="img" aria-label="ELAI logo">
+          <line pathLength="1" x1="0" y1="0" x2="0" y2="60"/><line pathLength="1" x1="0" y1="0" x2="34" y2="0"/>
+          <line pathLength="1" x1="0" y1="30" x2="25" y2="30"/><line pathLength="1" x1="0" y1="60" x2="34" y2="60"/>
+          <line pathLength="1" x1="76" y1="0" x2="76" y2="60"/><line pathLength="1" x1="76" y1="60" x2="106" y2="60"/>
+          <line pathLength="1" x1="150" y1="60" x2="170" y2="0"/><line pathLength="1" x1="170" y1="0" x2="190" y2="60"/>
+          <line pathLength="1" x1="162.7" y1="38" x2="177.3" y2="38"/><line pathLength="1" x1="228" y1="0" x2="228" y2="60"/>
+        </svg>
+      </div>
+    </div>
+
+    <section class="panel" aria-label="Session select">
+      <div class="p-label">RECENT PROJECTS <span class="ct">· 6</span></div>
+      <div class="search"><input type="text" placeholder="filter projects" aria-label="Filter projects" /></div>
+      <div class="list">
+        <div class="row recent" role="button" tabindex="0" data-name=".elai_cc">
+          <span class="dia"></span><div><div class="r-name">.elai_cc</div><div class="r-meta">rust + ts · 14 · 1,284 sym · main</div></div><div class="r-time">4m</div></div>
+        <div class="row" role="button" tabindex="0" data-name="liteGAME">
+          <span class="dia"></span><div><div class="r-name">liteGAME</div><div class="r-meta">rust + unity · 9 · 612 sym · dev</div></div><div class="r-time">2h</div></div>
+        <div class="row" role="button" tabindex="0" data-name="apps_workflow">
+          <span class="dia"></span><div><div class="r-name">apps_workflow</div><div class="r-meta">ts · 5 · 340 sym · main</div></div><div class="r-time">1d</div></div>
+        <div class="row" role="button" tabindex="0" data-name="regret">
+          <span class="dia"></span><div><div class="r-name">regret</div><div class="r-meta">rust · 3 · 188 sym · main</div></div><div class="r-time">3d</div></div>
+        <div class="row" role="button" tabindex="0" data-name="sidecar-infra">
+          <span class="dia"></span><div><div class="r-name">sidecar-infra</div><div class="r-meta">python · 7 · 421 sym · main</div></div><div class="r-time">5d</div></div>
+        <div class="row" role="button" tabindex="0" data-name="canvas-mcp">
+          <span class="dia"></span><div><div class="r-name">canvas-mcp</div><div class="r-meta">ts · 2 · 96 sym · dev</div></div><div class="r-time">1w</div></div>
+      </div>
+      <button class="np" id="newProject" type="button">+ NEW PROJECT</button>
+      <div class="trust"><b>◆</b> integrity verified · 6 sessions signed</div>
+    </section>
+  </main>
+
+  <script>
+    const root=document.documentElement;
+
+    // boot handoff: logo draws, then condenses to a crown and the panel takes center
+    let booted=false;
+    function boot(){if(booted)return;booted=true;root.classList.add('booted');}
+    const bootTimer=setTimeout(boot,2800);
+
+    // click the logo to skip into the panel (or, once booted, replay the draw)
+    document.getElementById('logo').addEventListener('click',()=>{
+      if(!booted){clearTimeout(bootTimer);boot();return;}
+      document.querySelectorAll('.logo line').forEach(ln=>{ln.style.animation='none';void ln.getBoundingClientRect();ln.style.animation='';});
+    });
+
+    const modes=[...document.querySelectorAll('.mode')];
+    modes.forEach(b=>b.addEventListener('click',()=>modes.forEach(x=>x.classList.toggle('on',x===b))));
+    function activeMode(){const on=document.querySelector('.mode.on');return on?on.textContent.trim():'LOCAL';}
+
+    function openProject(name){sessionStorage.setItem('elai.project',name||'');sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?'+new URLSearchParams({project:name||'',mode:activeMode()});}
+    document.querySelectorAll('[data-name]').forEach(row=>{const name=row.getAttribute('data-name');
+      row.addEventListener('click',()=>openProject(name));row.addEventListener('keydown',e=>{if(e.key==='Enter')openProject(name);});});
+
+    document.getElementById('newProject').addEventListener('click',()=>{sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?new=1&mode='+encodeURIComponent(activeMode());});
+
+    const search=document.querySelector('.search input');
+    if(search) search.addEventListener('input',()=>{const q=search.value.trim().toLowerCase();
+      document.querySelectorAll('.list .row').forEach(r=>{r.style.display=r.getAttribute('data-name').toLowerCase().includes(q)?'':'none';});});
+  </script>
+</body>
+</html>

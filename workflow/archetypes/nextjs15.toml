@@ -1,0 +1,28 @@
+# E-12 Tier-B framework manifest: Next.js 15 (App Router) — SaaS dashboard archetype
+#
+# Pinned version is the production track at the time the manifest landed.
+# Anti-slopsquatting verification required before bumping (CLAUDE.md HARD
+# RULE). Refresh via paper-ingestor mode=source on
+# https://nextjs.org/docs and the official Vercel framework guide.
+
+name = "nextjs15"
+version_pin = "15.0.0"
+language = "typescript"
+package_manager = "pnpm"
+lint_config_path = "biome.json"
+test_runner = "vitest"
+
+# Subset of the 15 universal SecurityCheckId values that apply to a
+# typical Next.js 15 App Router project. Order matters — runners
+# dispatch in this sequence.
+security_checks = [
+    "secrets_scan",
+    "trufflehog_scan",
+    "owasp_static",
+    "npm_audit",
+    "biome",
+    "lighthouse",
+    "otel_check",
+    "sentry_check",
+    "lsof_port",
+]

@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — Entrance</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:          #0a0f0e;
+    --sink:        #070b0a;
+    --panel:       #0e1413;
+    --raised:      #151c1a;
+    --row:         #0c1211;
+    --text:        #f2f5f4;
+    --read:        #c9cecb;
+    --dim:         #79827e;
+    --ghost:       #3a423f;
+    --teal:        #2BBBA4;
+    --teal-bright: #34C2AA;
+    --teal-deep:   #1B7A6E;
+    --line:        rgba(255,255,255,.17);
+    --line2:       rgba(255,255,255,.22);
+    --font-ui:      'Hanken Grotesk', sans-serif;
+    --font-data:    'JetBrains Mono', monospace;
+    --font-display: 'Hanken Grotesk', sans-serif;
+    --r: 2px;
+  }
+  [data-theme="light"] {
+    --bg:          #eef1ef;
+    --sink:        #e6eae7;
+    --panel:       #ffffff;
+    --raised:      #f4f6f4;
+    --row:         #f7f9f7;
+    --text:        #0b0f0e;
+    --read:        #2d342f;
+    --dim:         #646b66;
+    --ghost:       #aab1ac;
+    --teal:        #138a78;
+    --teal-bright: #0f7e6f;
+    --teal-deep:   #0c6256;
+    --line:        rgba(0,0,0,.30);
+    --line2:       rgba(0,0,0,.40);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 13.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+  /* ---------- shared chrome (§16) ---------- */
+  .chrome-right {
+    position: fixed; top: 18px; right: 20px;
+    display: flex; align-items: center; gap: 10px;
+    z-index: 50;
+  }
+  .icon-btn {
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    color: var(--dim);
+    border: 1px solid transparent;
+    border-radius: var(--r);
+    transition: color 120ms ease-out, background 120ms ease-out, border-color 120ms ease-out;
+  }
+  .icon-btn:hover { color: var(--text); background: var(--raised); }
+  .icon-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.4; }
+  .chrome-sep { width: 1px; height: 16px; background: var(--line); }
+  .win-btn { width: 26px; height: 26px; color: var(--dim); display: grid; place-items: center; }
+  .win-btn:hover { color: var(--text); }
+  .win-btn svg { width: 11px; height: 11px; stroke: currentColor; fill: none; stroke-width: 1.4; }
+  .win-btn.close:hover { background: var(--raised); }
+
+  /* ---------- entrance ---------- */
+  .stage {
+    position: fixed; inset: 0;
+    display: grid; place-items: center;
+  }
+  .focal {
+    display: flex; flex-direction: column; align-items: center; gap: 28px;
+  }
+  /* ELAI stroke wordmark — monoline, hairline display weight, wide-tracked */
+  .wordmark {
+    font-family: var(--font-display);
+    font-weight: 200;
+    font-size: 96px;
+    letter-spacing: .42em;
+    color: var(--text);
+    padding-left: .42em; /* compensate tracking so it stays optically centered */
+    line-height: 1;
+  }
+  .tagline {
+    font-family: var(--font-ui);
+    font-weight: 400;
+    font-size: 12px;
+    color: var(--dim);
+    letter-spacing: .02em;
+    max-width: 520px;
+    text-align: center;
+  }
+  .start-btn {
+    margin-top: 8px;
+    padding: 10px 28px;
+    background: transparent;
+    color: var(--read);
+    border: 1px solid var(--line2);
+    border-radius: var(--r);
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: .01em;
+    transition: background 160ms ease-out, color 160ms ease-out, border-color 160ms ease-out;
+  }
+  .start-btn:hover {
+    background: var(--teal);
+    color: var(--bg);
+    border-color: var(--teal);
+  }
+  .start-btn:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+
+  /* footer hint */
+  .footer-hint {
+    position: fixed; left: 0; right: 0; bottom: 22px;
+    text-align: center;
+    font-family: var(--font-data);
+    font-size: 10px;
+    color: var(--ghost);
+    letter-spacing: .04em;
+  }
+  .footer-hint kbd {
+    font-family: var(--font-data);
+    color: var(--dim);
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    padding: 1px 5px;
+    margin: 0 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- §16-chrome: TopRightControls (byte-identical on every screen) -->
+  <div class="chrome-right">
+    <button class="icon-btn" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
+      <!-- moon (dark resting) -->
+      <svg viewBox="0 0 24 24" id="themeIcon"><path d="M20 14.5A8 8 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>
+    </button>
+    <span class="chrome-sep"></span>
+    <button class="win-btn" title="Minimize" aria-label="Minimize">
+      <svg viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6"/></svg>
+    </button>
+    <button class="win-btn" title="Restore" aria-label="Restore">
+      <svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7"/></svg>
+    </button>
+    <button class="win-btn close" title="Close" aria-label="Close">
+      <svg viewBox="0 0 12 12"><line x1="2.5" y1="2.5" x2="9.5" y2="9.5"/><line x1="9.5" y1="2.5" x2="2.5" y2="9.5"/></svg>
+    </button>
+  </div>
+
+  <main class="stage">
+    <div class="focal">
+      <!-- static ELAI stroke wordmark (B-05: drawn instantly, no stagger) -->
+      <div class="wordmark">ELAI</div>
+      <div class="tagline">A near-black instrument with one bright-teal signal.</div>
+      <button class="start-btn" id="startBtn">Start</button>
+    </div>
+  </main>
+
+  <div class="footer-hint">Press <kbd>Enter</kbd> to start &nbsp;·&nbsp; <kbd>Esc</kbd> to collapse entrance</div>
+
+<script>
+  // shared theme toggle — same on all three screens
+  const root = document.documentElement;
+  const themeBtn = document.getElementById('themeToggle');
+  const themeIcon = document.getElementById('themeIcon');
+  function setTheme(t) {
+    root.setAttribute('data-theme', t);
+    themeIcon.innerHTML = t === 'dark'
+      ? '<path d="M20 14.5A8 8 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/>'          // moon
+      : '<circle cx="12" cy="12" r="4.2"/><line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/><line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/><line x1="5.1" y1="5.1" x2="6.8" y2="6.8"/><line x1="17.2" y1="17.2" x2="18.9" y2="18.9"/><line x1="5.1" y1="18.9" x2="6.8" y2="17.2"/><line x1="17.2" y1="6.8" x2="18.9" y2="5.1"/>';
+  }
+  themeBtn.addEventListener('click', () => {
+    setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+  document.getElementById('startBtn').addEventListener('click', () => {
+    // entrance dissolves to project-selection (mock: redirect)
+    window.location.href = 'noslop-project-selection.html';
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') window.location.href = 'noslop-project-selection.html';
+  });
+</script>
+</body>
+</html>

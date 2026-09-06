@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELAI — full UI skeleton mockup (boot · dashboard · flyout · settings)</title>
+<style>
+  /* ============================================================
+     ELAI design language, applied. Palette: monochrome + ONE teal
+     (P2 "Carbon Signal" — the locked ramp). No blue, amber, red,
+     green, purple, no second accent. Warn = ▲ in text color.
+     Fail = mono inversion (light chip, dark text). DESIGN.md is law.
+     Fonts: fallback mono stack + a hairline system display fallback.
+     NOTE: the authored hairline display face is still UNCHOSEN
+     (DESIGN.md open item) — system-ui at weight 100 stands in here.
+     ============================================================ */
+  :root {
+    /* role-named tokens, the ONLY color source (DESIGN.md sec 3, P2) */
+    --void:#030404; --panel:#090d0c; --surface:#0e1413; --raised:#161c1b;
+    --text:#f2f5f4; --dim:#79827e; --ghost:#3a423f;
+    --border:rgba(255,255,255,.07); --border-void:rgba(255,255,255,.10);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.35); --teal-ghost:rgba(43,187,164,.08);
+    --teal-wash:rgba(43,187,164,.10);
+    --mono:'JetBrains Mono','Cascadia Code',Consolas,monospace;
+    /* hairline display voice — authored face pending, system fallback */
+    --display:system-ui,'Segoe UI',sans-serif;
+    /* named z-scale (DESIGN.md sec 8) — no magic 9999 */
+    --z-chrome:10; --z-overlay:40; --z-flyout:50; --z-menubtn:60; --z-modal:80;
+    --r-sm:2px; --r:4px; --r-md:6px; --r-lg:10px;
+  }
+  * { margin:0; box-sizing:border-box; }
+  html,body { height:100%; }
+  body { background:var(--void); color:var(--text); font-family:var(--mono);
+         font-size:13px; overflow:hidden; }
+
+  /* ===== view switching: only one .view is shown ===== */
+  .view { display:none; height:100vh; }
+  .view.on { display:block; }
+
+  /* ============================================================
+     1. BOOT / PROJECT SELECTION  (BRAND surface — atmosphere allowed)
+     ============================================================ */
+  #boot { position:relative; display:flex; flex-direction:column;
+          align-items:center; justify-content:center;
+          /* faint teal radial bloom (felt, not seen) */
+          background:radial-gradient(ellipse at 50% 40%, rgba(43,187,164,.07), transparent 58%), var(--void); }
+  /* 4-6 dim 1px stars — brand only, never on work surfaces */
+  #boot .star { position:absolute; width:1px; height:1px; border-radius:50%;
+                background:rgba(242,245,244,.32); }
+  #boot .star.t { background:rgba(43,187,164,.4); }
+  .boot-inner { display:flex; flex-direction:column; align-items:center;
+                gap:30px; max-width:520px; width:100%; padding:0 24px; }
+  .logo-hero { width:min(300px,52vw); height:auto; overflow:visible; cursor:pointer; display:block; }
+  .logo-hero line { stroke:var(--teal-bright); stroke-width:2.4; stroke-linecap:round; fill:none; }
+  .tagline { font-family:var(--display); font-weight:100; font-size:15px;
+             letter-spacing:.42em; color:var(--dim); text-transform:lowercase;
+             padding-left:.42em; }
+  .mode-row { display:flex; gap:0; border:1px solid var(--border-void);
+              border-radius:var(--r-md); overflow:hidden; }
+  .mode-seg { font-size:10px; letter-spacing:.18em; padding:9px 22px; color:var(--dim);
+              cursor:pointer; background:transparent; border:none; font-family:var(--mono);
+              border-right:1px solid var(--border-void); transition:color 120ms ease-out, background 120ms ease-out; }
+  .mode-seg:last-child { border-right:none; }
+  .mode-seg.on { color:var(--teal-bright); background:var(--teal-ghost); }
+  .mode-seg:hover { color:var(--text); }
+  .recent { width:100%; display:flex; flex-direction:column; gap:8px; margin-top:6px; }
+  .recent-label { font-size:8px; letter-spacing:.24em; color:var(--dim); display:flex;
+                  align-items:center; gap:7px; margin-bottom:4px; }
+  .recent-label::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--teal-bright); }
+  .recent-row { display:flex; align-items:center; justify-content:space-between;
+                padding:12px 14px; border:1px solid var(--border); border-radius:var(--r-md);
+                background:var(--surface); cursor:pointer; transition:border-color 120ms ease-out, background 120ms ease-out; }
+  .recent-row:hover { border-color:var(--teal-soft); background:var(--raised); }
+  .recent-row .skl { height:9px; border-radius:var(--r-sm); background:var(--ghost); }
+  .recent-row .skl.w1 { width:160px; } .recent-row .skl.w2 { width:96px; }
+  .recent-row .meta { font-size:9px; letter-spacing:.1em; color:var(--dim); }
+  .ghost-btn { font-family:var(--mono); font-size:11px; letter-spacing:.16em; padding:11px 0;
+               width:100%; border:1px dashed var(--ghost); border-radius:var(--r-md);
+               background:transparent; color:var(--dim); cursor:pointer; margin-top:4px;
+               transition:border-color 120ms ease-out, color 120ms ease-out; }
+  .ghost-btn:hover { border-color:var(--teal-soft); color:var(--teal-bright); }
+
+  /* ============================================================
+     2. DASHBOARD SHELL  (WORK surface — flat matte, no stars/glow)
+     ============================================================ */
+  #dash { display:grid; grid-template-rows:42px 1fr 22px; }
+
+  /* ---- tab bar ---- */
+  .tabbar { display:flex; align-items:center; gap:4px; padding:0 12px 0 44px;
+            border-bottom:1px solid var(--border); background:var(--panel); position:relative; z-index:var(--z-chrome); }
+  .logo-sm { width:52px; overflow:visible; margin-right:18px; flex:none; }
+  .logo-sm line { stroke:var(--teal-bright); stroke-width:3.4; stroke-linecap:round; fill:none; }
+  .tab { font-size:10px; letter-spacing:.18em; padding:6px 14px; border-radius:var(--r-md) var(--r-md) 0 0;
+         color:var(--dim); cursor:pointer; border:1px solid transparent; border-bottom:none;
+         background:transparent; font-family:var(--mono); transition:color 120ms ease-out; }
+  .tab.on { color:var(--teal-bright); border-color:var(--border); background:var(--void); position:relative; top:1px; }
+  .tab:hover:not(.on) { color:var(--text); }
+  .tab-right { margin-left:auto; display:flex; align-items:center; gap:16px; }
+  .runbar { display:flex; align-items:center; gap:8px; font-size:9px; letter-spacing:.14em; color:var(--dim); }
+  .runbar .frac { color:var(--teal-bright); }
+  .segbar { display:flex; gap:2px; }
+  .seg { width:9px; height:8px; border-radius:1px; background:var(--ghost); }
+  .seg.f { background:var(--teal); }
+  .seg.a { background:var(--teal-bright); animation:segpulse 1.6s ease-in-out infinite; }
+  @keyframes segpulse { 0%,100%{opacity:1;} 50%{opacity:.35;} }
+
+  /* ---- body: chat | splitter | canvas ---- */
+  .shell { display:grid; grid-template-columns:300px 5px 1fr; min-height:0; }
+
+  /* chat pane (first-class, alongside canvas) */
+  .chat { border-right:1px solid var(--border); background:var(--panel);
+          display:grid; grid-template-rows:auto 1fr auto auto; min-height:0; }
+  .chat-head { padding:12px 16px 10px; border-bottom:1px solid var(--border); }
+  .chat-msgs { overflow-y:auto; padding:14px 16px; display:flex; flex-direction:column; gap:14px; }
+  .msg { display:flex; flex-direction:column; gap:6px; }
+  .msg .who { font-size:8px; letter-spacing:.2em; color:var(--dim); display:flex; align-items:center; gap:6px; }
+  .msg .who::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--ghost); }
+  .msg.ai .who::before { background:var(--teal-bright); }
+  .msg .bub { display:flex; flex-direction:column; gap:6px; }
+  .msg .ln { height:8px; border-radius:var(--r-sm); background:var(--ghost); }
+  .msg.ai .ln { background:var(--surface); border:1px solid var(--border); }
+  .chat-usage { padding:8px 16px; border-top:1px solid var(--border); font-size:8px;
+                letter-spacing:.12em; color:var(--dim); display:flex; justify-content:space-between; align-items:center; }
+  .chat-usage .live { color:var(--teal-bright); }
+  .chat-input { padding:12px 16px 14px; border-top:1px solid var(--border); display:flex; flex-direction:column; gap:8px; }
+  .chat-box { border:1px solid var(--border); border-radius:var(--r-md); background:var(--surface);
+              height:46px; display:flex; align-items:center; padding:0 12px; color:var(--dim); font-size:11px; }
+  .chat-box:focus-within { border-color:var(--teal-soft); }
+  .slash-hint { font-size:8px; letter-spacing:.1em; color:var(--dim); display:flex; gap:8px; flex-wrap:wrap; }
+  .slash-hint b { color:var(--teal-bright); font-weight:400; }
+
+  /* splitter (draggable-looking) */
+  .splitter { background:var(--border); cursor:col-resize; }
+  .splitter:hover { background:var(--teal-soft); }
+
+  /* canvas area — FLAT, no stars, no glow, ever */
+  .canvas { position:relative; overflow:hidden; background:var(--void); min-height:0; }
+  .pane { display:none; position:absolute; inset:0; }
+  .pane.on { display:block; }
+
+  /* shared: summary column + graph */
+  .work { display:grid; grid-template-columns:232px 1fr; height:100%; min-height:0; }
+  .summary { border-right:1px solid var(--border); background:var(--panel); padding:18px 16px;
+             display:flex; flex-direction:column; gap:20px; overflow-y:auto; }
+  .slabel { font-size:8px; letter-spacing:.22em; color:var(--dim); display:flex; align-items:center; gap:6px; margin-bottom:7px; }
+  .slabel::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--teal-bright); }
+  .sval { font-size:11px; line-height:1.55; }
+  .sval.dim { color:var(--dim); }
+  .sbig { font-size:22px; font-weight:300; letter-spacing:.03em; font-family:var(--display); }
+  .sbig small { font-size:11px; color:var(--dim); font-family:var(--mono); }
+  .gline { display:flex; gap:12px; font-size:11px; align-items:center; }
+  .gline .ok { color:var(--teal-bright); }
+  .gline .wa { color:var(--text); }
+  .gline .fa { background:var(--text); color:var(--void); padding:0 5px; border-radius:var(--r-sm); font-weight:600; }
+  .legend { font-size:9px; line-height:2; color:var(--dim); letter-spacing:.06em; }
+  .legend b { color:var(--text); font-weight:400; }
+
+  .graph { position:relative; overflow:hidden; background:var(--void); }
+  .graph svg.edges { position:absolute; inset:0; width:100%; height:100%; }
+  .edge { stroke:var(--border); stroke-width:1.5; fill:none; }
+  .edge.live { stroke:var(--teal-bright); stroke-dasharray:7 9; animation:march 1.1s linear infinite; }
+  @keyframes march { to { stroke-dashoffset:-32; } }
+
+  /* node states — shape carries state (DESIGN.md sec 6) */
+  .node { position:absolute; width:192px; border-radius:8px; border:1px solid var(--border);
+          background:var(--surface); padding:10px 12px; }
+  .node .nhead { display:flex; align-items:center; gap:8px; font-size:9px; letter-spacing:.14em; color:var(--dim); margin-bottom:6px; }
+  .node .glyph { width:18px; height:18px; border-radius:5px; display:flex; align-items:center; justify-content:center; font-size:10px; flex:none; }
+  .node .ntitle { font-size:11px; letter-spacing:.03em; margin-bottom:8px; }
+  .node .chips { display:flex; gap:5px; flex-wrap:wrap; }
+  .node .chipx { font-size:8px; letter-spacing:.1em; padding:2px 7px; border-radius:999px; border:1px solid var(--border); color:var(--dim); }
+  .node .chipx.t { color:var(--teal-bright); border-color:var(--teal-soft); }
+  .node.done { opacity:.82; border-left:3px solid var(--teal); }
+  .node.done .glyph { background:var(--teal); color:var(--void); }
+  .node.active { border:1.5px solid var(--teal-bright); background:var(--teal-ghost); animation:nodepulse 2.2s ease-in-out infinite; }
+  .node.active .glyph { border:1.5px solid var(--teal-bright); color:var(--teal-bright); }
+  @keyframes nodepulse { 0%,100%{box-shadow:0 0 0 0 var(--teal-ghost);} 50%{box-shadow:0 0 0 5px var(--teal-ghost);} }
+  .node.pending { border-style:dashed; }
+  .node.pending .glyph { border:1px solid var(--ghost); color:var(--dim); }
+  .node.pending .ntitle { color:var(--dim); }
+  .node.warn .glyph { border:1px solid var(--text); color:var(--text); }
+  /* fail = MONO INVERSION (loudest thing on the dark surface) */
+  .node.fail { background:var(--text); border-color:var(--text); }
+  .node.fail .nhead, .node.fail .ntitle { color:var(--void); }
+  .node.fail .glyph { background:var(--void); color:var(--text); font-weight:700; }
+  .node.fail .chipx { color:var(--void); border-color:rgba(0,0,0,.3); }
+
+  /* collapsed done cluster — done reads by ABSENCE of detail */
+  .capsule { position:absolute; display:flex; align-items:center; gap:9px; padding:11px 16px; border-radius:999px;
+             border:1px solid var(--teal-soft); background:var(--surface); font-size:10px; letter-spacing:.12em; cursor:pointer; }
+  .capsule .cg { color:var(--teal-bright); }
+  .capsule .cc { color:var(--dim); }
+
+  /* skeleton placeholder block (ghost-stroke rectangle, dim label) */
+  .skel { border:1px dashed var(--ghost); border-radius:var(--r-md); background:rgba(255,255,255,.012);
+          display:flex; align-items:center; justify-content:center; color:var(--ghost);
+          font-size:9px; letter-spacing:.2em; text-align:center; }
+  .skel.solid { border-style:solid; border-color:var(--border); }
+
+  /* lens / mode bars shared */
+  .lensbar { display:flex; align-items:center; gap:4px; padding:10px 16px; border-bottom:1px solid var(--border);
+             background:var(--panel); flex-wrap:wrap; }
+  .lens { font-size:9px; letter-spacing:.14em; padding:5px 12px; border-radius:var(--r); color:var(--dim);
+          border:1px solid transparent; cursor:pointer; background:transparent; font-family:var(--mono); transition:color 120ms ease-out; }
+  .lens.on { color:var(--teal-bright); border-color:var(--teal-soft); background:var(--teal-ghost); }
+  .lens:hover:not(.on) { color:var(--text); }
+  .lensbar .right { margin-left:auto; font-size:8px; letter-spacing:.16em; color:var(--dim); }
+
+  /* PROJECT / APP / KNOWLEDGE 3-col body: nav-ish left already in summary; here use graph + detail */
+  .gd { display:grid; grid-template-columns:1fr 248px; height:100%; min-height:0; }
+  .gd .center { position:relative; padding:20px; display:flex; flex-direction:column; gap:14px; overflow:auto; }
+  .gd .detail { border-left:1px solid var(--border); background:var(--panel); padding:18px 16px;
+                display:flex; flex-direction:column; gap:16px; overflow-y:auto; }
+  .drow { display:flex; flex-direction:column; gap:7px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+
+  /* memory fact rows (KNOWLEDGE) */
+  .fact { border:1px solid var(--border); border-radius:var(--r-md); background:var(--surface); padding:11px 13px;
+          display:flex; flex-direction:column; gap:8px; }
+  .fact .ftxt { height:9px; border-radius:var(--r-sm); background:var(--ghost); }
+  .fact .fchips { display:flex; gap:5px; flex-wrap:wrap; }
+  .pchip { font-size:8px; letter-spacing:.1em; padding:2px 7px; border-radius:999px; border:1px solid var(--border); color:var(--dim); }
+  .pchip.t { color:var(--teal-bright); border-color:var(--teal-soft); }
+  .pchip.warn { border-color:var(--text); color:var(--text); } /* ▲ warn = shape/text only */
+
+  /* ---- statusbar ---- */
+  .statusbar { display:flex; align-items:center; justify-content:space-between; padding:0 12px 0 44px;
+               font-size:9px; letter-spacing:.12em; color:var(--dim); border-top:1px solid var(--border);
+               background:var(--panel); position:relative; z-index:var(--z-chrome); }
+  .statusbar .fsm { color:var(--teal-bright); }
+
+  /* ============================================================
+     3. FLYOUT  (zero-width, slides left-to-right over everything)
+     ============================================================ */
+  .menubtn { position:fixed; top:0; left:0; width:32px; height:42px; z-index:var(--z-menubtn);
+             display:flex; align-items:center; justify-content:center; background:transparent;
+             border:none; color:var(--dim); font-size:14px; cursor:pointer; }
+  .menubtn:hover { color:var(--teal-bright); }
+  .flyout { position:fixed; top:0; left:0; bottom:0; width:300px; z-index:var(--z-flyout); background:var(--panel);
+            border-right:1px solid var(--border); transform:translateX(-100%);
+            transition:transform 220ms cubic-bezier(0.16,1,0.3,1); padding:52px 18px 18px; overflow-y:auto; }
+  .flyout.open { transform:translateX(0); box-shadow:18px 0 50px rgba(0,0,0,.5); }
+  .fsec { font-size:8px; letter-spacing:.22em; color:var(--dim); margin:18px 0 8px; display:flex; align-items:center; gap:6px; }
+  .fsec::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--teal-bright); }
+  .fitem { font-size:11px; padding:7px 9px; border-radius:var(--r-md); cursor:pointer; display:flex;
+           justify-content:space-between; align-items:center; color:var(--text); transition:background 120ms ease-out; }
+  .fitem:hover { background:var(--teal-ghost); }
+  .fitem .k { color:var(--ghost); font-size:9px; }
+  /* monitors long-tail: collapsed skeleton group, represented but out of the way */
+  .mon { font-size:9px; padding:5px 9px; border-radius:var(--r); color:var(--dim);
+         display:flex; align-items:center; gap:7px; cursor:default; }
+  .mon::before { content:""; width:4px; height:4px; border-radius:50%; background:var(--ghost); flex:none; }
+  .mon .dot-a::before { background:var(--teal-bright); }
+  .ftree { font-size:10px; line-height:1.9; color:var(--dim); }
+  .ftree .dir { color:var(--text); }
+  .ftree .hot { color:var(--teal-bright); }
+  .scrim { position:fixed; inset:0; z-index:var(--z-overlay); background:rgba(0,0,0,.35); opacity:0;
+           pointer-events:none; transition:opacity 220ms ease-out; }
+  .scrim.on { opacity:1; pointer-events:auto; }
+
+  /* ============================================================
+     4. SETTINGS  (popup MODAL over the workspace, never a tab/window)
+     ============================================================ */
+  .modal-scrim { position:fixed; inset:0; z-index:var(--z-modal); background:rgba(0,0,0,.5);
+                 display:none; align-items:center; justify-content:center; padding:40px; }
+  .modal-scrim.on { display:flex; }
+  .modal { width:min(840px,92vw); height:min(560px,86vh); background:var(--surface);
+           border:1px solid var(--border-void); border-radius:var(--r-lg); overflow:hidden;
+           display:grid; grid-template-rows:46px 1fr; box-shadow:0 24px 80px rgba(0,0,0,.6); }
+  .modal-head { display:flex; align-items:center; justify-content:space-between; padding:0 16px;
+                border-bottom:1px solid var(--border); }
+  .modal-head .mt { font-size:11px; letter-spacing:.2em; color:var(--text); }
+  .modal-close { background:transparent; border:none; color:var(--dim); font-size:15px; cursor:pointer; }
+  .modal-close:hover { color:var(--teal-bright); }
+  .modal-body { display:grid; grid-template-columns:206px 1fr; min-height:0; }
+  .set-nav { border-right:1px solid var(--border); background:var(--panel); padding:14px 10px; overflow-y:auto; }
+  .set-item { font-size:11px; padding:8px 11px; border-radius:var(--r-md); color:var(--dim); cursor:pointer;
+              transition:color 120ms ease-out, background 120ms ease-out; }
+  .set-item.on { color:var(--teal-bright); background:var(--teal-ghost); }
+  .set-item:hover:not(.on) { color:var(--text); }
+  .set-grp { font-size:8px; letter-spacing:.22em; color:var(--ghost); margin:14px 11px 6px; }
+  .set-panel { padding:22px 24px; overflow-y:auto; display:flex; flex-direction:column; gap:16px; }
+  .set-row { display:flex; flex-direction:column; gap:8px; }
+  .set-row .rl { font-size:9px; letter-spacing:.18em; color:var(--dim); display:flex; align-items:center; gap:6px; }
+  .set-row .rl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--teal-bright); }
+
+  /* ===== reduced motion: every animation swaps to a static end state ===== */
+  @media (prefers-reduced-motion:reduce) {
+    .edge.live, .node.active, .seg.a { animation:none !important; }
+    .flyout, .mode-seg, .tab, .lens, .set-item, .recent-row, .ghost-btn, .fitem { transition:none !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- shared menu button + flyout + scrim (present on dashboard only via z-stack; hidden on boot) -->
+<button class="menubtn" id="menubtn" aria-label="menu" style="display:none">☰</button>
+<div class="scrim" id="scrim"></div>
+<nav class="flyout" id="flyout" aria-label="menu and files">
+  <div class="fsec">MENU</div>
+  <div class="fitem">project intelligence</div>
+  <div class="fitem">sessions / branches <span class="k">3 active</span></div>
+  <div class="fitem">receipts / RRA <span class="k">elai rra show</span></div>
+  <div class="fitem" id="open-settings-2">settings <span class="k">popup ⌘,</span></div>
+  <div class="fsec">MONITORS <span class="k" style="margin-left:auto;font-size:8px">collapsed</span></div>
+  <!-- the legacy panel long-tail: represented, skeletal, out of the way -->
+  <div class="mon"><span class="dot-a"></span>cost cockpit · $/resolved-task</div>
+  <div class="mon">runtime / backends · 11 adapters</div>
+  <div class="mon">SSB telemetry · live event stream</div>
+  <div class="mon">trust / taint telemetry</div>
+  <div class="mon"><span class="dot-a"></span>context / usage meter</div>
+  <div class="mon">critic decisions</div>
+  <div class="mon">skill systems</div>
+  <div class="mon">roadmap / compliance posture</div>
+  <div class="mon">proposals / MSI (self-mod)</div>
+  <div class="mon">notifications · plan-approval · cost-confirm</div>
+  <div class="mon">mode-routing / refusal</div>
+  <div class="mon">mutation · blast-radius gates</div>
+  <div class="mon">reviewer cockpit / DSR</div>
+  <div class="mon">activity orbit <span style="margin-left:6px;color:var(--ghost)">retiring</span></div>
+  <div class="fsec">FILES</div>
+  <div class="ftree">
+    <div class="dir">crates/</div>
+    <div>&nbsp;&nbsp;orchestrator/</div>
+    <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="hot">task_runner.rs ●</span></div>
+    <div>&nbsp;&nbsp;&nbsp;&nbsp;ssb.rs</div>
+    <div>&nbsp;&nbsp;knowledge/</div>
+    <div>&nbsp;&nbsp;dashboard-v2/</div>
+    <div class="dir">python/</div>
+    <div>&nbsp;&nbsp;elai_inference/</div>
+  </div>
+</nav>
+
+<!-- settings modal (popup over workspace) -->
+<div class="modal-scrim" id="settings-scrim">
+  <div class="modal" role="dialog" aria-label="settings">
+    <div class="modal-head">
+      <span class="mt">SETTINGS</span>
+      <button class="modal-close" id="settings-close" aria-label="close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="set-nav" id="set-nav">
+        <div class="set-grp">CORE</div>
+        <div class="set-item on" data-set="models / routing">models / routing</div>
+        <div class="set-item" data-set="sidecar">sidecar</div>
+        <div class="set-item" data-set="cloud">cloud</div>
+        <div class="set-item" data-set="runtime">runtime</div>
+        <div class="set-grp">TRUST</div>
+        <div class="set-item" data-set="gates">gates</div>
+        <div class="set-item" data-set="gating / authz">gating / authz</div>
+        <div class="set-item" data-set="skills">skills</div>
+        <div class="set-grp">EXPERIENCE</div>
+        <div class="set-item" data-set="UX">UX</div>
+        <div class="set-grp">ADVANCED</div>
+        <div class="set-item" data-set="advanced inspectors">advanced inspectors</div>
+      </div>
+      <div class="set-panel" id="set-panel">
+        <div class="set-row"><div class="rl" id="set-title">MODELS / ROUTING</div>
+          <div class="skel solid" style="height:64px">PER-ROLE RUNTIME TABLE</div></div>
+        <div class="set-row"><div class="rl">CALIBRATED ROUTING</div>
+          <div class="skel" style="height:48px">ARCHITECT · EDITOR · VERIFIER LANES</div></div>
+        <div class="set-row"><div class="rl">TIER MATRIX</div>
+          <div class="skel" style="height:48px">LOCAL 3B/7B/32B · CLOUD SONNET/OPUS</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     VIEW: BOOT
+     ============================================================ -->
+<section class="view on" id="boot">
+  <span class="star" style="top:22%;left:24%"></span>
+  <span class="star t" style="top:64%;left:70%"></span>
+  <span class="star" style="top:34%;left:82%"></span>
+  <span class="star" style="top:76%;left:30%"></span>
+  <span class="star t" style="top:18%;left:60%"></span>
+  <span class="star" style="top:58%;left:14%"></span>
+  <div class="boot-inner">
+    <svg class="logo-hero" id="logo-hero" viewBox="-3 -3 236 66" aria-label="ELAI">
+      <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/><line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+      <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+      <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/><line x1="162.7" y1="38" x2="177.3" y2="38"/>
+      <line x1="228" y1="0" x2="228" y2="60"/>
+    </svg>
+    <div class="tagline">a deterministic development engine</div>
+    <div class="mode-row">
+      <button class="mode-seg on">LOCAL</button>
+      <button class="mode-seg">CLOUD</button>
+      <button class="mode-seg">HYBRID</button>
+    </div>
+    <div class="recent">
+      <div class="recent-label">RECENT PROJECTS</div>
+      <div class="recent-row" id="enter-1">
+        <div style="display:flex;flex-direction:column;gap:7px"><div class="skl w1"></div><div class="meta">elai_cc · rust + ts · 14 sessions</div></div>
+        <div class="skl w2"></div>
+      </div>
+      <div class="recent-row" id="enter-2">
+        <div style="display:flex;flex-direction:column;gap:7px"><div class="skl w1" style="width:120px"></div><div class="meta">vault-manager · 9 sessions</div></div>
+        <div class="skl w2" style="width:72px"></div>
+      </div>
+      <div class="recent-row" id="enter-3">
+        <div style="display:flex;flex-direction:column;gap:7px"><div class="skl w1" style="width:144px"></div><div class="meta">saas-archetype · 2 sessions</div></div>
+        <div class="skl w2" style="width:84px"></div>
+      </div>
+      <button class="ghost-btn">+ NEW PROJECT</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     VIEW: DASHBOARD
+     ============================================================ -->
+<section class="view" id="dash">
+  <header class="tabbar">
+    <svg class="logo-sm" viewBox="-3 -3 236 66" aria-label="ELAI">
+      <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/><line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+      <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+      <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/><line x1="162.7" y1="38" x2="177.3" y2="38"/>
+      <line x1="228" y1="0" x2="228" y2="60"/>
+    </svg>
+    <div class="tab on" data-pane="p-progress">PROGRESS</div>
+    <div class="tab" data-pane="p-project">PROJECT</div>
+    <div class="tab" data-pane="p-app">APP</div>
+    <div class="tab" data-pane="p-knowledge">KNOWLEDGE</div>
+    <div class="tab-right">
+      <div class="runbar">RUNNING
+        <span class="segbar">
+          <span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span>
+          <span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg a"></span>
+          <span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span>
+        </span>
+        <span class="frac">9/14</span>
+      </div>
+      <span style="font-size:9px;letter-spacing:.14em;color:var(--dim)">s-mock</span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- CHAT pane (first-class, alongside canvas) -->
+    <aside class="chat">
+      <div class="chat-head"><div class="slabel">CHAT</div><div class="sval dim">reflect pipeline · sonnet</div></div>
+      <div class="chat-msgs">
+        <div class="msg"><div class="who">YOU</div><div class="bub"><div class="ln" style="width:88%"></div><div class="ln" style="width:64%"></div></div></div>
+        <div class="msg ai"><div class="who">ELAI</div><div class="bub"><div class="ln" style="width:96%;height:8px"></div><div class="ln" style="width:90%"></div><div class="ln" style="width:72%"></div></div></div>
+        <div class="msg"><div class="who">YOU</div><div class="bub"><div class="ln" style="width:54%"></div></div></div>
+        <div class="msg ai"><div class="who">ELAI</div><div class="bub"><div class="ln" style="width:92%"></div><div class="ln" style="width:80%"></div></div></div>
+      </div>
+      <div class="chat-usage"><span>CTX 41k / 200k</span><span class="live">● 1.2k tok/s</span></div>
+      <div class="chat-input">
+        <div class="chat-box">message ELAI, or run a command…</div>
+        <div class="slash-hint"><b>/task</b> <b>/reason</b> <b>/ask</b> <b>/plan</b> <b>/research</b> <b>/runtime</b> <b>/rewind</b></div>
+      </div>
+    </aside>
+
+    <div class="splitter" id="splitter" title="drag to resize (mock)"></div>
+
+    <!-- CANVAS area: the 4 tab panes -->
+    <div class="canvas">
+
+      <!-- ===== PROGRESS pane ===== -->
+      <div class="pane on" id="p-progress">
+        <div class="work">
+          <aside class="summary">
+            <div><div class="slabel">MISSION</div><div class="sval">zero-knowledge password manager — sharing milestone</div></div>
+            <div><div class="slabel">PROGRESS</div><div class="sbig">9<small> / 14 steps</small></div></div>
+            <div><div class="slabel">GATES</div><div class="gline"><span class="ok">12 ✓</span><span class="wa">1 ▲</span><span class="fa">1 ✕</span></div></div>
+            <div><div class="slabel">LAST ACTIVITY</div><div class="sval dim">executor writing vault_crud.rs<br>12s ago · sonnet · 41k tok</div></div>
+            <div><div class="slabel">LEGEND</div>
+              <div class="legend">
+                <b>✓</b> done — teal, recedes<br>
+                <b>●</b> active — pulsing outline<br>
+                <b>○</b> pending — dashed, dim<br>
+                <b>▲</b> warn — shape only<br>
+                <b>✕</b> fail — mono inversion<br>
+                healthy = silent, zero badges
+              </div>
+            </div>
+          </aside>
+          <div class="graph">
+            <svg class="edges">
+              <path class="edge" d="M 232 272 C 280 272, 280 146, 318 146"/>
+              <path class="edge" d="M 232 272 C 280 272, 280 384, 318 384"/>
+              <path class="edge live" d="M 510 146 C 560 146, 560 150, 608 150"/>
+              <path class="edge" d="M 510 384 C 560 384, 560 388, 608 388"/>
+              <path class="edge" d="M 800 150 C 850 150, 850 154, 898 154"/>
+              <path class="edge" d="M 800 388 C 850 388, 850 392, 898 392"/>
+            </svg>
+            <div class="capsule" style="left:42px;top:250px" title="5 finished steps, collapsed">
+              <span class="cg">✓</span> FOUNDATION <span class="cc">· 5 STEPS</span>
+            </div>
+            <div class="node done" style="left:318px;top:106px">
+              <div class="nhead"><span class="glyph">✓</span>B-12 · STEP</div>
+              <div class="ntitle">google sso auth flow</div>
+              <div class="chips"><span class="chipx t">3 GATES ✓</span><span class="chipx">receipt</span></div>
+            </div>
+            <div class="node done" style="left:318px;top:344px">
+              <div class="nhead"><span class="glyph">✓</span>B-13 · STEP</div>
+              <div class="ntitle">master key derivation (PBKDF2)</div>
+              <div class="chips"><span class="chipx t">2 GATES ✓</span><span class="chipx">receipt</span></div>
+            </div>
+            <div class="node active" style="left:608px;top:106px">
+              <div class="nhead"><span class="glyph">●</span>B-14 · STEP</div>
+              <div class="ntitle">vault entry crud, client-side AES-GCM</div>
+              <div class="chips"><span class="chipx t">EXECUTOR · sonnet</span><span class="chipx">2/3 gates</span><span class="chipx">conf 91%</span></div>
+            </div>
+            <div class="node warn" style="left:608px;top:344px">
+              <div class="nhead"><span class="glyph">▲</span>B-15 · STEP</div>
+              <div class="ntitle">encrypted search index</div>
+              <div class="chips"><span class="chipx">1 registered stub</span><span class="chipx">resolves in B-18</span></div>
+            </div>
+            <div class="node pending" style="left:898px;top:110px">
+              <div class="nhead"><span class="glyph">○</span>B-16 · STEP</div>
+              <div class="ntitle">sharing core</div>
+              <div class="chips"><span class="chipx">queued · feasibility probe</span></div>
+            </div>
+            <div class="node fail" style="left:898px;top:348px">
+              <div class="nhead"><span class="glyph">✕</span>B-17 · STEP</div>
+              <div class="ntitle">ipc bridge contract</div>
+              <div class="chips"><span class="chipx">gate FAIL · evidence missing</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== PROJECT pane ===== -->
+      <div class="pane" id="p-project">
+        <div style="display:grid;grid-template-rows:auto 1fr;height:100%;min-height:0">
+          <div class="lensbar">
+            <span style="font-size:8px;letter-spacing:.22em;color:var(--dim);margin-right:8px">LENS</span>
+            <button class="lens on">STRUCTURE</button>
+            <button class="lens">SECURITY</button>
+            <button class="lens">HISTORY</button>
+            <button class="lens">COST</button>
+            <button class="lens">DEAD-CODE</button>
+            <span class="right">DKG · 18 grammars · PageRank repo-map</span>
+          </div>
+          <div class="gd">
+            <div class="center">
+              <div class="skel" style="flex:1;min-height:280px">CODE-GRAPH · SYMBOL NODES + TYPED EDGES (skeleton)</div>
+              <div class="grid3">
+                <div class="skel" style="height:60px">IMPACT CONE</div>
+                <div class="skel" style="height:60px">DEAD-CODE ISLANDS</div>
+                <div class="skel" style="height:60px">COVERAGE BACKSTOP</div>
+              </div>
+            </div>
+            <div class="detail">
+              <div class="drow"><div class="slabel">SELECTION</div><div class="skel" style="height:40px">no symbol selected</div></div>
+              <div class="drow"><div class="slabel">BLAST RADIUS</div><div class="skel" style="height:56px">reverse-dep cone · regression set</div></div>
+              <div class="drow"><div class="slabel">SECURITY</div><div class="skel" style="height:40px">vibegate · taint · CWE</div></div>
+              <div class="drow"><div class="slabel">RECEIPTS</div><div class="skel" style="height:40px">RRA · attestation</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== APP pane ===== -->
+      <div class="pane" id="p-app">
+        <div style="display:grid;grid-template-rows:auto 1fr;height:100%;min-height:0">
+          <div class="lensbar">
+            <span style="font-size:8px;letter-spacing:.22em;color:var(--dim);margin-right:8px">MODE</span>
+            <button class="lens on">APP</button>
+            <button class="lens">WEBSITE</button>
+            <button class="lens">ARCHITECTURE</button>
+            <span class="right">dev-preview proxy · data-oid recast writeback</span>
+          </div>
+          <div class="gd">
+            <div class="center">
+              <div class="slabel">PAGES</div>
+              <div class="grid3">
+                <div class="skel" style="height:90px">/ home</div>
+                <div class="skel" style="height:90px">/ vault</div>
+                <div class="skel" style="height:90px">/ settings</div>
+              </div>
+              <div class="slabel" style="margin-top:6px">RECAST · BEFORE / AFTER</div>
+              <div class="grid2">
+                <div class="skel" style="height:150px">BEFORE</div>
+                <div class="skel solid" style="height:150px;border-color:var(--teal-soft);color:var(--teal-bright)">AFTER (proposed)</div>
+              </div>
+            </div>
+            <div class="detail">
+              <div class="drow"><div class="slabel">LIVE PREVIEW</div><div class="skel" style="height:120px">dev-preview frame</div></div>
+              <div class="drow"><div class="slabel">FRAMEWORK</div><div class="skel" style="height:40px">manifest · fullstack codegen</div></div>
+              <div class="drow"><div class="slabel">ARCHETYPE</div><div class="skel" style="height:40px">SaaS RLS · scoped tokens</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== KNOWLEDGE pane ===== -->
+      <div class="pane" id="p-knowledge">
+        <div style="display:grid;grid-template-rows:auto 1fr;height:100%;min-height:0">
+          <div class="lensbar">
+            <span style="font-size:8px;letter-spacing:.22em;color:var(--dim);margin-right:8px">VIEW</span>
+            <button class="lens on">MEMORY</button>
+            <button class="lens">RESEARCH</button>
+            <button class="lens">RETRIEVAL</button>
+            <button class="lens">COSMOS</button>
+            <span class="right">Tier-A code-grounded · Tier-B preference · provenance + taint</span>
+          </div>
+          <div class="gd">
+            <div class="center">
+              <div class="slabel">MEMORY FACTS</div>
+              <div class="fact"><div class="ftxt" style="width:78%"></div>
+                <div class="fchips"><span class="pchip t">TIER-A · code-grounded</span><span class="pchip">DKG cited</span><span class="pchip">28d TTL</span></div></div>
+              <div class="fact"><div class="ftxt" style="width:62%"></div>
+                <div class="fchips"><span class="pchip t">TIER-B · preference</span><span class="pchip">provenance: user</span></div></div>
+              <div class="fact"><div class="ftxt" style="width:70%"></div>
+                <div class="fchips"><span class="pchip">provenance: WebFetch</span><span class="pchip warn">▲ stale</span><span class="pchip">taint: screened</span></div></div>
+              <div class="slabel" style="margin-top:6px">RESEARCH</div>
+              <div class="skel" style="height:90px">web research orchestrator · citation pre-binding</div>
+            </div>
+            <div class="detail">
+              <div class="drow"><div class="slabel">RETRIEVAL CASCADE</div><div class="skel" style="height:56px">bm25 → vector → pagerank → catrag → arag</div></div>
+              <div class="drow"><div class="slabel">COSMOS</div><div class="skel" style="height:40px">cross-project artifact tier</div></div>
+              <div class="drow"><div class="slabel">MEMORY HUB</div><div class="skel" style="height:40px">pin · provenance · governance</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer class="statusbar">
+    <span><span class="fsm">FSM EXECUTING</span> · s-mock · one fix per loop · LOCAL 7B NF4</span>
+    <span>flat work surface — stars and glow are brand-only</span>
+  </footer>
+</section>
+
+<script>
+(function () {
+  "use strict";
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- the LOCKED logo draw animation, verbatim timing from palette-boards ---- */
+  function segLen(ln) {
+    var dx = ln.x2.baseVal.value - ln.x1.baseVal.value;
+    var dy = ln.y2.baseVal.value - ln.y1.baseVal.value;
+    return Math.hypot(dx, dy);
+  }
+  function drawLogo(svg) {
+    var lines = Array.prototype.slice.call(svg.querySelectorAll('line'));
+    if (reduced) { lines.forEach(function (ln) { ln.style.strokeDasharray = 'none'; ln.style.strokeDashoffset = '0'; }); return; }
+    lines.forEach(function (ln) {
+      var len = segLen(ln);
+      ln.style.transition = 'none';
+      ln.style.strokeDasharray = String(len);
+      ln.style.strokeDashoffset = String(len);
+    });
+    void svg.getBoundingClientRect(); // commit start state
+    lines.forEach(function (ln, i) {
+      ln.style.transition = 'stroke-dashoffset 1400ms cubic-bezier(0.3, 0, 0.2, 1) ' + (400 + i * 380) + 'ms';
+      ln.style.strokeDashoffset = '0';
+    });
+  }
+  var hero = document.getElementById('logo-hero');
+  if (hero) { drawLogo(hero); hero.addEventListener('click', function () { drawLogo(hero); }); }
+  // the tab-bar mini logo is static, fully drawn
+  document.querySelectorAll('.logo-sm line').forEach(function (ln) { ln.style.strokeDashoffset = '0'; });
+
+  /* ---- view navigation: boot -> dashboard ---- */
+  var menubtn = document.getElementById('menubtn');
+  function showView(id) {
+    document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('on', v.id === id); });
+    // menu button + flyout live on the dashboard only
+    menubtn.style.display = (id === 'dash') ? 'flex' : 'none';
+    if (id === 'boot' && hero) { drawLogo(hero); } // replay the hero draw on return to boot
+  }
+  ['enter-1', 'enter-2', 'enter-3'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { el.addEventListener('click', function () { showView('dash'); }); }
+  });
+
+  /* ---- boot: mode segment toggle ---- */
+  document.querySelectorAll('.mode-seg').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.mode-seg').forEach(function (x) { x.classList.toggle('on', x === b); });
+    });
+  });
+
+  /* ---- dashboard tab switching ---- */
+  document.querySelectorAll('.tab').forEach(function (t) {
+    t.addEventListener('click', function () {
+      document.querySelectorAll('.tab').forEach(function (x) { x.classList.toggle('on', x === t); });
+      var paneId = t.getAttribute('data-pane');
+      document.querySelectorAll('.pane').forEach(function (p) { p.classList.toggle('on', p.id === paneId); });
+    });
+  });
+
+  /* ---- lens / mode bars (per-pane local toggle) ---- */
+  document.querySelectorAll('.lensbar').forEach(function (bar) {
+    var lenses = bar.querySelectorAll('.lens');
+    lenses.forEach(function (l) {
+      l.addEventListener('click', function () {
+        lenses.forEach(function (x) { x.classList.toggle('on', x === l); });
+      });
+    });
+  });
+
+  /* ---- flyout: zero-width, slides over ---- */
+  var fly = document.getElementById('flyout'), scrim = document.getElementById('scrim');
+  function toggleFly(open) { fly.classList.toggle('open', open); scrim.classList.toggle('on', open); }
+  menubtn.addEventListener('click', function () { toggleFly(!fly.classList.contains('open')); });
+  scrim.addEventListener('click', function () { toggleFly(false); });
+
+  /* ---- settings: popup modal (opens from flyout) ---- */
+  var sscrim = document.getElementById('settings-scrim');
+  function openSettings() { toggleFly(false); sscrim.classList.add('on'); }
+  function closeSettings() { sscrim.classList.remove('on'); }
+  document.getElementById('open-settings-2').addEventListener('click', openSettings);
+  document.getElementById('settings-close').addEventListener('click', closeSettings);
+  sscrim.addEventListener('click', function (e) { if (e.target === sscrim) { closeSettings(); } });
+
+  /* settings nav: switch the panel title (skeleton stays the same) */
+  var setTitle = document.getElementById('set-title');
+  document.querySelectorAll('.set-item').forEach(function (it) {
+    it.addEventListener('click', function () {
+      document.querySelectorAll('.set-item').forEach(function (x) { x.classList.toggle('on', x === it); });
+      setTitle.textContent = it.getAttribute('data-set').toUpperCase();
+    });
+  });
+
+  /* ---- Esc closes modal then flyout ---- */
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      if (sscrim.classList.contains('on')) { closeSettings(); }
+      else if (fly.classList.contains('open')) { toggleFly(false); }
+    }
+    // ⌘, / Ctrl+, opens settings while on the dashboard
+    if (e.key === ',' && (e.metaKey || e.ctrlKey) && document.getElementById('dash').classList.contains('on')) {
+      e.preventDefault(); openSettings();
+    }
+  });
+
+  /* ---- splitter: draggable chat/canvas divider ---- */
+  var splitter = document.getElementById('splitter');
+  var shell = document.querySelector('.shell');
+  var dragging = false;
+  splitter.addEventListener('mousedown', function () { dragging = true; document.body.style.userSelect = 'none'; });
+  window.addEventListener('mouseup', function () { dragging = false; document.body.style.userSelect = ''; });
+  window.addEventListener('mousemove', function (e) {
+    if (!dragging) { return; }
+    var w = Math.max(220, Math.min(520, e.clientX));
+    shell.style.gridTemplateColumns = w + 'px 5px 1fr';
+  });
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,403 @@
+ELAI FEATURE INVENTORY FOR DASHBOARD WIRING
+Scope: everything completed up to 2026-04-21 (pre-0 .. 4E, 4K.1 .. 4K.5, A-0 .. A-48, WEB.1 .. WEB.3 where applicable)
+Format: Feature Name: one-line description.
+Purpose: checklist for methodically wiring every completed feature into the Tauri dashboard.
+
+
+========================================================================
+GROUP 1 - CORE INFRASTRUCTURE (Phase 0)
+========================================================================
+9-Crate Workspace: Rust workspace split into core/providers/knowledge/reasoning/rules/tools/plugins/orchestrator/cli crates.
+Entropy Quarantine: all clocks and RNGs behind injectable traits (ClockProvider, EntropySource) so same seed = identical output.
+HashMap Ban: BTreeMap/IndexMap/FxHashMap only, to keep iteration order deterministic.
+Minimal FSM Loop: IDLE->EXECUTING->IDLE walking skeleton baseline.
+Config Loader: elai_cc.toml parsing with cross-platform paths and logging setup.
+
+
+========================================================================
+GROUP 2 - KNOWLEDGE ENGINE (Phase 1A-1I, 3K)
+========================================================================
+DKG (Dependency Knowledge Graph): tree-sitter -> SQLite graph of symbols, files, and caller->callee edges.
+Multi-Language DKG Grammars: Rust + Python + TypeScript + Go + Java + C# grammar support (A-35).
+DKG Data Flow Edges: PARAMETER/RETURN/ASSIGNMENT/FIELD_ACCESS edge table for blast radius (A-48).
+BM25 Full-Text Search: tantivy index, per-project isolation, zero orphan files (tree-sitter fallback to 50-line windows).
+Adaptive Chunking: AST-aware BM25 splitting at fn/impl/struct boundaries (3K).
+Dual Vector Search: GraphCodeBERT (code, 768d) + Granite (text, 384d) via ONNX Runtime, content-hash cache.
+SPLADE Sparse Expansion: feature-gated sparse keyword expansion, conditional on measured recall gain.
+PageRank Repo Map: ranks symbols by importance, token-budget-fitted via binary search, 10x personalization for task-mentioned nodes.
+CatRAG: query-aware graph traversal producing evidence chains from DKG.
+A-RAG: hierarchical retrieval with 55-87% token savings.
+Cross-Encoder Reranker: ms-marco-MiniLM-L12-v2, CPU-only, <50ms for 50 candidates, with semaphore+bounded channel+batching.
+Query Expansion: template-based multi-query retrieval (keyword, CamelCase/snake_case variants, synonyms) (3K).
+HyDE: hypothetical answer generation via sidecar for complex queries (3K).
+Query Tier Routing: FAST (BM25 only) / STANDARD (hybrid+reranker) / DEEP (expansion+HyDE+hybrid+reranker) (3K).
+Resilience Layer: per-model circuit breakers + HYBRID->SPARSE_ONLY->BM25_ONLY degradation cascade + query validator + startup readiness (READY/DEGRADED/UNAVAILABLE) + QueryTrace + index version migration.
+Project Indexing Wiring: DKG+BM25+vector indexing wired into pipeline with first-run prompt and incremental updates via SSB (A-44).
+RAG Freshness Scoring: freshness_meta.db sidecar, exponential decay + access boost in RRF scoring (A-13).
+
+
+========================================================================
+GROUP 3 - REASONING ENGINE (Phase 2A-2D, A-17..A-25, A-34)
+========================================================================
+GRC State Machine: observe -> hypothesize -> plan_action -> act -> verify (+ status echo, converge), per-topic call/char budget.
+Grounding Verification: 6 methods (FILE_CHECK, SOURCE_CHECK, TEST_CHECK, WEB_CHECK, API_CHECK, API_REGISTRY_CHECK) returning binary pass/fail.
+Plan Grounding Sweep: decomposes plans into claims, classifies GROUNDED/VERIFY_NEEDED/UNGROUNDED, blocks EXECUTING on any remaining UNGROUNDED.
+Per-Agent GRC Configuration: executor 8/1200, auditor 10/1200 double-verify, context-compiler 3/600, memory-writer 2/400, prompt-engineer 5/800, designer 8/1200.
+Anti-Rubber-Stamp Auditor: auditor must produce >=1 FINDING before Converge.
+CSQ (Counterfactual Safety Questions): "if X wrong, code will Y" with mandatory guards for CRITICAL categories (data_loss, security, financial, auth).
+Inline Feasibility: max 2 mid-execution quick checks for novel claims, Pass/Fail/Blocked outcomes.
+GG Sidecar Signals: mean_logprob, min_logprob, entropy_mean, entropy_max on every sidecar response (A-17).
+GG Generation Novelty: cosine similarity between GraphCodeBERT embeddings of current vs prior generation (A-25).
+Repair Context Profile: 1400-token REPAIR_CONTEXT slot + 7 GenerationProfile presets (A-18).
+Interrogation Tree: 3-7 multiple-choice diagnosis trees seeded for Rust/Python/Go/TypeScript, terminal nodes -> FixTemplate (A-19).
+Mistake Book: SSB-backed MistakeEntry, max 5/baby step, blake3 diff hashing, no variable names allowed (A-20).
+Micro-Reflection: 500-token context, JSON-constrained 50-token output, stores in MistakeBook (A-23).
+RA Failure Taxonomy Self-Discovery: auto-propose new FailureTaxonomy categories after 3+ recurring patterns (A-34).
+
+
+========================================================================
+GROUP 4 - RULES ENGINE (Phase 3F, A-2, A-6, A-14, A-21, A-45)
+========================================================================
+Predicate DSL: AST_PATTERN, GREP_PATTERN, SCHEMA_REQUIRED, METRIC_GATE, COMPOSITE, GRAPH_REACHABILITY predicate types.
+Three-Tier Enforcement: Tier 1 (deterministic code, <1ms), Tier 2 (constrained decoding / AST), Tier 3 (prompt + auditor).
+Rule Lifecycle State Machine: PROPOSED -> CANDIDATE -> SHADOW -> ACTIVE -> RETIRED with pure-arithmetic metric gates.
+Rule Self-Discovery: 3+ auditor violations auto-propose a rule, independent approval required.
+Counterfactual Shadow Testing: CEL-derived test for whether a SHADOW rule actually causes better outcomes.
+EDCT Counterfactual: tests rule fires on real violation vs spurious correlated feature.
+Time-Aware Confidence Decay: rules with no true positives in 90 days lose confidence; <0.25 auto-deprecated; mutable=0 exempt.
+Seed Rule Packs: ~120 rules across trading/dashboard/application/game/RE/engineering/security, ~33 engineering seed rules.
+T1 Hook: loads rules from rules.db, enforces GREP predicates on output (A-2).
+T2 Hook: tree-sitter AST parse for AST predicates (A-2).
+VERSION_GATE Predicate + deprecated_patterns Table: blocks 48% of anti-staleness audit findings (A-6).
+Constitutional Injection: injects CONSTRAINTS block into PhaseSpec content and wires VERSION_GATE into T1 (A-7).
+T2 AST Import Extraction: tree-sitter extracts imports, cross-references deprecated_patterns (<10ms budget) (A-14).
+CC Hook Enforcement: T1 lazy-code regex + file size limits per language + T2 AST completeness + cyclomatic <=10 + coupling <=15 (A-21).
+Source Tier Config: ~200 classified domains, deterministic URL lookup, T1-T4 tiers (A-45).
+Deprecated Patterns Seed: Rust/Python/TS/Go/Java/C#/Ruby ecosystem-specific deprecated APIs.
+
+
+========================================================================
+GROUP 5 - TOOLS AND PLUGINS CORE (Phase 3J, A-24, A-26..A-31, A-42; extended by 4B/4C in groups 18-19)
+========================================================================
+File Tools: Read (outline mode >300 lines), Write, Edit (3-tier matching: exact -> whitespace-normalized -> ellipsis).
+Bash Sandbox: timeout-controlled, isolated per agent.
+Bash Safety Filter: blocklist for push --force, reset --hard, rm -rf with safer-alternative hints (A-27).
+Tool Routing Layer: intercepts Bash cat/sed/grep and redirects to Read/Edit/Grep with hint (A-26).
+Git Commit Workflow Tool: single git_commit tool replacing ~4500-token prompt procedure (A-28).
+Agent Prompt Template: structured briefing wrapper (context/task/constraints/output) for sub-agent tasks (A-29).
+Output Postprocessor: emoji stripper + length enforcer + sycophancy prefix stripper (A-30).
+Action Classifier + Confirmation Gate: SAFE/REVERSIBLE/IRREVERSIBLE/SHARED_STATE classification, gate for dangerous actions (A-31).
+DAIRA Trace: structured runtime markers for call/return/mutation/branch/error/finding.
+ShortCoder: 10 AST-preserving simplification rules, 18-38% token savings (A-24).
+Failure Taxonomy: 9-category deterministic regex error classification.
+Visibility Filter: per-agent path allowlist, hidden paths return "not found", schema sanitization, error sanitization.
+Incremental Compilation: async build feedback after file writes, max 3 retries, skipped during TESTING_FIRST.
+Token Reclamation: formatting removal + output restoration + path abbreviation + import collapsing + deduplication (A-42).
+Hook System: PreToolUse, PostToolUse, Stop, PreCompact hooks intercept IPC messages.
+Tiered Static Analysis Hooks: T1 <1ms predicate DSL + T2 <10ms AST + T3 <5ms pattern (no LLM in hot path).
+
+
+========================================================================
+GROUP 6 - PROVIDERS / INFERENCE (Phase 3J, A-3, A-8, A-9, A-17, A-37, A-39)
+========================================================================
+Provider Abstraction: LlmProvider trait with Anthropic, OpenAI, Ollama, vLLM, LlamaCpp, sidecar implementations.
+ModelPool: load/unload tracking per GPU, predictive FSM-state preloading, SLO tiers per role.
+Tier 2 Enforcement Modes: GRAMMAR (constrained decoding) vs INSTRUCTOR (post-hoc JSON + retry) auto-selected per model.
+Node-Level Cache: TTL + float normalization + assistant prefill continuation.
+vLLM Provider: HTTP client, SSE streaming, health check.
+Sidecar Server: Python /v1/chat/completions + DoLa + TurboQuant + steering, Anthropic-compatible protocol.
+model.generate() Migration: sidecar uses model.generate() + LogitsProcessor (10-50x speedup, A-3).
+DoLa Layer-Contrast Decoding: dynamic premature layer JSD, per-role enable/disable, alpha=0.1.
+TurboQuant KV Cache Compression: TQ4/TQ8 KV cache compression.
+ActAdd Steering Vectors: per-role contrast pairs, mid-layer injection, composable.
+Freshness Steering Vector: modern_api_preference vector from contrast pairs (A-8).
+ETC Entropy Monitoring: LogitsProcessor observes entropy and triggers search between generations (A-9, default off).
+AS Safety Defaults: steering DISABLED and ETC DISABLED by default, DoLa/ETC incompatibility guard (A-39).
+GPU Multiplexing: VRAM safety margin + colocation policy + Murakkab SLO tiers.
+Workload Profiling: per-agent per-phase metrics recorded to SSB.
+MILP Scheduling: good_lp + HiGHS evaluation with greedy baseline.
+MCP Bridge: external MCP server connection, error recovery, security; cfg-gated + ELAI_ENABLE_MCP runtime toggle.
+AppContainer Isolation: Windows Job object + restricted-token sandbox for self-mod locks.
+VRAM-Tier Layer Configuration: auto-detect VRAM, config per 8/12/16/24/48GB tier, AB-MCTS branch counts (A-37).
+Predictive Pre-Loading: background load of next-state model based on FSM position.
+
+
+========================================================================
+GROUP 7 - ORCHESTRATION (Phase 3A-3I, A-10, A-18, A-22, A-40, A-46)
+========================================================================
+Full FSM (Interactive Mode): 9 states (IDLE, PLANNING, FEASIBILITY_PROBE, TESTING_FIRST, EXECUTING, AUDITING, MEMORIZING, COMPLETE, CONFIGURING) with transition validation matrix.
+Phase-Aware Tool/Rule Loading: each state gets a different tool and rule subset.
+Evidence Gates: 7 DAIRA-derived gates (zero ungrounded claims, tests fail correctly, test flipped, zero BLOCKs, DKG+changelog present, etc.).
+Risk-Level Classification: LOW/MEDIUM/HIGH per transition.
+INTERACTIVE Gate: pause + evidence + human APPROVE/REJECT/MODIFY/REDIRECT.
+ReplanRequest: MINOR (fast-track replan) vs MAJOR (requires human approval), max 1 per agent per phase.
+RESEARCHING FSM State: allows WebSearch + KnowledgeEngine, blocks file/bash/git (A-22).
+SSB (Shared State Board): SQLite WAL + single-writer tokio::mpsc + broadcast events + project_id isolation + 17 typed action types.
+Agent System: AgentPool + AgentHandle + 8 AgentRoles (including Designer) + 4 death classifications + Erlang supervision tree.
+Agent Checkpointing: 5 msgpack files per agent, auto triggers on GRC step / tool call / phase transition.
+Anti-Spiral Detection: 3x same step (blake2s content hash) -> escalate.
+Heartbeat Monitoring: 5s pulse / 15s timeout.
+Reasoning Trace Entries: every GRC step written to SSB for post-mortem and self-mod fuel.
+BSP Superstep Loop: snapshot -> clear topics -> execute -> apply writes -> clear ephemeral -> evidence gate -> checkpoint.
+BSP Channels: LastValue<T>, Topic<T> (accumulate), EphemeralValue<T>, UntrackedValue<T>.
+Parallel Agent Execution: tokio::JoinSet with VRAM-aware scheduling.
+Context Budget Allocator: 8 slots (SystemPrompt, Rules, PhaseSpec, RepoMap, CodeContext, SsbEntries, GrcHistory, OutputReserve).
+Two Cache Breakpoints: aligned with provider prefix caching (after PhaseSpec and after CodeContext).
+Adaptive Reduction: 3-level cascade (FilteredByRelevance -> ReducedGranularity -> ReducedScope -> Terminal).
+SSB Entry Filtering: file_overlap_score filter against agent's working files.
+Context Budget Adaptation: per-VRAM-tier slot weights and attention ceiling enforcement (A-10).
+Context Telescope: BoundedString<N> + 4-layer summaries (project 200tok + concept 150tok + phase 100tok + step 100tok) (A-46).
+MICRO Per-Slot Optimizations: strip system prompt, top 5 rules, skip RepoMap for MICRO tier (~3K total) (A-40).
+Hierarchical Plan Management: skeleton (TOML, 2-4K tokens, always in Slot 3) + per-phase elaboration loaded on demand.
+Contract Extraction: input_contracts from deps' outputs, output_contracts from dependents' inputs, 3 auditor coherence checks.
+Session Handoff: DAG-based state versioning (CMV-derived), per-message snapshot rows.
+Lossless Trimming: 3-pass stub replacement, user/assistant messages never stubbed, Slots 1-3 preserved.
+Branch-and-Explore: max 3 active branches, merge picks winner, abandoned branches tagged.
+Deterministic Simulation Testing: reference model oracle + proptest-state-machine + madsim IPC fault injection.
+Project Isolation: per-project directory with own SSB / knowledge DB / rules DB / sessions.
+
+
+========================================================================
+GROUP 8 - PROJECT INTELLIGENCE (A-4, A-5, A-11, A-16, A-32, A-33, A-36, A-38)
+========================================================================
+ProjectProfile Tier 1: structural discovery (filesystem, <5s) - language, build system, framework, test runner, CI, linter.
+Project Intelligence Tier 2: convention extraction via DKG + regex (<30s) - naming, error handling, module org, test patterns, auto-seeds rules.
+Project Intelligence Tier 3 + Telescope: LLM-assisted vision, domain classification, architecture inference, context telescope (<60s).
+PI Tier 1 Completions: override file, build system priority, ~200 framework entries, command validation (A-32).
+PI Tier 2 Completions: path prefix stripping, STRONG/MODERATE/MIXED convention thresholds, per-language error handling, rule lifecycle auto-promote (A-33).
+PI Tier 3 + Telescope Completions: language-specific fix templates, few-shot via DKG similarity, convention-aware templates (A-36).
+PI Incremental Profile Updates: change detection at baby step/phase boundaries, per-tier incremental re-profiling, schema versioning (A-38).
+PI Latency Measurement: benchmarks on 1K/10K/50K/100K/500K LOC projects (A-16).
+ProjectProfile Override File: manual corrections survive regeneration.
+
+
+========================================================================
+GROUP 9 - CLI AND COMMANDS (Phase 3J, A-47)
+========================================================================
+REPL Shell: slash-command router - /task, /config, /workflow, /fix, /continue, /explore, /status.
+Fallback Classifier: deterministic regex router for bare messages between questions and tasks.
+Custom Commands: extensible via .elai_cc/commands.toml.
+Mode Switching: INTERACTIVE default, AUTONOMOUS enablement wired through dispatcher (4G core behind flag).
+Backend Selection: elai_cc.toml [backend] mode = "local" | "api" | "hybrid" | "auto".
+--local Mode: full interactive experience via sidecar.
+--hybrid Mode: per-role routing (executor=local, auditor=API, etc).
+/model Command: inspect/change model routing at runtime without restart.
+InferenceDispatcher: trait with ApiDispatcher + LocalDispatcher implementations.
+FSM-Aware Tool Filtering: tools restricted per FSM state in dispatcher.
+/research CLI Command + /ask Command: oracle-mode entry points with deterministic regex routing (A-47).
+
+
+========================================================================
+GROUP 10 - ANTI-STALENESS AUTOMATION (A-12, A-15, A-41)
+========================================================================
+Nightly Dependency Audit: CLI subcommand querying 7 registry APIs, auto-detects ecosystems, updates deprecated_patterns (A-15).
+Deterministic-First Auditor: 5-step check (build, VERSION_GATE, file size, lazy code, completeness) before LLM audit (A-12).
+AS Deterministic Auditor Completions: 7-language build command registry with early-exit order and 4 CC checks wired (A-41).
+Baseline Measurement Harness: standalone binary measuring 7 model capabilities (attention, retry rate, few-shot delta, etc.) (A-1).
+
+
+========================================================================
+GROUP 11 - PIPELINE FACTORY L1 (Phase 4D.1-4D.10)
+========================================================================
+Research Agent: tree-structured research via FlashResearch, per-node FORMULATE -> SEARCH -> EXTRACT -> REFLECT -> CONVERGE/EXPAND/ITERATE.
+ResearchTree: breadth_factor, depth_limit, max_iterations, dual-threshold convergence (phi/psi).
+Source Quality Tiers: 5-tier deterministic domain-based lookup.
+Speculative Execution: cloud-only, bounded by speculative_depth * breadth_factor.
+Designer Agent: receives ResearchReport + SystemConstraints, produces PipelineSpec (distinct from executor).
+PipelineSpec + QualitySpec: structured research report output.
+Recursive Decomposition: fractal Idea -> Concepts -> Phases -> Steps -> BabySteps, grounded FlashResearch at each level.
+BabyStepSpec: 8 blocks (GROUNDING, PRE_GATE, TASK, TDD, DETERMINISTIC_CHECK, ACCEPTANCE, INTEGRATION, EXIT_CRITERIA).
+TechStackDecision: with DecisionSource (RESEARCH / EXISTING_PROJECT / USER_SPECIFIED / FALLBACK).
+PackageRef + API_REGISTRY_CHECK: verify_packages prevents hallucinated deps.
+ResearchCache: LRU cache preventing redundant FlashResearch across siblings.
+Alternative Presentation: INTERACTIVE presents alternatives, AUTONOMOUS auto-selects highest-evidence.
+
+
+========================================================================
+GROUP 12 - WEB RESEARCH INFRASTRUCTURE (Phase 4D.11-4D.18)
+========================================================================
+Web Search Client: SearXNG integration via IPC proxy, Docker auto-start, Brave fallback, rate limiting and retry (4D.11).
+Content Extraction: HTML-to-clean-text via readability-rust, robots.txt respect, per-domain rate limit, 2MB cap (4D.12).
+Source Quality Table: 200+ trusted domains, 5-tier lookup, subdomain rules (*.gov -> T1, *.edu -> T3) (4D.13).
+Web A-RAG: WebContentIndex + WebChunk with sentence splitting, keyword+semantic search, progressive disclosure (4D.14).
+VRAM-Tiered Research Config: 6 tiers (8/12/12_7b/16/24/48GB) with per-tier chunk size, breadth, depth, convergence (4D.15).
+Research Budget Manager: evidence admission policy, pruning by tier (T5 first, T1 never), compression for tight budgets (4D.16).
+Web Research Orchestrator: drives FORMULATE-SEARCH-EXTRACT-REFLECT-CONVERGE with SSB tracking and graceful degradation (4D.17).
+End-to-End Research Measurement: 10-query benchmark with time/sources/convergence/utilization metrics (4D.18).
+
+
+========================================================================
+GROUP 13 - PIPELINE FACTORY L2 / EXECUTION ENGINE (Phase 4E.1-4E.12)
+========================================================================
+PipelineBuilder: deterministic 5-stage assembly (research -> plan -> structural validation -> phase sizing -> feasibility probe), <1s target for 10-phase pipeline.
+Structural Validation: 8-point checks including visual_check adapter mapping + Kahn's cycle detection.
+DAG Repair Loop: AutoB2G-derived REORDER (cycles) + SUBSTITUTE (missing tools), max 10 rounds, deterministic only.
+Phase Sizing: splits phases exceeding available_for_work * 0.6 by contract boundaries, max depth 2.
+ExecutablePipeline: FSM states + DAG + agent configs + rule bindings + resource estimates + test harness skeleton + novel_step_ids.
+Test Harness Generator: per-pipeline skeleton for TDD.
+Resource Estimator: memory/time/tokens per phase.
+Novelty Detector: marks novel_step_ids for feasibility probe.
+Agent Configurator: assigns agent role/provider/optimizations per phase.
+Rule Installer: installs phase-appropriate rules into rules.db bindings.
+DecompositionTree: primary execution artifact as typed Rust struct (not prompts).
+TreeNavigator: deterministic depth-first traversal through baby steps with state serialization for crash recovery.
+Baby Step Execution Cycle: 8-step per baby step (context assembly -> pre_gate -> TESTING_FIRST -> EXECUTING -> AUDITING -> acceptance -> integration -> exit criteria).
+BubbleUpHandler: BabyStep(3 retries) -> Step(2) -> Phase(1) -> Concept(0) -> Escalate, with ResearchAlternative / RedecomposeStep / ReplanPhase / ReplanConcept / Escalate actions.
+Integration Checkpoints: 4 levels - BABY_STEP (cargo check, <5s), STEP (module tests, <30s), PHASE (crate tests, <60s), CONCEPT (workspace tests, <120s).
+TreeAutoAdvancePolicy: per-level risk (BabyStep=LOW .. Concept=HIGH) for autonomous advance gating.
+
+
+========================================================================
+GROUP 14 - WEB QUALITY PACK (WEB.1-WEB.3)
+========================================================================
+Scaffold Templates: 4 starters (vite-svelte, vite-react, astro, vanilla), each with 5 sections (Hero/Features/Cta/Footer/Gallery), pinned versions, CSS-variable theme system.
+Template Manifest: manifest.toml with per-template build/dev commands, port, sections, theme_system, FIM compatibility.
+apply_template Function: deterministic variable substitution (project_name, description, author, primary_hsl, bg_hsl, fg_hsl, accent_hsl), no LLM.
+Web Quality Rules: 27 rules (12 T1 + 11 T2 + 4 T3) seeded in rules.db for web domain (no inline style, no !important, img alt, WCAG AA contrast, section isolation, etc.).
+Web Deprecated Patterns: 6 patterns (moment.js, request, create-react-app, enzyme, webpack-new, jQuery) in deprecated_patterns.
+WebValidationTier: WEB_BUILD (npm run build) + WEB_DEV_SERVER (start + HTTP 200 + </html> + viewport + no stderr) + WEB_LINT (optional).
+Build Slot System: .elai_cc/web-preview/draft + live symlinks, atomic promotion on WEB_DEV_SERVER pass, immutable .elai_cc/builds/{step_id}/.
+Dev Server Lifecycle: start_dev_server / check_dev_server / stop_dev_server with DevServerHandle Drop impl to kill zombies.
+preview_available SSB Action: emitted with {url, step_id, slot} for dashboard clickable links.
+
+
+========================================================================
+GROUP 15 - DASHBOARD (Phase 4K.1-4K.5)
+========================================================================
+SsbViewer: read-only SQLite connection with 8 typed query functions, <10ms per query.
+Intervention Action Types: INTERVENTION_REQUEST + INTERVENTION_RESPONSE for pause/approve flow.
+Tauri App Scaffold: Tauri v2 binary with Svelte frontend in webview, dark theme, teal accents, no HTTP/WebSocket/CORS.
+Tauri Commands: #[tauri::command] wrappers around SsbViewer for frontend invoke().
+Project Selector: +New Project (name + parent picker, folder creation) and Open Existing (folder dialog).
+Template Picker: empty-folder flow offering Svelte / React / Astro / Vanilla.
+Task Input + Start Button: free-form task string submission.
+Main Workspace Layout: plan tree (left) + activity feed (right) with draggable divider + status bar showing FSM state.
+Plan Tree Panel: phases / steps / baby steps with status indicators.
+Activity Feed Panel: reasoning / edit / validate / test / preview entries.
+500ms Polling: setInterval + invoke() for live updates (no WebSocket required).
+Preview Link: clickable localhost URL via shell::open to default browser.
+Diff Viewer: unified diff for INTERVENTION_REQUEST(ApproveChange).
+Accept / Decline / Retry Controls: per-hunk granular control with multi-file navigation.
+get_action_detail Command: full action payload fetch for diff viewer.
+
+
+========================================================================
+GROUP 16 - RECENT PATCHES (post-4K.5, git log)
+========================================================================
+MCP Bridge Wiring (batch-ful-d): cfg gating + ELAI_ENABLE_MCP runtime toggle + JSON-RPC client + dashboard SETTINGS row + 3 SSB variants.
+A-8 Freshness Steering End-to-End (batch-ful-c): Rust compute_vector_via_sidecar + Python /v1/steering/* endpoints + dashboard SETTINGS steering row.
+Contract Fix (patch-ful-fix): task_splitter: None added to web_research + web_scaffold contracts.
+UI Fix (patch-ui-fix): vite relative asset paths + detach dashboard stdio + sidecar loading overlay.
+UI Mount Fix (patch-ui-mount-fix): Svelte 5 mount(App) in main.ts bootstrap.
+
+
+========================================================================
+GROUP 17 - AGENT PROCESS ISOLATION (Phase 4A, DONE)
+========================================================================
+Tier C Agent Processes: each agent runs as an isolated OS process communicating via IPC (unix socket on Linux, named pipe on Windows).
+Wire Protocol: 1-byte version + 4-byte length + postcard payload with 15 message types.
+ToolFilter (Whitelist): enforced at IPC layer, not inside agent.
+AgentDispatchConfig: authoritative config source (not AgentRole alone).
+phase_complete SSB Record: atomic durability marker written at swap protocol boundary.
+Agent Binary (elai_cc_agent): no LLM client, no network, no tools - everything proxied via IPC.
+Linux Sandbox: clone(NEWNS|NEWPID|NEWNET) + seccomp-bpf (IPC_BASELINE + NETWORK_EXTRA for researcher) + prctl(PR_SET_NO_NEW_PRIVS) + zero capabilities + rlimits + /proc masked.
+Windows Sandbox: AppContainer (preferred) or restricted token + Job object (documented-weaker fallback).
+Orchestrator-Side GRC Budget: budget enforcement lives in orchestrator, never in agent.
+GroundingRequest IPC Proxy: all external checks proxied back to orchestrator.
+Self-Mod Locks: IPC-level + filesystem-level + git-level triple layer.
+Auditor Finding Gate: agent-sourced findings enter only as PROPOSED rules requiring independent approval.
+
+
+========================================================================
+GROUP 18 - PRODUCTION TOOLS (Phase 4B, DONE)
+========================================================================
+git2 Integration: native Rust git ops (auto-commit, branch per plan, session-owned commit tracking, safe undo protocol).
+5-Tier Validation Pipeline: determinism -> quality/AST -> unit -> integration -> stress.
+Auditor-Sole Test Runner: executor never runs its own tests; auditor holds the validation pipeline.
+DAIRA Trace Execution: structured runtime markers (call/return/mutation/branch/error/finding).
+3-Tier Edit Matching: exact -> whitespace-normalized -> ellipsis-elision.
+ShortCoder Simplification: 10 tree-sitter rules applied post-execution before auditor view.
+Failure Taxonomy Classifier: 9 deterministic regex categories, auditor reads classification before raw output.
+File Read Outline Mode: automatic outline for files >300 lines.
+Incremental Compilation Feedback: async build check after each file write, max 3 retries, skipped in TESTING_FIRST.
+IntegrationTestRunner: per-baby-step and per-level in the DecompositionTree.
+Integration Granularity Levels: BABY_STEP (cargo check, <5s), STEP (module tests, <30s), PHASE (crate tests, <60s), CONCEPT (workspace tests, <120s).
+BashSandbox Reuse: integration runner reuses existing BashSandbox + FailureTaxonomy + incremental compilation.
+
+
+========================================================================
+GROUP 19 - PRODUCTION PLUGINS (Phase 4C, DONE)
+========================================================================
+Hook Interception at Orchestrator: PreToolUse / PostToolUse / Stop / PreCompact hooks intercept IPC messages before forwarding to agents.
+Hook Verdicts: ALLOW / BLOCK / WARN with verdicts never leaked to agents.
+Generic Error Sanitization: agent always sees "tool call rejected by policy" regardless of which rule/predicate fired.
+Tiered Static Analysis in Production: T1 (predicate DSL from rules.db, <1ms), T2 (tree-sitter, <10ms), T3 (pattern-match, no LLM, <5ms, WARN-only).
+Circular Trust Prevention: orchestrator normalizes findings, AUDITOR rules need independent approval.
+ShortCoder in PostToolUse: runs on AgentResponse before auditor view.
+Rule Self-Discovery Feed: hook findings feed the rules self-discovery mechanism.
+
+
+========================================================================
+GROUP 20 - NOT YET IMPLEMENTED (do NOT wire, reference only)
+========================================================================
+Phase 4F: Feasibility Probe (system probe + stub harness + nvml + branch-and-explore, 25s graceful / 30s hard kill) - partial hooks may exist in dashboard (get_feasibility_report command) but phase not shipped.
+Phase 4G: Autonomous Mode Enablement (AutonomousGate, 6 evidence checks, SPLIT_TASK, SUBSTITUTE_MODEL, circuit breaker) - partial stats hooks exist (get_auto_advance_stats) but phase not shipped.
+Phase 4H: Self-Modification (DGM/CEL/DarwinNet Layer 1A data-table growth, Layer 2 config proposals, Layer 3 stubs, MSI, 4 safety layers) - partial proposal/MSI hooks exist but phase not shipped.
+Phase 4I: Media Validator (Tier 1 deterministic + Tier 2 VLM + CLAP + MediaRenderAdapter + Render-Capture-Evaluate).
+Phase 4J: Empire Integration (FactoryLine protocol + brain registration + brainctl replacement + event subscription + capability exposure + repair pipeline).
+Group B-1: Constrained Decoding (grammar-guided, JSON schema, CRANE adaptive, CodeFast early stopping).
+Group B-2: Constrained Decoding for Imports (positive allowlist via JSON Schema/EBNF, vLLM-only).
+Group B-3: Maintenance Automation (freshness decay recalc, steering vector refresh automation).
+Cloud Mode (A-49 and beyond): LOCAL/CLOUD/HYBRID modes, cost tracking, privacy redaction, HYBRID escalation.
+Focus Tunnel (A-51..A-57): FIM / DIFF / STRUCTURED generation modes, streaming validation, pipeline parallelism, speculative file routing, automated dependency management.
+
+
+========================================================================
+WIRING STATUS HINTS (from current dashboard/src/commands.rs)
+========================================================================
+Already wired tauri commands (at time of snapshot):
+  submit_task, submit_intervention_response, open_project_from_folder,
+  get_system_status, get_feasibility_report, set_gate_mode, set_model_routing,
+  get_gate_status, get_auto_advance_stats, get_active_optimizations,
+  get_pending_proposals, get_applied_proposals, apply_proposal_from_user,
+  reject_proposal, get_msi_status, respond_to_confirmation,
+  get_steering_status, recompute_steering_vector, get_mcp_status.
+
+Already present UI components:
+  ActivityEntry, ActivityFeed, App, BootGate, DiffHunk, DiffViewer,
+  EmptyFolderChooser, InterventionCard, PlanTree, ProjectSelector,
+  ProposalsPanel, Settings, SidecarStatus, StatusBar, TaskInput,
+  TemplatePicker, Workspace.
+
+Missing or unclear wiring (from inventory above, verify one-by-one):
+  DKG / BM25 / Vector / PageRank indexing status indicator
+  KnowledgeEngine readiness (READY/DEGRADED/UNAVAILABLE) panel
+  Context Budget slot-by-slot visualization + 2 cache breakpoints
+  Rules Engine active-rule list per FSM state (count + domain)
+  Rule Lifecycle stats (SHADOW/CANDIDATE/ACTIVE counts)
+  Deprecated Patterns / VERSION_GATE status
+  Source Quality Tier panel (tier distribution of last research)
+  Web A-RAG browse / WebContentIndex state
+  Build Slot System (draft / live symlink pointer display)
+  Dev Server Lifecycle panel (PID, status, port)
+  preview_available feed entry rendering (verify link opens)
+  Scaffold Template picker already exists; verify manifest-driven variables
+  ProjectProfile (tier 1/2/3) viewer with Override File edit
+  DecompositionTree viewer (not just flat plan tree)
+  BubbleUp event log / escalation history
+  Integration Checkpoint results per level
+  Research Tree visualizer (FlashResearch nodes + convergence)
+  Research Budget usage bar
+  GRC topic budgets + grounding levels per agent
+  Mistake Book view (per baby step, forbidden diffs)
+  Interrogation Tree navigator (diagnosis tree preview)
+  GG sidecar signals (mean_logprob/min_logprob/entropy) live graph
+  Workload Profile (per-agent per-phase metrics)
+  SSB action-type filter / search
+  BSP superstep visualization
+  Session Handoff snapshots browser (branches, merged, abandoned)
+  CSQ results inline on code diffs
+  Failure Taxonomy classifier output for last error
+  MCP Bridge (already SETTINGS row; verify JSON-RPC ping and 3 SSB variants surface)
+  Nightly Dep Audit results view
+  Baseline Harness results view (A-1 measurements)

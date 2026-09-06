@@ -1,0 +1,2227 @@
+DASHBOARD WIRING PLAN
+Date: 2026-04-21
+Scope: rewire the Tauri dashboard from the current single-stack layout into a
+       KIMI-inspired sidebar + dual-panel shell, then fan out every completed
+       backend feature from dashboard-wiring-inventory.txt into the appropriate
+       window or drawer.
+Companions:
+  dashboard-wiring-inventory.txt    canonical feature list (source of what-to-wire)
+  docs/specs/guide/dashboard-design.txt   base design reference (not canonical vision)
+  current git state snapshot        commands.rs + src-frontend/src/*.svelte as-is
+
+
+========================================================================
+0. DESIGN INTENT
+========================================================================
+Inspiration: KIMI dashboard screenshot.
+  - Left sidebar: mode/category strip, not a plan tree.
+  - Centered chat window with integrated input, not a one-line command strip.
+  - Dual region beyond chat (chat + visual slot).
+The dashboard-design.txt is a BASE; the user's vision is:
+  A. sidebar (icon rail + mode indicator) + main area with TWO windows:
+     one chat window, one visual window.
+  B. visual window is polymorphic — type still being decided. Plan treats
+     "visual" as a slot whose content type (ACTIVITY / REVIEW / PLAN /
+     PREVIEW / MONITOR / EXPLORE) switches by FSM state and user choice.
+Anti-regression: do not lose any already-wired feature. Every tauri command
+currently invoked must continue to work end-to-end after the shell rewrite.
+
+
+========================================================================
+1. CURRENT STATE (verified 2026-04-21 from commands.rs + src-frontend/src/)
+========================================================================
+Shell:
+  App.svelte dispatches to: ProjectSelector | EmptyFolderChooser | TemplatePicker
+    | TaskInput | Workspace | Settings via $state discriminant.
+  BootGate wraps the whole app, polls get_sidecar_health every 2s.
+  Workspace layout: CSS grid 320px | 1fr. Left = PlanTree + exit button. Right =
+    vertical stack of autonomy strip, command strip (/mode /model only),
+    InterventionCard list, ProposalsPanel, and ActivityFeed OR DiffViewer
+    (DiffViewer replaces ActivityFeed when openSeq set).
+
+Wired tauri commands with live frontend consumers:
+  get_sidecar_health            BootGate + SidecarStatus
+  list_projects                 ProjectSelector
+  select_project                ProjectSelector
+  open_project_from_folder      ProjectSelector (+ unused launcher path)
+  get_indexing_status           ProjectSelector per-project meta
+  list_templates                TemplatePicker (orphaned from user flow)
+  create_project                TemplatePicker (orphaned)
+  submit_task                   TaskInput
+  get_fsm_state                 StatusBar
+  get_phase_progress            PlanTree (phase list)
+  step_progress                 PlanTree (step list per phase)
+  get_recent_actions            ActivityFeed + StatusBar (recency pulse)
+  get_action_detail             DiffViewer
+  get_recent_commits            ActivityFeed (commits tab)
+  get_recent_validations        (defined, not invoked from frontend)
+  get_file_changes              (defined, not invoked from frontend)
+  get_feasibility_report        ActivityFeed (feasibility tab)
+  get_rule_violations           ActivityFeed (rules tab)
+  get_pending_interventions     Workspace poll -> InterventionCard
+  submit_intervention_response  InterventionCard
+  respond_to_confirmation       InterventionCard
+  get_git_status                StatusBar
+  get_system_status             StatusBar
+  get_gate_status               Workspace + StatusBar
+  set_gate_mode                 Workspace command strip /mode
+  set_model_routing             Workspace command strip /model
+  get_auto_advance_stats        Workspace details panel
+  get_active_optimizations      StatusBar
+  get_msi_status                StatusBar
+  get_pending_proposals         ProposalsPanel
+  apply_proposal_from_user      ProposalsPanel
+  reject_proposal               ProposalsPanel
+  get_steering_status           Settings
+  recompute_steering_vector     Settings
+  get_mcp_status                Settings
+  set_mcp_enabled               Settings
+  open_preview_url              DiffViewer (preview links)
+
+Commands defined but not rendered in any component:
+  get_constitutional_constraints
+  get_source_tiers_config
+  get_telescope_stats
+  list_mcp_tools
+  call_mcp_tool
+  get_applied_proposals
+
+Live component inventory (17 files):
+  ActivityEntry, ActivityFeed, App, BootGate, DiffHunk, DiffViewer,
+  EmptyFolderChooser, InterventionCard, PlanTree, ProjectSelector,
+  ProposalsPanel, Settings, SidecarStatus, StatusBar, TaskInput,
+  TemplatePicker, Workspace.
+
+
+========================================================================
+2. GAPS vs INVENTORY (backend exists, no UI surface)
+========================================================================
+Group 2 Knowledge Engine:
+  DKG node/edge counts, BM25 index state, vector cache stats, PageRank top-N,
+  resilience readiness (READY/DEGRADED/UNAVAILABLE), query-tier routing
+  histograms, HyDE/QueryExpansion activity, reranker metrics,
+  RAG freshness scoring state.
+
+Group 3 Reasoning Engine:
+  GRC per-topic budgets per agent, grounding sweep result, CSQ outcomes,
+  Interrogation Tree preview, Mistake Book (per baby step, forbidden diffs),
+  Micro-Reflection log, RA failure taxonomy feed, GG sidecar signals
+  (mean_logprob / min_logprob / entropy_mean / entropy_max), Repair Context
+  Profile viewer.
+
+Group 4 Rules Engine:
+  Lifecycle counts (PROPOSED/CANDIDATE/SHADOW/ACTIVE/RETIRED), rule detail
+  view, VERSION_GATE hit history, deprecated_patterns list, constitutional
+  constraints injection preview, source-tier distribution from last research.
+
+Group 5 Tools:
+  DAIRA trace viewer, ShortCoder diff before/after, Failure Taxonomy output
+  for last error, Hook verdict log (ALLOW / BLOCK / WARN), Tool Routing
+  decisions log (cat/sed/grep redirects), Token Reclamation savings per step,
+  Action Classifier + Confirmation Gate history.
+
+Group 6 Providers / Inference:
+  ModelPool load/unload per GPU, VRAM tier display + manual override, DoLa /
+  TurboQuant / ActAdd toggles, ETC monitoring graph, circuit breaker per
+  provider, MILP scheduling trace, predictive pre-loading status, GG signals
+  live (same as Group 3 row above).
+
+Group 7 Orchestration:
+  FSM transition log, Evidence Gate pass/fail per transition, Agent checkpoint
+  browser, Heartbeat pulse per agent, BSP superstep visualization, 8-slot
+  Context Budget Allocator with 2 cache breakpoints, Adaptive Reduction log,
+  Session Handoff browser (branches / merged / abandoned), Branch-and-Explore
+  active branches, Reasoning trace entries.
+
+Group 8 Project Intelligence:
+  Tier 1 / Tier 2 / Tier 3 viewer (language, framework, conventions, patterns,
+  templates), Override file editor, Incremental profile update history, PI
+  latency measurements.
+
+Group 9 CLI:
+  Full slash-command palette (/task /fix /explore /config /status /continue
+  /research /ask) — current dashboard only handles /mode and /model.
+  Intent classification + disambiguation cards. Mode switching UI (LOCAL /
+  CLOUD / HYBRID and INTERACTIVE / AUTONOMOUS as separate axes) — currently
+  only gate mode is settable.
+
+Group 10 Anti-Staleness Automation:
+  Nightly Dep Audit results, Baseline Harness (A-1) results, Deterministic-
+  First Auditor 5-step breakdown per audit.
+
+Group 11 Pipeline Factory L1:
+  Research tree visualizer (FlashResearch nodes + convergence), Source Quality
+  Tier panel (distribution of last research), Designer agent PipelineSpec
+  viewer, BabyStepSpec inspector (8 blocks), TechStackDecision with
+  DecisionSource, ResearchCache hit rate, Alternative Presentation panel.
+
+Group 12 Web Research:
+  SearXNG health / Docker status, Web A-RAG (WebContentIndex + chunks),
+  VRAM-Tiered Research Config selector, Research Budget usage bar, Web
+  Research Orchestrator timeline, end-to-end benchmark results.
+
+Group 13 Pipeline L2 / Execution:
+  DecompositionTree hierarchical viewer (concept -> phase -> step -> baby) —
+  current PlanTree only shows phase + step. BubbleUp event log / escalation
+  history. Integration Checkpoint results per level (BABY_STEP / STEP / PHASE
+  / CONCEPT). DAG repair loop trace. Novelty detector output.
+
+Group 14 Web Quality Pack:
+  Build Slot System (draft vs live symlink pointer + .elai_cc/builds/{step_id}
+  list). Dev Server Lifecycle panel (PID / port / status). preview_available
+  event feed rendering inline (link opens now, but no persistent feed). Web
+  validation tier results (WEB_BUILD / WEB_DEV_SERVER / WEB_LINT).
+
+Group 15 Dashboard:
+  Window tabs, window history / recovery (Ctrl+Shift+H per design doc),
+  EXPLORE / MONITOR / REVIEW as standalone windows (today they are collapsed
+  into the single right column or are entirely absent).
+
+Group 17..19 (agent process isolation / production tools / production plugins):
+  Mostly backend-only, but surfacing Hook verdicts + ShortCoder effect +
+  Failure Taxonomy results + per-agent sandbox status is useful.
+
+Group 20 NOT YET IMPLEMENTED per inventory — do NOT wire:
+  Phase 4F Feasibility Probe (deep UI), Phase 4G Autonomous full enablement,
+  Phase 4H Self-Modification, Phase 4I Media Validator, Phase 4J Empire
+  Integration, Group B-1/B-2/B-3 constrained decoding + automation, Cloud
+  Mode (A-49+), Focus Tunnel (A-51..A-57).
+
+
+========================================================================
+3. ALIGNMENT GAPS (current layout vs KIMI + two-window vision)
+========================================================================
+  Current left column is a PlanTree — functional, but not a mode rail.
+  Current right column is a single stack — not a polymorphic slot.
+  Command surface is a one-line strip that only accepts /mode and /model —
+    not the structured message-history + action-card interface from the
+    design doc.
+  DiffViewer replaces ActivityFeed in place — user cannot see both at once.
+  TemplatePicker is orphaned per the App.svelte comment ("no longer reachable
+    from the default flow").
+  No window tabs, no window history, no window type switching.
+  No independent LOCAL / CLOUD / HYBRID toggle; only gate_mode + model_routing.
+  Sidebar icon rail from dashboard-design.txt lines 189..225 absent entirely.
+
+
+========================================================================
+4. TIER 0 — SHELL REWRITE (blocks everything else)
+========================================================================
+Goal: replace the flat grid in Workspace.svelte with a proper 4-region shell
+(sidebar + primary panel + secondary panel + status bar) and a typed window
+registry so every subsequent tier can slot into a slot without further shell
+changes.
+
+New files:
+  src-frontend/src/shell/
+    Shell.svelte              top-level wrapper (sidebar + dual panel + statusbar)
+    Sidebar.svelte            48px icon rail, active-mode dot, bottom mode indicator
+    PanelHost.svelte          one panel slot: tab bar + window renderer + collapse
+    PanelDivider.svelte       draggable 2px divider, teal on drag, dbl-click reset
+    WindowRegistry.ts         { type WindowType, componentFor(type), title(type) }
+    windowTypes.ts            enum CHAT | ACTIVITY | PLAN | REVIEW | MONITOR
+                                  | EXPLORE | PREVIEW | SETTINGS | KNOWLEDGE
+                                  | RULES | REASONING | PROJECT | RESEARCH
+    layoutState.svelte.ts     $state for primary/secondary panel contents,
+                                open tabs, window history ring buffer (20)
+
+Modified files:
+  App.svelte                  replace Workspace branch with Shell when view =
+                                Workspace. Keep ProjectSelector /
+                                EmptyFolderChooser / TemplatePicker / TaskInput
+                                / Settings as pre-workspace screens unchanged.
+  Workspace.svelte            demoted / deleted. Its existing children
+                                (PlanTree, ActivityFeed, DiffViewer,
+                                InterventionCard, ProposalsPanel) are reparented
+                                into individual window components in Tier 1-2.
+                                Keep the autonomy strip logic — moves to the
+                                MONITOR window in Tier 2.
+  StatusBar.svelte            no behaviour change, just positioned by Shell
+                                at the bottom 24px.
+
+Sidebar items (top to bottom), each flipping the PRIMARY panel type:
+  [terminal]   CHAT        (default)
+  [layers]     PLAN
+  [play]       ACTIVITY
+  [search]     EXPLORE
+  [settings]   SETTINGS
+  (spacer)
+  [mode]       mode indicator overlay (LOCAL/CLOUD/HYBRID, INTERACTIVE/AUTONOMOUS)
+  [user]       session info / projects exit
+
+Behaviour contract:
+  - Clicking a sidebar icon swaps the PRIMARY panel type. Secondary panel
+    keeps its current type unless user explicitly changes it.
+  - Default arrangement on workspace entry: PRIMARY=CHAT, SECONDARY=ACTIVITY.
+    When gate mode=autonomous: PRIMARY=MONITOR, SECONDARY=ACTIVITY.
+  - Secondary panel collapsible (double-click divider) to 0px, reopens at 380px.
+  - Tab bar shows open tabs for that panel slot; + button opens window-type
+    selector (overlay).
+  - Window history ring (20 deep) accessible via Ctrl+Shift+H.
+
+Keyboard shortcuts wired by Shell:
+  Ctrl+1..5  select sidebar mode
+  Ctrl+N     open window-type selector in focused panel
+  Ctrl+W     close current tab (demotes to history)
+  Ctrl+Shift+H recover closed window
+  Ctrl+D     toggle secondary panel
+  Ctrl+.     open slash-command palette (Tier 1)
+  Escape     dismiss overlays
+
+No new tauri commands in Tier 0. No backend change.
+
+Grounding / test strategy:
+  - Contract test: mount Shell with mocked layoutState, assert every sidebar
+    click flips only the PRIMARY panel type.
+  - Visual regression: existing InterventionCard, DiffViewer, ActivityFeed,
+    PlanTree, ProposalsPanel remain pixel-stable when mounted inside a
+    PanelHost slot. Each is reparented, none is rewritten in Tier 0.
+  - Snapshot: StatusBar data still populates via its existing commands.
+  - Manual: open a project, confirm default arrangement renders without
+    regressions in the 500ms polling loops.
+Exit criteria:
+  - Every tauri command listed in section 1 still has at least one live
+    consumer after the shell rewrite (grep invoke<> count >= previous count).
+  - No code path in App.svelte reaches the old Workspace.svelte.
+
+COMPLETED 2026-04-21 (session s-38600).
+Shipped artifacts:
+  shell/Shell.svelte, Sidebar.svelte, PanelHost.svelte, PanelDivider.svelte,
+  PlaceholderWindow.svelte, WindowRegistry.ts, layoutState.svelte.ts,
+  windowTypes.ts. App.svelte routes the Workspace branch to Shell. Workspace
+  survives as the PLAN window via WindowRegistry.LIVE[WindowType.PLAN].
+Baseline frozen for later tiers:
+  tier0-shell.mjs INVOKE_BASELINE = 35. Later tiers must ADD (tier{N}-*.mjs)
+  never mutate tier0-shell.mjs.
+Known carry-forward:
+  WindowRegistry LIVE only maps ACTIVITY/PLAN/SETTINGS post-Tier-0. Tier 1
+  adds CHAT; Tier 2 adds REVIEW/MONITOR/EXPLORE/PREVIEW/RESEARCH/KNOWLEDGE/
+  RULES/REASONING/PROJECT in follow-up tracks.
+
+
+========================================================================
+5. TIER 1 — CHAT WINDOW (the real control surface)
+========================================================================
+Goal: build the CHAT window specified in dashboard-design.txt lines 313..511.
+NOT a chatbot — an intent-classified control surface. Replaces the current
+inline /mode /model strip.
+
+New files:
+  src-frontend/src/chat/
+    ChatWindow.svelte         top-level window for CHAT type
+    MessageList.svelte        scrollable list of cards
+    cards/
+      StatusCard.svelte       teal left border, 1-3 line factual status
+      InterventionCardV2.svelte   wrap existing InterventionCard as a message card
+      ErrorCard.svelte        fail left border, "what failed / what ELAI does / user options"
+      DisambiguationCard.svelte   2-3 clickable intent buttons
+      SteeringAckCard.svelte  single inline teal line
+      RecentTaskRow.svelte    clickable past-task line for IDLE state
+    InputBar.svelte           bg-input, placeholder per FSM state, Send button
+    SlashPalette.svelte       filterable autocomplete overlay
+    intentRouter.ts           client-side deterministic router; falls back to
+                                  classify_intent tauri command for ambiguity
+
+Modified files:
+  Workspace.svelte            (from Tier 0) autonomy strip + command input
+                                  removed; moved into ChatWindow as cards.
+
+New tauri commands (add to commands.rs):
+  classify_intent(text: String) -> { intent: "TASK"|"FIX"|"EXPLORE"|"CONFIG"
+                                        |"INTERVENE"|"STEER"|"ABORT"|"AMBIGUOUS",
+                                     alternatives: Vec<IntentAlt> }
+  submit_chat_message(text: String, intent_override: Option<String>)
+                                  -> seq  (emits CHAT_MESSAGE SSB action,
+                                           dispatcher handles routing)
+  get_chat_history(project_id: String, limit: u32)
+                                  -> Vec<ChatEntry>  (reads SSB CHAT_*
+                                                      action types)
+  get_recent_tasks(project_id: String, limit: u32)
+                                  -> Vec<TaskSummary>  (for IDLE state)
+
+New SSB action types:
+  CHAT_MESSAGE      user input after classification
+  CHAT_RESPONSE     system card emission (status/error/ambig/steering ack)
+  Reuse existing INTERVENTION_REQUEST / INTERVENTION_RESPONSE as message
+    cards — do NOT duplicate.
+
+Intent routing (client-side, deterministic first):
+  starts-with "/task "       -> TASK
+  starts-with "/fix "        -> FIX
+  starts-with "/explore "    -> EXPLORE
+  starts-with "/config"      -> CONFIG   (opens Settings sidebar mode)
+  starts-with "/status"      -> inline StatusCard, no backend call
+  starts-with "/continue"    -> resume handoff
+  starts-with "/research "   -> RESEARCH
+  starts-with "/ask "        -> EXPLORE (alias)
+  starts-with "/mode "       -> existing set_gate_mode path
+  starts-with "/model "      -> existing set_model_routing path
+  starts-with "accept" |
+              "decline" |
+              "retry" |
+              "skip"         -> INTERVENE when an intervention is active
+  starts-with "stop" |
+              "cancel" |
+              "start over"   -> ABORT (mcp_fsm_reset equivalent)
+  starts-with "keep " |
+              "use " |
+              "must "        -> STEER
+  default                    -> call classify_intent backend. If confidence
+                                low, render DisambiguationCard.
+
+Input-bar placeholder follows FSM state:
+  IDLE            "describe a task, ask a question, or type / for commands"
+  EXECUTING       "add constraints, or wait for intervention cards"
+  intervention    "respond to the card above, or type to add context"
+
+IDLE-state CHAT body:
+  "no active task"
+  action buttons: /task /fix /explore /continue
+  recent tasks (via get_recent_tasks, clickable -> PLAN window for that task)
+
+Grounding / test strategy:
+  - Unit: every slash prefix routes to the correct intent without hitting
+    classify_intent.
+  - Contract: submit_chat_message writes exactly one CHAT_MESSAGE row into SSB
+    with the classified intent tag and is visible via get_chat_history next
+    poll.
+  - Manual: starting a task from /task is indistinguishable from the current
+    TaskInput screen path end-to-end (submit_task is still the underlying
+    dispatch for TASK intent).
+Exit criteria:
+  - /mode and /model still work exactly as they do in the current Workspace
+    command strip (regression).
+  - All intervention cards continue to appear in CHAT as InterventionCardV2
+    and continue to dispatch submit_intervention_response /
+    respond_to_confirmation.
+
+COMPLETED 2026-04-22 (session s-147708). Auditor: WARN_ONLY (0 BLOCK, 3 WARN).
+No commit per user directive. Full details in
+workflow/reasoning/phase-tier1-chat-decisions.md.
+
+Shipped artifacts:
+  Rust backend:
+    crates/orchestrator/src/ssb.rs — SsbActionType gained ChatMessage +
+      ChatResponse; SCHEMA_VERSION 19 -> 20; doc comment "All 32" -> "All 73";
+      CHECK constraint extended with 'chat_message' + 'chat_response';
+      ChatMessagePayload + ChatResponsePayload structs; 14-site extension
+      completed (enum, as_sql_str, from_str, SsbPayload, action_type(),
+      test_payload, all_test_payloads 32 -> 34, assert 32 -> 34,
+      proptest arb_payload prop_oneof).
+    crates/orchestrator/src/ssb_viewer.rs — ChatEntry + TaskSummary DTOs
+      and chat_history / recent_tasks methods, both project_id-scoped.
+    crates/orchestrator/src/lib.rs — re-exports ChatMessagePayload,
+      ChatResponsePayload, ChatEntry, TaskSummary.
+    crates/dashboard/src/commands.rs — 5 new #[tauri::command]:
+      classify_intent, submit_chat_message, get_chat_history,
+      get_recent_tasks, emit_chat_response. Named constants
+      CHAT_TEXT_MAX_LEN = 10_000, CHAT_LIMIT_MIN = 1, CHAT_LIMIT_MAX = 500.
+      DTOs IntentAlt, IntentClassification.
+    crates/dashboard/src/lib.rs — DashboardState gained pub session_id:
+      String. invoke_handler! 43 -> 48 entries.
+  Frontend (Svelte 5 + Tauri 2):
+    src-frontend/src/chat/ — ChatWindow.svelte (composition host),
+      MessageList.svelte, InputBar.svelte, SlashPalette.svelte,
+      intentRouter.ts (pure, no Tauri imports — routeClientSide +
+      stripPrefix + SLASH_PREFIX_LIST + Intent types).
+    src-frontend/src/chat/cards/ — StatusCard, InterventionCardV2
+      (wraps InterventionCard.svelte by composition), ErrorCard,
+      DisambiguationCard, SteeringAckCard, RecentTaskRow.
+    src-frontend/src/shell/Shell.svelte — placeholder replaced with
+      <SlashPalette onpick onclose/>. Sidebar-to-ChatWindow wiring lives
+      at WindowRegistry.LIVE[WindowType.CHAT].
+    src-frontend/src/shell/WindowRegistry.ts — [WindowType.CHAT]:
+      ChatWindow.
+    src-frontend/src/Workspace.svelte — /mode /model command strip
+      removed; PLAN window still renders PlanTree + ActivityFeed +
+      InterventionCard + ProposalsPanel + DiffViewer.
+  Contract tests:
+    crates/contracts/tests/dashboard_tier1_chat_contract.rs — 7 tests.
+    crates/dashboard/tests/contracts/tier1-chat.mjs — 8 checks.
+  Final counts: 7 Rust + 6 tier0 + 8 tier1 = 21/21 GREEN.
+
+Corrections to earlier assumptions in this plan:
+  §2 said the SsbActionType enum had "32 variants" — actual pre-Tier-1 count
+  was 71. Doc comment and plan text both bumped to 73 post-Tier-1.
+  §1/§11 numeric estimates for tauri commands (plan said +4 -> 39) were
+  based on an outdated 35 baseline. Real counts at Tier 1 start: 43
+  invoke_handler! entries, 46 #[tauri::command] definitions. Post-Tier-1:
+  48 invoke_handler! entries (added an extra emit_chat_response for the
+  server-side card-response write path).
+  §12 added two SSB action types exactly as specified. No changes to the
+  action-type strings ("chat_message", "chat_response", snake_case).
+
+Regression paths verified intact (mandatory future-tier constraint):
+  - /mode <arg> -> intentRouter MODE -> set_gate_mode (unchanged signature)
+    -> Shell's 2 s gate poll reflects the change.
+  - /model <arg> -> intentRouter MODEL -> set_model_routing (unchanged).
+  - InterventionCardV2 composes InterventionCard.svelte; the
+    confirm_irreversible: -> respond_to_confirmation short-circuit remains
+    inside InterventionCard.svelte (NOT duplicated in V2). Future tiers
+    that touch intervention flows must preserve this composition.
+
+Findings / deferrals carried forward to later tiers
+(all three audit WARNs plus the additional finding surfaced during the
+Tier 1 grounding sweep):
+
+  1. SSB_CHECK_CONSTRAINT_MCP_LATENT_BUG — pre-existing, NOT fixed in
+     Tier 1. CREATE_SSB_TABLE lines 39..67 (pre-Tier-1) omit three mcp_*
+     action-type strings that the enum / as_sql_str / from_str all
+     reference: 'mcp_server_connected', 'mcp_tool_called',
+     'mcp_server_disconnected'. Source: batch-ful-d (commit bc43953)
+     added the enum variants but forgot the CHECK list. Effect: fresh
+     SSB databases silently reject those rows with SQLITE_CONSTRAINT;
+     existing dev DBs skip the problem because CREATE TABLE IF NOT
+     EXISTS never rewrites an existing CHECK constraint on a
+     SCHEMA_VERSION bump. Owner: any tier that touches ssb.rs is
+     expected to add the three strings to the CHECK list and bump
+     SCHEMA_VERSION by 1. Not owned by Tier 2 unless that tier is
+     already editing ssb.rs for a separate reason.
+
+  2. CONTEXT_PACKAGE_STALE_CONSTANTS — future-tier discipline, not a
+     code bug. context-compiler cached numeric facts (SCHEMA_VERSION,
+     invoke_handler count, SsbActionType variant count) whose values
+     had drifted well past the cache. Real values at Tier 1 start were
+     19 / 43 / 71; context package said 8 / 35 / 32. Rule for later
+     tiers: grep-verify every numeric claim in context-package.md
+     before acting on it. The SSB_ACTION_TYPE_14_SITE_EXTENSION gotcha
+     now explicitly calls this out.
+
+  3. chat_history silent mismatched-row skip (WARN, deferred):
+     crates/orchestrator/src/ssb_viewer.rs chat_history loop silently
+     `continue`s when the action_type column disagrees with the
+     decoded SsbPayload variant. A poisoned row vanishes without a
+     trace. Fix: add `tracing::warn!(seq = seq, "chat_history row
+     action_type/payload mismatch; skipping")` in a future patch.
+     Same fix pattern applies to any future viewer methods that filter
+     msgpack-decoded rows.
+
+  4. chat_history LIMIT-before-filter scoping (WARN, deferred):
+     Tier 1 implementation applies SQL `LIMIT ?3` before the in-memory
+     `payload.project_id` filter. An SSB holding rows from multiple
+     projects can return << `limit` entries to the dashboard even when
+     more matching rows exist further back in the log. Documented as
+     a scoping tradeoff in decisions §8. Fix in Tier 2 (or whichever
+     tier expands project-scoping): either promote project_id to a
+     dedicated SQL column indexed alongside action_type, OR iterate
+     in two scans (fetch 2x the requested limit, then filter).
+
+  5. ChatWindow silent-catch on refresh polls (WARN, deferred):
+     refreshHistory / refreshInterventions / refreshRecentTasks /
+     refreshFsm in ChatWindow.svelte swallow `await invoke(...)`
+     errors. Low-severity (the polls fire before current_project is
+     selected), but a real failure would vanish silently. Fix:
+     `console.debug(e)` inside each `catch`. Any future tier that
+     forks this poll pattern should adopt the same.
+
+  6. SVELTE5_AUTOFOCUS_A11Y_WARNING pattern: Vite/svelte emits the
+     `a11y_autofocus` warning for plain `<input autofocus>`. Standard
+     fix: `onMount(() => inputEl?.focus())` with `bind:this={inputEl}`.
+     Applied in SlashPalette.svelte. Use this pattern in every new
+     overlay / modal / form entry.
+
+Carried-forward deferrals from the Tier 1 spec (reaffirmed):
+  - CHAT_MESSAGE and CHAT_RESPONSE rows have no orchestrator consumer.
+    They exist for dashboard history replay only. Same deferral class
+    as DASHBOARD_TASK_SUBMITTED_PICKUP_DEFERRED. A later tier may wire
+    CHAT_MESSAGE into a classifier/executor fan-out.
+  - classify_intent returns AMBIGUOUS unconditionally in Tier 1. The
+    frontend intentRouter covers 100% of documented prefixes, so the
+    backend is only invoked for ambiguous bare input. Wiring an LLM-
+    backed classifier is deferred until an executor/classifier role is
+    formalised.
+  - all_test_payloads() was NOT backfilled to cover all 73 variants.
+    It holds 34 entries (the original 32 plus 2 CHAT additions). The
+    proptest round-trip extension is authoritative for the 2 new
+    variants; full coverage is out of scope until a dedicated
+    backfill patch.
+
+Future-tier constraints entering Tier 2+ as hard rules:
+
+  F-1. SlashPalette rendering has ONE OWNER: Shell.svelte's overlay
+       slot (`layout.overlay === "slash-palette"`). Future windows
+       may call `openOverlay("slash-palette")` but MUST NOT import or
+       render SlashPalette.svelte directly. Breaking this duplicates
+       state + keyboard focus + backdrop handling.
+
+  F-2. tier0-shell.mjs is frozen. INVOKE_BASELINE = 35 never changes.
+       Tier N's contract test is tier{N}-*.mjs with its own assertions.
+       See tier1-chat.mjs as the template.
+
+  F-3. InterventionCard composition: InterventionCardV2 is the single
+       wrapper. Future card kinds (e.g. ReviewCard in Tier 2) should
+       also compose existing panes rather than duplicate their logic.
+
+  F-4. No new Rust crate or npm package without explicit user
+       confirmation (already a CLAUDE.md hard rule; repeated here so
+       tier planners see it inline).
+
+  F-5. SSB 14-site extension: every future action_type addition MUST
+       hit all 14 sites (doc comment, enum, CHECK constraint,
+       as_sql_str, from_str, SsbPayload enum, SsbPayload::action_type
+       match, test_payload, all_test_payloads if adding a matching
+       typed payload, proptest arb_payload, SCHEMA_VERSION bump, plus
+       any re-exports in orchestrator/src/lib.rs). Grep the real
+       count before bumping doc strings.
+
+
+========================================================================
+6. TIER 2 — VISUAL PANES (polymorphic slot)
+========================================================================
+Goal: materialize the remaining window types so the SECONDARY slot (and any
+user-requested PRIMARY override) can hold any of them. Wire FSM-based default
+routing so the slot follows the work without user intervention.
+
+Default routing table (read by layoutState on FSM/gate change):
+  FSM state                              PRIMARY          SECONDARY
+  IDLE                                   CHAT             empty (recent feed)
+  PLANNING | TESTING_FIRST | EXECUTING   CHAT             ACTIVITY
+  AUDITING                               CHAT             REVIEW
+  RESEARCHING                            CHAT             RESEARCH
+  CONFIGURING                            SETTINGS         CHAT
+  MEMORIZING                             ACTIVITY         CHAT
+  COMPLETE                               CHAT             MONITOR
+  gate=autonomous (any state)            MONITOR          ACTIVITY
+  SSB emits preview_available            (no change)      PREVIEW
+User override is sticky — once the user picks a tab manually, autoroute is
+disabled for that slot until the task ends.
+
+Window components to build (each a Svelte file under src-frontend/src/windows/):
+
+  ActivityWindow.svelte
+    Reuses ActivityFeed + ActivityEntry.
+    Adds: [reasoning] / [edit] / [validate] / [test] / [cloud] entry types
+      (currently ActivityFeed renders only actions/commits/feasibility/rules).
+    Needs: mapping from SSB action types to entry visual types.
+    Live indicator: 2px teal pulse on the last entry while FSM=EXECUTING.
+    No new tauri commands.
+
+  PlanWindow.svelte
+    Reuses PlanTree but adds hierarchical view: Concept > Phase > Step >
+      BabyStep (today PlanTree only renders Phase + Step).
+    Below tree: phase detail pane (description / expected outcome /
+      dependencies / estimated steps remaining).
+    New tauri commands:
+      get_decomposition_tree(project_id: String, task_id: Option<String>)
+          -> DecompositionTreeSnapshot
+      get_phase_detail(phase_id: String) -> PhaseDetail
+      get_baby_step_detail(baby_step_id: String) -> BabyStepDetail (8 blocks)
+
+  ReviewWindow.svelte
+    Wraps DiffViewer. Adds multi-file tab bar when >1 file in the action.
+    Adds per-hunk Accept/Decline (purple hover buttons).
+    Adds Ctrl+Shift+A / Ctrl+Shift+R shortcuts.
+    No new tauri commands (get_action_detail already returns full payload).
+
+  MonitorWindow.svelte
+    Per dashboard-design.txt lines 661..736.
+    Sections: identity (task name + elapsed), progress (bar + phase dots),
+      status snapshot (currently / health / model / spend), interventions
+      (only when present), timeline (last 15 events).
+    Consumes: get_auto_advance_stats, get_gate_status,
+      get_active_optimizations, get_recent_actions.
+    New tauri command:
+      get_monitor_snapshot(project_id: String) -> MonitorSnapshot
+          (aggregates the above in one call to avoid 500ms × N polling)
+
+  ExploreWindow.svelte
+    Read-only Q&A. Simple input + answer region with file citations.
+    Routes through /explore intent, which issues a knowledge-engine query
+      via the sidecar.
+    New tauri commands:
+      submit_explore_query(project_id: String, question: String)
+          -> explore_id
+      get_explore_result(explore_id: String)
+          -> { answer, sources: Vec<{path, range, score}>, citations }
+    Citations are clickable — open REVIEW window read-only at that path+range.
+
+  PreviewWindow.svelte
+    Shows iframe of the current preview_available URL.
+    Tab bar when multiple preview slots active (draft vs live).
+    Fallback panel when no preview active: "no preview running — start a web
+      scaffold task".
+    New tauri commands:
+      get_preview_state(project_id: String) -> PreviewState
+          (returns {slot, url, port, pid, status} for draft and live)
+      stop_dev_server(preview_id: String) -> ()
+
+  SettingsWindow.svelte (Tier 4 expansion of existing Settings.svelte)
+    Placeholder in Tier 2 so the sidebar settings icon routes here.
+
+Grounding / test strategy:
+  - Each window has a contract test: mount it with a mocked layoutState,
+    verify the tauri commands it invokes return the data shape it expects.
+  - ReviewWindow: open a real DiffViewer via get_action_detail to confirm
+    the migration didn't break existing multi-file rendering.
+  - Routing table: unit test that every FSM-state transition produces the
+    expected default arrangement.
+  - preview_available integration: write a dummy SSB row and verify
+    PreviewWindow picks it up within one poll tick.
+Exit criteria:
+  - User can hold CHAT in primary and switch secondary between all seven
+    visual window types without losing state.
+  - DiffViewer no longer replaces ActivityFeed — both visible simultaneously.
+
+
+========================================================================
+7. TIER 3 — FEATURE OBSERVABILITY DRAWERS
+========================================================================
+Goal: surface the remaining inventory features (Groups 2, 3, 4, 5, 6, 7, 8, 10,
+11, 12) as compact drawers inside the appropriate window, NOT as new top-level
+windows. Drawers are collapsed by default, mode=progressive-disclosure.
+
+Drawer pattern:
+  Each drawer is a Svelte component at src-frontend/src/drawers/ rendering:
+    - Header: icon + title + right-side [expand] caret
+    - Body: shown when expanded, ≤200px tall by default, scrollable
+  Drawers mount inside a window as a slotted child list. A window knows which
+  drawers it hosts.
+
+Wiring map (drawer -> host window -> commands):
+
+  Rules drawer -> CHAT + ACTIVITY
+    Wires: get_rule_violations (exists), get_constitutional_constraints
+      (exists, unrendered), get_source_tiers_config (exists, unrendered).
+    New tauri command:
+      get_rule_lifecycle_stats(project_id: String)
+          -> { proposed, candidate, shadow, active, retired }
+      get_rule_detail(rule_id: String) -> RuleDetail
+
+  Knowledge drawer -> EXPLORE
+    New tauri commands:
+      get_knowledge_readiness(project_id: String)
+          -> { overall: "READY"|"DEGRADED"|"UNAVAILABLE",
+               dkg: state, bm25: state, vector: state,
+               resilience: degradation_path }
+      get_dkg_stats(project_id: String) -> { nodes, edges, symbols, languages }
+      get_bm25_stats(project_id: String) -> { files, terms, size_bytes }
+      get_vector_stats(project_id: String)
+          -> { codebert_docs, granite_docs, cache_hit_rate }
+      get_pagerank_top(project_id: String, n: u32)
+          -> Vec<{ symbol, path, score }>
+      get_query_tier_stats(project_id: String)
+          -> { fast_pct, standard_pct, deep_pct, avg_latency_ms per tier }
+      get_freshness_state(project_id: String)
+          -> { decay_rate, access_boost, last_recalc_ms }
+
+  Reasoning drawer -> ACTIVITY
+    New tauri commands:
+      get_grc_budgets(project_id: String)
+          -> Vec<{ agent, topic, calls_used, calls_max, chars_used, chars_max }>
+      get_grounding_sweep(project_id: String, task_id: String)
+          -> { grounded: u32, verify_needed: u32, ungrounded: u32,
+               claims: Vec<GroundingClaim> }
+      get_mistake_book(project_id: String, baby_step_id: Option<String>)
+          -> Vec<MistakeEntry>
+      get_gg_signals(project_id: String, limit: u32)
+          -> Vec<{ ts, agent, mean_logprob, min_logprob,
+                   entropy_mean, entropy_max }>
+      get_failure_taxonomy_last(project_id: String)
+          -> Option<{ category, raw_error, classification_ts }>
+      get_dair_trace(project_id: String, step_id: String)
+          -> Vec<DairaMark>  // call/return/mutation/branch/error/finding
+      get_interrogation_tree(language: String, symptom: String)
+          -> InterrogationTreeSnapshot
+
+  Research drawer -> CHAT (when /research active) + RESEARCH window
+    New tauri commands:
+      get_research_tree(project_id: String, research_id: String)
+          -> ResearchTreeSnapshot (nodes with FORMULATE/SEARCH/EXTRACT/REFLECT
+                                   phase + convergence score)
+      get_research_budget(research_id: String)
+          -> { admitted, pruned, tier_distribution, tokens_used, tokens_max }
+      get_source_tier_distribution(research_id: String)
+          -> { t1, t2, t3, t4, t5 }
+      get_searxng_status() -> { reachable, last_success_ms_ago, docker_state }
+
+  Orchestration drawer -> MONITOR + ACTIVITY
+    New tauri commands:
+      get_context_budget_snapshot(agent_id: String, step_id: String)
+          -> { slots: [8 slot sizes and contents summaries],
+               breakpoint_1_ok, breakpoint_2_ok }
+      get_agent_checkpoints(agent_id: String) -> Vec<CheckpointRef>
+      get_agent_heartbeats(project_id: String)
+          -> Vec<{ agent, last_pulse_ms_ago, status }>
+      get_session_handoffs(project_id: String)
+          -> Vec<{ id, branch, merged, abandoned, ts, summary }>
+      get_bsp_superstep_log(project_id: String, limit: u32)
+          -> Vec<BspSuperstepEntry>
+
+  Project Intelligence drawer -> SETTINGS (dedicated PI subsection in Tier 4)
+    New tauri commands:
+      get_project_profile(project_id: String, tier: u8)
+          -> ProfileTier1|ProfileTier2|ProfileTier3
+      get_override_file(project_id: String) -> String
+      write_override_file(project_id: String, content: String) -> ()
+    Uses existing populate_tier3_if_missing.
+
+  Provider / VRAM drawer -> SETTINGS
+    New tauri commands:
+      get_vram_tier_state()
+          -> { tier: "8GB"|"12GB"|"12_7B"|"16GB"|"24GB"|"48GB",
+               measured_total, measured_free }
+      get_model_pool_state()
+          -> Vec<{ gpu_idx, model, vram_mb, load_state, role }>
+      get_provider_health() -> Vec<{ provider, reachable, circuit_state }>
+      get_active_decoding_toggles() -> { dola, turboquant, actadd, etc }
+
+  Anti-Staleness drawer -> SETTINGS
+    New tauri commands:
+      get_dep_audit_results(project_id: String, limit: u32)
+          -> Vec<DepAuditEntry>
+      get_baseline_harness_results() -> Vec<BaselineMeasurement>
+      get_deterministic_audit_log(step_id: String) -> DeterministicAuditReport
+
+  Tools / Hooks drawer -> ACTIVITY
+    New tauri commands:
+      get_hook_verdict_log(project_id: String, limit: u32)
+          -> Vec<{ ts, hook_stage, verdict, rule_id_redacted }>
+      get_shortcoder_effect(step_id: String)
+          -> { before_tokens, after_tokens, rules_applied }
+      get_token_reclamation_stats(project_id: String)
+          -> { saved_tokens_total, breakdown_by_category }
+
+  Web Quality drawer -> PREVIEW
+    New tauri commands:
+      get_build_slot_state(project_id: String)
+          -> { draft_path, live_path, last_promote_ts }
+      get_dev_server_state(project_id: String)
+          -> { pid, port, url, status }
+      get_web_validation_results(step_id: String)
+          -> { web_build, web_dev_server, web_lint }
+
+Grounding / test strategy:
+  - Each new tauri command needs a unit test against SsbViewer returning
+    fixed data, plus a contract test in tests/contracts/dashboard_commands/.
+  - SSB reads only — no tier 3 feature introduces a write path. All writes
+    live in the orchestrator / auditor / sidecar as before.
+  - Drawers must degrade silently: if a command returns null/empty, the
+    drawer header still renders but body shows "no data".
+Exit criteria:
+  - Every "Missing or unclear wiring" bullet in the inventory has a drawer.
+  - No drawer is mandatory for correctness — everything is progressive
+    disclosure, collapsed by default.
+
+
+========================================================================
+8. TIER 4 — SETTINGS REORG + MISC
+========================================================================
+Goal: restructure Settings.svelte per dashboard-design.txt lines 771..797,
+absorb PI viewer, VRAM tier, and session handoff browser as first-class
+Settings subsections rather than hidden drawers.
+
+Settings sections (top to bottom):
+  Execution    mode: LOCAL / CLOUD / HYBRID (new first-class toggle, distinct
+               from gate_mode); model selection per role; VRAM budget;
+               cloud API key + spend limits (when CLOUD/HYBRID).
+  Control      INTERACTIVE / AUTONOMOUS (gate_mode); auto-approve threshold;
+               notification preferences.
+  Project      project path (read-only); detected language / framework /
+               build system; Override file editor (opens inline).
+  Knowledge    DKG / BM25 / vector state (reuses Tier 3 knowledge drawer
+                  commands); reindex button.
+  Rules        Rule lifecycle counts; seeded-rule-pack browser.
+  Providers    VRAM tier; ModelPool state; DoLa / TurboQuant / ActAdd toggles;
+               MCP bridge (existing); Steering (existing).
+  Anti-Staleness   dep audit results; baseline harness results; deprecated
+                   patterns list; run-audit-now button.
+  Appearance   font size; panel layout preference; density.
+  Session      current session id; recent handoffs; branch-and-explore.
+
+New tauri commands:
+  set_execution_mode(mode: "LOCAL"|"CLOUD"|"HYBRID") -> String
+    (distinct from set_model_routing which controls per-role routing only)
+  get_execution_mode() -> String
+  set_vram_budget(max_mb: u32) -> ()
+  get_cloud_spend(project_id: String)
+      -> { total_usd, last_24h_usd, per_provider }
+  trigger_reindex(project_id: String) -> ()
+  trigger_dep_audit() -> ()
+
+Grounding / test strategy:
+  - Regression: existing Settings behaviour (steering, MCP) must be
+    unchanged after reorg.
+  - Unit: Execution vs Control modes are two independent axes — verify
+    toggling one does not mutate the other.
+Exit criteria:
+  - LOCAL / CLOUD / HYBRID toggle matches the [LOCAL][CLOUD][HYBRID] footer
+    of the ProjectSelector design.
+
+
+========================================================================
+9. DEFERRED (blocked on backend — do not wire until the phase ships)
+========================================================================
+  Phase 4F Feasibility Probe deep UI
+  Phase 4G Autonomous Mode full enablement (AutonomousGate / SPLIT_TASK /
+           SUBSTITUTE_MODEL / circuit breaker UI beyond stats already shown)
+  Phase 4H Self-Modification (DGM / CEL / DarwinNet Layer 1A..1C, MSI full)
+  Phase 4I Media Validator
+  Phase 4J Empire Integration
+  Group B-1 / B-2 constrained decoding UI
+  Group B-3 maintenance automation UI
+  Cloud Mode (A-49 and beyond) — Execution mode toggle exists in Tier 4, but
+           actual CLOUD dispatch path is not implemented yet
+  Focus Tunnel (A-51..A-57) FIM / DIFF / STRUCTURED mode UI
+When those phases ship, each earns its own Tier-3 drawer or Settings subsection.
+
+
+========================================================================
+10. DEPENDENCY GRAPH / SEQUENCING
+========================================================================
+Strict ordering — later tiers depend on earlier ones:
+
+  Tier 0 (shell)
+    |
+    +--> Tier 1 (CHAT window) -- depends on Shell + PanelHost
+    |
+    +--> Tier 2 (visual panes)
+         |    depends on Shell + PanelHost + WindowRegistry
+         |    can parallelize within Tier 2 (each window is independent)
+         |    ActivityWindow + PlanWindow + ReviewWindow first (reuse existing)
+         |    then MonitorWindow + ExploreWindow + PreviewWindow (new builds)
+         |
+         +--> Tier 3 (drawers)
+              |    depends on Tier 2 hosts existing
+              |    can parallelize across drawers
+              |    prioritize: Rules, Knowledge, Reasoning, Research
+              |    (highest inventory-to-UI gap)
+              |
+              +--> Tier 4 (Settings reorg)
+                   depends on Tier 3 drawer commands being mergeable into
+                   Settings sections
+
+Inside a tier, wire features one at a time and audit before the next (per
+CLAUDE.md hard rule: one change at a time).
+
+Commit naming convention (continuing the patch-N.X line from git log):
+  patch-ui-shell-tier0-0         scaffold: shell + sidebar + panelhost
+  patch-ui-shell-tier0-1         reparent PlanTree + ActivityFeed into windows
+  patch-ui-chat-tier1-0          ChatWindow + MessageList + card types
+  patch-ui-chat-tier1-1          SlashPalette + intentRouter
+  patch-ui-chat-tier1-2          classify_intent + submit_chat_message + SSB
+  patch-ui-vis-tier2-activity    ActivityWindow
+  patch-ui-vis-tier2-plan        PlanWindow + get_decomposition_tree
+  patch-ui-vis-tier2-review      ReviewWindow
+  patch-ui-vis-tier2-monitor     MonitorWindow + get_monitor_snapshot
+  patch-ui-vis-tier2-explore     ExploreWindow + submit_explore_query
+  patch-ui-vis-tier2-preview     PreviewWindow + get_preview_state
+  patch-ui-drw-tier3-rules       Rules drawer
+  patch-ui-drw-tier3-knowledge   Knowledge drawer
+  patch-ui-drw-tier3-reasoning   Reasoning drawer
+  patch-ui-drw-tier3-research    Research drawer
+  patch-ui-drw-tier3-orch        Orchestration drawer
+  patch-ui-drw-tier3-pi          Project Intelligence drawer
+  patch-ui-drw-tier3-provider    Provider / VRAM drawer
+  patch-ui-drw-tier3-as          Anti-Staleness drawer
+  patch-ui-drw-tier3-tools       Tools / Hooks drawer
+  patch-ui-drw-tier3-web         Web Quality drawer
+  patch-ui-settings-tier4-0      Settings reorg: Execution / Control / Project
+  patch-ui-settings-tier4-1      Settings Knowledge / Rules / Providers
+  patch-ui-settings-tier4-2      Settings Anti-Staleness / Appearance / Session
+
+
+========================================================================
+11. NEW TAURI COMMANDS SUMMARY (all tiers)
+========================================================================
+Tier 1:
+  classify_intent
+  submit_chat_message
+  get_chat_history
+  get_recent_tasks
+Tier 2:
+  get_decomposition_tree
+  get_phase_detail
+  get_baby_step_detail
+  get_monitor_snapshot
+  submit_explore_query
+  get_explore_result
+  get_preview_state
+  stop_dev_server
+Tier 3:
+  get_rule_lifecycle_stats
+  get_rule_detail
+  get_knowledge_readiness
+  get_dkg_stats
+  get_bm25_stats
+  get_vector_stats
+  get_pagerank_top
+  get_query_tier_stats
+  get_freshness_state
+  get_grc_budgets
+  get_grounding_sweep
+  get_mistake_book
+  get_gg_signals
+  get_failure_taxonomy_last
+  get_dair_trace
+  get_interrogation_tree
+  get_research_tree
+  get_research_budget
+  get_source_tier_distribution
+  get_searxng_status
+  get_context_budget_snapshot
+  get_agent_checkpoints
+  get_agent_heartbeats
+  get_session_handoffs
+  get_bsp_superstep_log
+  get_project_profile
+  get_override_file
+  write_override_file
+  get_vram_tier_state
+  get_model_pool_state
+  get_provider_health
+  get_active_decoding_toggles
+  get_dep_audit_results
+  get_baseline_harness_results
+  get_deterministic_audit_log
+  get_hook_verdict_log
+  get_shortcoder_effect
+  get_token_reclamation_stats
+  get_build_slot_state
+  get_dev_server_state
+  get_web_validation_results
+Tier 4:
+  set_execution_mode
+  get_execution_mode
+  set_vram_budget
+  get_cloud_spend
+  trigger_reindex
+  trigger_dep_audit
+
+Total new commands: ~50. Every one reads from SSB or sidecar — no new
+write paths beyond set_execution_mode / set_vram_budget / write_override_file
+/ stop_dev_server / trigger_*.
+
+
+========================================================================
+12. NEW SSB ACTION TYPES
+========================================================================
+Tier 1:
+  CHAT_MESSAGE
+  CHAT_RESPONSE
+Tier 4:
+  EXECUTION_MODE_CHANGED
+All others read existing SSB action types defined by the orchestrator.
+
+
+========================================================================
+13. GROUNDING REQUIREMENTS (per CLAUDE.md grounded-by-default rule)
+========================================================================
+Before any tier enters EXECUTING:
+  - Verify every tauri command listed above has a corresponding SsbViewer
+    method. For missing viewer methods, add them first in a separate patch.
+  - Verify the SSB action types needed by each read command exist. If not,
+    add them to the orchestrator side first.
+  - For commands that call into the sidecar (classify_intent potentially,
+    submit_explore_query): verify the sidecar endpoint exists and the HTTP
+    contract is stable. Add sidecar endpoints first if missing.
+  - Do NOT assume any sidecar endpoint exists based on training data.
+    Grep the python/elai_inference/server.py for the exact route before
+    writing the Rust client.
+
+Per-tier grounding sweep (before EXECUTING):
+  Tier 0: no backend grounding — frontend-only.
+  Tier 1: grounding-needed claims — "SSB supports adding new action types"
+          (verify by grepping crates/core/ssb/ for action registration).
+          "intent classification can run client-side deterministically"
+          (verified from this plan; no backend claim).
+  Tier 2: grounding-needed — each new command's SsbViewer method exists or
+          will be added; preview_available SSB action already emitted per
+          inventory Group 14.
+  Tier 3: highest grounding cost — every drawer claims backend data exists.
+          For each drawer, grep the source to confirm the data is actually
+          captured and queryable via SSB or sidecar before writing the
+          command. A drawer whose data source is a ghost gets dropped from
+          the tier until the backend adds it.
+  Tier 4: only small backend additions (execution mode, vram budget,
+          override file). Grep existing config paths first.
+
+
+========================================================================
+14. OPEN QUESTIONS FOR USER
+========================================================================
+1. Visual slot identity: three options from our analysis —
+   (a) default to ACTIVITY (engineering feed),
+   (b) default to PREVIEW (product-facing live site),
+   (c) polymorphic with FSM-based routing (this plan's default).
+   This plan assumes (c). Confirm or override.
+
+2. CLOUD mode dispatch: Tier 4 adds the UI toggle, but per inventory
+   Group 20 the CLOUD / HYBRID backend path is not shipped. Should the
+   toggle be disabled in Tier 4, or shown enabled with a "routes only
+   gate_mode today" note?
+
+3. Window history depth: design doc says 20. Confirm.
+
+4. Sidebar icon set: design doc uses Lucide. Confirm or pick alternative
+   (Heroicons, Tabler, custom).
+
+5. Chat message persistence: should CHAT_MESSAGE survive across sessions
+   (SSB-backed history) or live only in the current session? Design doc
+   is ambiguous; this plan assumes SSB-backed.
+
+6. Intent classifier fallback: if LLM-based classification is used for
+   AMBIGUOUS inputs, which role dispatches it? Options: executor, new
+   classifier role, or deterministic-only (no LLM fallback). This plan
+   defaults to deterministic-only for now; disambiguation card covers
+   ambiguity.
+
+7. TemplatePicker: currently orphaned. Re-integrate (reachable from
+   EmptyFolderChooser when user picks "scaffold") or delete? This plan
+   assumes keep-and-reintegrate via the EmptyFolderChooser path.
+
+8. Responsive minimum: design doc says 1000px. Below that, sidebar
+   collapses to hamburger. Confirm we want a hamburger at all for a
+   development tool (or drop responsive entirely).
+
+
+========================================================================
+15. TIER COMPLETION LEDGER AND CARRY-OVER CONTEXT
+========================================================================
+This section grows as tiers ship. Append-only. Records:
+  - tier status (PLANNED / IN_PROGRESS / DONE),
+  - invariants enforced by contract tests (future tiers MUST NOT break),
+  - decisions taken during implementation that constrain later tiers,
+  - deferred items tagged with the tier that should pick them up,
+  - gotchas discovered along the way.
+
+Read the ledger before starting any later tier. Numbers are stable IDs —
+later tier audits can reference DEF-T1-2 or I0-6 to cite this file.
+
+
+15.1 TIER 0 SHELL REWRITE
+-------------------------
+Status:         DONE 2026-04-22 (session s-38600)
+Evidence:       workflow/sessions/s-38600/audit-tier0.md
+                workflow/reasoning/tier0-shell-grounding.md
+                workflow/sessions/s-38600/context-package.md
+Commits:        NONE (user instructed no commits for this phase)
+Build:          npm run build PASS 0 warnings 0 errors
+                cargo build --workspace PASS 0 errors 3 pre-existing warnings
+Tests:          tests/contracts/tier0-shell.mjs 6/6 PASS (static-only)
+Coverage gap:   no vitest/jest in package.json. Mount-style tests deferred
+                until a test framework is approved as a dep (see DEF-ALL-1).
+
+INVARIANTS — enforced by tests/contracts/tier0-shell.mjs. Future tiers
+must not regress these; changes that would require breaking them need
+user approval and an explicit baseline update.
+  I0-1  Eight files exist under src-frontend/src/shell/:
+          windowTypes.ts, layoutState.svelte.ts, WindowRegistry.ts,
+          PlaceholderWindow.svelte, PanelDivider.svelte, PanelHost.svelte,
+          Sidebar.svelte, Shell.svelte.
+  I0-2  windowTypes.ts enumerates all 13 WindowType variants: CHAT,
+          ACTIVITY, PLAN, REVIEW, MONITOR, EXPLORE, PREVIEW, SETTINGS,
+          KNOWLEDGE, RULES, REASONING, PROJECT, RESEARCH.
+  I0-3  WindowRegistry.ts maps the Tier 0 live types (or their Tier 2+
+          wrappers) + PlaceholderWindow as default. Post-Tier-2A the
+          assertion was relaxed to accept ActivityWindow and
+          SettingsWindow wrappers instead of raw ActivityFeed / Settings.
+  I0-4  Shell.svelte imports and renders StatusBar at bottom.
+  I0-5  App.svelte imports Shell and NO LONGER renders <Workspace/>
+          directly. Workspace is reachable only via WindowRegistry.
+  I0-6  invoke<> grep across src-frontend/src is >= 35. Baseline 35
+          (Tier 0 added get_gate_status in Shell, bumping the pre-Tier-0
+          count of 34). When a future tier demotes a component, its
+          invoke<> consumers must land elsewhere or the baseline drops.
+
+DECISIONS — constrain later tiers. Break these only with user approval.
+  D0-1  Workspace.svelte is DEMOTED but INTACT. It renders only when
+          WindowRegistry.componentFor(PLAN) returns it. This preserves
+          its 5 invoke consumers (get_pending_interventions,
+          get_gate_status, get_auto_advance_stats, set_gate_mode,
+          set_model_routing) until Tier 1 reparents them.
+          TIER 1 RULE: when the command strip migrates into CHAT's
+          input bar, those 5 invokes must find a new home or I0-6
+          will fail. Proposed plan: the command strip becomes a CHAT
+          header until the slash palette + chat input replace it.
+  D0-2  StatusBar is a NEW LIVE CONSUMER. It was never mounted before
+          Tier 0 (verified). Shell.svelte is its first mount site. All
+          7 of its invokes go live for the first time in the app's
+          history. Do not remove.
+  D0-3  Sidebar uses UNICODE GLYPHS (▶ ▤ ≡ ? ⚙ ←) not Lucide, to
+          avoid a new dep. Swap to lucide-svelte is gated on user
+          approval (see §14 Q4, now §15.3).
+  D0-4  Window history ring depth = 20 (HISTORY_RING_SIZE constant).
+  D0-5  Keyboard shortcuts registered in Shell.svelte's svelte:window
+          onkeydown:
+            Ctrl+1..5   primary-slot window modes
+            Ctrl+N      window-type selector overlay
+            Ctrl+W      close active primary tab
+            Ctrl+Shift+H recover last closed window
+            Ctrl+D      toggle secondary panel collapse
+            Ctrl+.      slash palette overlay
+            Escape      dismiss any overlay
+          Later tiers adding shortcuts must check this handler first
+          to avoid collisions.
+  D0-6  User-override sticky semantics (Tier 2 Track A — implemented
+          in layoutState.svelte.ts). setPrimary/setSecondary flip
+          per-slot userOverrodePrimary / userOverrodeSecondary flags.
+          applyDefaultsForFsm and applyAutoArrangement skip auto-
+          routing for flagged slots. clearUserOverridesOnTaskEnd
+          resets both on FSM=IDLE.
+  D0-7  Three commands EXCLUDED from the invoke<> baseline because
+          they had 0 hits pre-Tier-0: select_project, create_project,
+          open_preview_url. Do not add them to the exit-criterion
+          check unless they become live.
+  D0-8  FSM_ROUTING table in layoutState.svelte.ts is the single
+          source of truth for FSM-state → primary/secondary defaults.
+          Gate=autonomous overrides. Unknown FSM states emit one
+          console.warn per distinct literal per session.
+
+DEFERRED — tagged by the tier that should pick them up.
+  DEF-T1-1   ActivityFeed double-mount. When PRIMARY=PLAN and
+             SECONDARY=ACTIVITY, ActivityFeed mounts twice — once
+             inside Workspace, once standalone via the ACTIVITY slot.
+             Each runs its own 500ms poll on get_recent_actions.
+             Severity: INFO (perf, not correctness). Fix via
+             Workspace reparenting in Tier 1.
+  DEF-T1-2   get_gate_status triple-poll when PLAN window active:
+             Shell (2s), StatusBar (5s/30s), Workspace (2s). Three
+             independent polls on one endpoint. Consolidate via
+             shared gateMode state when Tier 1/2 reparents Workspace.
+  DEF-T1-3   onexit callback in SECONDARY slot navigates the whole
+             app back to ProjectSelector. If the user drags the PLAN
+             window into the secondary panel and clicks "← projects",
+             they lose the workspace. Tier 1 fix: either restrict
+             PLAN to primary only, or differentiate primary-onexit
+             vs secondary-onexit.
+  DEF-T2-1   Shell.svelte is 348 lines, exceeds dashboardRules Rule 1
+             (150-line God-Component limit). Accepted for Tier 0
+             scaffolding. Tier 2 must decompose. Suggested splits:
+             OverlayManager (window selector + slash palette),
+             KeyboardRouter (global shortcut handling),
+             GateModePoller (get_gate_status + auto-arrange).
+  DEF-T2-2   Ten window types still render PlaceholderWindow.svelte.
+             Tier 2 fills REVIEW, MONITOR, EXPLORE, PREVIEW. Tier 3
+             fills KNOWLEDGE, RULES, REASONING, RESEARCH. Tier 4
+             first-classes PROJECT if §8 calls for it.
+  DEF-T2-3   applyDefaultsForFsm references WindowType.REVIEW (for
+             AUDITING) and WindowType.MONITOR (for COMPLETE and
+             autonomous) BEFORE those windows exist. Until Tier 2
+             ships them, those slots render PlaceholderWindow when
+             the routing fires. Deterministic but visually empty.
+  DEF-ALL-1  No mount-style frontend tests. Contract tests are
+             static-grep only. Adding vitest + @testing-library
+             requires user approval (no-new-deps rule). Current
+             gap: cannot assert sidebar-click flips PanelHost
+             rendering, cannot assert tab bar re-renders on close,
+             cannot assert overlay close-on-outside-click.
+  DEF-ALL-2  3 pre-existing svelte-check errors in ActivityFeed.svelte
+             and DiffViewer.svelte (narrowing `never` types). Not
+             from Tier 0. Flag for cleanup when those files are
+             touched anyway.
+  DEF-ALL-3  2 pre-existing cargo warnings in crates/orchestrator:
+               pipeline_tree_navigator.rs:15 unused import PhaseNode
+               web_research_orchestrator.rs:117 unused field `clock`
+             Not from Tier 0. Out of scope.
+
+CONTRACT FOR FUTURE TIERS:
+  I0-6 (the invoke<> baseline) is the primary regression guard. When
+  a future tier DEMOTES or REWRITES an existing component, the
+  commands that component owned must land in the new component, OR
+  migrate to another live component, OR be explicitly removed from
+  the baseline (requires user approval). Example: when Workspace's
+  command strip moves to CHAT's input bar (Tier 1), bump
+  INVOKE_BASELINE intentionally, not silently.
+
+
+15.2 OBSERVED BEYOND TIER 0 (not audited by session s-38600)
+------------------------------------------------------------
+Files present at 2026-04-22 beyond Tier 0 scope — any claim here is
+"grep-observed only", not auditor-certified. The next audit must
+independently verify:
+  src-frontend/src/chat/          ChatWindow, MessageList, InputBar,
+                                  SlashPalette — Tier 1 scaffolding
+                                  in progress.
+  shell/layoutState.svelte.ts     applyDefaultsForFsm + FSM_ROUTING +
+                                  user-override sticky flags — Tier 2
+                                  Track A routing table landed ahead
+                                  of some referenced window types
+                                  (see DEF-T2-3).
+  shell/WindowRegistry.ts         now imports ChatWindow for CHAT and
+                                  wraps ACTIVITY/SETTINGS in Tier 2A
+                                  wrapper components.
+  tests/contracts/tier2-windows-frontend.mjs
+                                  Tier 2A contract tests (not run in
+                                  this session).
+
+Tier 1 auditor must verify: (a) I0-6 still holds after chat/ lands,
+(b) ChatWindow does not duplicate Workspace's 5 invokes before
+Workspace is reparented, (c) SlashPalette replaces or cleanly coexists
+with Shell's Ctrl+. overlay stub from D0-5.
+
+
+15.3 §14 OPEN QUESTIONS — STATUS AFTER TIER 0
+---------------------------------------------
+  Q1 Visual slot identity              RESOLVED (c) polymorphic FSM
+                                       routing. See applyDefaultsForFsm.
+  Q2 CLOUD mode dispatch               UNRESOLVED. Tier 4 decision.
+  Q3 Window history depth 20           RESOLVED: HISTORY_RING_SIZE=20.
+  Q4 Sidebar icon set                  RESOLVED (interim): unicode
+                                       glyphs. Re-open only if user
+                                       approves lucide-svelte as a dep.
+  Q5 Chat message persistence          UNRESOLVED. Tier 1 decision.
+  Q6 Intent classifier fallback        UNRESOLVED. Tier 1 decision.
+  Q7 TemplatePicker re-integrate       UNRESOLVED. Not touched in Tier 0.
+  Q8 Responsive minimum 1000px         UNRESOLVED. No breakpoints added
+                                       in Tier 0.
+
+
+15.4 TIER 1 CHAT WINDOW
+-----------------------
+Status:         DONE (per FSM phase label "Tier 1 CHAT WINDOW — done"
+                at session s-342352 start). Full ledger entry NOT WRITTEN
+                by the Tier 1 session — backfill owed. The notes below
+                are reconstructed from §15.2's grep-observed inventory
+                and from Tier 2 audit findings, NOT from a Tier 1
+                auditor report.
+Evidence:       PARTIAL — workflow/sessions/<tier1-session-id>/
+                artifacts not consulted. Recoverable from git log
+                (look for patch-ui-chat-tier1-* commits) and from
+                src-frontend/src/chat/ on disk.
+Commits:        none observed in git log under the patch-ui-chat-tier1
+                naming. Either committed under a different label or
+                kept uncommitted (consistent with the no-commits
+                pattern this project uses for in-progress phases).
+Build:          inferred PASS (Tier 2's cargo build --release
+                --workspace and vite build both included Tier 1 files
+                with 0 errors as of 2026-04-22).
+
+INVARIANTS — reconstructed; future audit should re-grep to confirm.
+  I1-1  src-frontend/src/chat/ contains ChatWindow, MessageList,
+          InputBar, SlashPalette (per §15.2). InterventionCardV2 +
+          card subtypes (StatusCard, ErrorCard, DisambiguationCard,
+          SteeringAckCard, RecentTaskRow) presence NOT verified —
+          plan §5 lists them as scaffolded.
+  I1-2  WindowRegistry maps CHAT → ChatWindow (per §15.2:1240).
+  I1-3  Workspace's command strip (/mode, /model) was reparented into
+          ChatWindow per the §5 spec, addressing DEF-T1-1 / DEF-T1-2 /
+          DEF-T1-3 from §15.1. Verification owed: the 5 invokes called
+          out in D0-1 (get_pending_interventions, get_gate_status,
+          get_auto_advance_stats, set_gate_mode, set_model_routing)
+          must still appear at least once in the live frontend tree.
+  I1-4  tier1-chat.mjs contract test exists. At Tier 1 close it pinned
+          FROZEN_INVOKE_HANDLER_COUNT=48. Tier 2 raised this to 56 in
+          tier2-windows-backend.mjs (I2-2). The Tier 1 file's count
+          assertion was untouched by Tier 2 and continued to assert 48
+          against a 56-command lib.rs — verify whether the Tier 1
+          assertion was relaxed or supersedes-by-newer-test.
+  I1-5  4 new tauri commands shipped in Tier 1 (per §11 Tier 1 list):
+          classify_intent, submit_chat_message, get_chat_history,
+          get_recent_tasks. Tier 2 backend audit confirmed these are
+          present in the count (48 = pre-Tier-1 baseline 44 + 4).
+  I1-6  2 new SSB action types per §12 Tier 1: CHAT_MESSAGE,
+          CHAT_RESPONSE. §15.2:1235 implies they landed; precise SSB
+          schema bump version not recorded.
+
+DECISIONS — Tier 1 carry-overs informed Tier 2 design.
+  D1-1  Chat persistence: SSB-backed (resolves §14 Q5; documented as
+          such in §15.6 below).
+  D1-2  Intent classification: deterministic-only fallback, no LLM
+          (resolves §14 Q6).
+  D1-3  Slash palette overlay (Ctrl+.) implemented via SlashPalette
+          component, not via Shell.svelte's overlay stub from D0-5.
+          Verification owed.
+
+DEFERRED — propagated from §15.1 DEF-T1-* and inherited.
+  DEF-T1-1   ActivityFeed double-mount — INHERITED into Tier 2.
+             Tier 2 Track A reparenting via ActivityWindow wrapper
+             may have addressed it. Verify on next audit.
+  DEF-T1-2   get_gate_status triple-poll — likely RESOLVED by Shell
+             reparenting (Tier 2 Track A added Shell.svelte gate
+             poll integration). Verify.
+  DEF-T1-3   onexit secondary-slot navigation hazard — STATUS
+             UNKNOWN. Tier 2 did not specifically address it.
+  DEF-T2_1-1 Shell.svelte still likely >150 lines (DEF-T2-1
+             carryover). No decomposition documented.
+
+CONTRACT FOR FUTURE TIERS:
+  Reconstructed Tier 1 ledger is BEST EFFORT. Treat I1-X invariants
+  as hypotheses to verify on touch, not as hard guarantees, until
+  Tier 1 audit artifacts are recovered or re-derived. Tier 2's
+  invariants (§15.5) were authored with first-hand audit data and
+  carry full weight.
+
+
+15.5 TIER 2 VISUAL PANES
+------------------------
+Status:         DONE except DEF-T2_5-1 (WindowRegistry flip for
+                PLAN/MONITOR/EXPLORE/PREVIEW). 2026-04-22, session
+                s-342352. Two parallel implementation tracks (A =
+                frontend-only, B = backend-extending), one audit cycle
+                each, 5 BLOCKs fixed in-place after the single audit
+                pass (no rework loop).
+Evidence:       workflow/sessions/s-342352/context-package.md
+                workflow/sessions/s-342352/tier2-briefings.md
+                workflow/reasoning/tier2-decisions.md
+                Track A audit summary (in-message; no separate file).
+                Track B audit summary (in-message; no separate file).
+Commits:        NONE (user instructed no commits for this phase).
+Build:          cargo build --release --workspace PASS 2m 25s
+                  0 errors, 2 pre-existing warnings (DEF-ALL-3).
+                vite build (frontend) PASS 955ms
+                  142 KB JS / 30 KB CSS / 0 warnings.
+Tests:          tier2-routing.mjs                  9/9   PASS
+                tier2-windows-frontend.mjs         6/6   PASS
+                tier2-windows-backend.mjs          6/6   PASS
+                dashboard_tier2_windows_contract.rs 10/10 PASS
+                  (after BLOCK-3 fix: 2 sync #[test] -> #[tokio::test])
+                tier1-chat.mjs                     8/8   PASS (regress)
+                tier0-shell.mjs                    6/6   PASS
+                  (after baseline supersede: ActivityFeed -> ActivityWindow)
+Coverage gap:   Same as DEF-ALL-1 (no vitest, static-grep only).
+                cargo test for elai-contracts post-fix-pass run by
+                Track B auditor pre-fix; main model did NOT re-run
+                after the 5 BLOCK fixes (per "1 audit cycle" rule).
+
+INVARIANTS — enforced by tier2-* contract tests + the Rust contract
+test. Future tiers must not regress these.
+  I2-1  src-frontend/src/windows/ contains 7 components:
+          ActivityWindow.svelte, ReviewWindow.svelte,
+          SettingsWindow.svelte (Track A wrappers — flipped in
+          WindowRegistry), PlanWindow.svelte, MonitorWindow.svelte,
+          ExploreWindow.svelte, PreviewWindow.svelte (Track B —
+          NOT yet flipped in WindowRegistry, see DEF-T2_5-1).
+  I2-2  invoke_handler in crates/dashboard/src/lib.rs registers 56
+          commands (was 48 at Tier 1 close). FROZEN_INVOKE_HANDLER_COUNT
+          = 56 is asserted in tier2-windows-backend.mjs. Future tiers
+          adding tauri commands MUST update this constant explicitly,
+          never silently — same rule as I0-6.
+  I2-3  WindowRegistry maps:
+          CHAT     → ChatWindow            (Tier 1)
+          ACTIVITY → ActivityWindow        (Tier 2A wrapper)
+          REVIEW   → ReviewWindow          (Tier 2A wrapper)
+          SETTINGS → SettingsWindow        (Tier 2A wrapper)
+          PLAN     → Workspace             (DEMOTED — Tier 0 D0-1)
+          PLAN/MONITOR/EXPLORE/PREVIEW window components are NOT
+          mapped to LIVE registry yet — see DEF-T2_5-1.
+  I2-4  SsbViewer gains 4 read methods:
+          decomposition_tree(task_id: Option<&str>) -> DecompositionTreeSnapshot
+          phase_detail(phase_id: &str) -> PhaseDetail
+          baby_step_detail(baby_step_id: &str) -> BabyStepDetail
+          recent_preview_available(project_id, limit) -> Vec<PreviewAvailableRow>
+          + SsbViewerError gains NotFound { kind, id } variant.
+  I2-5  ZERO new SsbActionType variants in Tier 2 (per plan §12).
+          PreviewAvailablePayload schema UNCHANGED — preview state is
+          assembled at runtime in the dashboard via DevServerRegistry
+          (see D2-1).
+  I2-6  Sidecar surface UNCHANGED in Tier 2. /v1/explore was NOT added.
+          ExploreWindow's submit_explore_query re-routes through the
+          existing GET /search endpoint (server.py:2343).
+          tier2-windows-backend.mjs asserts the literal string
+          "/v1/explore" does NOT appear in any Track B production file.
+  I2-7  phase_detail caps SSB scan at PHASE_DETAIL_SCAN_LIMIT = 1000
+          most-recent phase_complete rows. Phases older than the cap
+          OR pre-completion phases (no phase_complete row yet) report
+          SsbViewerError::NotFound — known limitation.
+  I2-8  PreviewState design: runtime-join via Tauri-managed
+          Arc<RwLock<HashMap<preview_id, DevServerHandle>>>
+          (DevServerRegistry). Same registry serves both
+          get_preview_state and stop_dev_server. Drained on
+          tauri::WindowEvent::CloseRequested.
+  I2-9  ExploreCache shutdown signal uses tokio::sync::watch
+          (already in workspace tokio "sync" feature) — NOT
+          tokio_util::CancellationToken. tokio-util is NOT a
+          dashboard dependency.
+  I2-10 dashboard/Cargo.toml: blake3 + reqwest declared as
+          { workspace = true } (NOT direct version pins).
+          elai-web-validator added as a path dep so commands.rs can
+          consume DevServerHandle / DevServerStatus directly.
+          contracts/Cargo.toml: elai-dashboard added as dev-dep so
+          dashboard_tier2_windows_contract.rs can import the command
+          surface.
+
+DECISIONS — constrain later tiers. Break only with user approval.
+  D2-1  PreviewState uses runtime-join, NOT SSB schema bump. Tier 3
+          drawers needing live process state (Web Quality dev server
+          lifecycle, Provider model-load handles, etc.) SHOULD reuse
+          this pattern — extend an existing or add a new
+          Tauri-managed registry rather than introducing a new
+          SsbActionType variant. Plan §12 enumerates ZERO new SSB
+          action types for Tier 2; this design preserves that intent.
+  D2-2  ExploreWindow re-routes through existing /search; no
+          /v1/explore endpoint exists. Tier 3 Knowledge / Reasoning
+          drawers face the same constraint: assume the sidecar exposes
+          /search + /v1/messages + /v1/steering/* only; verify any
+          new endpoint via grep server.py BEFORE writing the Rust
+          client (per plan §13:832).
+  D2-3  WindowRegistry mapping for PLAN/MONITOR/EXPLORE/PREVIEW
+          deferred (DEF-T2_5-1) for parallel-track non-overlap. Track
+          A owned WindowRegistry.ts; Track B wrote the four window
+          components. Cross-track edits to one file would have
+          violated the parallel split. The flip is mechanical
+          (4 imports + 4 LIVE map entries) and MUST close before
+          Tier 3 drawer work begins, because drawers mount inside
+          their host windows.
+  D2-4  Contract tests live in:
+          crates/dashboard/tests/contracts/*.mjs    (Node)
+          crates/contracts/tests/*.rs               (Rust, mirrors
+                                                     existing
+                                                     dashboard_tier1_
+                                                     chat_contract.rs)
+          The plan's original .elai_cc/src-tauri/tests/contracts/
+          path does not exist in this repo. Tiers 3+ must use this
+          layout.
+  D2-5  BabyStepSpec is 6 fields (id, task, estimated_tokens,
+          grounding, tdd, acceptance) at research_tree.rs:1284 — NOT
+          8. Plan §6.PlanWindow's "8 blocks" reference was off-by-2.
+          BabyStepDetail uses Optional fields where the writer side
+          has no persistence yet.
+  D2-6  blake3 + reqwest declared via { workspace = true } (NOT
+          direct version pins) to avoid silent divergence on workspace
+          bumps. tokio-util explicitly REMOVED (replaced by
+          tokio::sync::watch).
+  D2-7  phase_detail intentionally only matches PhaseComplete.phase_id
+          — NOT PhaseTransitionPayload.evidence_summary (free-text
+          field, caused false positives + false negatives in the
+          original Track B implementation; fixed during BLOCK-2).
+          Pre-completion phases report NotFound until orchestrator
+          emits phase_complete for them.
+  D2-8  ExploreCache TTL = 5 min, eviction interval =
+          EXPLORE_CACHE_EVICTION_INTERVAL_SECS (commands.rs constant).
+          Cache key = blake3(question + project_id) — explicit
+          deterministic identifier (NOT uuid-v4).
+
+DEFERRED for tiny follow-up patch (DEF-T2_5-X):
+  DEF-T2_5-1 WindowRegistry flip for PLAN/MONITOR/EXPLORE/PREVIEW
+             (~10 lines: 4 imports + 4 LIVE map entries). BLOCKS
+             Tier 3 drawer work — drawers inside unreachable windows
+             are invisible.
+  DEF-T2_5-2 6 svelte-check errors in PreviewWindow.svelte:
+             svelte/store usage (should be Svelte 5 runes per Tier 2A
+             precedent) + invalid button nesting. Cosmetic until
+             DEF-T2_5-1 closes; lint-clean before Tier 3.
+  DEF-T2_5-3 ReviewWindow load() lacks per-invocation request token.
+             Rapid seq prop changes (user clicking through activity
+             feed) produce interleaved invoke responses; last-write
+             wins on detail state. Add a local sequence counter.
+  DEF-T2_5-4 submit_explore_query uses std::time::SystemTime::now()
+             instead of state.clock.now() for explore_id derivation
+             (commands.rs:2821). Violates entropy quarantine
+             consistency. state.clock is in scope at line 2850.
+             Same WARN applies to Instant-based TTL math in the
+             cache eviction path.
+  DEF-T2_5-5 ExploreCache "pending" tombstone is not cleaned on
+             tokio::spawn task panic. Stale entry persists 5 min
+             until eviction tick removes it. Frontend 30s timeout
+             catches user-facing impact, but the backend has no
+             panic-safe cleanup.
+  DEF-T2_5-6 applyAutoArrangement: autoApplied boolean in
+             Shell.svelte never resets. Autonomous->manual->autonomous
+             re-fire skips the Tier 0 compat path. Functionally OK
+             because applyDefaultsForFsm covers later transitions,
+             but semantically inconsistent.
+  DEF-T2_5-7 windowProps.fsmState=null during 0-2s warm-up. First
+             gate poll has not yet returned, so applyDefaultsForFsm
+             skips routing. Routing applies on the second tick (2s
+             worst-case delay). Fix: seed initial fsmState from
+             cached SSB read, OR shorten the first-poll interval.
+
+DEFERRED for Tier 3 (DEF-T3-X):
+  DEF-T3-1   decomposition_tree returns Ok(empty) until orchestrator
+             emits concept_decomposition SSB rows. Tier 3 PI drawer
+             (or backend Phase 4D/4E) is the writer-side owner.
+             PlanWindow detail panes need this to populate.
+  DEF-T3-2   PhaseDetail / BabyStepDetail Optional fields stay None
+             until the writer side emits baby_step_spec /
+             phase_detail rows. Same writer-side gap as DEF-T3-1.
+
+DEFERRED, broad / architectural (DEF-ALL-X):
+  DEF-ALL-4  ActivityEntry.svelte is 1393 lines (dashboardRules
+             Rule 1, 150-line God-Component limit). Pre-existing,
+             persists past Tier 2. Track A added 5 switch cases
+             (~35 lines) to the file; cumulative violation grows.
+             Decompose when the file is touched again.
+
+Pre-existing breakage discovered during Tier 2 (NOT Tier 2's bug):
+  - fula_dkg_querier_hot_swap_contract.rs:158 missing task_splitter
+    field. Attributed to commit ebc607a (batch-ful-b: PhaseSizing-
+    aware SPLIT_TASK splitter). Out of dashboard scope; flag for
+    batch-ful follow-up.
+
+CONTRACT FOR FUTURE TIERS:
+  - DEF-T2_5-1 (WindowRegistry flip) is the gating prerequisite for
+    Tier 3 drawer work.
+  - I2-2 (FROZEN_INVOKE_HANDLER_COUNT=56) is the tauri-command
+    regression guard. Tier 3 will add commands; bump explicitly.
+  - I2-5 (zero new SsbActionType variants in Tier 2) sets the
+    expectation: Tier 3 drawers should also avoid SSB schema bumps
+    where possible. Use D2-1's runtime-join pattern instead.
+  - I2-6 + D2-2 (no /v1/explore) is the sidecar grounding rule:
+    grep server.py before writing any sidecar client.
+
+
+15.6 §14 OPEN QUESTIONS — STATUS AFTER TIER 2
+---------------------------------------------
+  Q1 Visual slot identity              RESOLVED at Tier 0 (kept).
+                                       Polymorphic FSM routing via
+                                       FSM_ROUTING table.
+  Q2 CLOUD mode dispatch               UNRESOLVED. Tier 4 decision
+                                       (UI toggle in scope; dispatch
+                                       path NOT shipped per §9 Group
+                                       20).
+  Q3 Window history depth 20           RESOLVED at Tier 0 (kept).
+  Q4 Sidebar icon set                  RESOLVED at Tier 0 (interim
+                                       unicode glyphs). Re-open only
+                                       if user approves lucide-svelte
+                                       as a dep.
+  Q5 Chat message persistence          RESOLVED at Tier 1 (D1-1):
+                                       SSB-backed via CHAT_MESSAGE /
+                                       CHAT_RESPONSE.
+  Q6 Intent classifier fallback        RESOLVED at Tier 1 (D1-2):
+                                       deterministic-only, no LLM.
+  Q7 TemplatePicker re-integrate       UNRESOLVED. Not touched in
+                                       Tier 0/1/2.
+  Q8 Responsive minimum 1000px         UNRESOLVED. No breakpoints
+                                       added in Tier 0/1/2.
+
+Newly-surfaced questions for Tier 3+:
+  Q9 (Tier 3) Concept_decomposition writer side — which subsystem
+              owns emitting the SSB row that decomposition_tree reads
+              (DEF-T3-1)? Candidates: PI Tier 3 telescope, backend
+              Phase 4D Designer, backend Phase 4E PipelineBuilder.
+              Decision needed before PlanWindow detail panes are
+              wired into a Tier 3 drawer.
+  Q10 (Tier 3) BabyStepSpec / PhaseDetail writer side — same
+              question for baby_step_spec / phase_detail rows
+              (DEF-T3-2). Likely same owner as Q9.
+  Q11 (Tier 3) Sidecar /v1/knowledge endpoint — does the Knowledge
+              drawer query a real knowledge engine endpoint, or
+              re-route through /search like ExploreWindow (D2-2
+              precedent)? Grep server.py first; if absent, decide
+              between adding the endpoint or re-routing.
+
+
+15.7 TIER 2.5 WINDOWREGISTRY CLOSURE
+--------------------------------------
+Status:         DONE 2026-04-24 (session s-84064). Bundled with Tier 3
+                partial under the same 1-audit-cycle envelope per user
+                directive.
+Evidence:       workflow/sessions/s-84064/context-package.md
+                workflow/sessions/s-84064/transformed-prompt.md
+                Auditor CONVERGED (score 8.85/10, 1 BLOCK fixed in-place,
+                4 WARN documented as deferred).
+Commits:        NONE (user instructed no commits for this phase).
+Build:          cargo check -p elai-dashboard PASS 0 errors
+                npm run build (vite)       PASS 0 warnings 208 modules
+                cargo build --workspace --release (auditor)  PASS
+                2 pre-existing warnings (DEF-ALL-3).
+Tests:          tier0-shell.mjs               6/6  PASS (regression)
+                tier1-chat.mjs                8/8  PASS (regression)
+                tier2-windows-backend.mjs     6/6  PASS (FROZEN bumped)
+                tier3-drawers-backend.mjs    11/11 PASS
+                dashboard_tier2_windows_contract.rs  10/10 PASS
+                dashboard_tier3_drawers_contract.rs   4/4  PASS
+Coverage gap:   Same as DEF-ALL-1 (no vitest; static-grep only).
+
+INVARIANTS — enforced by contract tests. Future tiers must not regress.
+  I-T2.5-1  WindowRegistry.ts LIVE map contains exactly 8 entries:
+            CHAT, ACTIVITY, PLAN (still Workspace per D0-1), REVIEW,
+            SETTINGS, MONITOR, EXPLORE, PREVIEW. All eight map to a
+            real component; only KNOWLEDGE / RULES / REASONING /
+            PROJECT / RESEARCH fall through to PlaceholderWindow.
+  I-T2.5-2 PreviewWindow.svelte does NOT contain <button class="tab">
+            nested inside another <button>. The outer tab is a
+            <div role="tab" tabindex="0"> with Enter/space key
+            handler; the inner stop button stays a <button>. Asserted
+            by tier3-drawers-backend.mjs regex.
+
+DECISIONS — constrain later tiers.
+  D-T2.5-1 The WindowRegistry flip is ~7 lines (3 imports + 3 LIVE
+            entries; PLAN already mapped). Plan's "4 entries" wording
+            was off-by-one because PLAN is pre-existing.
+  D-T2.5-2 PreviewWindow fix is a button-nesting correction (not a
+            svelte/store -> runes migration as §15.5 DEF-T2_5-2
+            originally speculated). PreviewWindow already used Svelte
+            5 runes correctly prior to this session.
+
+DEFERRED — items NOT closed this session.
+  DEF-T2_5-3 (remaining) ReviewWindow load() still lacks per-invocation
+             request token. No change this session.
+  DEF-T2_5-4 (remaining) submit_explore_query entropy quarantine
+             violation at commands.rs:2821. Out of Tier 2.5 scope.
+  DEF-T2_5-5 (remaining) ExploreCache "pending" tombstone panic-safe
+             cleanup. Out of scope.
+  DEF-T2_5-6 (remaining) Shell.svelte applyAutoArrangement autoApplied
+             reset. Out of scope.
+  DEF-T2_5-7 (remaining) windowProps.fsmState warm-up seed. Out of
+             scope.
+
+CONTRACT FOR FUTURE TIERS:
+  - I-T2.5-1 is now the regression guard for any change to
+    WindowRegistry.ts. Adding a new live window slot bumps the LIVE
+    count; the contract test must be updated.
+  - Tier 3 Knowledge / Orchestration / WebQuality drawers are no
+    longer blocked (I-T2.5-1 makes their host windows live).
+
+
+15.8 TIER 3 PARTIAL — 8 DRAWERS
+---------------------------------
+Status:         DONE 2026-04-24 (session s-84064). 1 audit cycle, no
+                commits, 1 BLOCK fixed in-place. Three of the ten
+                planned drawers intentionally deferred:
+                  - Anti-Staleness (ALL 3 commands ghost — dropped)
+                  - Research drawer (RESEARCH window host still
+                    unwired; Q9 owner undecided)
+Evidence:       workflow/sessions/s-84064/context-package.md
+                workflow/sessions/s-84064/transformed-prompt.md
+                Auditor report score 8.85/10 CONVERGED.
+Commits:        NONE (user instructed no commits for this phase).
+Build:          Same as §15.7 (shared build envelope).
+Tests:          Same as §15.7. Notable:
+                  tier3-drawers-backend.mjs          11/11 PASS
+                  dashboard_tier3_drawers_contract.rs 4/4  PASS
+Coverage gap:   Same as DEF-ALL-1. Drawer-level mount tests deferred
+                until vitest is approved.
+
+INVARIANTS — enforced by tier3-drawers-backend.mjs + the Rust contract
+test. Future tiers must not regress these.
+  I3-1  tauri::generate_handler! count is FROZEN at 85
+        (56 Tier 2 close + 29 Tier 3 partial). Asserted in BOTH
+        tier2-windows-backend.mjs AND tier3-drawers-backend.mjs
+        since both tests count the same macro block.
+  I3-2  SsbActionType variant count unchanged at 73. ZERO new
+        SsbActionType variants added (HR-2 satisfied).
+  I3-3  8 drawer .svelte files exist in
+        crates/dashboard/src-frontend/src/drawers/. Largest is
+        OrchestrationDrawer.svelte at 144 lines — under the
+        150-line dashboardRules R1 limit.
+  I3-4  8 ghost commands are absent from commands.rs AND
+        lib.rs invoke_handler: get_grounding_sweep, get_model_pool_state,
+        get_provider_health, get_bsp_superstep_log, get_agent_heartbeats,
+        get_dep_audit_results, get_baseline_harness_results,
+        get_deterministic_audit_log.
+  I3-5  Rules drawer reuses 3 pre-existing Tier-2-baseline commands
+        (get_rule_violations, get_constitutional_constraints,
+        get_source_tiers_config) — they are NOT duplicated; Tier 3
+        Rules only adds 2 new commands (get_rule_lifecycle_stats,
+        get_rule_detail).
+  I3-6  SsbViewer gains 19 new pub fn methods (18 drawer-read methods
+        + 2 internal helpers). All compile clean; none hold the lock
+        mutex across .await.
+  I3-7  write_override_file performs canonicalize-based path-
+        traversal validation. The validate_override_path helper
+        rejects any override path whose canonical parent does not
+        start with the canonical project root.
+
+DECISIONS — constrain later tiers.
+  D3-1  Q11 RESOLVED: Knowledge drawer does NOT call a /v1/knowledge
+        sidecar endpoint (grep of server.py returned 0 matches). It
+        reads SSB-backed DkgReady + IndexingProgress rows via new
+        SsbViewer methods. No sidecar client was written.
+  D3-2  Anti-Staleness drawer DROPPED entirely. All 3 of its
+        commands had no SSB writer (dep_audit writes TOML files,
+        BaselineMeasurement/DeterministicAuditReport types do not
+        exist). Future tier that wires these must first add persistence.
+  D3-3  pagerank_top, query_tier_stats, freshness_state return
+        graceful-empty stubs (empty Vec / zero fields / known=false).
+        No SSB row type currently persists per-symbol PageRank scores
+        or per-query tier histograms. Drawers render "no data yet"
+        instead of erroring.
+  D3-4  Rules lifecycle + detail commands query rules.db directly
+        via a per-call read-only rusqlite connection (derived from
+        DashboardState.rules_db_path). No long-lived handle held;
+        the Layer1A processor's AsyncMutex<rules_db_conn> is NOT
+        touched by drawer reads.
+  D3-5  Rules DB schema read uses narrowing .try_into() guards for
+        `tier` (u8) and `version` (u32) columns — a corrupt row with
+        out-of-range values surfaces as rusqlite::Error instead of
+        silently truncating. Audit BLOCK fix.
+  D3-6  DashboardState gains rules_db_path: Arc<PathBuf>. Derived
+        from db_path.parent() at startup using the same convention
+        as layer1a_processor. Future drawers that need per-call
+        rules.db access should reuse this path.
+  D3-7  dashboard/Cargo.toml gains workspace-ref rusqlite + toml.
+        Both already-workspace deps used by sibling crates; no new
+        external supply-chain surface. HR-11 satisfied.
+  D3-8  get_dev_server_state returns GLOBAL active counts (not
+        per-project) because DevServerRegistry keys are preview_ids
+        without embedded project_id. The `project_id` field on
+        DevServerSummary echoes the input for round-trip fidelity,
+        not filter scope. Documented in the DTO rustdoc per audit
+        WARN 1.
+  D3-9  web_validation_results `project_id` parameter is unused —
+        ValidationTierPayload has no project_id field. The
+        signature is retained for API stability; future writer-side
+        extensions can honour it without breaking the Tauri contract.
+
+DEFERRED — items that fell out of scope this session.
+  DEF-T3-3  Research drawer (CHAT + RESEARCH window host). RESEARCH
+            window still unmapped in WindowRegistry LIVE; Q9 writer-
+            side decision unresolved. Picked up by a later tier that
+            ships the concept_decomposition writer.
+  DEF-T3-4  get_interrogation_tree runtime traversal test not added.
+            The seed_trees() correctness is already covered by
+            elai_core::interrogation_tree tests; the drawer test
+            pins the command symbol only.
+  DEF-T3-5  grc_budgets calls_used is a lower-bound count: the
+            method breaks early once `effective` groups are found
+            so repeated traces for a same (agent_id, topic) after
+            that point are not counted. Audit WARN 3; deferred
+            until the drawer metric demonstrates a real need for
+            exact counts.
+  DEF-T3-6  Anti-Staleness drawer implementation deferred until a
+            writer-side SSB row type emits dep_audit /
+            baseline_harness / deterministic_audit results. Candidate
+            SSB action types: DepAuditComplete, BaselineMeasured,
+            DeterministicAuditReported.
+  DEF-T3-7  pagerank_top / query_tier_stats / freshness_state real
+            data sources. Currently permanent stubs. Candidate
+            sources: pagerank_top via PageRank SSB row emitted by
+            the repo-map builder; query_tier_stats via a per-query
+            SSB row; freshness_state via a read endpoint on the
+            freshness meta DB.
+  DEF-T3-8  phase decisions doc at workflow/reasoning/
+            phase-tier3-partial-decisions.md NOT written this
+            session (audit WARN 4). Not required for the 1-audit-
+            cycle envelope; add in a cleanup patch.
+
+CONTRACT FOR FUTURE TIERS:
+  - I3-1 (FROZEN=85) is the primary regression guard. Any new
+    Tauri command must increment BOTH tier2-windows-backend.mjs AND
+    tier3-drawers-backend.mjs FROZEN_INVOKE_HANDLER_COUNT in the
+    same patch.
+  - I3-4 (ghost list) must be preserved. Re-adding any of the 8
+    ghost commands requires first adding real writer-side backing
+    (SSB row type + emitter) or falling back to the runtime-join
+    pattern (D2-1).
+  - I3-7 (override path validation) must be preserved. Any future
+    file-write command (Tier 4 Settings reorg may add more) must
+    reuse validate_override_path or an equivalent canonicalize
+    check.
+  - HR-11 (no new deps without user confirmation) remains in force
+    for Tier 4+. This session added rusqlite + toml as workspace
+    refs only — no external fetch.
+
+
+15.9 §14 OPEN QUESTIONS — STATUS AFTER TIER 3 PARTIAL
+------------------------------------------------------
+  Q1  RESOLVED at Tier 0 (polymorphic FSM routing kept).
+  Q2  UNRESOLVED. Tier 4 decision.
+  Q3  RESOLVED at Tier 0 (HISTORY_RING_SIZE=20 kept).
+  Q4  RESOLVED at Tier 0 (interim unicode glyphs kept).
+  Q5  RESOLVED at Tier 1 (SSB-backed).
+  Q6  RESOLVED at Tier 1 (deterministic-only).
+  Q7  UNRESOLVED. Not touched.
+  Q8  UNRESOLVED. No breakpoints added.
+  Q9  UNRESOLVED. concept_decomposition writer-side owner still
+      undecided; blocks PlanWindow detail pane wiring AND Research
+      drawer implementation.
+  Q10 UNRESOLVED. Same owner as Q9 likely.
+  Q11 RESOLVED at Tier 3 partial (D3-1): Knowledge drawer reads
+      SSB DkgReady + IndexingProgress; no /v1/knowledge sidecar
+      endpoint added. /search re-route precedent (D2-2) preserved.
+
+
+15.10 TIER 3 COMPLETE — FINAL 2 DRAWERS
+-----------------------------------------
+Status:         DONE 2026-04-24 (session s-456340). 1 audit cycle, no
+                commits. 1 BLOCK fixed in-place + 2 WARN fixed + 1 WARN
+                deferred as INFO. Closes Tier 3 drawer work started at
+                s-84064 (§15.8). 10 of 10 planned Tier 3 drawers now
+                shipped.
+Evidence:       workflow/sessions/s-456340/context-package.md
+                workflow/reasoning/phase-tier3-complete-decisions.md
+                Auditor CONVERGED score 8.5/10, BLOCK fixed, 2 WARN
+                addressed (integration_dashboard_state + import order +
+                dead alive flag), 1 WARN deferred (u64 node_id JS
+                precision — practical risk negligible).
+Commits:        NONE (user instructed no commits for this phase).
+Build:          cargo check -p elai-orchestrator -p elai-dashboard PASS
+                  0 errors, 2 pre-existing warnings (DEF-ALL-3).
+                npm run build (vite) PASS 0 warnings 214 modules.
+                svelte-check: 8 pre-existing errors (DEF-ALL-2 +
+                DEF-T2_5-2); ZERO errors introduced.
+Tests:          tier0-shell.mjs                   6/6   PASS (regress)
+                tier1-chat.mjs                    8/8   PASS (regress)
+                tier2-windows-backend.mjs         6/6   PASS
+                tier3-drawers-backend.mjs        15/15  PASS (+4 new)
+                dashboard_tier2_windows_contract.rs  10/10 PASS
+                dashboard_tier3_drawers_contract.rs   4/4  PASS
+                integration_dashboard_state.rs    5/5   PASS (BLOCK fix)
+Coverage gap:   Same as DEF-ALL-1 (no vitest; static-grep only).
+
+INVARIANTS — enforced by tier2/tier3 contract tests. Future tiers must
+not regress these.
+  I3C-1  FROZEN_INVOKE_HANDLER_COUNT bumped 85 -> 89 in BOTH
+         tier2-windows-backend.mjs AND tier3-drawers-backend.mjs
+         (atomic). Tier 3 complete adds exactly 4 Research commands;
+         Anti-Staleness contributes ZERO (permanent graceful-empty stub).
+  I3C-2  SsbActionType variant count unchanged at 73. HR-2 + I3-2
+         preserved across both Tier 3 sessions (s-84064 + s-456340).
+  I3C-3  10 drawer .svelte files under drawers/, all ≤150 lines. New
+         adds: ResearchDrawer.svelte (~103 LOC), AntiStalenessDrawer
+         .svelte (~75 LOC).
+  I3C-4  Ghost command list (I3-4) UNCHANGED. get_dep_audit_results,
+         get_baseline_harness_results, get_deterministic_audit_log
+         remain permanently forbidden. Anti-Staleness drawer ships as
+         pure stub (zero invoke() calls, zero @tauri-apps/api/core
+         imports) rather than re-introduce them.
+  I3C-5  WindowRegistry LIVE map now 9 entries (was 8 at §15.7
+         I-T2.5-1). RESEARCH -> ResearchWindow added. KNOWLEDGE /
+         RULES / REASONING / PROJECT remain on PlaceholderWindow —
+         drawers-inside-windows pattern covers them via host windows
+         (EXPLORE / CHAT / ACTIVITY / SETTINGS) per plan §7.
+  I3C-6  layoutState.svelte.ts RESEARCHING route flipped
+         { primary: CHAT, secondary: ACTIVITY } -> { primary: RESEARCH,
+         secondary: CHAT }. Closes DEF-T3-3. All 9 other FSM_ROUTING
+         entries preserved verbatim.
+  I3C-7  SettingsWindow.svelte now mounts 3 drawers: ProjectIntelligence,
+         ProviderVram, AntiStaleness. Tier 3 partial order preserved;
+         new drawer appended (not inserted).
+  I3C-8  research_steps() SsbViewer method UNIONs WebResearchStep +
+         ResearchStep SSB rows with `kind` discriminator. `local` kind
+         reports sources_fetched=sources_used=0 (payload has no such
+         fields). DRAWER_QUERY_HARD_CAP respected.
+  I3C-9  Zero new Cargo.toml [dependencies] entries (dashboard + all
+         workspace crates). HR-11 preserved.
+  I3C-10 Zero new sidecar endpoints in python/elai_inference/server.py.
+         D2-2 preserved. get_searxng_status probes the existing
+         /search route with SEARXNG_PROBE_TIMEOUT_MS = 2000 explicit
+         timeout; HTTP errors report as SearxngStatus fields
+         (reachable: false), NOT as Tauri Err (drawer always renders).
+
+DECISIONS — constrain later tiers.
+  D3C-1  Research drawer splits commands by data availability:
+         get_research_tree is a REAL SSB read (WebResearchStep +
+         ResearchStep rows exist); get_research_budget and
+         get_source_tier_distribution are graceful-empty stubs
+         (D3-3 precedent, known=false). Wiring real data for the
+         two stubs requires writer-side row types documented as
+         DEF-T3-RESEARCH-1 + DEF-T3-RESEARCH-2 below.
+  D3C-2  Anti-Staleness drawer ships as a PERMANENT graceful-empty
+         stub. Plan §7's 3 originally-listed commands stay in the
+         ghost list (I3-4) forever unless a future session adds:
+         (a) DepAuditComplete / BaselineMeasured /
+         DeterministicAuditReported SSB variants with the 14-site
+         F-5 extension, (b) emitters in the relevant subsystems, and
+         (c) THEN removes the ghost-list entries. The three
+         candidate names are documented at DEF-T3-6 + DEF-T3C-AS.
+         Drawer renders 3 "no data yet" rows + a note pointing to
+         DEF-T3-6. Mounts inside SettingsWindow per plan §7.
+  D3C-3  get_searxng_status ERROR HANDLING: HTTP failures surface as
+         structured SearxngStatus fields (reachable: false, elapsed_ms,
+         error: Some(msg)) rather than `Err(..)`. The drawer body
+         always renders something; the caret row shows "searxng
+         ok | down" without ever hitting a Tauri error boundary.
+         Future read-only health probes should follow the same
+         convention.
+  D3C-4  Integration test regression: DashboardState gained two fields
+         in prior uncommitted sessions (session_id at s-147708,
+         rules_db_path at s-84064) that
+         integration_dashboard_state.rs did not track because those
+         sessions committed nothing. Audit BLOCK fix: added
+         `session_id: "dash-test".to_owned()` and
+         `rules_db_path: Arc::new(PathBuf::from("rules.db"))` to the
+         test literal at integration_dashboard_state.rs:72..77.
+         Future DashboardState field additions MUST bump this
+         integration test atomically (there is no CI enforcement
+         across uncommitted sessions).
+  D3C-5  ResearchWindow.svelte follows the same import-before-rune
+         ordering as every other window (ExploreWindow pattern).
+         Audit WARN fix on first pass.
+  D3C-6  AntiStalenessDrawer is a "truly-stub" drawer: NO import of
+         `onDestroy`, NO alive flag (nothing to clean up because
+         nothing fires). Shape diverges from the RulesDrawer template
+         intentionally; future stub drawers should match this
+         pattern (header + toggle() + graceful-empty body — that's
+         it).
+
+DEFERRED — picked up by a later tier.
+  DEF-T3C-AS  Anti-Staleness drawer real wiring. Candidates:
+              (a) new SSB action types DepAuditComplete,
+                  BaselineMeasured, DeterministicAuditReported +
+                  14-site F-5 extension + emitters;
+              (b) read TOML/JSON files on disk (dep_audit writes
+                  metrics/dep_audit_{date}.toml per D3-2);
+              (c) stay stub forever.
+              Requires ghost-list update (I3-4) before any command
+              is re-added to commands.rs.
+  DEF-T3-RESEARCH-1  get_research_budget real data. Candidate
+              SSB row type: ResearchBudgetUpdate { admitted, pruned,
+              tokens_used, tokens_max, ts_ms }. Emitted by
+              ResearchBudgetManager at admission / pruning boundaries.
+  DEF-T3-RESEARCH-2  get_source_tier_distribution real data.
+              Candidate SSB row type: SourceTierCounted { research_id,
+              t1..t5, ts_ms }. Emitted by SourceTierClassifier after
+              each research run's source fan-in.
+  DEF-T3C-U64  ResearchStepEntry.node_id serialized as JSON number
+              across the Tauri IPC boundary. JS Number cannot
+              precisely represent integers >= 2^53. Practical research
+              trees stay well below this; audit classified as WARN but
+              node_ids accumulate monotonically so long-lived dashboards
+              could theoretically overflow. Fix (if ever needed):
+              `#[serde(serialize_with = "...")]` to string-encode u64
+              IPC fields.
+
+FINAL TIER 3 LEDGER
+  Drawers shipped (10/10):
+    Rules, Reasoning, ProjectIntelligence, ProviderVram, ToolsHooks,
+    Knowledge, WebQuality, Orchestration (Tier 3 partial, s-84064),
+    Research, AntiStaleness (Tier 3 complete, s-456340).
+  Tauri commands added across Tier 3: 29 (partial) + 4 (complete) = 33.
+  FROZEN_INVOKE_HANDLER_COUNT total progression: 48 (T1) -> 56 (T2) ->
+    85 (T3 partial) -> 89 (T3 complete).
+  SsbActionType variant count: 73 throughout. Zero growth.
+  WindowRegistry LIVE map: 4 (T0) -> 5 (T1) -> 8 (T2.5) -> 9 (T3
+    complete).
+  Drawers hosted inside windows (drawers-in-windows pattern) stable
+    across the whole tier; no rewrite required.
+
+CONTRACT FOR FUTURE TIERS:
+  - I3C-1 FROZEN=89 is the primary Tier 4 regression guard. Any new
+    Tauri command must increment both tier2/tier3 backend .mjs files
+    in the same patch.
+  - I3C-4 ghost list MUST remain intact. Re-enabling Anti-Staleness
+    requires real writer-side backing first — this is non-negotiable.
+  - I3C-10 + D3C-3 set the sidecar-probe convention: structured
+    status fields, never Err. Later drawers with external-service
+    health checks MUST follow.
+  - HR-11 (no new deps) + I2-5 / I3C-2 (no new SSB variants) remain
+    in force for Tier 4+. Tier 3 complete adds zero of both.
+
+
+15.11 §14 OPEN QUESTIONS — STATUS AFTER TIER 3 COMPLETE
+--------------------------------------------------------
+  Q1  RESOLVED at Tier 0.
+  Q2  UNRESOLVED. Tier 4 decision.
+  Q3  RESOLVED at Tier 0.
+  Q4  RESOLVED at Tier 0.
+  Q5  RESOLVED at Tier 1.
+  Q6  RESOLVED at Tier 1.
+  Q7  UNRESOLVED. Not touched.
+  Q8  UNRESOLVED. No breakpoints added.
+  Q9  UNRESOLVED. concept_decomposition writer-side owner still
+      undecided. Tier 3 complete's Research drawer works around it
+      by reading the already-emitted WebResearchStep/ResearchStep
+      rows instead of the undecided decomposition writer output.
+  Q10 UNRESOLVED. Same owner as Q9.
+  Q11 RESOLVED at Tier 3 partial.
+
+
+15.12 TIER 4 SETTINGS REORG
+----------------------------
+Status:         DONE 2026-04-24 (session s-130284). 1 audit cycle, no
+                commits. Auditor CONVERGED score 7.5/10, 1 BLOCK fixed
+                in-place, 2 WARN documented. Closes the plan's
+                dependency graph (§10) — no further tier follows this
+                entry.
+Evidence:       workflow/sessions/s-130284/context-package.md
+                workflow/sessions/s-130284/transformed-prompt.md
+                workflow/sessions/s-130284/audit-tier4.md
+                Memory-writer memorize: topic=tier4-settings-reorg-complete
+                (RAG indexed 2026-04-24).
+Commits:        NONE (user instructed no commits for this phase).
+Build:          cargo check --workspace PASS 4m 25s
+                  0 errors, 2 pre-existing warnings (DEF-ALL-3).
+                npm run build PASS 0 warnings, 214 modules.
+                cargo test -p elai-orchestrator --lib
+                  test_all_action_types_insert PASS 1/1 (BLOCK-1 fix
+                  verified — count bumped 32 -> 33).
+                cargo test -p elai_cc_contracts --test
+                  dashboard_tier4_settings_contract PASS 4/4.
+Tests:          tier0-shell.mjs                   6/6   PASS (regress)
+                tier1-chat.mjs                    8/8   PASS (regress)
+                tier2-windows-backend.mjs         6/6   PASS (FROZEN 95)
+                tier3-drawers-backend.mjs        15/15  PASS (FROZEN 95 +
+                                                             variant 74)
+                tier4-settings-backend.mjs       11/11  PASS (new)
+                dashboard_tier4_settings_contract.rs 4/4 PASS (new)
+                ssb test_all_action_types_insert  1/1   PASS (post-fix)
+Coverage gap:   Same as DEF-ALL-1 (no vitest; static-grep only). Mount-
+                style Svelte tests still deferred until vitest +
+                @testing-library are approved deps.
+
+INVARIANTS — enforced by tier2/tier3/tier4 contract tests. Since this is
+the terminal tier, the only "future tier" these constrain is any
+post-plan follow-up patch (patch-* naming per §10 convention).
+  I4-1   FROZEN_INVOKE_HANDLER_COUNT = 95 in BOTH
+         tier2-windows-backend.mjs AND tier3-drawers-backend.mjs AND
+         tier4-settings-backend.mjs. Tier 3 close 89 + 6 Tier 4 commands.
+  I4-2   SsbActionType variant count = 74 (plan §12 authorised +1 for
+         ExecutionModeChanged; F-5 14-site extension complete). Any
+         future patch that bumps the count MUST follow F-5 and update
+         tier3-drawers-backend.mjs's assertion in the same patch.
+  I4-3   SSB SCHEMA_VERSION = 21 (bumped 20 -> 21). The CHECK constraint
+         in CREATE_SSB_TABLE includes 'execution_mode_changed'.
+  I4-4   Settings.svelte contains exactly 9 <section class="panel"
+         id="..."> anchors: execution, control, project, knowledge,
+         rules, providers, anti-staleness, appearance, session. CSS
+         `.settings { min-width: 1000px }` enforces Q8. onback prop
+         preserved (`let { onback }: Props = $props()`).
+  I4-5   DashboardState gains exactly two fields: execution_mode
+         (Arc<tokio::sync::Mutex<String>>, default "LOCAL") and
+         vram_budget_mb (Arc<std::sync::atomic::AtomicU32>, default 0).
+         integration_dashboard_state.rs literal updated atomically per
+         the D3C-4 pattern.
+  I4-6   Six new Tauri commands registered at lib.rs invoke_handler!:
+         set_execution_mode, get_execution_mode, set_vram_budget,
+         get_cloud_spend, trigger_reindex, trigger_dep_audit. All six
+         have both #[tauri::command] definitions in commands.rs AND
+         matching commands:: entries in invoke_handler!.
+  I4-7   I3C-4 ghost list preserved: get_dep_audit_results,
+         get_baseline_harness_results, get_deterministic_audit_log
+         still absent from commands.rs + lib.rs. Re-enabling requires
+         writer-side SSB emitters first.
+  I4-8   I3C-9 preserved: zero new Cargo.toml [dependencies] entries.
+         All types used (AsyncMutex, AtomicU32) are workspace-stdlib.
+  I4-9   I3C-10 preserved: zero new sidecar endpoints in
+         python/elai_inference/server.py. Tier 4 is 100% SSB-backed.
+  I4-10  DEF-T3C-AS preserved: Anti-Staleness Settings section ships as
+         graceful-empty stub. The two buttons (Trigger dep audit +
+         Reindex) call stub commands that emit Finding rows only — NO
+         new SSB reads for dep_audit / baseline / deterministic_audit.
+
+DECISIONS — constrain any post-plan follow-up patch.
+  D4-1   execution_mode uses tokio::sync::Mutex (NOT std::sync::Mutex
+         like model_routing). Reason: set_execution_mode is async and
+         holds the lock across the async SSB write; std::sync::Mutex
+         would deadlock the runtime. Post-plan work that adds async
+         mutable fields to DashboardState should follow this pattern.
+  D4-2   vram_budget_mb uses std::sync::atomic::AtomicU32 with
+         Ordering::Relaxed. Reason: set_vram_budget is sync and the
+         value is a soft ceiling, not a consistency-critical counter.
+         No Mutex poisoning risk, no async contention.
+  D4-3   get_cloud_spend is a PERMANENT graceful stub (tracked: false)
+         following the D3-3 / D3C-2 precedent. No cloud-spend SSB row
+         type exists; the frontend renders "tracking unavailable" from
+         tracked=false. Wiring real data requires a future patch that
+         adds a CloudSpendUpdated SSB variant + emitter, following F-5.
+  D4-4   trigger_dep_audit is a PERMANENT graceful stub. Reason:
+         dep_audit::run_dep_audit() lives in elai-cli, and dashboard
+         crate has no elai-cli dependency (I3C-9 forbids adding one).
+         The stub emits a Finding row recording the user's trigger;
+         actual execution is the user's responsibility via
+         `elai audit-deps` or the scheduled CLI job.
+  D4-5   trigger_reindex is a graceful stub. IndexingService::run_full_index
+         exists in elai-orchestrator, but constructing an IndexingService
+         in-process would duplicate the sidecar's authoritative state.
+         The stub emits a Finding row; actual reindex is applied by
+         sidecar restart against the updated project root (same pattern
+         as Tier 3 Knowledge drawer readiness probe).
+  D4-6   Q2 RESOLVED: CLOUD mode enabled-with-note. set_execution_mode
+         accepts "CLOUD" | "HYBRID" AND writes a follow-up Finding row
+         flagging "dispatch path not yet implemented (§9 group 20)".
+         Frontend also renders an inline note on CLOUD selection.
+         Actual CLOUD dispatch is deferred to a future phase (A-49+).
+  D4-7   Q7 RESOLVED: TemplatePicker kept; reachable via
+         EmptyFolderChooser. The Project Settings section adds a
+         footnote pointing to the scaffold flow but adds no new
+         binding — existing App.svelte routing unchanged.
+  D4-8   Q8 RESOLVED: CSS `min-width: 1000px` on .settings. No
+         hamburger menu (the dashboard is a development tool, not a
+         mobile surface). Sub-1000px viewports truncate the sidebar
+         rather than reflow.
+  D4-9   F-5 14-site extension includes test_all_action_types_insert
+         types array + COUNT assertion (sites 8+9). Earlier Tier 1
+         ledger observation ("array kept at 32 for Tier 1") was an
+         accidental omission, not a design decision. Tier 4 backfills
+         this via BLOCK-1 fix; future tiers adding SsbActionType
+         variants MUST update this array + assertion in the same
+         atomic patch as the other 12 sites.
+
+DEFERRED — items NOT closed this session (carry-forward to post-plan
+patches; each is explicitly documented as a known exception).
+  DEF-T4-1   Settings.svelte Providers section template is 113 lines
+             (652-765), exceeding the 80-line dashboardRules R1
+             decompose threshold. Accepted as a known exception because
+             the section has no co-located fetch/state logic — it is a
+             pure template host for the Steering + MCP + VRAM tier +
+             decoding toggles read paths, each of which already has
+             its load function defined elsewhere in the file. Extract
+             into a <ProvidersSection /> sub-component when the file
+             is next touched for a feature addition.
+  DEF-T4-2   ResearchStepEntry.node_id u64 IPC precision (inherited
+             from Tier 3 complete DEF-T3C-U64). Unchanged; Tier 4 did
+             not extend research surfaces. Fix pattern if ever needed:
+             `#[serde(serialize_with = "...")]` string-encoded u64.
+  DEF-T4-3   Q2 CLOUD / HYBRID dispatch PATH is §9 group 20 deferred.
+             Tier 4 wires the UI toggle + records the mode change +
+             emits the gap-flag Finding row, but no dispatch code
+             routes to a cloud provider yet. When A-49 (LOCAL / CLOUD /
+             HYBRID dispatcher) ships, drop the gap-flag Finding emit
+             from set_execution_mode.
+  DEF-T4-4   Q7 TemplatePicker re-integration — the Project Settings
+             section adds a footnote pointing to the scaffold flow
+             but does NOT expose a direct "new from template" button
+             inside Settings. A future patch could add one, reusing
+             the existing create_project + list_templates commands.
+             Out of Tier 4 scope; noted for opportunistic wiring.
+  DEF-T4-5   Tier 4 audit WARN-1 (originally raised): the in-file
+             comment in Settings.svelte previously described an
+             AbortController cleanup pattern that did not exist.
+             Fixed in-place this session (comment rewritten to
+             match the onMount fire-and-forget reality). No carry-
+             forward — resolved.
+  DEF-ALL-1  (reaffirmed) No vitest / @testing-library. Contract
+             tests remain static-grep only. Adding a mount-style test
+             framework requires user approval.
+  DEF-ALL-3  (reaffirmed) 2 pre-existing cargo warnings in
+             crates/orchestrator (pipeline_tree_navigator.rs:15 unused
+             import PhaseNode, web_research_orchestrator.rs:117 unused
+             field `clock`). Pre-dates every tier in this plan. Out of
+             scope; flag for cleanup when those files are touched.
+
+Pre-existing breakage NOT affected by Tier 4:
+  - fula_dkg_querier_hot_swap_contract.rs:158 missing task_splitter
+    field (first flagged in §15.5). Still out of dashboard scope.
+
+CONTRACT FOR POST-PLAN PATCHES:
+  - I4-1 / I4-2 / I4-3 are the primary regression guards for any
+    post-plan work that touches Tauri commands, SsbActionType, or
+    the SSB schema. Any future SsbActionType addition MUST follow
+    F-5 with all 14 sites including test_all_action_types_insert
+    (D4-9 correction of earlier Tier 1 gap).
+  - I4-4 (9 Settings section anchors) is the Settings.svelte
+    regression guard. Renaming any id= anchor breaks
+    tier4-settings-backend.mjs; renaming + updating the contract
+    test simultaneously is the correct pattern.
+  - I4-7 / I4-8 / I4-9 (ghost list / no new deps / no new sidecar
+    routes) carry forward indefinitely — these are the HR-* hard
+    rules from CLAUDE.md expressed as contract assertions, not
+    Tier 4 originals.
+
+
+15.13 §14 OPEN QUESTIONS — STATUS AFTER TIER 4 (FINAL)
+-------------------------------------------------------
+  Q1  RESOLVED at Tier 0 (polymorphic FSM routing).
+  Q2  RESOLVED at Tier 4 (D4-6): CLOUD enabled-with-note; dispatch
+      path is §9 group 20 deferred via DEF-T4-3.
+  Q3  RESOLVED at Tier 0 (HISTORY_RING_SIZE=20).
+  Q4  RESOLVED at Tier 0 (interim unicode glyphs).
+  Q5  RESOLVED at Tier 1 (SSB-backed chat history).
+  Q6  RESOLVED at Tier 1 (deterministic-only intent classifier).
+  Q7  RESOLVED at Tier 4 (D4-7): TemplatePicker kept; reachable via
+      EmptyFolderChooser. Direct "new from template" button inside
+      Settings deferred via DEF-T4-4.
+  Q8  RESOLVED at Tier 4 (D4-8): CSS min-width: 1000px, no hamburger.
+  Q9  UNRESOLVED. concept_decomposition writer-side owner still
+      undecided. Not a Tier 4 concern — Research drawer (Tier 3
+      complete) routes around it. Post-plan fix when PI Tier 3
+      Telescope / Phase 4D Designer / Phase 4E PipelineBuilder
+      takes ownership.
+  Q10 UNRESOLVED. Same owner as Q9.
+  Q11 RESOLVED at Tier 3 partial (SSB-backed, no /v1/knowledge
+      sidecar endpoint).
+
+All 11 §14 questions reach a terminal state in this ledger:
+  9 RESOLVED across Tiers 0/1/3/4 (Q1-Q8 + Q11).
+  2 UNRESOLVED (Q9, Q10) — carried as plan-external deferrals; they
+    belong to backend writer-side work (concept_decomposition +
+    baby_step_spec / phase_detail row emitters), not to any
+    dashboard tier in this plan.
+
+
+PLAN STATUS: COMPLETE
+---------------------
+Dependency graph §10 fully traversed: Tier 0 → 1 → 2 → 2.5 → 3 partial
+→ 3 complete → 4. No further tier follows Tier 4. Remaining §9
+DEFERRED items (Phase 4F / 4G / 4H / 4I / 4J, Groups B-1 / B-2 / B-3,
+Cloud Mode A-49+, Focus Tunnel A-51..A-57) are blocked on backend
+phases that have not shipped — each earns its own drawer or Settings
+subsection WHEN the backend phase ships, not before. Those are not
+future tiers of this plan; they will be tracked under their own phase
+specs.
+
+Post-plan follow-up items tracked as DEF-* entries above. Any patch
+series (patch-N.X per §10 naming) picking one up must cite the DEF-*
+id it closes in the patch description and contract-test update.

@@ -96,6 +96,30 @@ are intentionally unusable as the former services. Sanitization also invalidates
 historical byte hashes, signatures and line offsets. Use the new manifest for
 this snapshot, not old receipts.
 
+## Documentation recovery
+
+A source-to-public comparison found authored documentation that the initial
+allowance list had missed. The recovery adds 303 original files and three
+navigation/inventory files. The [recovery record](docs/RECOVERED-DOCUMENTS.md)
+accounts for 31,151 missing candidates through recovery, equivalent already-public
+documents or deliberate exclusion; private exclusion filenames remain private.
+
+The additions include dashboard plans and flows, seven surface digests, the
+335-finding lint baseline, HTML prototypes, three concept boards, research
+sweeps, experiment reports and historical development instructions. Personal
+terms and local paths were generalized; private correspondence and handoff
+metadata were excluded. The concept boards were visually inspected and their
+metadata checked for known private terms; their original bytes were preserved.
+The third-party screenshot set was not included.
+
+The new navigation and HTML resource links were checked, along with JSON/TOML
+syntax, inventory hashes, unchanged original-source hashes and the complete
+publication manifest. The existing feature catalog remained unchanged and its
+check passed. Privacy scans were repeated without adding synthetic-value
+allowances. No ELAI product code, historical automation or benchmark was run.
+Older plain-text pointers, source line offsets and claimed run evidence remain
+historical and may refer to omitted or changed material.
+
 ## Publication boundary
 
 This separately filtered history edition retains

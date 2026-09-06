@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — color tuner + UI preview</title>
+<!--
+  COLOR TUNER + UI-CHANGE PREVIEW (build-free playground).
+  Purpose: tune the DAY (light) palette live, then hit COPY and paste the string back to Claude,
+  who maps it into the dashboard tokens.css [data-theme="light"] block.
+  Also previews the queued UI changes so colors are judged against the FINAL layout:
+    - intro: NO mode buttons, NO "NO GLOW" button (modes moved to the selector).
+    - selector: LOCAL/CLOUD/HYBRID at CENTER-TOP, START-style underline (no box) — hover draws
+      center>out, selected keeps the full line.
+    - ledger: brighter PROJECT/PATH/UPDATED headers, index numbers removed (rows start at the name),
+      New Project CENTERED, and modes + New Project + rows all use the START button's
+      center>outwards underline animation on hover/click.
+  The top strip + right panel are DEV HARNESS (neutral gray), not part of the design.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Martian+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{background:#16191c;font-family:'JetBrains Mono',ui-monospace,monospace;overflow:hidden;}
+
+  /* ─────────── DEV HARNESS (not the design) ─────────── */
+  .harness{position:fixed;top:0;left:0;right:0;height:42px;z-index:200;display:flex;align-items:center;gap:18px;
+    padding:0 14px;background:#1d2125;border-bottom:1px solid #2b3036;color:#aab1b5;font-size:11px;letter-spacing:.08em;}
+  .harness .grp{display:flex;align-items:center;gap:6px;}
+  .harness .lbl{color:#6b7378;font-size:9px;letter-spacing:.2em;}
+  .harness button{appearance:none;background:#23282d;border:1px solid #333a40;color:#9aa1a6;cursor:pointer;
+    font-family:inherit;font-size:10.5px;letter-spacing:.06em;padding:6px 12px;border-radius:4px;transition:all .14s;}
+  .harness button:hover{color:#dfe4e7;border-color:#444c52;}
+  .harness button.on{color:#2BBBA4;border-color:#2BBBA4;background:rgba(43,187,164,.10);}
+  .harness .spacer{flex:1;}
+  .harness .hint{color:#6b7378;font-size:10px;letter-spacing:.02em;}
+
+  /* ─────────── PREVIEW ROOT (themed by the tuner via JS) ─────────── */
+  #app{position:fixed;top:42px;left:0;right:340px;bottom:0;overflow:hidden;
+    /* fallback defaults; JS overwrites every var on load */
+    --void:#030404;--bg:#0a0f0e;--panel:#0e1413;--raised:#151c1a;--sink:#070b0a;--row:#0c1211;
+    --text:#f2f5f4;--read:#c9cecb;--dim:#79827e;--ghost:#3a423f;
+    --line:rgba(255,255,255,.08);--line2:rgba(255,255,255,.15);
+    --teal:#2BBBA4;--teal-bright:#34C2AA;--teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.4);--teal-ghost:rgba(43,187,164,.1);--teal-faint:rgba(43,187,164,.05);
+    --ring:rgba(43,187,164,.1);--ring-faint:rgba(43,187,164,.06);
+    --dur-fast:140ms;--dur:260ms;--ease-out:cubic-bezier(0.16,1,0.3,1);--ease-draw:cubic-bezier(0.3,0,0.2,1);
+    --mono:'JetBrains Mono',ui-monospace,monospace;--ledger:'Martian Mono',monospace;
+    transition:right .18s var(--ease-out);}
+  #app.wide{right:0;}
+  .view{position:absolute;inset:0;display:none;}
+  .view.show{display:block;}
+
+  /* shared sun/moon toggle */
+  .icon-toggle{appearance:none;cursor:pointer;position:relative;width:32px;height:30px;background:transparent;
+    border:1px solid var(--line);border-radius:5px;color:var(--read);transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .icon-toggle:hover{color:var(--teal);border-color:var(--teal-soft);}
+  .icon-toggle svg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);}
+  .icon-toggle .ico-sun{display:none;}
+  #app[data-theme="light"] .icon-toggle .ico-sun{display:block;}
+  #app[data-theme="light"] .icon-toggle .ico-moon{display:none;}
+
+  /* ═══════════ INTRO VIEW ═══════════ */
+  #introView{background:radial-gradient(ellipse 135% 135% at 50% 50%,
+      rgba(4,13,17,1) 0%,rgba(4,13,17,.74) 36%,rgba(4,13,17,.28) 72%,rgba(4,13,17,0) 100%),var(--void);}
+  #app[data-theme="light"] #introView{background:radial-gradient(ellipse 135% 135% at 50% 50%,
+      #eef2ef 0%,#e8ede9 40%,#d6ddd9 80%,#cad2cd 100%),var(--void);}
+  #sky{position:absolute;inset:0;z-index:1;pointer-events:none;}
+  .bloom{position:absolute;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(ellipse 54% 54% at 50% 50%, var(--teal-soft) 0%, var(--teal-ghost) 30%, transparent 62%);
+    opacity:.55;}
+  #app[data-theme="light"] .bloom{opacity:.7;}
+  .rings{position:absolute;inset:0;z-index:2;pointer-events:none;}
+  .ring{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:1px solid var(--ring);border-radius:50%;}
+  .ring.r1{width:370px;height:370px;}.ring.r2{width:560px;height:560px;}
+  .ring.r3{width:750px;height:750px;border-color:var(--ring-faint);}
+  .core{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;display:flex;flex-direction:column;align-items:center;}
+  .logo-wrap{cursor:pointer;line-height:0;filter:drop-shadow(0 0 42px var(--teal-soft)) drop-shadow(0 0 12px var(--teal-ghost));}
+  .logo{width:300px;height:auto;display:block;}
+  .logo line{fill:none;stroke:var(--text);stroke-width:2.4;stroke-linecap:round;}
+  .readout{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:5;}
+  .np-start{position:relative;appearance:none;cursor:pointer;background:transparent;border:1px solid var(--line2);border-radius:0;
+    font-family:var(--mono);font-weight:500;font-size:12px;letter-spacing:.2em;color:var(--read);padding:13px 34px;overflow:hidden;
+    transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .np-start:hover{color:var(--teal-bright);border-color:var(--teal-soft);}
+  .np-start::after{content:"";position:absolute;left:0;bottom:0;height:1px;width:100%;background:var(--teal);
+    transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .np-start:hover::after{transform:scaleX(1);}
+  .intro-tr{position:absolute;top:18px;right:20px;z-index:7;}
+
+  /* ═══════════ SELECT VIEW (ledger, software window) ═══════════ */
+  #selectView{display:none;flex-direction:column;background:var(--bg);font-family:var(--ledger);color:var(--text);}
+  #selectView.show{display:flex;}
+  .topbar{position:relative;flex:0 0 auto;display:flex;align-items:center;height:48px;padding:0 16px;
+    border-bottom:1px solid var(--line);background:var(--bg);}
+  .brand{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:var(--read);font-weight:600;}
+  .brand .sep{color:var(--ghost);}.brand .title{color:var(--dim);letter-spacing:.1em;font-weight:400;}
+  .topbar .spacer{flex:1;}
+  /* modes — center-top, START-style underline, NO box */
+  .modes{position:absolute;left:50%;top:0;transform:translateX(-50%);height:100%;display:flex;align-items:center;gap:6px;}
+  .mode{position:relative;appearance:none;background:none;border:0;cursor:pointer;font-family:var(--mono);font-weight:500;
+    font-size:11px;letter-spacing:.18em;color:var(--dim);padding:16px 16px;transition:color var(--dur-fast);}
+  .mode::after{content:"";position:absolute;left:12px;right:12px;bottom:10px;height:1px;background:var(--teal);
+    transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .mode:hover{color:var(--read);}
+  .mode:hover::after{transform:scaleX(1);}
+  .mode.on{color:var(--teal-bright);}
+  .mode.on::after{transform:scaleX(1);}
+
+  .content{flex:1;min-width:0;overflow-y:auto;}
+  .wrap{width:100%;max-width:840px;margin:0 auto;padding:46px 30px 48px;}
+  .panelbox{position:relative;border:1px solid var(--line2);border-radius:11px;background:var(--panel);overflow:hidden;}
+  .head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);}
+  .head h1{margin:0;font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;color:var(--read);}
+  .head h1::before{content:"~/ ";color:var(--teal);}
+  .head .ct{font-family:var(--mono);font-size:12px;color:var(--dim);}
+  .body{padding:18px 20px 22px;}
+
+  /* columns — name-first (no index), brighter headers */
+  .cols-head,.row{display:grid;grid-template-columns:1.5fr 1.7fr 88px;align-items:center;column-gap:16px;}
+  .cols-head{padding:0 16px 9px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;color:var(--read);
+    border-bottom:1px solid var(--line2);}
+  .cols-head .num{text-align:right;}
+  .row{position:relative;padding:13px 16px;cursor:pointer;border-bottom:1px solid var(--line);}
+  .list .row:last-child{border-bottom:0;}
+  .row::after{content:"";position:absolute;left:16px;right:16px;bottom:-1px;height:1px;background:var(--teal);
+    transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .row:hover::after{transform:scaleX(1);}
+  .row.sel::after{transform:scaleX(1);}
+  .nm{font-family:var(--mono);font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .row:hover .nm{color:var(--teal-bright);}
+  .row.sel .nm{color:var(--teal);}
+  .pa{font-family:var(--mono);font-size:12px;color:var(--read);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .up{font-family:var(--mono);font-size:12px;color:var(--read);font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
+
+  /* New Project — CENTERED, START-style center>out underline */
+  .newrow{display:flex;justify-content:center;margin-top:18px;}
+  .newproj{position:relative;appearance:none;cursor:pointer;background:transparent;border:1px solid var(--line2);border-radius:0;
+    font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--read);padding:11px 22px;
+    overflow:hidden;transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .newproj::after{content:"";position:absolute;left:0;bottom:0;width:100%;height:1px;background:var(--teal);
+    transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .newproj:hover{color:var(--teal-bright);border-color:var(--teal-soft);}
+  .newproj:hover::after,.newproj.sel::after{transform:scaleX(1);}
+
+  .statusbar{flex:0 0 auto;display:flex;align-items:center;gap:14px;height:24px;padding:0 14px;
+    border-top:1px solid var(--line);background:var(--panel);font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.06em;}
+  .statusbar .dot{color:var(--teal);}
+  .statusbar .spacer{flex:1;}
+
+  /* ─────────── TUNER PANEL (dev) ─────────── */
+  #tuner{position:fixed;top:42px;right:0;bottom:0;width:340px;z-index:200;background:#1a1e21;border-left:1px solid #2b3036;
+    display:flex;flex-direction:column;color:#cdd3d7;transition:transform .18s var(--ease-out);}
+  #tuner.closed{transform:translateX(340px);}
+  #tuner .t-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid #2b3036;}
+  #tuner .t-head b{font-size:11px;letter-spacing:.14em;color:#e2e7ea;font-weight:600;}
+  #tuner .t-head .which{font-size:9.5px;color:#2BBBA4;letter-spacing:.1em;}
+  #tuner .t-body{flex:1;overflow-y:auto;padding:12px 14px 18px;}
+  #tuner .grp-l{font-size:9px;letter-spacing:.22em;color:#6b7378;margin:14px 0 8px;}
+  #tuner .grp-l:first-child{margin-top:0;}
+  .ctl{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;}
+  .ctl label{font-size:11px;color:#aeb5b9;}
+  .ctl .v{font-size:10px;color:#727a7f;font-variant-numeric:tabular-nums;}
+  .ctl input[type=color]{width:34px;height:24px;border:1px solid #333a40;border-radius:4px;background:none;padding:0;cursor:pointer;}
+  .ctl input[type=range]{width:120px;accent-color:#2BBBA4;}
+  .ctl .right{display:flex;align-items:center;gap:8px;}
+  #tuner .t-foot{flex:0 0 auto;padding:12px 14px;border-top:1px solid #2b3036;display:flex;flex-direction:column;gap:9px;}
+  #tuner .t-foot button{appearance:none;cursor:pointer;font-family:inherit;font-size:11px;letter-spacing:.08em;padding:9px 12px;border-radius:5px;border:1px solid #333a40;background:#23282d;color:#cdd3d7;transition:all .14s;}
+  #tuner #copyBtn{border-color:#2BBBA4;color:#2BBBA4;}
+  #tuner #copyBtn:hover{background:rgba(43,187,164,.12);}
+  #tuner .t-foot button:hover{border-color:#444c52;}
+  #tuner .accent{padding-bottom:10px;border-bottom:1px solid #2b3036;margin-bottom:6px;}
+  #tuner .hue{width:100%;height:14px;margin:2px 0 4px;-webkit-appearance:none;appearance:none;border-radius:7px;outline:none;cursor:pointer;
+    background:linear-gradient(to right,hsl(0,65%,50%),hsl(60,65%,50%),hsl(120,65%,50%),hsl(180,65%,50%),hsl(240,65%,50%),hsl(300,65%,50%),hsl(360,65%,50%));}
+  #tuner .hue::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:18px;border-radius:3px;background:#fff;border:1px solid #000;cursor:pointer;}
+  #tuner .swatch{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid #333a40;vertical-align:-2px;margin-left:5px;}
+  #tuner input[type=checkbox]{accent-color:#2BBBA4;cursor:pointer;}
+  #tuner #out{width:100%;height:118px;resize:none;background:#101316;border:1px solid #2b3036;border-radius:5px;color:#9aa1a6;
+    font-family:inherit;font-size:10px;line-height:1.5;padding:8px;white-space:pre;}
+</style>
+</head>
+<body>
+  <!-- DEV HARNESS -->
+  <div class="harness">
+    <div class="grp"><span class="lbl">VIEW</span>
+      <button id="vIntro" type="button">INTRO</button>
+      <button id="vSelect" class="on" type="button">SELECT</button>
+    </div>
+    <div class="grp"><span class="lbl">THEME</span>
+      <button id="tDark" type="button">DARK</button>
+      <button id="tDay" class="on" type="button">DAY</button>
+    </div>
+    <div class="spacer"></div>
+    <span class="hint">tune DAY colors → COPY → paste the string to Claude</span>
+    <button id="tunerToggle" type="button">⚙ tuner</button>
+  </div>
+
+  <!-- PREVIEW ROOT -->
+  <div id="app" data-theme="light">
+
+    <!-- INTRO -->
+    <section id="introView" class="view">
+      <div class="bloom"></div>
+      <canvas id="sky"></canvas>
+      <div class="rings"><div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div></div>
+      <div class="core">
+        <div class="logo-wrap" id="logo" title="click to replay">
+          <svg class="logo" viewBox="-3 -3 236 66" role="img" aria-label="ELAI">
+            <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/>
+            <line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+            <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+            <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/>
+            <line x1="162.7" y1="38" x2="177.3" y2="38"/><line x1="228" y1="0" x2="228" y2="60"/>
+          </svg>
+        </div>
+      </div>
+      <div class="intro-tr"><button class="icon-toggle themeBtn" type="button" aria-label="theme"><svg class="ico-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.6A8 8 0 0 1 9.4 4 7 7 0 1 0 20 14.6Z"/></svg><svg class="ico-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/><line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/><line x1="5.2" y1="5.2" x2="6.9" y2="6.9"/><line x1="17.1" y1="17.1" x2="18.8" y2="18.8"/><line x1="18.8" y1="5.2" x2="17.1" y2="6.9"/><line x1="6.9" y1="17.1" x2="5.2" y2="18.8"/></svg></button></div>
+      <div class="readout"><button class="np-start" type="button">START</button></div>
+    </section>
+
+    <!-- SELECT -->
+    <section id="selectView" class="view show">
+      <header class="topbar">
+        <div class="brand">ELAI <span class="sep">·</span> <span class="title">session select</span></div>
+        <div class="spacer"></div>
+        <div class="modes" role="group" aria-label="Execution mode">
+          <button class="mode on" type="button">LOCAL</button>
+          <button class="mode" type="button">CLOUD</button>
+          <button class="mode" type="button">HYBRID</button>
+        </div>
+        <button class="icon-toggle themeBtn" type="button" aria-label="theme"><svg class="ico-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.6A8 8 0 0 1 9.4 4 7 7 0 1 0 20 14.6Z"/></svg><svg class="ico-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/><line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/><line x1="5.2" y1="5.2" x2="6.9" y2="6.9"/><line x1="17.1" y1="17.1" x2="18.8" y2="18.8"/><line x1="18.8" y1="5.2" x2="17.1" y2="6.9"/><line x1="6.9" y1="17.1" x2="5.2" y2="18.8"/></svg></button>
+      </header>
+      <div class="content">
+        <div class="wrap">
+          <div class="panelbox">
+            <div class="head"><h1>recent sessions</h1><span class="ct">3 projects</span></div>
+            <div class="body">
+              <div class="cols-head"><span>PROJECT</span><span>PATH</span><span class="num">UPDATED</span></div>
+              <div class="list" id="rows">
+                <article class="row"><span class="nm">.elai_cc</span><span class="pa">/workspace/ELAI\.elai_cc</span><span class="up">4m</span></article>
+                <article class="row"><span class="nm">aider-main</span><span class="pa">…\docs\.source\aider-main</span><span class="up">2w</span></article>
+                <article class="row"><span class="nm">liteGAME</span><span class="pa">D:\.liteGAME_workflow</span><span class="up">3d</span></article>
+              </div>
+              <div class="newrow"><button class="newproj" type="button">+ new project</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <footer class="statusbar"><span class="dot">●</span><span>s-1a2b3c</span><span class="spacer"></span><span>LOCAL · ready</span></footer>
+    </section>
+
+  </div>
+
+  <!-- TUNER -->
+  <aside id="tuner">
+    <div class="t-head"><b>PALETTE TUNER</b><span class="which" id="whichTheme">DAY</span></div>
+    <div class="t-body"><div id="accent" class="accent"></div><div id="controls"></div></div>
+    <div class="t-foot">
+      <button id="copyBtn" type="button">COPY TOKENS</button>
+      <button id="resetBtn" type="button">reset to defaults</button>
+      <textarea id="out" readonly spellcheck="false"></textarea>
+    </div>
+  </aside>
+
+  <script>
+  // ── default token sets (dark = settled §3 ; light = provisional §12) ──
+  const DEFAULTS={
+    dark:{void:'#030404',bg:'#0a0f0e',panel:'#0e1413',raised:'#151c1a',sink:'#070b0a',row:'#0c1211',
+      text:'#f2f5f4',read:'#c9cecb',dim:'#79827e',ghost:'#3a423f',lineA:0.08,line2A:0.15,
+      teal:'#2BBBA4',tealBright:'#34C2AA',tealDeep:'#1B7A6E'},
+    light:{void:'#e9ede9',bg:'#eef1ef',panel:'#ffffff',raised:'#f4f6f4',sink:'#e6eae7',row:'#f7f9f7',
+      text:'#0b0f0e',read:'#2d342f',dim:'#646b66',ghost:'#aab1ac',lineA:0.10,line2A:0.17,
+      teal:'#138a78',tealBright:'#0f7e6f',tealDeep:'#0c6256'}
+  };
+  const THEMES=JSON.parse(JSON.stringify(DEFAULTS));
+  let active='light';
+
+  const COLOR_KEYS=[
+    ['SURFACES',[['void','void (cosmos)'],['bg','bg (app)'],['panel','panel'],['raised','raised'],['sink','sink'],['row','row']]],
+    ['TEXT',[['text','text'],['read','read'],['dim','dim'],['ghost','ghost']]],
+    ['ACCENT',[['teal','teal'],['tealBright','teal-bright'],['tealDeep','teal-deep']]]
+  ];
+  const ALPHA_KEYS=[['lineA','line α'],['line2A','line2 α']];
+
+  function hx(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(c=>c+c).join('');
+    return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+  function rgba(hex,a){const[r,g,b]=hx(hex);return `rgba(${r},${g},${b},${a})`;}
+  const clamp=x=>Math.max(0,Math.min(1,x));
+  function hexToHsl(hex){let[r,g,b]=hx(hex);r/=255;g/=255;b/=255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
+    let h=0,s=0,l=(mx+mn)/2,d=mx-mn;if(d){s=l>.5?d/(2-mx-mn):d/(mx+mn);
+      switch(mx){case r:h=(g-b)/d+(g<b?6:0);break;case g:h=(b-r)/d+2;break;default:h=(r-g)/d+4;}h*=60;}return{h,s,l};}
+  function hslToHex(h,s,l){h=(h%360+360)%360;const c=(1-Math.abs(2*l-1))*s,x=c*(1-Math.abs((h/60)%2-1)),m=l-c/2;let r,g,b;
+    if(h<60){r=c;g=x;b=0;}else if(h<120){r=x;g=c;b=0;}else if(h<180){r=0;g=c;b=x;}
+    else if(h<240){r=0;g=x;b=c;}else if(h<300){r=x;g=0;b=c;}else{r=c;g=0;b=x;}
+    const to=v=>('0'+Math.round((v+m)*255).toString(16)).slice(-2);return '#'+to(r)+to(g)+to(b);}
+
+  // accent-hue master state (per theme): rotate the whole scheme off the baseline, keeping its S/L structure
+  const UI={dark:{hue:null,viv:1,tint:true},light:{hue:null,viv:1,tint:true}};
+  const NEUT=['void','bg','panel','raised','sink','row','text','read','dim','ghost'];
+  let keyInputs={};
+
+  function derive(name){const t=THEMES[name];const n=name==='light'?'0,0,0':'255,255,255';
+    return {'--void':t.void,'--bg':t.bg,'--panel':t.panel,'--raised':t.raised,'--sink':t.sink,'--row':t.row,
+      '--text':t.text,'--read':t.read,'--dim':t.dim,'--ghost':t.ghost,
+      '--line':`rgba(${n},${t.lineA})`,'--line2':`rgba(${n},${t.line2A})`,
+      '--teal':t.teal,'--teal-bright':t.tealBright,'--teal-deep':t.tealDeep,
+      '--teal-soft':rgba(t.teal,.40),'--teal-ghost':rgba(t.teal,.10),'--teal-faint':rgba(t.teal,.05),
+      '--ring':rgba(t.teal,.10),'--ring-faint':rgba(t.teal,.06)};}
+
+  const app=document.getElementById('app');
+  function apply(){const m=derive(active);for(const k in m)app.style.setProperty(k,m[k]);app.setAttribute('data-theme',active);}
+
+  function buildControls(){
+    const box=document.getElementById('controls');box.innerHTML='';keyInputs={};
+    const t=THEMES[active];
+    for(const[grp,items]of COLOR_KEYS){
+      const l=document.createElement('div');l.className='grp-l';l.textContent=grp;box.appendChild(l);
+      for(const[key,label]of items){
+        const row=document.createElement('div');row.className='ctl';
+        row.innerHTML=`<label>${label}</label><div class="right"><span class="v">${t[key]}</span><input type="color" value="${t[key]}"></div>`;
+        const inp=row.querySelector('input'),v=row.querySelector('.v');
+        keyInputs[key]={input:inp,v};
+        inp.addEventListener('input',()=>{t[key]=inp.value;v.textContent=inp.value;apply();});
+        box.appendChild(row);
+      }
+    }
+    const l=document.createElement('div');l.className='grp-l';l.textContent='HAIRLINES';box.appendChild(l);
+    for(const[key,label]of ALPHA_KEYS){
+      const row=document.createElement('div');row.className='ctl';
+      row.innerHTML=`<label>${label}</label><div class="right"><span class="v">${t[key]}</span><input type="range" min="0" max="0.30" step="0.01" value="${t[key]}"></div>`;
+      const inp=row.querySelector('input'),v=row.querySelector('.v');
+      inp.addEventListener('input',()=>{t[key]=parseFloat(inp.value);v.textContent=t[key].toFixed(2);apply();});
+      box.appendChild(row);
+    }
+  }
+
+  function exportStr(){
+    const t=THEMES[active],n=active==='light'?'0,0,0':'255,255,255';
+    return `ELAI ${active==='light'?'DAY':'DARK'}-MODE TOKENS — paste to Claude\n`+
+      `# accent-hue: ${UI[active].hue}°  vividness: ${UI[active].viv.toFixed(2)}  tint-neutrals: ${UI[active].tint}\n`+
+      `void: ${t.void}\nbg: ${t.bg}\npanel: ${t.panel}\nraised: ${t.raised}\nsink: ${t.sink}\nrow: ${t.row}\n`+
+      `text: ${t.text}\nread: ${t.read}\ndim: ${t.dim}\nghost: ${t.ghost}\n`+
+      `line: rgba(${n},${t.lineA})\nline2: rgba(${n},${t.line2A})\n`+
+      `teal: ${t.teal}\nteal-bright: ${t.tealBright}\nteal-deep: ${t.tealDeep}`;
+  }
+
+  // ── accent-hue master control ──
+  function buildAccent(){
+    const a=document.getElementById('accent');
+    a.innerHTML=`<div class="grp-l">ACCENT HUE — rotate the whole scheme</div>
+      <div class="ctl"><label>hue<span class="swatch" id="hueSw"></span></label><span class="v" id="hueV"></span></div>
+      <input type="range" id="hueR" class="hue" min="0" max="360" step="1">
+      <div class="ctl"><label>vividness</label><div class="right"><span class="v" id="vivV"></span><input type="range" id="vivR" min="0.5" max="1.4" step="0.02"></div></div>
+      <div class="ctl"><label>tint neutrals to accent</label><input type="checkbox" id="tintC"></div>`;
+    a.querySelector('#hueR').addEventListener('input',e=>{UI[active].hue=+e.target.value;recomputeAccent();});
+    a.querySelector('#vivR').addEventListener('input',e=>{UI[active].viv=+e.target.value;recomputeAccent();});
+    a.querySelector('#tintC').addEventListener('change',e=>{UI[active].tint=e.target.checked;recomputeAccent();});
+  }
+  function syncAccentUI(){
+    const u=UI[active];if(u.hue===null)u.hue=Math.round(hexToHsl(DEFAULTS[active].teal).h);
+    document.getElementById('hueR').value=u.hue;document.getElementById('vivR').value=u.viv;document.getElementById('tintC').checked=u.tint;
+    document.getElementById('hueV').textContent=u.hue+'°';document.getElementById('vivV').textContent=u.viv.toFixed(2);
+    document.getElementById('hueSw').style.background=THEMES[active].teal;
+  }
+  function recomputeAccent(){
+    const u=UI[active];if(u.hue===null)u.hue=Math.round(hexToHsl(DEFAULTS[active].teal).h);
+    const shift=u.hue-hexToHsl(DEFAULTS[active].teal).h;
+    const touched=['teal','tealBright','tealDeep'];
+    touched.forEach(k=>{const o=hexToHsl(DEFAULTS[active][k]);THEMES[active][k]=hslToHex(o.h+shift,clamp(o.s*u.viv),o.l);});
+    NEUT.forEach(k=>{if(u.tint){const o=hexToHsl(DEFAULTS[active][k]);THEMES[active][k]=hslToHex(o.h+shift,o.s,o.l);}else{THEMES[active][k]=DEFAULTS[active][k];}touched.push(k);});
+    apply();
+    touched.forEach(k=>{const r=keyInputs[k];if(r){r.input.value=THEMES[active][k];r.v.textContent=THEMES[active][k];}});
+    document.getElementById('hueV').textContent=u.hue+'°';document.getElementById('vivV').textContent=u.viv.toFixed(2);
+    document.getElementById('hueSw').style.background=THEMES[active].teal;
+  }
+
+  // harness wiring
+  function setTheme(name){active=name;
+    document.getElementById('tDay').classList.toggle('on',name==='light');
+    document.getElementById('tDark').classList.toggle('on',name==='dark');
+    document.getElementById('whichTheme').textContent=name==='light'?'DAY':'DARK';
+    buildControls();syncAccentUI();apply();}
+  function setView(v){
+    document.getElementById('introView').classList.toggle('show',v==='intro');
+    document.getElementById('selectView').classList.toggle('show',v==='select');
+    document.getElementById('vIntro').classList.toggle('on',v==='intro');
+    document.getElementById('vSelect').classList.toggle('on',v==='select');}
+
+  document.getElementById('tDark').onclick=()=>setTheme('dark');
+  document.getElementById('tDay').onclick=()=>setTheme('light');
+  document.getElementById('vIntro').onclick=()=>setView('intro');
+  document.getElementById('vSelect').onclick=()=>setView('select');
+  document.getElementById('tunerToggle').onclick=()=>{document.getElementById('tuner').classList.toggle('closed');app.classList.toggle('wide');};
+  document.getElementById('copyBtn').onclick=()=>{const s=exportStr();document.getElementById('out').value=s;
+    navigator.clipboard&&navigator.clipboard.writeText(s).catch(()=>{});document.getElementById('out').select();};
+  document.getElementById('resetBtn').onclick=()=>{THEMES[active]=JSON.parse(JSON.stringify(DEFAULTS[active]));setTheme(active);};
+  [...document.querySelectorAll('.themeBtn')].forEach(b=>b.onclick=()=>setTheme(active==='light'?'dark':'light'));
+
+  // demo interactions
+  document.querySelectorAll('.mode').forEach(b=>b.onclick=()=>document.querySelectorAll('.mode').forEach(x=>x.classList.toggle('on',x===b)));
+  document.querySelectorAll('#rows .row').forEach(r=>r.onclick=()=>{document.querySelectorAll('#rows .row').forEach(x=>x.classList.remove('sel'));r.classList.add('sel');});
+  const npb=document.querySelector('.newproj');if(npb)npb.onclick=()=>{npb.classList.add('sel');setTimeout(()=>npb.classList.remove('sel'),500);};
+  const lg=document.getElementById('logo');
+
+  // minimal starfield (intro)
+  (function(){const c=document.getElementById('sky');if(!c)return;const ctx=c.getContext('2d');
+    const dpr=Math.min(window.devicePixelRatio||1,2);let W,H,stars=[];
+    function hash(a,b){let h=(a^0x9e3779b9)>>>0;h=Math.imul(h^(b+0x85ebca6b|0),0xc2b2ae35);h^=h>>>15;h=Math.imul(h,0x27d4eb2f);h^=h>>>13;return (h>>>0)/4294967296;}
+    const L=[{r:.6,a:.55,p:4000},{r:1.2,a:.74,p:6000},{r:2.2,a:.96,p:9000}];
+    function build(){W=c.clientWidth;H=c.clientHeight;c.width=W*dpr;c.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);
+      stars=[];const cnt=[14,8,3];L.forEach((l,li)=>{for(let i=0;i<cnt[li];i++)stars.push({i:stars.length,li,off:hash(stars.length*131+19,2)*l.p});});}
+    function paint(){const light=app.getAttribute('data-theme')==='light';ctx.clearRect(0,0,W,H);
+      ctx.fillStyle=light?'rgb(12,16,15)':'rgb(255,255,255)';const now=Date.now();
+      for(const s of stars){const l=L[s.li],tn=now+s.off,cyc=Math.floor(tn/l.p),lt=tn-cyc*l.p,life=Math.sin(Math.PI*lt/l.p);if(life<=0)continue;
+        const x=hash(s.i*8,cyc)*W,y=hash(s.i*8+1,cyc)*H,a=l.a*life*.9;if(a<.02)continue;
+        ctx.globalAlpha=a;ctx.beginPath();ctx.arc(x,y,l.r,0,6.2832);ctx.fill();}ctx.globalAlpha=1;requestAnimationFrame(paint);}
+    build();paint();window.addEventListener('resize',build);})();
+
+  buildAccent();setView('select');setTheme('light');
+  </script>
+</body>
+</html>

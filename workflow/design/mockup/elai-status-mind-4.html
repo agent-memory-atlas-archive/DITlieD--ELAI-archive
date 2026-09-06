@@ -1,0 +1,449 @@
+<!--
+  design read: the ELAI status monitor as a CONTAINMENT VIEW - an AI core trapped inside the machine,
+  observed through the glass of an old terminal; ELAI teal phosphor, not lain violet; the lattice of
+  every planned unit is the core's body, unlit matter is what is not yet built, the cage is the gate
+  stack holding it. brand/entry surface, CRT-brutalist language, leaning phosphor-terminal.
+  dials: STRUCTURE_VARIANCE 7 / MOTION_INTENSITY 5 / VISUAL_DENSITY 6
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELAI // CORE CONTAINMENT</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root{
+  --ground:#070b0a;
+  --sink:#040706;
+  --surface:rgba(13,20,18,.82);
+  --surface-2:#141d1a;
+  --text:#eef7f4;
+  --text-2:#c3d2cc;
+  --dim:#6e837b;
+  --accent:#2bbba4;
+  --accent-deep:#0b3a33;
+  --line:#1a2421;
+  --line-2:#28352f;
+  --font-ui:'Hanken Grotesk',sans-serif;
+  --font-data:'JetBrains Mono',monospace;
+  --z-base:0; --z-core:1; --z-hud:2; --z-crt:3;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  background:var(--ground);
+  color:var(--text);
+  font-family:var(--font-ui);
+  font-size:13.5px;
+  overflow:hidden;
+}
+canvas#rain,canvas#core{position:fixed;inset:0;width:100vw;height:100vh}
+canvas#rain{z-index:var(--z-base);opacity:.55}
+canvas#core{z-index:var(--z-core)}
+
+/* CRT glass */
+.crt{position:fixed;inset:0;z-index:var(--z-crt);pointer-events:none}
+.crt::before{
+  content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);
+}
+.crt::after{
+  content:"";position:absolute;inset:0;
+  background:radial-gradient(ellipse at 50% 46%,transparent 52%,rgba(2,6,5,.62) 100%);
+}
+.rollband{
+  position:absolute;left:0;right:0;height:120px;top:-140px;
+  background:linear-gradient(180deg,transparent,rgba(43,187,164,.035),transparent);
+  animation:roll 9s linear infinite;
+}
+@keyframes roll{from{transform:translateY(0)}to{transform:translateY(120vh)}}
+
+/* HUD */
+.hud{position:fixed;inset:0;z-index:var(--z-hud);pointer-events:none}
+.panel{
+  position:absolute;pointer-events:auto;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:2px;
+  padding:10px 12px 11px;
+  width:302px;
+}
+.panel h2{
+  font:600 12px/1.2 var(--font-ui);
+  color:var(--text-2);
+  display:flex;justify-content:space-between;align-items:baseline;
+  border-bottom:1px solid var(--line);
+  padding-bottom:7px;margin-bottom:8px;
+}
+.stamp{font:500 10px var(--font-data);color:var(--dim)}
+.row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12.5px;color:var(--text-2)}
+.row .fill{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .num{font:500 11px var(--font-data);color:var(--text)}
+.sq{width:8px;height:8px;flex:none;background:var(--accent)}
+.sq.hollow{background:transparent;border:1px solid var(--line-2)}
+.sq.deep{background:var(--accent-deep)}
+.sq.dimfill{background:var(--dim)}
+.sq.suspect{background:transparent;border:1px dashed var(--dim)}
+.tag{font:500 9.5px var(--font-data);color:var(--dim);border:1px solid var(--line-2);border-radius:2px;padding:1px 4px;flex:none}
+.chip-err{
+  font:700 10px var(--font-data);
+  background:var(--text);color:#06100d;
+  border-radius:2px;padding:2px 6px;flex:none;letter-spacing:.02em;
+}
+.chip-stale{
+  font:500 9.5px var(--font-data);color:var(--text-2);
+  border:1px solid var(--line-2);border-radius:2px;padding:1px 5px;flex:none;
+}
+.caption{font-size:10.5px;color:var(--dim);margin-top:6px;line-height:1.45}
+
+/* placement */
+#p-burndown{left:22px;top:88px}
+#p-health{left:22px;bottom:24px}
+#p-bench{right:22px;top:88px}
+#p-rework{right:22px;top:378px}
+#p-usage{right:22px;bottom:24px}
+
+/* top strip */
+.topline{
+  position:absolute;top:20px;left:22px;right:22px;
+  display:flex;justify-content:space-between;align-items:baseline;pointer-events:auto;
+}
+.brand{display:flex;align-items:baseline;gap:12px}
+.brand .word{font:700 17px var(--font-ui);letter-spacing:.28em;color:var(--text)}
+.brand .sub{font:500 10px var(--font-data);color:var(--dim);letter-spacing:.12em}
+.sysline{font:500 11px var(--font-data);color:var(--dim);display:flex;gap:18px}
+.sysline b{color:var(--accent);font-weight:500}
+
+/* headline */
+.headline{
+  position:absolute;left:50%;bottom:30px;transform:translateX(-50%);
+  text-align:center;pointer-events:auto;width:560px;
+}
+.headline .label{font:600 11px var(--font-ui);color:var(--dim);letter-spacing:.22em;margin-bottom:2px}
+.headline .big{
+  font:700 92px/1 var(--font-data);
+  color:var(--text);
+  animation:phosphor 4.2s steps(2,end) infinite;
+}
+.headline .big em{font-style:normal;color:var(--accent);font-size:26px;vertical-align:24px;letter-spacing:.06em}
+.headline .buckets{
+  margin-top:8px;font:500 11px var(--font-data);color:var(--dim);
+  display:flex;justify-content:center;gap:16px;
+}
+.headline .lit{font:500 10px var(--font-data);color:var(--dim);margin-top:7px;letter-spacing:.08em}
+@keyframes phosphor{0%,92%{opacity:1}96%{opacity:.93}100%{opacity:1}}
+
+.meter{height:5px;background:var(--sink);border:1px solid var(--line);margin:3px 0 7px}
+.meter i{display:block;height:100%;background:var(--accent-deep);border-right:1px solid var(--accent)}
+
+.legend{display:flex;gap:14px;margin-top:8px}
+.legend span{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--dim)}
+
+@media (prefers-reduced-motion: reduce){
+  .rollband{display:none}
+  .headline .big{animation:none}
+}
+</style>
+</head>
+<body>
+<canvas id="rain"></canvas>
+<canvas id="core"></canvas>
+
+<div class="hud">
+  <div class="topline">
+    <div class="brand">
+      <span class="word">E.L.A.I</span>
+      <span class="sub">CORE CONTAINMENT · read-only observation deck</span>
+    </div>
+    <div class="sysline">
+      <span>core <b>AWAKE</b></span>
+      <span>cage <b>HOLDING</b></span>
+      <span>schema <b id="schemaline">--</b></span>
+      <span id="clockline">--</span>
+    </div>
+  </div>
+
+  <div class="panel" id="p-burndown">
+    <h2>open gaps <span class="stamp" id="st-burndown"></span></h2>
+    <div id="burndown-rows"></div>
+    <div class="legend">
+      <span><i class="sq" style="width:8px;height:8px"></i>confirmed (runtime)</span>
+      <span><i class="sq suspect" style="width:8px;height:8px"></i>suspected (static only)</span>
+    </div>
+    <div class="caption">only these count. everything else is parked on purpose or waiting on hardware.</div>
+  </div>
+
+  <div class="panel" id="p-health">
+    <h2>dashboard health <span class="stamp" id="st-health"></span></h2>
+    <div id="health-rows"></div>
+  </div>
+
+  <div class="panel" id="p-bench">
+    <h2>benchmarks <span class="stamp" id="st-bench"></span></h2>
+    <div id="bench-rows"></div>
+    <div class="caption">a number renders only after a real run. nothing here is estimated.</div>
+  </div>
+
+  <div class="panel" id="p-rework">
+    <h2>ui rework <span class="stamp" id="st-rework"></span></h2>
+    <div id="rework-rows"></div>
+    <div class="legend">
+      <span><i class="sq dimfill"></i>keep</span>
+      <span><i class="sq"></i>redo</span>
+      <span><i class="sq hollow"></i>not started</span>
+    </div>
+  </div>
+
+  <div class="panel" id="p-usage">
+    <h2>usage <span class="stamp" id="st-usage"></span></h2>
+    <div id="usage-rows"></div>
+  </div>
+
+  <div class="headline">
+    <div class="label">OPEN AGAINST DONE</div>
+    <div class="big" id="opencount">-<em></em></div>
+    <div class="buckets" id="bucketstrip"></div>
+    <div class="lit" id="litline"></div>
+  </div>
+</div>
+
+<div class="crt"><div class="rollband"></div></div>
+
+<script>
+const status = {
+  generated_at_min: 4,
+  schema: "234/543",
+  open_count: 7,
+  open_items: [
+    { id:"I-33",  desc:"zero-caller symbol on impact api",        kind:"confirmed" },
+    { id:"H-10",  desc:"PagerankPanel orphan component",          kind:"suspected" },
+    { id:"B-4",   desc:"stale doc-comment vs live schema",        kind:"confirmed" },
+    { id:"C-15",  desc:"entropy-gate regression",                 kind:"confirmed" },
+    { id:"H-T3",  desc:"trust gates built, not intercepting",     kind:"confirmed" },
+    { id:"E-33",  desc:"skeleton route never mounted",            kind:"suspected" },
+    { id:"J-28",  desc:"usage ledger turn-capture gap",           kind:"confirmed" }
+  ],
+  buckets: { registered_dark:41, gpu_blocked:12, user_deferred:8, verify_debt:11 },
+  letters: [
+    ["B",54,49],["C",45,33],["D",40,29],["E",55,41],["F",13,13],["G",9,7],["H",52,31],
+    ["I",54,28],["J",30,17],["K",23,9],["L",14,5],["M",8,2],["N",6,1]
+  ],
+  benchmarks: [
+    { name:"SAFEDELTA",          state:"not-run", note:"gpu-blocked" },
+    { name:"QDELTA",             state:"not-run", note:"" },
+    { name:"gate-tax",           state:"not-run", note:"" },
+    { name:"routing-economics",  state:"not-run", note:"" },
+    { name:"hallucination-delta",state:"error",   note:"harness missing" }
+  ],
+  bench_age_days: 3,
+  health: { orphan_components:2, dead_ipc:5, checker_error:"svelte_mount_reachability: exit 2" },
+  ui_rework: [
+    ["Command","keep"],["Activity","redo"],["Monitor","redo"],["Explore","not-started"],
+    ["Review","keep"],["Plan","redo"],["Settings","keep"]
+  ],
+  usage: {
+    five_hour:45, weekly:48, weekly_model:36,
+    lanes:[ ["claude","2.1M","340K"], ["free-gemini","8.4M","1.2M"], ["codex","900K","210K"] ]
+  }
+};
+
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const ACC = '43,187,164';
+
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const rng = mulberry32(20260705);
+
+/* ---------- HUD population ---------- */
+const $ = id => document.getElementById(id);
+$('schemaline').textContent = status.schema;
+$('clockline').textContent = 'sat · jul 5';
+
+$('st-burndown').textContent = 'as of '+status.generated_at_min+'m ago';
+$('burndown-rows').innerHTML = status.open_items.map(it =>
+  '<div class="row"><i class="sq '+(it.kind==='suspected'?'suspect':'')+'"></i>'+
+  '<span class="num">'+it.id+'</span><span class="fill">'+it.desc+'</span></div>'
+).join('');
+
+$('st-health').textContent = 'as of '+status.generated_at_min+'m ago';
+$('health-rows').innerHTML =
+  '<div class="row"><i class="sq deep"></i><span class="fill">orphan components</span><span class="num">'+status.health.orphan_components+'</span></div>'+
+  '<div class="row"><i class="sq deep"></i><span class="fill">dead ipc wires</span><span class="num">'+status.health.dead_ipc+'</span></div>'+
+  '<div class="row"><span class="chip-err">ERROR</span><span class="fill" style="font:500 10.5px var(--font-data);color:var(--text-2)">'+status.health.checker_error+'</span></div>';
+
+$('st-bench').innerHTML = 'as of '+status.bench_age_days+'d ago <span class="chip-stale">STALE</span>';
+$('bench-rows').innerHTML = status.benchmarks.map(b => {
+  if (b.state==='error')
+    return '<div class="row"><span class="chip-err">ERROR</span><span class="fill">'+b.name+'</span><span class="tag">'+b.note+'</span></div>';
+  return '<div class="row"><i class="sq hollow"></i><span class="fill">'+b.name+'</span>'+
+         (b.note?'<span class="tag">'+b.note+'</span>':'')+
+         '<span class="num" style="color:var(--dim)">NOT RUN</span></div>';
+}).join('');
+
+$('st-rework').textContent = 'hand-seeded · jul 5';
+$('rework-rows').innerHTML = status.ui_rework.map(([v,s]) => {
+  const cls = s==='keep' ? 'dimfill' : s==='redo' ? '' : 'hollow';
+  return '<div class="row"><i class="sq '+cls+'"></i><span class="fill">'+v+'</span>'+
+         '<span class="num" style="color:'+(s==='redo'?'var(--accent)':'var(--dim)')+'">'+s+'</span></div>';
+}).join('');
+
+$('st-usage').textContent = 'live · 12s ago';
+const meter = (label,pct)=>'<div class="row" style="padding-bottom:0"><span class="fill">'+label+'</span><span class="num">'+pct+'%</span></div>'+
+  '<div class="meter"><i style="width:'+pct+'%"></i></div>';
+$('usage-rows').innerHTML =
+  meter('5h window',status.usage.five_hour)+
+  meter('weekly',status.usage.weekly)+
+  meter('weekly · model',status.usage.weekly_model)+
+  status.usage.lanes.map(([lane,i,o]) =>
+    '<div class="row"><i class="sq deep"></i><span class="fill">'+lane+'</span><span class="num">'+i+' in · '+o+' out</span></div>'
+  ).join('');
+
+const totals = status.letters.reduce((a,[,t,w])=>[a[0]+t,a[1]+w],[0,0]);
+$('opencount').innerHTML = status.open_count+'<em>OPEN</em>';
+$('bucketstrip').innerHTML =
+  '<span>'+status.buckets.registered_dark+' dark-by-design</span>'+
+  '<span>'+status.buckets.gpu_blocked+' gpu-blocked</span>'+
+  '<span>'+status.buckets.user_deferred+' deferred</span>'+
+  '<span>'+status.buckets.verify_debt+' verify-debt</span>';
+$('litline').textContent = 'lattice '+totals[1]+' / '+totals[0]+' units lit · the core completes when every node ignites';
+
+/* ---------- glyph rain ---------- */
+const rain = $('rain'), rctx = rain.getContext('2d');
+const GLYPHS = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉ0123456789BCDEHIJKLMN';
+let cols, drops;
+function rainInit(){
+  rain.width = innerWidth; rain.height = innerHeight;
+  cols = Math.floor(innerWidth/18);
+  drops = Array.from({length:cols},()=>rng()*innerHeight/16);
+}
+function rainFrame(){
+  rctx.fillStyle = 'rgba(7,11,10,0.09)';
+  rctx.fillRect(0,0,rain.width,rain.height);
+  rctx.font = '12px "JetBrains Mono",monospace';
+  for(let i=0;i<cols;i++){
+    const head = Math.random()<0.012;
+    rctx.fillStyle = head ? 'rgba('+ACC+',0.55)' : 'rgba('+ACC+',0.13)';
+    rctx.fillText(GLYPHS[(Math.random()*GLYPHS.length)|0], i*18, drops[i]*16);
+    if(drops[i]*16 > rain.height && Math.random() > 0.975) drops[i]=0;
+    drops[i] += 0.35;
+  }
+}
+
+/* ---------- the caged core ---------- */
+const core = $('core'), cctx = core.getContext('2d');
+function coreSize(){ core.width = innerWidth; core.height = innerHeight; }
+
+const NODES = [];
+(function build(){
+  status.letters.forEach(([L,total,wired])=>{
+    for(let k=0;k<total;k++){
+      const u=rng(), v=rng(), r=Math.cbrt(rng());
+      const th=2*Math.PI*u, ph=Math.acos(2*v-1);
+      const state = k<wired ? 'lit' : (rng()<0.45 ? 'deferred' : 'dark');
+      NODES.push({
+        x:r*Math.sin(ph)*Math.cos(th), y:r*Math.cos(ph), z:r*Math.sin(ph)*Math.sin(th),
+        state, flick:0
+      });
+    }
+  });
+  NODES.forEach(n=>{
+    let best=-1,bd=9;
+    for(let j=0;j<24;j++){
+      const m=NODES[(rng()*NODES.length)|0];
+      if(m===n||m.state!=='lit'||n.state!=='lit')continue;
+      const d=(n.x-m.x)**2+(n.y-m.y)**2+(n.z-m.z)**2;
+      if(d<bd){bd=d;best=m}
+    }
+    n.link = best===-1?null:best;
+  });
+})();
+
+const CUBE=[];
+for(let i=0;i<8;i++)CUBE.push([(i&1?1:-1),(i&2?1:-1),(i&4?1:-1)]);
+const EDGES=[[0,1],[0,2],[1,3],[2,3],[4,5],[4,6],[5,7],[6,7],[0,4],[1,5],[2,6],[3,7]];
+
+let t0 = performance.now();
+function coreFrame(now){
+  const t = REDUCED ? 0 : (now-t0)/1000;
+  const W=core.width,H=core.height,cx=W/2,cy=H*0.46;
+  const R = Math.min(W,H)*0.30 * (1+0.012*Math.sin(t*0.9));
+  const ay=t*0.12, ax=0.32+0.03*Math.sin(t*0.23);
+  const sy=Math.sin(ay),cyr=Math.cos(ay),sx=Math.sin(ax),cxr=Math.cos(ax);
+  const F=3.2;
+
+  cctx.clearRect(0,0,W,H);
+
+  function proj(x,y,z){
+    let X=x*cyr+z*sy, Z=-x*sy+z*cyr;
+    let Y=y*cxr-Z*sx; Z=y*sx+Z*cxr;
+    const s=F/(F+Z);
+    return [cx+X*R*s, cy+Y*R*s, s, Z];
+  }
+
+  cctx.lineWidth=1;
+  cctx.strokeStyle='rgba('+ACC+',0.16)';
+  const C=1.42;
+  EDGES.forEach(([a,b])=>{
+    const A=proj(CUBE[a][0]*C,CUBE[a][1]*C,CUBE[a][2]*C);
+    const B=proj(CUBE[b][0]*C,CUBE[b][1]*C,CUBE[b][2]*C);
+    cctx.beginPath();cctx.moveTo(A[0],A[1]);cctx.lineTo(B[0],B[1]);cctx.stroke();
+  });
+  CUBE.forEach(v=>{
+    const P=proj(v[0]*C,v[1]*C,v[2]*C);
+    cctx.fillStyle='rgba('+ACC+',0.5)';
+    cctx.fillRect(P[0]-2,P[1]-2,4,4);
+  });
+
+  cctx.strokeStyle='rgba('+ACC+',0.07)';
+  NODES.forEach(n=>{
+    if(!n.link)return;
+    const A=proj(n.x,n.y,n.z),B=proj(n.link.x,n.link.y,n.link.z);
+    cctx.beginPath();cctx.moveTo(A[0],A[1]);cctx.lineTo(B[0],B[1]);cctx.stroke();
+  });
+
+  if(!REDUCED && Math.random()<0.02){
+    const lit=NODES.filter(n=>n.state==='lit');
+    lit[(Math.random()*lit.length)|0].flick=1;
+  }
+
+  const sorted = NODES.map(n=>({n,p:proj(n.x,n.y,n.z)})).sort((a,b)=>b.p[3]-a.p[3]);
+  sorted.forEach(({n,p})=>{
+    const [X,Y,s]=p;
+    if(n.state==='lit'){
+      const f=n.flick; n.flick=Math.max(0,f-0.03);
+      const sz=(1.6+f*2.2)*s;
+      cctx.shadowColor='rgba('+ACC+',0.9)';
+      cctx.shadowBlur=(4+f*10)*s;
+      cctx.fillStyle='rgba('+ACC+','+(0.55+0.45*s+f*0.4)+')';
+      cctx.fillRect(X-sz/2,Y-sz/2,sz,sz);
+      cctx.shadowBlur=0;
+    } else if(n.state==='deferred'){
+      cctx.fillStyle='rgba(110,131,123,'+(0.30*s)+')';
+      cctx.fillRect(X-1,Y-1,2,2);
+    } else {
+      cctx.strokeStyle='rgba(110,131,123,'+(0.22*s)+')';
+      cctx.strokeRect(X-1.5,Y-1.5,3,3);
+    }
+  });
+}
+
+function frame(now){
+  rainFrame();
+  coreFrame(now);
+  requestAnimationFrame(frame);
+}
+function staticFrame(){
+  rctx.fillStyle='#070b0a';rctx.fillRect(0,0,rain.width,rain.height);
+  for(let p=0;p<300;p++)rainFrame();
+  coreFrame(0);
+}
+function boot(){
+  rainInit(); coreSize();
+  if(REDUCED) staticFrame(); else requestAnimationFrame(frame);
+}
+addEventListener('resize',()=>{rainInit();coreSize();if(REDUCED)staticFrame();});
+boot();
+</script>
+</body>
+</html>

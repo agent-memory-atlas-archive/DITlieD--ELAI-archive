@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ELAI palette boards — cook round 2 (rev 3: stroke logo + draw animation, fail locked)</title>
+<style>
+  :root { --mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace; }
+  * { margin: 0; box-sizing: border-box; }
+  body { background: #000; font-family: var(--mono); }
+
+  .board { padding: 48px 56px 64px; min-height: 92vh; }
+  .board-head { margin-bottom: 40px; }
+  .board-label { font-size: 10px; letter-spacing: .25em; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .board-label .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .board-title { font-size: 22px; font-weight: 300; letter-spacing: .04em; }
+  .board-sub { font-size: 11px; margin-top: 6px; opacity: .65; }
+
+  .cols { display: grid; grid-template-columns: 300px 1fr; gap: 56px; }
+
+  .chip { display: grid; grid-template-columns: 88px 1fr; gap: 14px; align-items: center; margin-bottom: 12px; }
+  .chip .swatch { height: 52px; border-radius: 6px; border: 1px solid rgba(255,255,255,.08); }
+  .chip .name { font-size: 10px; letter-spacing: .18em; }
+  .chip .hex { font-size: 10px; opacity: .55; margin-top: 3px; }
+  .chip-note { font-size: 9px; letter-spacing: .08em; opacity: .45; margin-top: 22px; line-height: 1.7; }
+
+  /* the LOCKED logo: monoline stroke wordmark, drawn stroke by stroke (click to replay) */
+  .logo-draw { width: min(290px, 42vw); height: auto; display: block; overflow: visible; margin-bottom: 36px; cursor: pointer; }
+  .logo-draw line { stroke-width: 2.4; stroke-linecap: round; fill: none; }
+  .logo-mini { width: 120px; height: auto; overflow: visible; z-index: 2; }
+  .logo-mini line { stroke-width: 2.4; stroke-linecap: round; fill: none; }
+
+  .samples { display: flex; gap: 14px; align-items: center; margin-bottom: 28px; flex-wrap: wrap; }
+  .btn { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; padding: 9px 18px; border-radius: 6px; background: transparent; cursor: pointer; }
+  .btn-hot { border: none; font-weight: 600; }
+  .badge { font-size: 9px; letter-spacing: .14em; padding: 4px 9px; border-radius: 4px; border: 1px solid; }
+
+  .states { margin-bottom: 36px; }
+  .states-label { font-size: 9px; letter-spacing: .22em; opacity: .5; display: block; margin-bottom: 12px; }
+  .state-groups { display: flex; gap: 44px; flex-wrap: wrap; align-items: flex-start; }
+  .sgroup .sg-tag { font-size: 8px; letter-spacing: .2em; opacity: .45; margin-top: 10px; }
+  .srow { display: flex; align-items: center; gap: 10px; }
+  .snode { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+  .schip { height: 32px; border-radius: 6px; display: flex; align-items: center; gap: 7px; padding: 0 12px; font-size: 11px; letter-spacing: .1em; }
+
+  .minis { display: flex; gap: 20px; flex-wrap: wrap; }
+  .mini { width: 360px; height: 200px; border-radius: 8px; border: 1px solid rgba(255,255,255,.08); overflow: hidden; position: relative; }
+  .mini-tag { position: absolute; top: 8px; left: 10px; font-size: 8px; letter-spacing: .2em; opacity: .5; z-index: 3; }
+  .mini-hero { display: flex; align-items: center; justify-content: center; }
+  .mini-hero .star { position: absolute; width: 1px; height: 1px; border-radius: 50%; }
+  .mini-dash { display: grid; grid-template-columns: 26px 60px 1fr 1.4fr; }
+  .mini-dash > div { border-right: 1px solid rgba(255,255,255,.06); }
+  .rail-ic { width: 12px; height: 12px; border-radius: 3px; margin: 8px auto 0; }
+  .tree-line { height: 5px; border-radius: 2px; margin: 9px 7px 0; }
+  .pane-block { height: 9px; border-radius: 3px; margin: 9px 10px 0; }
+
+  /* ---------------- P1 ABYSS INSTRUMENT ---------------- */
+  .p1 { background: #0a0e12; color: #e6ecf1; }
+  .p1 .board-label { color: #24a08e; } .p1 .dot { background: #24a08e; }
+  .p1 .logo-draw line, .p1 .logo-mini line { stroke: #2BAE98; }
+  .p1 .btn { border: 1px solid #1B7A6E; color: #24a08e; }
+  .p1 .badge { border-color: rgba(36,160,142,.45); color: #24a08e; background: rgba(27,122,110,.08); }
+  .p1 .node-done { background: #1B7A6E; color: #0a0e12; }
+  .p1 .node-active { border: 1.5px solid #24a08e; color: #24a08e; background: rgba(27,122,110,.08); }
+  .p1 .node-pending { border: 1px solid #383e47; color: #6e7681; }
+  .p1 .node-warn { border: 1px solid rgba(230,236,241,.35); color: #e6ecf1; }
+  .p1 .fail-mono { background: #e6ecf1; color: #0a0e12; font-weight: 600; }
+  .p1 .mini { background: #0f1318; }
+  .p1 .mini-hero { background: radial-gradient(ellipse at 50% 38%, rgba(30,138,122,.10), transparent 65%), #0a0e12; }
+  .p1 .star { background: rgba(208,215,222,.5); }
+
+  /* ---------------- P2 CARBON SIGNAL ---------------- */
+  .p2 { background: #030404; color: #f2f5f4; }
+  .p2 .board-label { color: #2BBBA4; } .p2 .dot { background: #2BBBA4; }
+  .p2 .logo-draw line, .p2 .logo-mini line { stroke: #f2f5f4; }
+  .p2 .btn-hot { background: #2BBBA4; color: #030404; }
+  .p2 .badge { border-color: rgba(43,187,164,.55); color: #34C2AA; background: rgba(43,187,164,.07); }
+  .p2 .node-done { background: #2BBBA4; color: #030404; }
+  .p2 .node-active { border: 1.5px solid #34C2AA; color: #34C2AA; background: rgba(43,187,164,.10); }
+  .p2 .node-pending { border: 1px solid #3a423f; color: #79827e; }
+  .p2 .node-warn { border: 1px solid rgba(242,245,244,.4); color: #f2f5f4; }
+  .p2 .fail-mono { background: #f2f5f4; color: #030404; font-weight: 600; }
+  .p2 .mini { background: #0e1413; border-color: rgba(255,255,255,.10); }
+  .p2 .mini-hero { background: radial-gradient(ellipse at 50% 38%, rgba(43,187,164,.07), transparent 60%), #020202; }
+  .p2 .star { background: rgba(242,245,244,.35); }
+
+  /* ---------------- P3 DEEP FIELD ---------------- */
+  .p3 { background: #07090b; color: #dfe6ee; position: relative; overflow: hidden; }
+  .p3::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(1px 1px at 12% 22%, rgba(223,230,238,.55), transparent 100%),
+      radial-gradient(1px 1px at 31% 64%, rgba(223,230,238,.35), transparent 100%),
+      radial-gradient(1px 1px at 48% 12%, rgba(36,160,142,.55), transparent 100%),
+      radial-gradient(1px 1px at 63% 48%, rgba(223,230,238,.4), transparent 100%),
+      radial-gradient(1px 1px at 76% 80%, rgba(223,230,238,.3), transparent 100%),
+      radial-gradient(1px 1px at 88% 28%, rgba(36,160,142,.4), transparent 100%),
+      radial-gradient(1px 1px at 22% 88%, rgba(223,230,238,.35), transparent 100%),
+      radial-gradient(1px 1px at 55% 92%, rgba(223,230,238,.25), transparent 100%),
+      radial-gradient(900px 500px at 8% 0%, rgba(30,138,122,.10), transparent 70%); }
+  .p3 .board-head, .p3 .cols { position: relative; z-index: 1; }
+  .p3 .board-label { color: #24a08e; } .p3 .dot { background: #24a08e; box-shadow: 0 0 8px rgba(36,160,142,.8); }
+  .p3 .logo-draw line, .p3 .logo-mini line { stroke: #2BAE98; }
+  .p3 .logo-draw, .p3 .logo-mini { filter: drop-shadow(0 0 10px rgba(36,160,142,.45)); }
+  .p3 .btn { border: 1px solid #1B7A6E; color: #24a08e; box-shadow: 0 0 14px rgba(27,122,110,.25), inset 0 0 8px rgba(27,122,110,.12); }
+  .p3 .badge { border-color: rgba(36,160,142,.5); color: #24a08e; background: rgba(27,122,110,.10); }
+  .p3 .snode { border-radius: 50%; width: 30px; height: 30px; }
+  .p3 .node-done { background: #24a08e; color: #07090b; box-shadow: 0 0 16px rgba(36,160,142,.7); }
+  .p3 .node-active { border: 1.5px solid #24a08e; color: #24a08e; box-shadow: 0 0 12px rgba(36,160,142,.45); }
+  .p3 .node-pending { border: 1px solid #353d49; color: #6b7584; }
+  .p3 .node-warn { border: 1px solid rgba(223,230,238,.4); color: #dfe6ee; }
+  .p3 .fail-mono { background: #dfe6ee; color: #07090b; font-weight: 600; }
+  .p3 .mini { background: #0d1118; }
+  .p3 .mini-hero { background:
+      radial-gradient(1px 1px at 20% 30%, rgba(223,230,238,.6), transparent),
+      radial-gradient(1px 1px at 70% 20%, rgba(223,230,238,.4), transparent),
+      radial-gradient(1px 1px at 45% 75%, rgba(36,160,142,.5), transparent),
+      radial-gradient(1px 1px at 85% 60%, rgba(223,230,238,.35), transparent),
+      radial-gradient(420px 240px at 30% 10%, rgba(30,138,122,.16), transparent 70%), #07090b; }
+</style>
+</head>
+<body>
+
+<!-- the locked logo: 10 monoline strokes (E L A I), drawn stroke-by-stroke left to right.
+     geometry verbatim from the v1 site (viewBox -3 -3 236 66); click any large logo to replay. -->
+
+<!-- ============ P1 ============ -->
+<section class="board p1">
+  <div class="board-head">
+    <div class="board-label"><span class="dot"></span>DIRECTION P1</div>
+    <div class="board-title">ABYSS INSTRUMENT</div>
+    <div class="board-sub">continuity, disciplined — current cool ramp + current sea-teal, steel demoted, contrast raised, factory restraint</div>
+  </div>
+  <div class="cols">
+    <div>
+      <div class="chip"><div class="swatch" style="background:#0a0e12"></div><div><div class="name">VOID</div><div class="hex">#0a0e12</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#151a20"></div><div><div class="name">SURFACE</div><div class="hex">#151a20</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#e6ecf1"></div><div><div class="name">TEXT</div><div class="hex">#e6ecf1</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#1B7A6E"></div><div><div class="name">TEAL</div><div class="hex">#1B7A6E · bright #24a08e</div></div></div>
+      <div class="chip-note">the palette is FOUR values.<br>warn / fail are not colors —<br>they are glyphs in the state<br>language (row on the right).</div>
+    </div>
+    <div>
+      <svg class="logo-draw" viewBox="-3 -3 236 66" aria-label="ELAI">
+        <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/><line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+        <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+        <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/><line x1="162.7" y1="38" x2="177.3" y2="38"/>
+        <line x1="228" y1="0" x2="228" y2="60"/>
+      </svg>
+      <div class="samples">
+        <button class="btn">RUN MISSION</button>
+        <span class="badge">GATE PASS</span>
+      </div>
+      <div class="states">
+        <span class="states-label">STATE LANGUAGE — SHAPE CARRIES STATE, COLOR ONLY WHISPERS</span>
+        <div class="state-groups">
+          <div class="sgroup">
+            <div class="srow">
+              <span class="snode node-done">✓</span>
+              <span class="snode node-active">●</span>
+              <span class="snode node-pending">○</span>
+              <span class="snode node-warn">▲</span>
+            </div>
+            <div class="sg-tag">DONE · ACTIVE · PENDING · WARN (no own color)</div>
+          </div>
+          <div class="sgroup">
+            <div class="srow"><span class="schip fail-mono">✕ FAIL</span></div>
+            <div class="sg-tag">FAIL · MONO INVERSION — LOCKED</div>
+          </div>
+        </div>
+      </div>
+      <div class="minis">
+        <div class="mini mini-hero"><span class="mini-tag">WEBSITE · BOOT-SCREEN FEEL</span>
+          <span class="star" style="top:24%;left:18%"></span><span class="star" style="top:60%;left:72%"></span><span class="star" style="top:38%;left:85%"></span><span class="star" style="top:78%;left:34%"></span><span class="star" style="top:16%;left:58%"></span>
+          <svg class="logo-mini" viewBox="-3 -3 236 66" aria-label="ELAI">
+            <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/><line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+            <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+            <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/><line x1="162.7" y1="38" x2="177.3" y2="38"/>
+            <line x1="228" y1="0" x2="228" y2="60"/>
+          </svg>
+        </div>
+        <div class="mini mini-dash"><span class="mini-tag" style="left:34px">DASHBOARD</span>
+          <div><div class="rail-ic" style="background:#1B7A6E"></div><div class="rail-ic" style="background:#383e47"></div><div class="rail-ic" style="background:#383e47"></div><div class="rail-ic" style="background:#383e47"></div></div>
+          <div><div class="tree-line" style="background:#383e47;width:38px"></div><div class="tree-line" style="background:#383e47;width:30px;margin-left:13px"></div><div class="tree-line" style="background:rgba(27,122,110,.5);width:34px;margin-left:13px"></div><div class="tree-line" style="background:#383e47;width:26px"></div></div>
+          <div><div class="pane-block" style="background:#1e2530;width:70%"></div><div class="pane-block" style="background:#1e2530;width:85%"></div><div class="pane-block" style="background:rgba(27,122,110,.35);width:45%"></div><div class="pane-block" style="background:#1e2530;width:78%"></div></div>
+          <div><div class="pane-block" style="background:#151a20;height:54px;margin:9px 10px 0;border:1px solid rgba(255,255,255,.06)"></div><div class="pane-block" style="background:rgba(27,122,110,.25);width:30%"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ P2 ============ -->
+<section class="board p2">
+  <div class="board-head">
+    <div class="board-label"><span class="dot"></span>DIRECTION P2</div>
+    <div class="board-title">CARBON SIGNAL</div>
+    <div class="board-sub">factory-energy translation — near-pure black, hotter electric teal, strong whites, maximum contrast</div>
+  </div>
+  <div class="cols">
+    <div>
+      <div class="chip"><div class="swatch" style="background:#030404"></div><div><div class="name">VOID</div><div class="hex">#030404</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#0e1413"></div><div><div class="name">SURFACE</div><div class="hex">#0e1413</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#f2f5f4"></div><div><div class="name">TEXT</div><div class="hex">#f2f5f4</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#2BBBA4"></div><div><div class="name">TEAL</div><div class="hex">#2BBBA4 · bright #34C2AA</div></div></div>
+      <div class="chip-note">the palette is FOUR values.<br>warn / fail are not colors —<br>they are glyphs in the state<br>language (row on the right).</div>
+    </div>
+    <div>
+      <svg class="logo-draw" viewBox="-3 -3 236 66" aria-label="ELAI">
+        <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/><line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+        <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+        <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/><line x1="162.7" y1="38" x2="177.3" y2="38"/>
+        <line x1="228" y1="0" x2="228" y2="60"/>
+      </svg>
+      <div class="samples">
+        <button class="btn btn-hot">RUN MISSION</button>
+        <span class="badge">GATE PASS</span>
+      </div>
+      <div class="states">
+        <span class="states-label">STATE LANGUAGE — SHAPE CARRIES STATE, COLOR ONLY WHISPERS</span>
+        <div class="state-groups">
+          <div class="sgroup">
+            <div class="srow">
+              <span class="snode node-done">✓</span>
+              <span class="snode node-active">●</span>
+              <span class="snode node-pending">○</span>
+              <span class="snode node-warn">▲</span>
+            </div>
+            <div class="sg-tag">DONE · ACTIVE · PENDING · WARN (no own color)</div>
+          </div>
+          <div class="sgroup">
+            <div class="srow"><span class="schip fail-mono">✕ FAIL</span></div>
+            <div class="sg-tag">FAIL · MONO INVERSION — LOCKED</div>
+          </div>
+        </div>
+      </div>
+      <div class="minis">
+        <div class="mini mini-hero"><span class="mini-tag">WEBSITE · BOOT-SCREEN FEEL</span>
+          <span class="star" style="top:22%;left:24%"></span><span class="star" style="top:64%;left:70%"></span><span class="star" style="top:34%;left:82%"></span><span class="star" style="top:76%;left:30%"></span>
+          <svg class="logo-mini" viewBox="-3 -3 236 66" aria-label="ELAI">
+            <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/><line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+            <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+            <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/><line x1="162.7" y1="38" x2="177.3" y2="38"/>
+            <line x1="228" y1="0" x2="228" y2="60"/>
+          </svg>
+        </div>
+        <div class="mini mini-dash"><span class="mini-tag" style="left:34px">DASHBOARD</span>
+          <div><div class="rail-ic" style="background:#2BBBA4"></div><div class="rail-ic" style="background:#3a423f"></div><div class="rail-ic" style="background:#3a423f"></div><div class="rail-ic" style="background:#3a423f"></div></div>
+          <div><div class="tree-line" style="background:#3a423f;width:38px"></div><div class="tree-line" style="background:#3a423f;width:30px;margin-left:13px"></div><div class="tree-line" style="background:rgba(43,187,164,.55);width:34px;margin-left:13px"></div><div class="tree-line" style="background:#3a423f;width:26px"></div></div>
+          <div><div class="pane-block" style="background:#161c1b;width:70%"></div><div class="pane-block" style="background:#161c1b;width:85%"></div><div class="pane-block" style="background:rgba(43,187,164,.4);width:45%"></div><div class="pane-block" style="background:#161c1b;width:78%"></div></div>
+          <div><div class="pane-block" style="background:#0e1413;height:54px;margin:9px 10px 0;border:1px solid rgba(255,255,255,.08)"></div><div class="pane-block" style="background:#2BBBA4;width:30%"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ P3 ============ -->
+<section class="board p3">
+  <div class="board-head">
+    <div class="board-label"><span class="dot"></span>DIRECTION P3</div>
+    <div class="board-title">DEEP FIELD</div>
+    <div class="board-sub">galaxy-forward — teal as luminance on brand surfaces, starfield + nebula bloom; the canvas work surface stays flat (no stars, no glow)</div>
+  </div>
+  <div class="cols">
+    <div>
+      <div class="chip"><div class="swatch" style="background:#07090b"></div><div><div class="name">VOID</div><div class="hex">#07090b</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#10141c"></div><div><div class="name">SURFACE</div><div class="hex">#10141c</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#dfe6ee"></div><div><div class="name">TEXT</div><div class="hex">#dfe6ee</div></div></div>
+      <div class="chip"><div class="swatch" style="background:#24a08e;box-shadow:0 0 18px rgba(36,160,142,.6)"></div><div><div class="name">TEAL</div><div class="hex">#24a08e · luminous</div></div></div>
+      <div class="chip-note">the palette is FOUR values.<br>warn / fail are not colors —<br>they are glyphs in the state<br>language (row on the right).</div>
+    </div>
+    <div>
+      <svg class="logo-draw" viewBox="-3 -3 236 66" aria-label="ELAI">
+        <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/><line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+        <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+        <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/><line x1="162.7" y1="38" x2="177.3" y2="38"/>
+        <line x1="228" y1="0" x2="228" y2="60"/>
+      </svg>
+      <div class="samples">
+        <button class="btn">RUN MISSION</button>
+        <span class="badge">GATE PASS</span>
+      </div>
+      <div class="states">
+        <span class="states-label">STATE LANGUAGE — SHAPE CARRIES STATE, COLOR ONLY WHISPERS</span>
+        <div class="state-groups">
+          <div class="sgroup">
+            <div class="srow">
+              <span class="snode node-done">✓</span>
+              <span class="snode node-active">●</span>
+              <span class="snode node-pending">○</span>
+              <span class="snode node-warn">▲</span>
+            </div>
+            <div class="sg-tag">DONE · ACTIVE · PENDING · WARN (no own color)</div>
+          </div>
+          <div class="sgroup">
+            <div class="srow"><span class="schip fail-mono">✕ FAIL</span></div>
+            <div class="sg-tag">FAIL · MONO INVERSION — LOCKED</div>
+          </div>
+        </div>
+      </div>
+      <div class="minis">
+        <div class="mini mini-hero"><span class="mini-tag">WEBSITE · BOOT-SCREEN FEEL</span>
+          <svg class="logo-mini" viewBox="-3 -3 236 66" aria-label="ELAI">
+            <line x1="0" y1="0" x2="0" y2="60"/><line x1="0" y1="0" x2="34" y2="0"/><line x1="0" y1="30" x2="25" y2="30"/><line x1="0" y1="60" x2="34" y2="60"/>
+            <line x1="76" y1="0" x2="76" y2="60"/><line x1="76" y1="60" x2="106" y2="60"/>
+            <line x1="150" y1="60" x2="170" y2="0"/><line x1="170" y1="0" x2="190" y2="60"/><line x1="162.7" y1="38" x2="177.3" y2="38"/>
+            <line x1="228" y1="0" x2="228" y2="60"/>
+          </svg>
+        </div>
+        <div class="mini mini-dash"><span class="mini-tag" style="left:34px">DASHBOARD · FLAT WORK SURFACE</span>
+          <div><div class="rail-ic" style="background:#24a08e"></div><div class="rail-ic" style="background:#353d49"></div><div class="rail-ic" style="background:#353d49"></div><div class="rail-ic" style="background:#353d49"></div></div>
+          <div><div class="tree-line" style="background:#353d49;width:38px"></div><div class="tree-line" style="background:#353d49;width:30px;margin-left:13px"></div><div class="tree-line" style="background:rgba(36,160,142,.5);width:34px;margin-left:13px"></div><div class="tree-line" style="background:#353d49;width:26px"></div></div>
+          <div><div class="pane-block" style="background:#171c24;width:70%"></div><div class="pane-block" style="background:#171c24;width:85%"></div><div class="pane-block" style="background:rgba(36,160,142,.35);width:45%"></div><div class="pane-block" style="background:#171c24;width:78%"></div></div>
+          <div><div class="pane-block" style="background:#10141c;height:54px;margin:9px 10px 0;border:1px solid rgba(255,255,255,.06)"></div><div class="pane-block" style="background:rgba(36,160,142,.3);width:30%"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+// the LOCKED logo animation, verbatim timing from the v1 site:
+// each stroke draws in via stroke-dashoffset, 1400ms cubic-bezier(0.3,0,0.2,1), delay 400 + i*380ms,
+// line by line, left to right. click a large logo to replay. reduced-motion = drawn instantly.
+(function () {
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function segLen(ln) {
+    const dx = ln.x2.baseVal.value - ln.x1.baseVal.value;
+    const dy = ln.y2.baseVal.value - ln.y1.baseVal.value;
+    return Math.hypot(dx, dy);
+  }
+
+  function drawLogo(svg) {
+    const lines = Array.from(svg.querySelectorAll('line'));
+    if (reduced) { lines.forEach(ln => { ln.style.strokeDasharray = 'none'; ln.style.strokeDashoffset = '0'; }); return; }
+    lines.forEach(ln => {
+      const len = segLen(ln);
+      ln.style.transition = 'none';
+      ln.style.strokeDasharray = String(len);
+      ln.style.strokeDashoffset = String(len);
+    });
+    void svg.getBoundingClientRect(); // commit start state
+    lines.forEach((ln, i) => {
+      ln.style.transition = 'stroke-dashoffset 1400ms cubic-bezier(0.3, 0, 0.2, 1) ' + (400 + i * 380) + 'ms';
+      ln.style.strokeDashoffset = '0';
+    });
+  }
+
+  document.querySelectorAll('svg.logo-draw').forEach(svg => {
+    drawLogo(svg);
+    svg.addEventListener('click', () => drawLogo(svg));
+  });
+  // minis: static, fully drawn (the animation belongs to the hero logo)
+  document.querySelectorAll('svg.logo-mini line').forEach(ln => { ln.style.strokeDashoffset = '0'; });
+})();
+</script>
+
+</body>
+</html>

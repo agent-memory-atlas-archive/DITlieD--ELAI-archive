@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-ground="slate">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — Ghost in the Shell palette</title>
+<!-- Mockup: fonts from Google CDN (standalone). Palette grounded in the GITS 1995
+     color references (Umi GITS palette, Color-Palette-Cinema GITS strip, the GITS
+     1995 lavender-ground wheel): desaturated filmic multi-tone, NON-black ground.
+     Locked: white mono-inversion for errors (never red/yellow). No teal, no scanlines. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600&family=IBM+Plex+Mono:wght@300;400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ===== GITS multi-tone palette — each hue carries MEANING, muted + filmic ===== */
+  :root{
+    /* semantic hues (constant across grounds; desaturated GITS mid-tones) */
+    --cyan:#63aab2;  --cyan-hi:#82c8d0;   /* live / active / running */
+    --sage:#93a884;                        /* done / ok (recedes) */
+    --slate:#6d8ca2;                       /* pending / neutral info */
+    --mauve:#9585a8;                       /* a distinct category (e.g. worker source) */
+    --amber:#c99a5b;                       /* attention / needs-input (rare, the warm hit) */
+    --invert-bg:#e7ede9; --invert-fg:#121e1b; /* error = white mono-inversion (LOCKED) */
+    --disp:'Chakra Petch',sans-serif;
+    --ui:'IBM Plex Sans',system-ui,sans-serif;
+    --data:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  html[data-ground="slate"]{
+    --ground:#19221f; --panel:#212b28; --raised:#2b3630; --sink:#131a18; --row:#1d2724;
+    --text:#e2e8e4; --read:#a7b5af; --dim:#6c7a74; --ghost:#3a453f;
+    --line:rgba(224,234,229,.14); --line2:rgba(224,234,229,.08);
+  }
+  html[data-ground="lavender"]{                 /* the GITS 1995 signature ground */
+    --ground:#272531; --panel:#302d3b; --raised:#3a3749; --sink:#1e1c26; --row:#2b2934;
+    --text:#e7e4ee; --read:#b0abbd; --dim:#77728b; --ghost:#453f54;
+    --line:rgba(232,228,240,.15); --line2:rgba(232,228,240,.08);
+  }
+  html[data-ground="deep"]{                      /* darkest, for dark-mode preference */
+    --ground:#0f1413; --panel:#161d1b; --raised:#1f2724; --sink:#0a0f0e; --row:#131a18;
+    --text:#e2e8e4; --read:#a7b5af; --dim:#6c7a74; --ghost:#333d39;
+    --line:rgba(224,234,229,.13); --line2:rgba(224,234,229,.07);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--ground); color:var(--text); font-family:var(--ui); font-size:13.5px; line-height:1.55;
+    -webkit-font-smoothing:antialiased; padding-bottom:80px;
+    /* filmic: a whisper of vignette + grain, NOT scanlines */
+    background-image:radial-gradient(120% 90% at 50% -10%, rgba(255,255,255,.03), transparent 60%);
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+
+  header.top{position:sticky; top:0; z-index:50; background:var(--ground); border-bottom:1px solid var(--line);
+    padding:14px 26px; display:flex; align-items:center; gap:18px; flex-wrap:wrap}
+  header.top .wm{font-family:var(--disp); font-weight:600; letter-spacing:.34em; color:var(--text); font-size:15px}
+  header.top .sub{color:var(--dim); font-size:11.5px}
+  .grounds{margin-left:auto; display:flex; gap:0; border:1px solid var(--line)}
+  .grounds button{font-family:var(--ui); background:transparent; color:var(--dim); border:0; border-left:1px solid var(--line);
+    padding:6px 13px; font-size:11px; cursor:pointer; letter-spacing:.02em}
+  .grounds button:first-child{border-left:0}
+  .grounds button[aria-pressed="true"]{background:var(--raised); color:var(--text)}
+
+  main{max-width:1040px; margin:0 auto; padding:30px 26px 0}
+
+  /* palette legend — makes the "hue = meaning" philosophy explicit (not decoration) */
+  .legend{display:flex; gap:22px; flex-wrap:wrap; margin-bottom:28px; padding-bottom:22px; border-bottom:1px solid var(--line)}
+  .legend .sw{display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--read)}
+  .legend .chip{width:22px; height:12px; border-radius:2px}
+  .legend .chip.inv{background:var(--invert-bg); display:flex; align-items:center; justify-content:center; color:var(--invert-fg); font-size:8px; font-weight:700; width:30px; font-family:var(--data)}
+
+  .surface{display:grid; grid-template-columns:1.45fr 1fr; gap:22px; align-items:start}
+  @media (max-width:800px){.surface{grid-template-columns:1fr}}
+  .caplbl{font-family:var(--disp); font-size:10.5px; letter-spacing:.24em; text-transform:uppercase; color:var(--dim); margin-bottom:9px}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:3px; overflow:hidden}
+  .panel .bt{display:flex; align-items:center; justify-content:space-between; padding:11px 15px; border-bottom:1px solid var(--line); background:var(--sink)}
+  .panel .bt .t{font-family:var(--disp); font-size:11px; letter-spacing:.22em; text-transform:uppercase; color:var(--read)}
+  .panel .bt .c{font-family:var(--data); font-size:11px; color:var(--dim)}
+  .phead{display:flex; align-items:center; gap:10px; padding:10px 15px; color:var(--read); font-size:12.5px; border-bottom:1px solid var(--line)}
+  .phead .pill{font-family:var(--data); font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:2px; padding:1px 7px}
+  .phead .pill.src{color:var(--mauve); border-color:color-mix(in oklab, var(--mauve) 45%, transparent)}
+
+  .rowh,.row{display:grid; grid-template-columns:1fr 78px 76px; gap:12px; align-items:center; padding:10px 15px}
+  .rowh{font-family:var(--disp); color:var(--read); font-size:10px; letter-spacing:.14em; text-transform:uppercase; border-bottom:1px solid var(--line)}
+  .row{border-bottom:1px solid var(--line2); border-left:2px solid transparent}
+  .row:last-child{border-bottom:0}
+  .row .nm{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px}
+  .stt{font-size:11.5px; color:var(--dim)}
+  .stt.run{color:var(--cyan)} .stt.wait{color:var(--slate)} .stt.warn{color:var(--amber)}
+  .pg{font-family:var(--data); font-variant-numeric:tabular-nums; text-align:right; color:var(--read); font-size:12px}
+  .row.live{border-left-color:var(--cyan); background:color-mix(in oklab, var(--cyan) 7%, transparent)}
+  .row.live .nm{color:var(--cyan-hi)}
+  .row.done .nm{color:var(--sage); opacity:.72}
+  .fail{background:var(--invert-bg); color:var(--invert-fg); font-family:var(--data); font-weight:600; font-size:10.5px; padding:2px 8px; border-radius:2px; letter-spacing:.02em}
+
+  .mtile{padding:13px 15px; border-bottom:1px solid var(--line2)}
+  .mtile:last-child{border-bottom:0}
+  .mtile .l1{display:flex; align-items:center; gap:9px; font-size:12.5px}
+  .mtile .l1 .dotb{width:3px; height:13px; border-radius:1px; background:var(--cyan)}
+  .mtile .l2{font-family:var(--data); color:var(--dim); font-size:11px; margin-top:5px; font-variant-numeric:tabular-nums}
+  .seg{display:flex; gap:2px; margin-top:9px}
+  .seg i{height:5px; flex:1; background:var(--ghost); border-radius:1px}
+  .seg i.on{background:var(--cyan); opacity:.75}
+  .verdict{color:var(--sage); font-size:11.5px; letter-spacing:.08em}
+  .mtile.attn{border-left:2px solid var(--amber)}
+  .mtile.attn .l1{color:var(--amber)}
+  .mtile.attn .dotb{background:var(--amber)}
+
+  .breathe{animation:br 2.6s ease-in-out infinite}
+  @keyframes br{0%,100%{opacity:1}50%{opacity:.55}}
+
+  footer.note{max-width:1040px; margin:30px auto 0; padding:0 26px; color:var(--dim); font-size:11.5px}
+  footer.note b{color:var(--read)}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="wm">ELAI</span>
+  <span class="sub">Ghost in the Shell palette · desaturated multi-tone, non-black ground · one committed design</span>
+  <div class="grounds" role="group" aria-label="ground">
+    <button aria-pressed="true"  onclick="setG('slate',this)">slate-green</button>
+    <button aria-pressed="false" onclick="setG('lavender',this)">lavender</button>
+    <button aria-pressed="false" onclick="setG('deep',this)">deep</button>
+  </div>
+</header>
+
+<main>
+  <div class="legend">
+    <span class="sw"><span class="chip" style="background:var(--cyan)"></span>live / running</span>
+    <span class="sw"><span class="chip" style="background:var(--sage)"></span>done</span>
+    <span class="sw"><span class="chip" style="background:var(--slate)"></span>pending</span>
+    <span class="sw"><span class="chip" style="background:var(--mauve)"></span>category / source</span>
+    <span class="sw"><span class="chip" style="background:var(--amber)"></span>needs input</span>
+    <span class="sw"><span class="chip inv">FAIL</span>error (inversion)</span>
+  </div>
+
+  <div class="surface">
+    <div>
+      <div class="caplbl">Sessions</div>
+      <div class="panel">
+        <div class="bt"><span class="t">Sessions</span><span class="c">elai-core</span></div>
+        <div class="phead"><span>elai-core</span><span class="pill">rust</span><span class="pill src">claude-only</span></div>
+        <div class="rowh"><span>session</span><span>status</span><span style="text-align:right">progress</span></div>
+        <div class="row live"><span class="nm">fix-vram-tier</span><span class="stt run breathe">running</span><span class="pg">6 / 9</span></div>
+        <div class="row done"><span class="nm">b40-idea-framer</span><span class="stt">done</span><span class="pg">12 / 12</span></div>
+        <div class="row"><span class="nm">patch-blake3</span><span class="stt wait">pending</span><span class="pg">—</span></div>
+        <div class="row"><span class="nm">sidecar-search</span><span class="stt run">running</span><span class="pg">3 / 8</span></div>
+        <div class="row"><span class="nm">dola-eval</span><span class="stt"></span><span class="pg"><span class="fail">FAIL</span></span></div>
+      </div>
+    </div>
+    <div>
+      <div class="caplbl">Monitor</div>
+      <div class="panel">
+        <div class="bt"><span class="t">Monitor</span><span class="c">autonomous ops</span></div>
+        <div class="mtile"><div class="l1"><span class="dotb breathe"></span>executor · glm-5.2</div><div class="l2">ctx 18k / 32k · 7 / 11</div><div class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="mtile"><div class="l1" style="color:var(--sage)"><span class="dotb" style="background:var(--sage)"></span>auditor · sonnet</div><div class="l2"><span class="verdict">GATE PASS</span></div></div>
+        <div class="mtile attn"><div class="l1"><span class="dotb"></span>approval required</div><div class="l2">git push · elai-core → main</div></div>
+        <div class="mtile"><div class="l1" style="color:var(--dim)"><span class="dotb" style="background:var(--ghost)"></span>worker pool</div><div class="l2">3 / 4 free · free-mistral</div></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="note">
+  This is ONE committed design, not a menu — the three buttons top-right only swap the GROUND (slate-green / lavender / deep); the palette + type + layout stay fixed so you judge the design, not a repaint. The colour is <b>multi-tone with meaning</b>: cyan = live, sage = done, slate = pending, mauve = a category (worker source), amber = needs-input, and the white inversion = error. That is deliberately NOT "one accent" — it is the GITS filmic palette used semantically, which is why it reads different from everything before. Type is Chakra Petch (headers) + IBM Plex Sans (UI) + IBM Plex Mono (data), no terminal-mono-everywhere. Tell me: right palette? right ground? and is the multi-tone-semantic direction the one, or do you want it pulled tighter (fewer hues) or looser (more GITS purples/ambers)?
+</footer>
+
+<script>
+  function setG(g, btn){
+    document.documentElement.setAttribute('data-ground', g);
+    document.querySelectorAll('.grounds button').forEach(b=>b.setAttribute('aria-pressed', b===btn?'true':'false'));
+  }
+</script>
+</body>
+</html>

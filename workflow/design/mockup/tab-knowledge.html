@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-tab="knowledge">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — knowledge</title>
+<!--
+  KNOWLEDGE TAB — the memory / research / retrieval view, built into the settled dashboard shell.
+  Shell (topbar, icon rail, chat pane, statusbar, drawers, settings modal, ALL :root tokens, ALL shared
+  component CSS) is COPIED VERBATIM from workflow/design/mockup/dashboard-app.html — unchanged. The KNOWLEDGE
+  tab is set active (button .on, data-tab="knowledge" on <html>); the #host-* placeholders are removed; only the
+  contents of <section class="canvas-pane"> are replaced with the KNOWLEDGE view. All knowledge CSS is scoped
+  under .kn-* and never touches the shared :root or shared component classes.
+  Content grounded in real backend DTOs (HANDLER-SHAPES.md / CONTRACT-SHEET.md / MOCKUP-INVENTORY.md §2e):
+    MemoryFactDto (get_memory_facts / get_memory_facts_with_history, commands_e5.rs:34) — fact_id, user_id,
+      project_id, scope, fact_type, key, value, confidence, trust_score, trust_threshold, ingested_at_ms,
+      valid_from_ms, valid_to_ms, decay_rate_per_day, last_observed_at_ms, evidence_pointers[], superseded_by.
+    SemanticContradictionDto (get_semantic_contradictions, commands_e5.rs:201) — fact_id_a, fact_id_b, conflict_kind.
+    MemoryNoteRow (get_memory_notes, commands_e1.rs:53) + ChatMemoryState (get_chat_memory_state, commands_e1.rs:113).
+    QueryTraceRow (get_query_trace_recent, commands.rs:1409) — seq, ts, query_id, tier, stage_count, result_count, total_latency_ms.
+    list_artifacts {artifact_names[]} (commands.rs:9232) + StalenessQuarantineRow (get_staleness_quarantine, commands_f5.rs:47).
+    research_node_stages (get_research_node_history, commands.rs:10703) — research tree FORMULATE>SEARCH>EXTRACT>REFLECT>CONVERGE.
+  RAG cascade stage labels grounded in crates/knowledge modules: bm25.rs, pagerank, web_arag.rs (arag),
+  reranker.rs; catrag = CAT-RAG stage. All values are representative mock; nothing wired. Demo project .elai_cc.
+  Tier-A vs Tier-B is DERIVED for the chip: scope=project/fact_type=code_grounded -> Tier-A; scope=user/preference -> Tier-B.
+  prefers-reduced-motion + light theme preserved unchanged. Esc closes overlays. Dev STATE switcher in the statusbar.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#0a0f0e; --graph:#0a0f0e; --panel:#0e1413; --surface:#151c1a; --raised:#1b2220; --sink:#070b0a;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --border:rgba(255,255,255,.08); --border2:rgba(255,255,255,.14);
+    --teal:#2BBBA4; --tealb:#34C2AA; --teal-deep:#1B7A6E;
+    --tealsoft:rgba(43,187,164,.35); --tealghost:rgba(43,187,164,.10); --tealfaint:rgba(43,187,164,.05);
+    --disp:'Chakra Petch',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+    --dur-fast:140ms; --dur:240ms; --ease-out:cubic-bezier(0.16,1,0.3,1);
+    --r-sm:5px; --r-md:8px; --r-lg:11px;
+    --rail:48px; --chat:368px; --summary:196px; --drawer:286px;
+  }
+  [data-theme="light"]{
+    --bg:#eef1ef; --graph:#eef1ef; --panel:#ffffff; --surface:#f7f9f7; --raised:#eef1ee; --sink:#e6eae7;
+    --text:#0b0f0e; --read:#2d342f; --dim:#646b66; --ghost:#a9b0ab;
+    --border:rgba(0,0,0,.10); --border2:rgba(0,0,0,.17);
+    --teal:#138a78; --tealb:#0f7e6f; --teal-deep:#0c6256;
+    --tealsoft:rgba(19,138,120,.38); --tealghost:rgba(19,138,120,.12); --tealfaint:rgba(19,138,120,.06);
+  }
+  *{margin:0;box-sizing:border-box;}
+  html,body{height:100%;}
+  body{font-family:var(--mono);background:var(--bg);color:var(--text);height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;}
+  .app{display:grid;grid-template-rows:48px 1fr 24px;height:100vh;}
+
+  /* ─────────────── TOPBAR (identical language to select-terminal) ─────────────── */
+  .topbar{display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--bg);}
+  .brand{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:var(--read);font-weight:600;}
+  .brand .sep{color:var(--ghost);}
+  .brand .title{color:var(--dim);letter-spacing:.1em;font-weight:400;}
+  /* primary nav = segmented control, same shape as select's LOCAL/CLOUD/HYBRID pill */
+  .tabs{display:flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;}
+  .tab{appearance:none;background:transparent;border:0;border-right:1px solid var(--border);cursor:pointer;font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.14em;color:var(--dim);padding:7px 16px;transition:color var(--dur-fast),background var(--dur-fast);}
+  .tab:last-child{border-right:0;}
+  .tab:hover{color:var(--read);background:rgba(255,255,255,.04);}
+  .tab.on{color:var(--tealb);background:var(--tealghost);}
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:18px;}
+  .runbar{display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.14em;color:var(--dim);}
+  .runbar .frac{color:var(--tealb);}
+  .segbar{display:flex;gap:2px;}
+  .seg{width:9px;height:8px;border-radius:1px;background:var(--ghost);}
+  .seg.f{background:var(--teal-deep);}
+  .seg.a{background:var(--tealb);animation:segpulse 1.6s ease-in-out infinite;}
+  @keyframes segpulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+
+  /* theme toggle (sun/moon) — carried verbatim from intro/select */
+  .icon-toggle{appearance:none;cursor:pointer;position:relative;width:32px;height:30px;background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);color:var(--read);transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .icon-toggle:hover{color:var(--teal);border-color:var(--tealsoft);}
+  .icon-toggle .ico{position:absolute;top:50%;left:50%;transition:opacity var(--dur) var(--ease-out),transform var(--dur) var(--ease-out);}
+  .icon-toggle .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  .icon-toggle .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  .icon-toggle:hover .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  .icon-toggle:hover .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+
+  /* ─────────────── BODY GRID: rail | canvas | chat ─────────────── */
+  .body{position:relative;display:grid;grid-template-columns:var(--rail) 1fr var(--chat);min-height:0;}
+
+  /* icon rail */
+  .rail{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0;border-right:1px solid var(--border);background:var(--panel);z-index:30;}
+  .rail .spring{flex:1;}
+  .rbtn{appearance:none;position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:var(--r-sm);color:var(--dim);cursor:pointer;transition:color var(--dur-fast),background var(--dur-fast),border-color var(--dur-fast);}
+  .rbtn:hover{color:var(--read);background:var(--tealfaint);}
+  .rbtn.on{color:var(--tealb);background:var(--tealghost);border-color:var(--tealsoft);}
+  .rbtn svg{width:18px;height:18px;}
+  /* hover tooltip */
+  .rbtn::after{content:attr(data-label);position:absolute;left:42px;top:50%;transform:translateY(-50%) translateX(-4px);white-space:nowrap;font-size:10px;letter-spacing:.08em;color:var(--read);background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:4px 9px;opacity:0;pointer-events:none;transition:opacity var(--dur-fast),transform var(--dur-fast);z-index:50;}
+  .rbtn:hover::after{opacity:1;transform:translateY(-50%) translateX(0);}
+
+  /* ─────────────── CANVAS PANE (top strip · graph · bottom strip) ─────────────── */
+  .canvas-pane{position:relative;display:grid;grid-template-rows:auto 1fr auto;min-width:0;background:var(--graph);}
+
+  /* canvas TOP strip — mission + progress + gates (was the side summary) */
+  .canvas-top{display:flex;align-items:center;gap:18px;min-height:40px;padding:8px 18px;border-bottom:1px solid var(--border);background:var(--bg);}
+  .canvas-top .mission{font-size:11px;color:var(--read);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+  .ck{font-size:8px;letter-spacing:.22em;color:var(--dim);margin-right:9px;}
+  .canvas-top .cright{margin-left:auto;display:flex;align-items:center;gap:22px;font-size:10px;letter-spacing:.1em;color:var(--dim);white-space:nowrap;}
+  .canvas-top .cright b{font-family:var(--disp);font-weight:500;font-size:15px;color:var(--text);letter-spacing:.02em;}
+  .gtl{display:inline-flex;gap:9px;align-items:center;}
+  .gtl .ok{color:var(--tealb);}.gtl .wa{color:var(--text);}
+  .gtl .fa{background:var(--text);color:var(--bg);padding:0 5px;border-radius:3px;font-weight:600;}
+
+  /* canvas BOTTOM strip — last activity + quinary legend */
+  .canvas-bot{display:flex;align-items:center;gap:18px;min-height:30px;padding:6px 18px;border-top:1px solid var(--border);background:var(--bg);}
+  .canvas-bot .lastact{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+  .canvas-bot .lastact::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);flex:none;}
+  .canvas-bot .lastact b{color:var(--read);font-weight:400;}
+  .legend-inline{margin-left:auto;display:flex;gap:13px;font-size:9px;letter-spacing:.05em;color:var(--dim);white-space:nowrap;}
+  .legend-inline b{color:var(--read);font-weight:400;}
+
+  /* graph surface — flat matte, no stars/glow (DESIGN: work surface); pans inside the canvas */
+  .graph{position:relative;overflow:auto;background:var(--graph);}
+  .graphspace{position:relative;width:1140px;height:600px;margin:0 auto;}
+  .graphspace svg.edges{position:absolute;inset:0;width:100%;height:100%;}
+  .edge{stroke:var(--border2);stroke-width:1.5;fill:none;}
+  .edge.live{stroke:var(--tealb);stroke-dasharray:7 9;animation:march 1.1s linear infinite;}
+  @keyframes march{to{stroke-dashoffset:-32;}}
+
+  .node{position:absolute;width:192px;border-radius:var(--r-md);border:1px solid var(--border);background:var(--surface);padding:10px 12px;transition:border-color var(--dur-fast),transform var(--dur-fast);cursor:pointer;}
+  .node:hover{border-color:var(--tealsoft);transform:translateY(-1px);}
+  .node .nhead{display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.14em;color:var(--dim);margin-bottom:6px;}
+  .node .glyph{width:18px;height:18px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;flex:none;}
+  .node .ntitle{font-size:11px;letter-spacing:.03em;margin-bottom:8px;color:var(--text);}
+  .node .chips{display:flex;gap:5px;flex-wrap:wrap;}
+  .node .chipx{font-size:8px;letter-spacing:.1em;padding:2px 7px;border-radius:999px;border:1px solid var(--border);color:var(--dim);}
+  .node .chipx.t{color:var(--tealb);border-color:var(--tealsoft);}
+  .node.done{opacity:.82;border-left:3px solid var(--teal);}
+  .node.done .glyph{background:var(--teal);color:var(--bg);}
+  .node.active{border:1.5px solid var(--tealb);background:var(--tealghost);animation:nodepulse 2.2s ease-in-out infinite;}
+  .node.active .glyph{border:1.5px solid var(--tealb);color:var(--tealb);}
+  @keyframes nodepulse{0%,100%{box-shadow:0 0 0 0 var(--tealghost);}50%{box-shadow:0 0 0 5px var(--tealghost);}}
+  .node.pending{border-style:dashed;}
+  .node.pending .glyph{border:1px solid var(--ghost);color:var(--dim);}
+  .node.pending .ntitle{color:var(--dim);}
+  .node.warn .glyph{border:1px solid var(--text);color:var(--text);}
+  .node.fail{background:var(--text);border-color:var(--text);}
+  .node.fail .nhead,.node.fail .ntitle{color:var(--bg);}
+  .node.fail .glyph{background:var(--bg);color:var(--text);font-weight:700;}
+  .node.fail .chipx{color:var(--bg);border-color:rgba(0,0,0,.3);}
+  .capsule{position:absolute;display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:999px;border:1px solid var(--tealsoft);background:var(--surface);font-size:10px;letter-spacing:.12em;cursor:pointer;}
+  .capsule .cg{color:var(--tealb);}.capsule .cc{color:var(--dim);}
+
+  /* tab placeholder (PROJECT/APP/KNOWLEDGE — filled in detail pass) */
+  .tabhost{display:none;position:absolute;inset:0;align-items:center;justify-content:center;background:var(--graph);}
+  .tabhost .ph{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;color:var(--dim);}
+  .tabhost .ph .pg{width:46px;height:46px;border:1px dashed var(--border2);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;color:var(--ghost);}
+  .tabhost .ph h2{font-family:var(--disp);font-size:18px;font-weight:500;letter-spacing:.04em;color:var(--read);}
+  .tabhost .ph p{font-size:11px;letter-spacing:.04em;max-width:340px;line-height:1.6;}
+
+  /* ─────────────── CHAT (right, resizable) ─────────────── */
+  .chat{position:relative;display:flex;flex-direction:column;min-width:0;border-left:1px solid var(--border);background:var(--panel);}
+  /* drag handle on the chat's left edge */
+  .resizer{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:18;display:flex;justify-content:center;}
+  .resizer::before{content:"";width:1px;height:100%;background:transparent;transition:background var(--dur-fast);}
+  .resizer:hover::before,.resizer.drag::before{background:var(--tealsoft);}
+  .chat-head{display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid var(--border);}
+  .chat-head .ct{font-size:10px;letter-spacing:.18em;color:var(--read);}
+  .chat-head .cw{font-size:8.5px;letter-spacing:.06em;color:var(--ghost);}
+  .chat-head .model{margin-left:auto;font-size:9px;letter-spacing:.1em;color:var(--dim);border:1px solid var(--border);border-radius:999px;padding:3px 9px;}
+  .chat-head .model b{color:var(--tealb);font-weight:500;}
+  /* normal block flow (NOT flex) so message text wraps reliably */
+  .chat-log{flex:1;overflow-y:auto;padding:16px 15px;}
+  .chat-log::-webkit-scrollbar{width:8px;}.chat-log::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px;}
+  .msg{font-size:12px;line-height:1.55;}
+  .msg + .msg{margin-top:14px;}
+  .msg.user{margin-left:auto;width:fit-content;max-width:84%;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md) var(--r-md) 2px var(--r-md);padding:9px 12px;color:var(--text);}
+  .msg.elai{max-width:92%;}
+  .msg.elai .who{font-size:8px;letter-spacing:.2em;color:var(--dim);margin-bottom:5px;display:flex;align-items:center;gap:6px;}
+  .msg.elai .who::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);}
+  .msg.elai .mtext{color:var(--read);}
+  /* front-door style ELAI cards (ACK / notice / RESULT) */
+  .card{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);padding:10px 12px;margin-top:8px;}
+  .card .ct{font-size:8px;letter-spacing:.18em;color:var(--dim);margin-bottom:6px;display:flex;align-items:center;gap:7px;}
+  .card .ct .dot{width:6px;height:6px;border-radius:50%;background:var(--tealb);}
+  .card .ct.exec .dot{animation:segpulse 1.6s ease-in-out infinite;}
+  .card .line{font-size:11px;color:var(--text);}
+  .card .deeplink{margin-top:8px;font-size:10px;letter-spacing:.04em;color:var(--tealb);cursor:pointer;display:inline-flex;align-items:center;gap:5px;}
+  .card .deeplink:hover{color:var(--text);}
+  .chat-input{padding:12px 15px;border-top:1px solid var(--border);}
+  /* contained input box with a teal focus ring (Claude-Code style) */
+  .input-box{display:flex;align-items:flex-end;gap:6px;background:var(--sink);border:1px solid var(--border2);border-radius:var(--r-md);padding:7px 7px 7px 11px;transition:border-color var(--dur-fast),box-shadow var(--dur-fast);}
+  .input-box:focus-within{border-color:var(--teal);box-shadow:0 0 0 1px var(--tealsoft);}
+  .input-box textarea{flex:1;resize:none;height:30px;min-height:30px;background:none;border:0;outline:none;padding:5px 0;font-family:var(--mono);font-size:12px;line-height:1.4;color:var(--text);}
+  .input-box textarea::placeholder{color:var(--dim);}
+  .attach,.send{appearance:none;cursor:pointer;height:30px;width:30px;flex:none;background:transparent;border:0;border-radius:var(--r-sm);color:var(--dim);display:flex;align-items:center;justify-content:center;transition:color var(--dur-fast),background var(--dur-fast);}
+  .attach:hover{color:var(--read);background:var(--tealghost);}
+  .send{color:var(--read);}
+  .send:hover{color:var(--tealb);background:var(--tealghost);}
+  /* live usage meter (J-28/29 concept) */
+  .usage{padding:9px 15px 11px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px;}
+  .usage .urow{display:flex;align-items:center;justify-content:space-between;font-size:9px;letter-spacing:.08em;color:var(--dim);}
+  .usage .urow b{color:var(--read);font-weight:400;}
+  .ubar{height:4px;border-radius:2px;background:var(--sink);overflow:hidden;display:flex;}
+  .ubar i{display:block;height:100%;}
+  .ubar .used{width:21%;background:var(--teal-deep);}
+  .ubar .cache{width:6%;background:var(--tealb);}
+
+  /* ─────────────── STATUSBAR ─────────────── */
+  .statusbar{display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 calc(var(--rail) + 8px);font-size:9px;letter-spacing:.12em;color:var(--dim);border-top:1px solid var(--border);background:var(--panel);}
+  .statusbar .fsm{display:inline-flex;align-items:center;gap:7px;}
+  .statusbar .fsm .dot{width:6px;height:6px;border-radius:50%;background:var(--tealb);animation:segpulse 1.6s ease-in-out infinite;}
+  .statusbar .right span+span{margin-left:14px;}
+  .statusbar .ok{color:var(--tealb);}.statusbar .fa{color:var(--text);}
+
+  /* ─────────────── LEFT DRAWERS (slide left-to-right from the rail) ─────────────── */
+  .drawer{position:absolute;top:0;bottom:0;left:var(--rail);width:var(--drawer);background:var(--panel);border-right:1px solid var(--border2);z-index:25;
+    transform:translateX(-100%);opacity:0;pointer-events:none;transition:transform var(--dur) var(--ease-out),opacity var(--dur) var(--ease-out);
+    padding:16px 16px 18px;overflow-y:auto;}
+  .drawer.open{transform:translateX(0);opacity:1;pointer-events:auto;box-shadow:18px 0 46px rgba(0,0,0,.45);}
+  .drawer .dh{font-size:9px;letter-spacing:.22em;color:var(--read);display:flex;align-items:center;gap:7px;margin-bottom:14px;}
+  .drawer .dh::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);}
+  .drawer .dh .x{margin-left:auto;cursor:pointer;color:var(--dim);font-size:13px;}
+  .drawer .dh .x:hover{color:var(--text);}
+  /* file tree */
+  .ftree{font-size:11px;line-height:2;color:var(--dim);}
+  .ftree .row{padding:1px 6px;border-radius:4px;cursor:pointer;white-space:nowrap;}
+  .ftree .row:hover{background:var(--tealfaint);color:var(--read);}
+  .ftree .dir{color:var(--text);}
+  .ftree .hot{color:var(--tealb);}
+  .ftree .ind{padding-left:16px;}.ftree .ind2{padding-left:32px;}
+  /* generic drawer placeholder (filled in detail pass) */
+  .dnote{font-size:10.5px;line-height:1.7;color:var(--dim);border:1px dashed var(--border2);border-radius:var(--r-md);padding:14px;background:var(--sink);}
+  .dnote b{color:var(--read);font-weight:500;}
+  .dlist{margin-top:12px;display:flex;flex-direction:column;gap:7px;}
+  .dlist .di{font-size:10.5px;color:var(--read);border:1px solid var(--border);border-radius:var(--r-sm);padding:9px 11px;display:flex;justify-content:space-between;align-items:center;}
+  .dlist .di .k{font-size:8.5px;color:var(--ghost);letter-spacing:.1em;}
+
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.42);opacity:0;pointer-events:none;transition:opacity var(--dur);z-index:20;}
+  .scrim.on{opacity:1;pointer-events:auto;}
+
+  /* ─────────────── SETTINGS MODAL ─────────────── */
+  .modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:60;opacity:0;pointer-events:none;transition:opacity var(--dur);}
+  .modal.open{opacity:1;pointer-events:auto;}
+  .modal .card2{width:560px;max-width:92vw;max-height:80vh;overflow-y:auto;background:var(--panel);border:1px solid var(--border2);border-radius:var(--r-lg);box-shadow:0 24px 70px rgba(0,0,0,.55);}
+  .modal .mh{display:flex;align-items:center;gap:9px;padding:16px 20px;border-bottom:1px solid var(--border);}
+  .modal .mh h2{font-family:var(--disp);font-size:15px;font-weight:600;letter-spacing:.04em;color:var(--text);}
+  .modal .mh .x{margin-left:auto;cursor:pointer;color:var(--dim);font-size:16px;}
+  .modal .mh .x:hover{color:var(--text);}
+  .modal .mbody{padding:18px 20px;}
+  .modal .mnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;}
+  .modal .mnav button{appearance:none;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 12px;cursor:pointer;transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .modal .mnav button.on{color:var(--tealb);border-color:var(--tealsoft);background:var(--tealghost);}
+  .modal .mnav button:hover{color:var(--read);}
+
+  /* ══════════════════════════════════════════════════════════════════════════════
+     KNOWLEDGE TAB (scoped .kn-* — never touches shared :root / shared component classes)
+     ══════════════════════════════════════════════════════════════════════════════ */
+
+  /* the knowledge view replaces the .graph child of .canvas-pane: a scroll surface holding the panels */
+  .kn-scroll{position:relative;overflow:auto;background:var(--graph);}
+  .kn-scroll::-webkit-scrollbar{width:9px;height:9px;}
+  .kn-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px;}
+  /* asymmetric two-column rhythm (NOT equal thirds): wide facts column + narrow rail */
+  .kn-wrap{display:grid;grid-template-columns:1.55fr 1fr;gap:22px;padding:18px 22px 30px;align-items:start;min-width:760px;}
+  .kn-col{display:flex;flex-direction:column;gap:18px;min-width:0;}
+
+  /* section header — the factory dot-label */
+  .kn-sec{display:flex;align-items:center;gap:9px;margin-bottom:2px;}
+  .kn-sec .lbl{font-size:9px;letter-spacing:.22em;color:var(--dim);display:flex;align-items:center;gap:8px;}
+  .kn-sec .lbl::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);flex:none;}
+  .kn-sec .meta{margin-left:auto;font-size:9px;letter-spacing:.1em;color:var(--ghost);white-space:nowrap;}
+  .kn-sec .meta b{color:var(--read);font-weight:400;}
+
+  /* a panel card on the work surface */
+  .kn-panel{border:1px solid var(--border);border-radius:var(--r-md);background:var(--panel);padding:14px 15px;display:flex;flex-direction:column;gap:13px;}
+
+  /* ── MEMORY FACTS rows ── */
+  .kn-facts{display:flex;flex-direction:column;gap:9px;}
+  .kn-fact{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);padding:11px 13px;transition:border-color var(--dur-fast),transform var(--dur-fast);}
+  .kn-fact:hover{border-color:var(--tealsoft);transform:translateY(-1px);}
+  .kn-fact .fhead{display:flex;align-items:center;gap:9px;margin-bottom:7px;}
+  /* tier chip — Tier-A = filled teal-deep (code-grounded), Tier-B = teal outline (preference) */
+  .kn-tier{font-size:8px;letter-spacing:.14em;font-weight:500;padding:2px 8px;border-radius:var(--r-sm);flex:none;}
+  .kn-tier.a{background:var(--teal-deep);color:var(--text);}
+  .kn-tier.b{border:1px solid var(--tealsoft);color:var(--tealb);}
+  .kn-fact .ftype{font-size:8.5px;letter-spacing:.13em;color:var(--dim);text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .kn-fact .fact-id{margin-left:auto;font-size:8px;letter-spacing:.06em;color:var(--ghost);white-space:nowrap;}
+  .kn-fact .fbody{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.5;margin-bottom:9px;}
+  .kn-fact .fbody .fkey{color:var(--read);white-space:nowrap;}
+  .kn-fact .fbody .farrow{color:var(--ghost);flex:none;}
+  .kn-fact .fbody .fval{color:var(--text);word-break:break-word;}
+  .kn-fact .fbody .fval.code{font-feature-settings:"liga" 0;}
+  /* trust bar — fill measured against the threshold tick */
+  .kn-trust{display:flex;align-items:center;gap:9px;margin-bottom:9px;}
+  .kn-trust .tlab{font-size:8px;letter-spacing:.1em;color:var(--dim);white-space:nowrap;}
+  .kn-trustbar{position:relative;flex:1;height:5px;border-radius:3px;background:var(--sink);overflow:hidden;}
+  .kn-trustbar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--teal-deep);}
+  .kn-trustbar .thr{position:absolute;top:-2px;bottom:-2px;width:1px;background:var(--text);}
+  .kn-trustbar.low i{background:var(--text);}             /* below threshold -> mono inversion fill, no foreign hue */
+  .kn-trust .tnum{font-size:9px;letter-spacing:.04em;color:var(--read);white-space:nowrap;font-variant-numeric:tabular-nums;}
+  .kn-trust .tnum.low{color:var(--text);}
+  /* provenance + decay + state chips */
+  .kn-fchips{display:flex;flex-wrap:wrap;gap:5px;align-items:center;}
+  .kn-chip{font-size:8px;letter-spacing:.08em;padding:2px 7px;border-radius:999px;border:1px solid var(--border);color:var(--dim);white-space:nowrap;display:inline-flex;align-items:center;gap:5px;}
+  .kn-chip.ev{color:var(--read);}                         /* evidence pointer */
+  .kn-chip.ev::before{content:"";width:4px;height:4px;border-radius:50%;background:var(--teal-deep);}
+  .kn-chip.decay{color:var(--dim);}
+  .kn-chip.decay i{display:inline-block;width:22px;height:3px;border-radius:2px;background:linear-gradient(90deg,var(--teal-deep),var(--ghost));}
+  .kn-chip.stale{border-color:var(--text);color:var(--text);}   /* near-expiry -> shape+text, warn language */
+  .kn-chip.stale::before{content:"\25B2";font-size:7px;}
+  /* per-row actions */
+  .kn-fact .factions{margin-left:auto;display:flex;gap:4px;}
+  .kn-abtn{appearance:none;cursor:pointer;font-family:var(--mono);font-size:8px;letter-spacing:.1em;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);padding:3px 8px;transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .kn-abtn:hover{color:var(--tealb);border-color:var(--tealsoft);}
+  .kn-abtn.pinned{color:var(--tealb);border-color:var(--tealsoft);background:var(--tealghost);}
+
+  /* contradiction callout — flagged pair, warn/inversion language */
+  .kn-contra{border:1px solid var(--text);border-radius:var(--r-md);background:var(--surface);padding:11px 13px;}
+  .kn-contra .ch{display:flex;align-items:center;gap:8px;font-size:8.5px;letter-spacing:.16em;color:var(--text);margin-bottom:9px;}
+  .kn-contra .ch .gx{width:16px;height:16px;border-radius:4px;border:1px solid var(--text);display:flex;align-items:center;justify-content:center;font-size:9px;}
+  .kn-contra .cpair{display:flex;align-items:center;gap:10px;font-size:10.5px;color:var(--read);flex-wrap:wrap;}
+  .kn-contra .cpair .cf{border:1px solid var(--border);border-radius:var(--r-sm);padding:4px 8px;color:var(--text);background:var(--panel);}
+  .kn-contra .cpair .ckind{font-size:8px;letter-spacing:.12em;color:var(--dim);background:var(--text);color:var(--bg);padding:1px 7px;border-radius:3px;}
+  .kn-contra + .kn-contra{margin-top:8px;}
+
+  /* superseded / history subsection */
+  .kn-hist{border-top:1px solid var(--border);padding-top:11px;display:flex;flex-direction:column;gap:7px;}
+  .kn-hist .hlab{font-size:8px;letter-spacing:.18em;color:var(--ghost);}
+  .kn-histrow{display:flex;align-items:center;gap:9px;font-size:10px;color:var(--dim);opacity:.82;}
+  .kn-histrow .hk{color:var(--read);}
+  .kn-histrow .harrow{color:var(--ghost);}
+  .kn-histrow .hsup{font-size:8px;letter-spacing:.06em;color:var(--ghost);margin-left:auto;white-space:nowrap;}
+
+  /* ── MEMORY NOTES (memGPT) ── */
+  .kn-core{border:1px solid var(--tealsoft);border-radius:var(--r-md);background:var(--tealfaint);padding:13px 14px;}
+  .kn-core .corehead{display:flex;align-items:center;gap:9px;font-size:8.5px;letter-spacing:.16em;color:var(--read);margin-bottom:10px;}
+  .kn-core .corehead .sleep{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:8px;letter-spacing:.1em;color:var(--tealb);}
+  .kn-core .corehead .sleep .pip{width:6px;height:6px;border-radius:50%;background:var(--tealb);animation:segpulse 1.6s ease-in-out infinite;}
+  .kn-core .corehead .sleep.idle{color:var(--dim);}
+  .kn-core .corehead .sleep.idle .pip{background:var(--ghost);animation:none;}
+  .kn-core .coretext{font-size:11.5px;line-height:1.6;color:var(--text);white-space:pre-line;}
+  .kn-core .coremeta{display:flex;gap:16px;margin-top:11px;font-size:8.5px;letter-spacing:.08em;color:var(--dim);}
+  .kn-core .coremeta b{color:var(--read);font-weight:400;font-variant-numeric:tabular-nums;}
+
+  .kn-notes{display:flex;flex-direction:column;gap:8px;}
+  .kn-note{border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);padding:10px 12px;transition:border-color var(--dur-fast);}
+  .kn-note:hover{border-color:var(--tealsoft);}
+  .kn-note .nrow{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+  .kn-scope{font-size:7.5px;letter-spacing:.12em;padding:2px 7px;border-radius:999px;border:1px solid var(--border);color:var(--dim);text-transform:uppercase;flex:none;}
+  .kn-scope.project{color:var(--tealb);border-color:var(--tealsoft);}
+  .kn-scope.global{color:var(--read);border-color:var(--border2);}
+  .kn-note .nid{font-size:8px;letter-spacing:.05em;color:var(--ghost);}
+  .kn-note .nlinks{margin-left:auto;font-size:8px;letter-spacing:.06em;color:var(--dim);display:inline-flex;align-items:center;gap:5px;}
+  .kn-note .nlinks::before{content:"";width:4px;height:4px;border-radius:50%;background:var(--teal-deep);}
+  .kn-note .nbody{font-size:11px;line-height:1.5;color:var(--read);margin-bottom:7px;}
+  .kn-note .ntags{display:flex;flex-wrap:wrap;gap:5px;}
+  .kn-note .ntag{font-size:7.5px;letter-spacing:.06em;color:var(--dim);background:var(--sink);border-radius:3px;padding:2px 6px;}
+
+  /* ── RAG CASCADE (query trace) — compact instrument strip ── */
+  .kn-qtrace{display:flex;flex-direction:column;gap:10px;}
+  .kn-qrow{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);padding:10px 12px;}
+  .kn-qrow .qtop{display:flex;align-items:center;gap:9px;margin-bottom:9px;}
+  .kn-qrow .qid{font-size:9px;letter-spacing:.06em;color:var(--read);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .kn-qtier{font-size:7.5px;letter-spacing:.14em;font-weight:500;padding:2px 8px;border-radius:var(--r-sm);flex:none;}
+  .kn-qtier.fast{border:1px solid var(--border2);color:var(--dim);}
+  .kn-qtier.standard{border:1px solid var(--tealsoft);color:var(--tealb);}
+  .kn-qtier.deep{background:var(--teal-deep);color:var(--text);}
+  .kn-qrow .qtot{margin-left:auto;font-size:9px;letter-spacing:.04em;color:var(--read);font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .kn-qrow .qtot b{color:var(--tealb);font-weight:500;}
+  /* the pipeline stages — segmented, latency-weighted */
+  .kn-stages{display:flex;align-items:stretch;gap:3px;}
+  .kn-stage{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:4px;}
+  .kn-stage .sbar{height:4px;border-radius:2px;background:var(--teal-deep);opacity:.85;}
+  .kn-stage.skip .sbar{background:var(--ghost);opacity:.5;}
+  .kn-stage.hot .sbar{background:var(--tealb);}
+  .kn-stage .sname{font-size:7px;letter-spacing:.04em;color:var(--dim);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .kn-stage .sms{font-size:7.5px;letter-spacing:.02em;color:var(--read);text-align:center;font-variant-numeric:tabular-nums;}
+  .kn-stage.skip .sname,.kn-stage.skip .sms{color:var(--ghost);}
+
+  /* ── COSMOS ARTIFACTS + STALENESS ── */
+  .kn-arts{display:flex;flex-wrap:wrap;gap:7px;}
+  .kn-art{font-size:9.5px;letter-spacing:.03em;color:var(--read);border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);padding:6px 10px;display:inline-flex;align-items:center;gap:7px;transition:border-color var(--dur-fast);}
+  .kn-art:hover{border-color:var(--tealsoft);}
+  .kn-art::before{content:"";width:5px;height:5px;border-radius:1px;background:var(--teal-deep);flex:none;}
+  .kn-art.flagged{border-color:var(--text);color:var(--text);}
+  .kn-art.flagged::before{background:var(--text);}
+  .kn-stale{display:flex;flex-direction:column;gap:7px;}
+  .kn-stalerow{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);padding:8px 11px;font-size:9.5px;}
+  .kn-stalerow.q{border-color:var(--text);}
+  .kn-stalerow .sfid{color:var(--read);white-space:nowrap;}
+  .kn-stalerow .sratio{display:inline-flex;align-items:center;gap:7px;color:var(--dim);font-variant-numeric:tabular-nums;}
+  .kn-staleval{position:relative;width:50px;height:4px;border-radius:2px;background:var(--sink);overflow:hidden;}
+  .kn-staleval i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--teal-deep);}
+  .kn-staleval i.over{background:var(--text);}
+  .kn-stalerow .sdemo{margin-left:auto;font-size:8px;letter-spacing:.06em;color:var(--dim);white-space:nowrap;}
+  .kn-stalerow .sdemo b{color:var(--read);font-weight:400;}
+  .kn-stalerow .qchip{font-size:7.5px;letter-spacing:.12em;color:var(--bg);background:var(--text);padding:1px 7px;border-radius:3px;}
+
+  /* ── RESEARCH ORCHESTRATOR — uses shared .node/.edge on a contained canvas ── */
+  .kn-research{position:relative;border:1px solid var(--border);border-radius:var(--r-md);background:var(--graph);overflow:auto;}
+  .kn-research .kn-rspace{position:relative;width:980px;height:430px;}
+  .kn-research svg.edges{position:absolute;inset:0;width:100%;height:100%;}
+  /* the E-48 contradiction edge between two conflicting sources — mono inversion-adjacent: white, no foreign hue */
+  .kn-research .edge.contra{stroke:var(--text);stroke-width:1.5;stroke-dasharray:2 4;}
+  .kn-research .node{width:168px;}
+  .kn-research .node .ntitle{font-size:10.5px;}
+  .kn-clabel{position:absolute;font-size:7.5px;letter-spacing:.1em;color:var(--text);background:var(--text);color:var(--bg);padding:1px 7px;border-radius:3px;white-space:nowrap;}
+
+  /* ══════════ STATE VARIANTS (switched by data-state on .kn-scroll) ══════════ */
+  /* default state = POPULATED (no attribute / data-state="populated") -> show .kn-wrap */
+  .kn-stateview{display:none;position:absolute;inset:0;padding:0;overflow:auto;}
+  .kn-stateview .inner{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:40px;}
+  .kn-stateview .sg{width:50px;height:50px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;}
+  .kn-stateview h2{font-family:var(--disp);font-size:17px;font-weight:500;letter-spacing:.03em;color:var(--read);}
+  .kn-stateview p{font-size:11px;letter-spacing:.03em;color:var(--dim);max-width:360px;line-height:1.65;}
+  .kn-stateview .act{margin-top:6px;appearance:none;cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--bg);background:var(--tealb);border:0;border-radius:var(--r-sm);padding:9px 18px;transition:background var(--dur-fast);}
+  .kn-stateview .act:hover{background:var(--teal);}
+  /* empty: focal next-action, teal outline glyph */
+  .kn-scroll[data-state="empty"] .kn-wrap,
+  .kn-scroll[data-state="loading"] .kn-wrap,
+  .kn-scroll[data-state="disconnected"] .kn-wrap,
+  .kn-scroll[data-state="error"] .kn-wrap{display:none;}
+  .kn-scroll[data-state="empty"] #knEmpty,
+  .kn-scroll[data-state="loading"] #knLoading,
+  .kn-scroll[data-state="disconnected"] #knDisconnected,
+  .kn-scroll[data-state="error"] #knError{display:flex;}
+  #knEmpty .sg{border:1px dashed var(--tealsoft);color:var(--tealb);}
+  #knDisconnected .sg{border:1px dashed var(--border2);color:var(--dim);}
+  /* error + disconnected obey state language: mono-inversion glyph, never red */
+  #knError .sg{background:var(--text);color:var(--bg);}
+  #knError .act{background:var(--text);color:var(--bg);}
+  #knError .act:hover{background:var(--read);}
+  /* loading skeleton */
+  .kn-skel-wrap{display:grid;grid-template-columns:1.55fr 1fr;gap:22px;padding:18px 22px;width:100%;min-width:760px;}
+  .kn-skel{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);overflow:hidden;}
+  .kn-skel .bar{height:11px;margin:12px;border-radius:3px;background:linear-gradient(90deg,var(--raised),var(--sink),var(--raised));background-size:200% 100%;animation:knshimmer 1.3s linear infinite;}
+  .kn-skel .bar.s{width:40%;}.kn-skel .bar.m{width:66%;}.kn-skel .bar.l{width:88%;}
+  @keyframes knshimmer{to{background-position:-200% 0;}}
+
+  /* dev STATE switcher in the statusbar (presentation aid, like select-terminal-styles) */
+  .kn-stateswitch{display:inline-flex;align-items:center;gap:0;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;}
+  .kn-stateswitch .sl{font-size:7.5px;letter-spacing:.12em;color:var(--ghost);padding:0 8px;}
+  .kn-stateswitch button{appearance:none;cursor:pointer;font-family:var(--mono);font-size:8px;letter-spacing:.08em;color:var(--dim);background:transparent;border:0;border-left:1px solid var(--border);padding:4px 9px;transition:color var(--dur-fast),background var(--dur-fast);}
+  .kn-stateswitch button:hover{color:var(--read);background:var(--tealfaint);}
+  .kn-stateswitch button.on{color:var(--tealb);background:var(--tealghost);}
+
+  @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important;}}
+</style>
+</head>
+<body>
+  <main class="app">
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div class="brand">ELAI <span class="sep">·</span> <span class="title">.elai_cc</span></div>
+      <div class="tabs" role="group" aria-label="View">
+        <button class="tab" data-tab="progress" type="button">PROGRESS</button>
+        <button class="tab" data-tab="project" type="button">PROJECT</button>
+        <button class="tab" data-tab="app" type="button">APP</button>
+        <button class="tab on" data-tab="knowledge" type="button">KNOWLEDGE</button>
+      </div>
+      <div class="tb-right">
+        <div class="runbar">RUNNING
+          <span class="segbar">
+            <span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span>
+            <span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg a"></span>
+            <span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span>
+          </span>
+          <span class="frac">9/14</span>
+        </div>
+        <button class="icon-toggle" id="themeToggle" type="button" title="Toggle light / dark" aria-label="Toggle light / dark mode">
+          <svg class="ico ico-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/>
+            <line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/>
+            <line x1="5.2" y1="5.2" x2="6.9" y2="6.9"/><line x1="17.1" y1="17.1" x2="18.8" y2="18.8"/>
+            <line x1="18.8" y1="5.2" x2="17.1" y2="6.9"/><line x1="6.9" y1="17.1" x2="5.2" y2="18.8"/>
+          </svg>
+          <svg class="ico ico-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 14.6A8 8 0 0 1 9.4 4 7 7 0 1 0 20 14.6Z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- BODY: rail | canvas | chat -->
+    <div class="body">
+      <!-- icon rail -->
+      <nav class="rail" aria-label="Workspace">
+        <button class="rbtn" data-drawer="files" data-label="Files" type="button" aria-label="Files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="intel" data-label="Project intel" type="button" aria-label="Project intelligence">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="13" cy="18" r="2.4"/><path d="M8 8.5 11 16M16 8 13.6 15.6M8.2 6.6 15.6 6.2"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="sessions" data-label="Sessions / branches" type="button" aria-label="Sessions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M6 7.2v9.6M6 12h6a4 4 0 0 0 4-2.4"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="receipts" data-label="Receipts / RRA" type="button" aria-label="Receipts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l3 3v15l-2.2-1.4L13.6 21l-2.2-1.4L9.2 21 7 19.6 4 21V5a2 2 0 0 1 2-2Z"/><path d="M8 8h7M8 11.5h7M8 15h4"/></svg>
+        </button>
+        <button class="rbtn on" data-drawer="monitors" data-label="Monitors" type="button" aria-label="Monitors">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h3l2.5-6 4 13 2.5-8 1.6 4H21"/></svg>
+        </button>
+        <span class="spring"></span>
+        <button class="rbtn" data-modal="settings" data-label="Settings" type="button" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6"/></svg>
+        </button>
+      </nav>
+
+      <!-- canvas pane (KNOWLEDGE view) -->
+      <section class="canvas-pane">
+        <!-- canvas TOP strip — memory store path + fact/note counts + sleep-compute status -->
+        <div class="canvas-top">
+          <div class="mission"><span class="ck">MEMORY</span>~/.elai/.elai_cc/memory.store · facts <b style="font-size:11px;color:var(--read)">128</b> · notes 41</div>
+          <div class="cright">
+            <span>TIER-A <b>74</b> · TIER-B 54</span>
+            <span class="gtl">STORE <span class="ok">attached</span> · sleep-compute <span class="ok">●</span></span>
+          </div>
+        </div>
+
+        <!-- KNOWLEDGE scroll surface (replaces the PROGRESS graph) -->
+        <div class="graph kn-scroll" id="knScroll" data-state="populated">
+
+          <!-- POPULATED layout -->
+          <div class="kn-wrap">
+
+            <!-- LEFT COLUMN: memory facts (the focal, widest column) -->
+            <div class="kn-col">
+
+              <!-- 1. MEMORY FACTS -->
+              <div>
+                <div class="kn-sec"><span class="lbl">MEMORY FACTS</span><span class="meta">get_memory_facts · scope <b>project · user</b></span></div>
+                <div class="kn-facts" style="margin-top:11px">
+
+                  <!-- Tier-A code-grounded fact, pinned, high trust -->
+                  <div class="kn-fact">
+                    <div class="fhead">
+                      <span class="kn-tier a">TIER-A</span>
+                      <span class="ftype">code_grounded · build_command</span>
+                      <span class="fact-id">fact_0c41</span>
+                    </div>
+                    <div class="fbody"><span class="fkey">workspace.test</span><span class="farrow">→</span><span class="fval code">cargo test -p orchestrator --features vibesec</span></div>
+                    <div class="kn-trust">
+                      <span class="tlab">TRUST</span>
+                      <div class="kn-trustbar"><i style="width:94%"></i><span class="thr" style="left:60%"></span></div>
+                      <span class="tnum">0.94 / 0.60</span>
+                    </div>
+                    <div class="kn-fchips">
+                      <span class="kn-chip ev">crates/orchestrator/Cargo.toml:54</span>
+                      <span class="kn-chip ev">CLAUDE.md:212</span>
+                      <span class="kn-chip decay">decay <i></i> 0.002/d</span>
+                      <div class="factions"><button class="kn-abtn pinned" type="button" title="memory_pin">PINNED</button><button class="kn-abtn" type="button" title="memory_forget">forget</button></div>
+                    </div>
+                  </div>
+
+                  <!-- Tier-A fact, high trust -->
+                  <div class="kn-fact">
+                    <div class="fhead">
+                      <span class="kn-tier a">TIER-A</span>
+                      <span class="ftype">code_grounded · dependency_pin</span>
+                      <span class="fact-id">fact_1a7e</span>
+                    </div>
+                    <div class="fbody"><span class="fkey">hash.algorithm</span><span class="farrow">→</span><span class="fval">blake3 (never blake2/sha2 for non-RFC uses)</span></div>
+                    <div class="kn-trust">
+                      <span class="tlab">TRUST</span>
+                      <div class="kn-trustbar"><i style="width:89%"></i><span class="thr" style="left:60%"></span></div>
+                      <span class="tnum">0.89 / 0.60</span>
+                    </div>
+                    <div class="kn-fchips">
+                      <span class="kn-chip ev">crates/knowledge/src/bm25.rs</span>
+                      <span class="kn-chip ev">9 call-sites</span>
+                      <span class="kn-chip decay">decay <i></i> 0.004/d</span>
+                      <div class="factions"><button class="kn-abtn" type="button" title="memory_pin">pin</button><button class="kn-abtn" type="button" title="memory_forget">forget</button></div>
+                    </div>
+                  </div>
+
+                  <!-- Tier-B preference fact, mid trust, near-expiry STALE -->
+                  <div class="kn-fact">
+                    <div class="fhead">
+                      <span class="kn-tier b">TIER-B</span>
+                      <span class="ftype">preference · commit_voice</span>
+                      <span class="fact-id">fact_2f90</span>
+                    </div>
+                    <div class="fbody"><span class="fkey">commit.style</span><span class="farrow">→</span><span class="fval">lowercase i, no em-dashes, no robotic prefixes</span></div>
+                    <div class="kn-trust">
+                      <span class="tlab">TRUST</span>
+                      <div class="kn-trustbar"><i style="width:71%"></i><span class="thr" style="left:50%"></span></div>
+                      <span class="tnum">0.71 / 0.50</span>
+                    </div>
+                    <div class="kn-fchips">
+                      <span class="kn-chip ev">.claude/rules/commit-cadence.md</span>
+                      <span class="kn-chip decay">decay <i></i> 0.011/d</span>
+                      <span class="kn-chip stale">valid_to 4d · staleness 0.81</span>
+                      <div class="factions"><button class="kn-abtn" type="button" title="memory_pin">pin</button><button class="kn-abtn" type="button" title="memory_forget">forget</button></div>
+                    </div>
+                  </div>
+
+                  <!-- Tier-B preference fact, low trust (below threshold -> mono inversion fill) -->
+                  <div class="kn-fact">
+                    <div class="fhead">
+                      <span class="kn-tier b">TIER-B</span>
+                      <span class="ftype">preference · model_choice</span>
+                      <span class="fact-id">fact_3b22</span>
+                    </div>
+                    <div class="fbody"><span class="fkey">local.model</span><span class="farrow">→</span><span class="fval">Qwen2.5-Coder-7B-Instruct-abliterated (rejected Gemma-4)</span></div>
+                    <div class="kn-trust">
+                      <span class="tlab">TRUST</span>
+                      <div class="kn-trustbar low"><i style="width:43%"></i><span class="thr" style="left:55%"></span></div>
+                      <span class="tnum low">0.43 / 0.55 ▲</span>
+                    </div>
+                    <div class="kn-fchips">
+                      <span class="kn-chip ev">metrics/baseline_findings.md</span>
+                      <span class="kn-chip decay">decay <i></i> 0.020/d</span>
+                      <div class="factions"><button class="kn-abtn" type="button" title="memory_pin">pin</button><button class="kn-abtn" type="button" title="memory_forget">forget</button></div>
+                    </div>
+                  </div>
+
+                </div>
+
+                <!-- contradiction callout (get_semantic_contradictions) -->
+                <div class="kn-contra" style="margin-top:11px">
+                  <div class="ch"><span class="gx">▲</span>SEMANTIC CONTRADICTION · 1 unresolved pair</div>
+                  <div class="cpair">
+                    <span class="cf">fact_3b22 · local.model = 7B</span>
+                    <span class="ckind">value_conflict</span>
+                    <span class="cf">fact_5d18 · local.model = 3B</span>
+                  </div>
+                </div>
+
+                <!-- superseded / history subsection (get_memory_facts_with_history) -->
+                <div class="kn-hist" style="margin-top:13px">
+                  <div class="hlab">SUPERSEDED · 2 (history_facts)</div>
+                  <div class="kn-histrow"><span class="hk">workspace.test</span><span class="harrow">→</span><span>cargo test --all (whole-workspace)</span><span class="hsup">superseded_by fact_0c41</span></div>
+                  <div class="kn-histrow"><span class="hk">hash.algorithm</span><span class="harrow">→</span><span>sha2 (legacy)</span><span class="hsup">superseded_by fact_1a7e</span></div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- RIGHT COLUMN: notes · cascade · artifacts · staleness (the narrow rail) -->
+            <div class="kn-col">
+
+              <!-- 2. MEMORY NOTES (memGPT) -->
+              <div>
+                <div class="kn-sec"><span class="lbl">MEMORY NOTES</span><span class="meta">get_memory_notes · get_chat_memory_state</span></div>
+                <div class="kn-core" style="margin-top:11px">
+                  <div class="corehead">CORE BLOCK
+                    <span class="sleep"><span class="pip"></span>sleep-compute active</span>
+                  </div>
+                  <div class="coretext">Example workspace profile. Cloud and local model lanes; independent verification before completion. Compact interface with one teal accent.</div>
+                  <div class="coremeta">
+                    <span>bytes <b>412</b> / 2048</span>
+                    <span>last reflection <b>3m</b> ago</span>
+                    <span>recent notes <b>6</b></span>
+                  </div>
+                </div>
+                <div class="kn-notes" style="margin-top:9px">
+                  <div class="kn-note">
+                    <div class="nrow"><span class="kn-scope project">project</span><span class="nid">note_7c1a</span><span class="nlinks">4 links</span></div>
+                    <div class="nbody">Wire-dark gate is off-agent: the auditor re-runs production_caller_check.py, never the executor.</div>
+                    <div class="ntags"><span class="ntag">wiring</span><span class="ntag">audit</span><span class="ntag">D-030</span></div>
+                  </div>
+                  <div class="kn-note">
+                    <div class="nrow"><span class="kn-scope global">global</span><span class="nid">note_4e83</span><span class="nlinks">2 links</span></div>
+                    <div class="nbody">Anti-slopsquat: verify package name + version + publish date before any import. Never trust training memory.</div>
+                    <div class="ntags"><span class="ntag">deps</span><span class="ntag">security</span></div>
+                  </div>
+                  <div class="kn-note">
+                    <div class="nrow"><span class="kn-scope">session</span><span class="nid">note_9f02</span><span class="nlinks">1 link</span></div>
+                    <div class="nbody">Sidecar runs on the remote 3090 box (pythondev); never boot two model instances at once.</div>
+                    <div class="ntags"><span class="ntag">sidecar</span><span class="ntag">hardware</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 4. RETRIEVAL / RAG CASCADE (query trace) -->
+              <div>
+                <div class="kn-sec"><span class="lbl">RAG CASCADE</span><span class="meta">get_query_trace_recent · last <b>3</b></span></div>
+                <div class="kn-qtrace" style="margin-top:11px">
+
+                  <!-- DEEP query: all stages active -->
+                  <div class="kn-qrow">
+                    <div class="qtop">
+                      <span class="kn-qtier deep">DEEP</span>
+                      <span class="qid">q_8821 · "AES-GCM key rotation seam"</span>
+                      <span class="qtot"><b>312ms</b> · 18 hits</span>
+                    </div>
+                    <div class="kn-stages">
+                      <div class="kn-stage"><span class="sbar"></span><span class="sname">bm25</span><span class="sms">9ms</span></div>
+                      <div class="kn-stage"><span class="sbar"></span><span class="sname">vector</span><span class="sms">41ms</span></div>
+                      <div class="kn-stage"><span class="sbar"></span><span class="sname">pagerank</span><span class="sms">12ms</span></div>
+                      <div class="kn-stage"><span class="sbar"></span><span class="sname">catrag</span><span class="sms">73ms</span></div>
+                      <div class="kn-stage"><span class="sbar"></span><span class="sname">arag</span><span class="sms">84ms</span></div>
+                      <div class="kn-stage hot"><span class="sbar"></span><span class="sname">rerank</span><span class="sms">93ms</span></div>
+                    </div>
+                  </div>
+
+                  <!-- STANDARD query: catrag/arag skipped -->
+                  <div class="kn-qrow">
+                    <div class="qtop">
+                      <span class="kn-qtier standard">STANDARD</span>
+                      <span class="qid">q_8814 · "where is fsm transition"</span>
+                      <span class="qtot"><b>78ms</b> · 11 hits</span>
+                    </div>
+                    <div class="kn-stages">
+                      <div class="kn-stage"><span class="sbar"></span><span class="sname">bm25</span><span class="sms">8ms</span></div>
+                      <div class="kn-stage"><span class="sbar"></span><span class="sname">vector</span><span class="sms">34ms</span></div>
+                      <div class="kn-stage"><span class="sbar"></span><span class="sname">pagerank</span><span class="sms">10ms</span></div>
+                      <div class="kn-stage skip"><span class="sbar"></span><span class="sname">catrag</span><span class="sms">—</span></div>
+                      <div class="kn-stage skip"><span class="sbar"></span><span class="sname">arag</span><span class="sms">—</span></div>
+                      <div class="kn-stage hot"><span class="sbar"></span><span class="sname">rerank</span><span class="sms">26ms</span></div>
+                    </div>
+                  </div>
+
+                  <!-- FAST query: bm25 only -->
+                  <div class="kn-qrow">
+                    <div class="qtop">
+                      <span class="kn-qtier fast">FAST</span>
+                      <span class="qid">q_8809 · "ssb schema version"</span>
+                      <span class="qtot"><b>14ms</b> · 6 hits</span>
+                    </div>
+                    <div class="kn-stages">
+                      <div class="kn-stage hot"><span class="sbar"></span><span class="sname">bm25</span><span class="sms">14ms</span></div>
+                      <div class="kn-stage skip"><span class="sbar"></span><span class="sname">vector</span><span class="sms">—</span></div>
+                      <div class="kn-stage skip"><span class="sbar"></span><span class="sname">pagerank</span><span class="sms">—</span></div>
+                      <div class="kn-stage skip"><span class="sbar"></span><span class="sname">catrag</span><span class="sms">—</span></div>
+                      <div class="kn-stage skip"><span class="sbar"></span><span class="sname">arag</span><span class="sms">—</span></div>
+                      <div class="kn-stage skip"><span class="sbar"></span><span class="sname">rerank</span><span class="sms">—</span></div>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+
+              <!-- 5. COSMOS ARTIFACTS + STALENESS -->
+              <div>
+                <div class="kn-sec"><span class="lbl">COSMOS ARTIFACTS</span><span class="meta">list_artifacts · <b>6</b></span></div>
+                <div class="kn-arts" style="margin-top:11px">
+                  <span class="kn-art">tauri-v2-ipc</span>
+                  <span class="kn-art">qwen2.5-coder-card</span>
+                  <span class="kn-art">ort-2.0-rc12</span>
+                  <span class="kn-art flagged">eu-ai-act-timeline</span>
+                  <span class="kn-art">blake3-spec</span>
+                  <span class="kn-art flagged">runpod-pricing-2026</span>
+                </div>
+                <div class="kn-sec" style="margin-top:15px"><span class="lbl">STALENESS QUARANTINE</span><span class="meta">get_staleness_quarantine · <b>2</b></span></div>
+                <div class="kn-stale" style="margin-top:11px">
+                  <div class="kn-stalerow q">
+                    <span class="sfid">fact_6e11 · runpod.price</span>
+                    <span class="sratio"><span class="kn-staleval"><i class="over" style="width:100%"></i></span>1.34</span>
+                    <span class="sdemo">demoted <b>3</b> · flagged <b>2</b></span>
+                    <span class="qchip">QUARANTINED</span>
+                  </div>
+                  <div class="kn-stalerow">
+                    <span class="sfid">fact_4c08 · eu_act.date</span>
+                    <span class="sratio"><span class="kn-staleval"><i style="width:78%"></i></span>0.78</span>
+                    <span class="sdemo">demoted <b>1</b> · flagged <b>1</b></span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- 3. RESEARCH ORCHESTRATOR — full-width research tree below the two columns -->
+            <div style="grid-column:1 / -1">
+              <div class="kn-sec"><span class="lbl">RESEARCH ORCHESTRATOR</span><span class="meta">get_research_node_history · session s-7f3a · <b>SEARCH</b> active</span></div>
+              <div class="kn-research" style="margin-top:11px">
+                <div class="kn-rspace">
+                  <svg class="edges">
+                    <!-- FORMULATE -> SEARCH (two branches) -->
+                    <path class="edge live" d="M 196 196 C 236 196, 236 110, 276 110"/>
+                    <path class="edge live" d="M 196 196 C 236 196, 236 282, 276 282"/>
+                    <!-- SEARCH -> EXTRACT -->
+                    <path class="edge" d="M 444 110 C 484 110, 484 110, 524 110"/>
+                    <path class="edge" d="M 444 282 C 484 282, 484 282, 524 282"/>
+                    <!-- EXTRACT -> REFLECT -->
+                    <path class="edge" d="M 692 110 C 732 110, 732 196, 772 196"/>
+                    <path class="edge" d="M 692 282 C 732 282, 732 196, 772 196"/>
+                    <!-- E-48 CONTRADICTION edge between the two conflicting source branches -->
+                    <path class="edge contra" d="M 608 146 C 620 196, 620 196, 608 246"/>
+                  </svg>
+
+                  <!-- FORMULATE -->
+                  <div class="node done" style="left:28px;top:160px">
+                    <div class="nhead"><span class="glyph">✓</span>FORMULATE</div>
+                    <div class="ntitle">decompose: "key rotation pattern, library support"</div>
+                    <div class="chips"><span class="chipx t">3 sub-queries</span></div>
+                  </div>
+
+                  <!-- SEARCH branch A (active) -->
+                  <div class="node active" style="left:276px;top:74px">
+                    <div class="nhead"><span class="glyph">●</span>SEARCH · A</div>
+                    <div class="ntitle">searxng + arag · "AES-GCM rotation"</div>
+                    <div class="chips"><span class="chipx t">7 sources</span><span class="chipx">arag</span></div>
+                  </div>
+                  <!-- SEARCH branch B (active) -->
+                  <div class="node active" style="left:276px;top:246px">
+                    <div class="nhead"><span class="glyph">●</span>SEARCH · B</div>
+                    <div class="ntitle">code-graph · in-repo seal/open callers</div>
+                    <div class="chips"><span class="chipx t">5 sources</span><span class="chipx">bm25</span></div>
+                  </div>
+
+                  <!-- EXTRACT branch A -->
+                  <div class="node pending" style="left:524px;top:74px">
+                    <div class="nhead"><span class="glyph">○</span>EXTRACT · A</div>
+                    <div class="ntitle">cite spans, dedup claims</div>
+                    <div class="chips"><span class="chipx">queued</span></div>
+                  </div>
+                  <!-- EXTRACT branch B -->
+                  <div class="node pending" style="left:524px;top:246px">
+                    <div class="nhead"><span class="glyph">○</span>EXTRACT · B</div>
+                    <div class="ntitle">cite spans, dedup claims</div>
+                    <div class="chips"><span class="chipx">queued</span></div>
+                  </div>
+
+                  <!-- REFLECT (converge gate) -->
+                  <div class="node pending" style="left:772px;top:146px">
+                    <div class="nhead"><span class="glyph">○</span>REFLECT → CONVERGE</div>
+                    <div class="ntitle">reconcile branches, resolve conflict</div>
+                    <div class="chips"><span class="chipx">blocked · 1 contradiction</span></div>
+                  </div>
+
+                  <!-- contradiction edge label -->
+                  <div class="kn-clabel" style="left:560px;top:188px">▲ source conflict</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- ══════════ STATE VIEWS (toggled by data-state on #knScroll) ══════════ -->
+          <!-- EMPTY: focal next action, not a bare "no data" -->
+          <div class="kn-stateview" id="knEmpty">
+            <div class="inner">
+              <div class="sg"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V4Z"/><path d="M9 9h6M9 12.5h4"/></svg></div>
+              <h2>No memory yet for .elai_cc</h2>
+              <p>The memory store is attached but empty. Facts and notes accrue as ELAI works the plan, or seed it now from the project's CLAUDE.md and prior sessions.</p>
+              <button class="act" type="button">SEED FROM PROJECT →</button>
+            </div>
+          </div>
+
+          <!-- LOADING: skeleton for structured content -->
+          <div class="kn-stateview" id="knLoading">
+            <div class="kn-skel-wrap">
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div class="kn-skel"><div class="bar s"></div><div class="bar l"></div><div class="bar m"></div></div>
+                <div class="kn-skel"><div class="bar s"></div><div class="bar l"></div><div class="bar m"></div></div>
+                <div class="kn-skel"><div class="bar s"></div><div class="bar l"></div></div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div class="kn-skel"><div class="bar m"></div><div class="bar l"></div></div>
+                <div class="kn-skel"><div class="bar s"></div><div class="bar m"></div></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- DISCONNECTED: embedding sidecar down -->
+          <div class="kn-stateview" id="knDisconnected">
+            <div class="inner">
+              <div class="sg"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12 6.5 14.5a3.5 3.5 0 0 1-5-5L4 7M15 12l2.5-2.5a3.5 3.5 0 0 1 5 5L20 17"/><line x1="4" y1="4" x2="20" y2="20"/></svg></div>
+              <h2>Embedding sidecar unreachable</h2>
+              <p>BM25 lexical retrieval still answers, but vector / arag / rerank stages are dark — the sidecar at localhost:8100 is not responding. Memory facts shown are last-cached.</p>
+              <button class="act" type="button" style="background:transparent;color:var(--tealb);border:1px solid var(--tealsoft)">RETRY SIDECAR</button>
+            </div>
+          </div>
+
+          <!-- ERROR: state language = mono inversion, never red -->
+          <div class="kn-stateview" id="knError">
+            <div class="inner">
+              <div class="sg"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5h.01"/><path d="M10.3 3.9 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg></div>
+              <h2>Memory store read failed</h2>
+              <p>get_memory_facts returned an error opening ~/.elai/.elai_cc/memory.store (lock held by another session). Close the other session or force-release the store lock to recover.</p>
+              <button class="act" type="button">RELEASE LOCK &amp; RETRY</button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- canvas BOTTOM strip — retrieval cascade status + STALE count -->
+        <div class="canvas-bot">
+          <div class="lastact">RETRIEVAL: <b>last query DEEP · 312ms · 18 hits</b> · rerank loaded · cascade healthy</div>
+          <div class="legend-inline"><span><b>2</b> stale</span><span><b>1</b> quarantined</span><span><b>1</b> contradiction</span><span><b>74/128</b> Tier-A</span></div>
+        </div>
+      </section>
+
+      <!-- CHAT (right) — shared chrome, unchanged (chat = user <-> ELAI orchestrator) -->
+      <aside class="chat" aria-label="Chat">
+        <div class="resizer" id="chatResizer" title="Drag to resize chat"></div>
+        <div class="chat-head">
+          <span class="ct">CHAT</span>
+          <span class="cw" id="cwReadout">—</span>
+        </div>
+        <div class="chat-log">
+          <div class="msg user">what do you remember about how i want commits written?</div>
+          <div class="msg elai">
+            <div class="who">ELAI</div>
+            <div class="mtext">One Tier-B preference fact covers it (fact_2f90, trust 0.71): lowercase i, no em-dashes, no robotic prefixes. It is near-expiry though — last re-observed a while ago.</div>
+            <div class="card"><div class="ct"><span class="dot"></span>MEMORY · FACT RECALLED</div><div class="line">fact_2f90 · commit.style · <b>staleness 0.81</b> → re-confirm to refresh</div><span class="deeplink">open in knowledge →</span></div>
+          </div>
+          <div class="msg user">add client-side AES-GCM key rotation, check what the libraries support first</div>
+          <div class="msg elai">
+            <div class="who">ELAI</div>
+            <div class="mtext">Spun up a research branch before touching code. SEARCH is live on two lanes (web arag + in-repo callers); REFLECT is blocked on one source contradiction I'll surface before converging.</div>
+            <div class="card"><div class="ct exec"><span class="dot"></span>RESEARCH · s-7f3a</div><div class="line">FORMULATE ✓ · SEARCH ● 2 lanes · 1 contradiction to resolve</div><span class="deeplink">open in canvas →</span></div>
+          </div>
+        </div>
+        <div class="chat-input">
+          <div class="input-box">
+            <button class="attach" type="button" aria-label="Attach"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+            <textarea placeholder="message ELAI"></textarea>
+            <button class="send" type="button" aria-label="Send"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg></button>
+          </div>
+        </div>
+        <div class="usage">
+          <div class="urow"><span>CONTEXT WINDOW</span><span><b>41.2k</b> / 200k</span></div>
+          <div class="ubar"><i class="used"></i><i class="cache"></i></div>
+          <div class="urow"><span>this turn <b>1.24k tok</b> · 6% cached</span><span>cloud · $0.04</span></div>
+        </div>
+      </aside>
+
+      <!-- LEFT DRAWERS -->
+      <div class="drawer" id="drawer-files">
+        <div class="dh">FILES <span class="x" data-close>✕</span></div>
+        <div class="ftree">
+          <div class="row dir">crates/</div>
+          <div class="row ind dir">orchestrator/</div>
+          <div class="row ind2 hot">vault_crud.rs ●</div>
+          <div class="row ind2">key_derive.rs</div>
+          <div class="row ind2">ssb.rs</div>
+          <div class="row ind dir">dashboard-v2/</div>
+          <div class="row ind2">CockpitWindow.svelte</div>
+          <div class="row ind2">CanvasWindow.svelte</div>
+          <div class="row ind dir">knowledge/</div>
+          <div class="row dir">python/</div>
+          <div class="row ind dir">elai_inference/</div>
+          <div class="row ind2">server.py</div>
+          <div class="row dir">docs/</div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-intel">
+        <div class="dh">PROJECT INTELLIGENCE <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>code-intelligence overview.</b> repo map, PageRank hotspots, dead-code islands, security &amp; cost lenses. Detailed surface lands here in the next pass.</div>
+        <div class="dlist">
+          <div class="di">symbols indexed<span class="k">1,284</span></div>
+          <div class="di">top hotspot<span class="k">ssb.rs</span></div>
+          <div class="di">dead-code islands<span class="k">3</span></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-sessions">
+        <div class="dh">SESSIONS / BRANCHES <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>session DAG + branch / merge.</b> fork, merge, close, progress sparkline per branch. Built next from get_session_branches.</div>
+        <div class="dlist">
+          <div class="di">main<span class="k">HEAD · 9/14</span></div>
+          <div class="di">try/aes-gcm<span class="k">+2 ahead</span></div>
+          <div class="di">archive/keys<span class="k">closed</span></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-receipts">
+        <div class="dh">RECEIPTS / RRA <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>reproducible-run artifacts + attestation.</b> root hash, guarantee level, gate count, objective-hash chain. Built next from get_run_artifact · get_attestations.</div>
+        <div class="dlist">
+          <div class="di">B-13 receipt<span class="k">reproducible</span></div>
+          <div class="di">B-12 receipt<span class="k">verified · 3 gates</span></div>
+        </div>
+      </div>
+
+      <!-- MONITORS drawer — KNOWLEDGE-relevant memory/retrieval monitor list (the rail's active drawer on this tab) -->
+      <div class="drawer" id="drawer-monitors">
+        <div class="dh">KNOWLEDGE MONITORS <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>memory · research · retrieval telemetry.</b> the long-tail behind this tab — each opens its detail surface (CONTRACT-SHEET §2e/2f).</div>
+        <div class="dlist">
+          <div class="di">memory facts<span class="k">128 · 2 stale</span></div>
+          <div class="di">memory notes<span class="k">41 · core 412B</span></div>
+          <div class="di">research tree<span class="k">SEARCH active</span></div>
+          <div class="di">query trace<span class="k">DEEP · 312ms</span></div>
+          <div class="di">cosmos artifacts<span class="k">6 · 2 flagged</span></div>
+          <div class="di">staleness quarantine<span class="k">2 rows</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATUSBAR (adds a dev STATE switcher for this tab's state coverage) -->
+    <footer class="statusbar">
+      <span class="fsm"><span class="dot"></span>FSM EXECUTING · s-7f3a · research branch live</span>
+      <span class="right">
+        <span class="kn-stateswitch" role="group" aria-label="Knowledge tab state (dev)">
+          <span class="sl">STATE</span>
+          <button data-knstate="populated" class="on" type="button">POPULATED</button>
+          <button data-knstate="loading" type="button">LOADING</button>
+          <button data-knstate="empty" type="button">EMPTY</button>
+          <button data-knstate="disconnected" type="button">DISCONNECTED</button>
+          <button data-knstate="error" type="button">ERROR</button>
+        </span>
+        <span>cloud · sonnet 4.6</span><span>ctx 21%</span>
+      </span>
+    </footer>
+
+    <div class="scrim" id="scrim"></div>
+
+    <!-- SETTINGS MODAL -->
+    <div class="modal" id="modal-settings">
+      <div class="card2">
+        <div class="mh"><h2>Settings</h2><span class="x" data-close>✕</span></div>
+        <div class="mbody">
+          <div class="mnav">
+            <button class="on" type="button">Models</button><button type="button">Sidecar</button><button type="button">Gates</button>
+            <button type="button">Cloud</button><button type="button">Runtime</button><button type="button">Skills</button><button type="button">UX</button>
+          </div>
+          <div class="dnote"><b>model routing &amp; runtime.</b> per-role targets, gate mode, sidecar boot/quantization, cloud ceiling / BYOK, calibrated routing tier matrix. Detailed controls land here in the next pass (SettingsWindow handlers).</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const root=document.documentElement;
+
+    // theme toggle (sun/moon)
+    document.getElementById('themeToggle').addEventListener('click',()=>{
+      const light=root.getAttribute('data-theme')==='light';
+      root.setAttribute('data-theme', light?'dark':'light');});
+
+    // tab switching
+    const tabs=[...document.querySelectorAll('.tab')];
+    tabs.forEach(t=>t.addEventListener('click',()=>{
+      root.setAttribute('data-tab',t.dataset.tab);
+      tabs.forEach(x=>x.classList.toggle('on',x===t));}));
+
+    // drawers + scrim
+    const scrim=document.getElementById('scrim');
+    const railBtns=[...document.querySelectorAll('.rbtn[data-drawer]')];
+    function closeAll(){
+      document.querySelectorAll('.drawer.open').forEach(d=>d.classList.remove('open'));
+      document.querySelectorAll('.modal.open').forEach(m=>m.classList.remove('open'));
+      railBtns.forEach(b=>b.classList.remove('on'));
+      scrim.classList.remove('on');
+    }
+    railBtns.forEach(b=>b.addEventListener('click',()=>{
+      const id='drawer-'+b.dataset.drawer; const d=document.getElementById(id);
+      const wasOpen=d.classList.contains('open');
+      closeAll();
+      if(!wasOpen){d.classList.add('open');b.classList.add('on');scrim.classList.add('on');}
+    }));
+    // settings modal
+    document.querySelector('.rbtn[data-modal]').addEventListener('click',()=>{
+      const m=document.getElementById('modal-settings');const wasOpen=m.classList.contains('open');
+      closeAll(); if(!wasOpen){m.classList.add('open');scrim.classList.add('on');}
+    });
+    document.querySelectorAll('[data-close]').forEach(x=>x.addEventListener('click',closeAll));
+    scrim.addEventListener('click',closeAll);
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')closeAll();});
+
+    // settings mnav toggle
+    document.querySelectorAll('.modal .mnav button').forEach(b=>b.addEventListener('click',()=>{
+      document.querySelectorAll('.modal .mnav button').forEach(x=>x.classList.toggle('on',x===b));}));
+
+    // canvas node -> (mock) focus
+    document.querySelectorAll('.node').forEach(n=>n.addEventListener('click',()=>{
+      document.querySelectorAll('.node').forEach(x=>x.style.outline='');
+      n.style.outline='1px solid var(--tealsoft)';n.style.outlineOffset='2px';}));
+    document.querySelector('.card .deeplink')?.addEventListener('click',()=>{
+      root.setAttribute('data-tab','knowledge');tabs.forEach(x=>x.classList.toggle('on',x.dataset.tab==='knowledge'));});
+
+    // memory-fact per-row actions: pin / forget toggle (presentational)
+    document.querySelectorAll('.kn-abtn').forEach(b=>b.addEventListener('click',()=>{
+      const isPin=(b.title==='memory_pin');
+      if(isPin){const on=b.classList.toggle('pinned');b.textContent=on?'PINNED':'pin';}
+    }));
+
+    // dev STATE switcher (presentation only) — flips data-state on the knowledge scroll surface
+    const knScroll=document.getElementById('knScroll');
+    document.querySelectorAll('.kn-stateswitch button').forEach(b=>b.addEventListener('click',()=>{
+      document.querySelectorAll('.kn-stateswitch button').forEach(x=>x.classList.toggle('on',x===b));
+      knScroll.setAttribute('data-state',b.dataset.knstate);}));
+
+    // chat resize — drag the left edge; default ~47% of the free area (rail excluded), just under half
+    const RAIL=48, MINCHAT=340, MINCANVAS=380;
+    const cwReadout=document.getElementById('cwReadout');
+    function setChat(px){const free=window.innerWidth-RAIL;px=Math.round(Math.max(MINCHAT,Math.min(px,free-MINCANVAS)));root.style.setProperty('--chat',px+'px');if(cwReadout)cwReadout.textContent=px+'px';}
+    const rz=document.getElementById('chatResizer');let drag=false;
+    rz.addEventListener('pointerdown',e=>{drag=true;rz.classList.add('drag');rz.setPointerCapture(e.pointerId);e.preventDefault();});
+    rz.addEventListener('pointermove',e=>{if(drag)setChat(window.innerWidth-e.clientX);});
+    rz.addEventListener('pointerup',()=>{drag=false;rz.classList.remove('drag');});
+    setChat(Math.round((window.innerWidth-RAIL)*0.47));
+    window.addEventListener('resize',()=>setChat(parseInt(getComputedStyle(root).getPropertyValue('--chat'))||400));
+  </script>
+</body>
+</html>

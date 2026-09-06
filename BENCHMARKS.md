@@ -5,8 +5,9 @@ archive.** Results were not saved uniformly. The tree mixes harnesses, synthetic
 fixtures, seed configuration, historical measurements and research reports.
 It is not a validated benchmark release or a leaderboard submission.
 
-The paths below were checked against the public Git tree at `55011059`, before
-this navigation guide was added. No historical benchmark, model inference or
+The original table was checked against the public Git tree at `55011059`.
+A later [documentation recovery](docs/RECOVERED-DOCUMENTS.md) adds the ignored
+reports described below. No historical benchmark, model inference or
 ELAI application test was rerun for the archive. Privacy edits and omitted inputs
 can also invalidate old hashes and reproduction instructions.
 
@@ -23,6 +24,26 @@ can also invalidate old hashes and reproduction instructions.
 | Sycophancy / tamper | [Sycophancy result](.elai_cc/benchmarks/sycophancy/reports/sycophancy-2026-07-18.json), [tamper result](.elai_cc/benchmarks/tamper/reports/tamper-bench-report-2026-07-18.json), [notices](THIRD_PARTY_NOTICES.md) | Historical adversarial fixture reports, not live-task evaluations. The old sycophancy corpus included 20 adapted fixtures that were removed during publication review; 80 synthetic fixtures remain. The old report is not a result for the reduced public corpus. |
 | Improvement-conjecture / FDL research | [Grounding pilot](workflow/reasoning/conjecture-bench-run-2026-07-11.md), [novelty A/B](workflow/reasoning/conjecture-novelty-ab-2026-07-11.md), [later synergy experiment](workflow/reasoning/conjecture-run-autoresearch-synergy-2026-07-17.md) | Reports from external bridge/agent experiments about ELAI. The small grounding pilot recorded more real code anchors but no supported downstream reduction in auditor blocks. Negative/null novelty findings are retained too. Raw harness/run directories are not included; this is not an ELAI runtime benchmark. |
 | Scale, journal and runtime harnesses | [Graph-scale bench](.elai_cc/crates/knowledge/benches/symbol_graph_scale.rs), [memory bench](.elai_cc/crates/knowledge/benches/scale_memory.rs), [checkpoint bench](.elai_cc/crates/orchestrator/benches/checkpoint_format.rs), [SSB throughput](.elai_cc/crates/orchestrator/benches/ssb_throughput.rs), [runtime probe](.elai_cc/benches/runtime_compat/probe_local.py), [local-lane runner](.elai_cc/crates/orchestrator/src/benchmarks/local_lane_e2e_runner.rs) | Benchmark source is present. Retained scale metrics include synthetic/limited cases; production-scale runs were deferred. The [registry](.elai_cc/benchmarks/registry.json) still labels local-lane-e2e PLANNED despite runner source existing. No retained local-lane end-to-end result was identified in this review. |
+
+## Reports recovered from ignored documentation
+
+The later recovery adds 12 saved reports under [workflow/benchmarks](workflow/benchmarks/),
+including selector A/B, frontier-discriminator, multicycle and research-creativity
+experiments. Negative and invalid verdicts remain as recorded; for example,
+[the second creativity report](workflow/benchmarks/research-creativity-b0v2-2026-07-13/report.md)
+says INVALID and [the third](workflow/benchmarks/research-creativity-b0v3-2026-07-14/report.md)
+says REFUTED. These are external development experiments, not end-to-end agent scores.
+
+[Retrieval experiment plans and results](workflow/experiments/), including the
+[RLM/ELAI comparison](workflow/experiments/RLM-VS-ELAI-RESULTS-2026-06-26.md) and
+[CGG findings log](workflow/experiments/cgg_bench/CGG-BENCH-FINDINGS.md), are also
+preserved. The [earlier CGG result file](workflow/experiments/cgg_bench/CGG-BENCH-RESULTS.md)
+still says DATA PENDING; it was not rewritten to agree with the later findings.
+[Historical audits](workflow/audits/) include a saved checkpoint-format measurement.
+
+These documents were absent from the earlier public tree. Their raw run directories,
+provider sessions and external datasets remain omitted. No measurement was rerun,
+and the reports alone do not establish reproducibility or a validated comparison.
 
 ## What was not committed or included
 

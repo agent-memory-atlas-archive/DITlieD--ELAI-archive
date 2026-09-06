@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELAI brand icon — flat concentric rings + glow core (10 variations)</title>
+<style>
+  :root{
+    --void:#030404; --bg:#0a0f0e; --panel:#070b0a; --raised:#151c1a;
+    --text:#f2f5f4; --dim:#79827e;
+    --line:rgba(255,255,255,.17);
+    --teal:#2BBBA4; --teal-bright:#34C2AA;
+    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:var(--mono);
+    display:flex; flex-direction:column; align-items:center;
+    padding:48px 40px 64px; gap:36px;
+  }
+  header{width:100%; max-width:1180px}
+  header h1{font-size:13px; font-weight:600; letter-spacing:.18em; margin:0 0 6px; color:var(--text)}
+  header p{font-size:11px; line-height:1.7; color:var(--dim); margin:0; max-width:760px}
+  .grid{
+    width:100%; max-width:1180px;
+    display:grid; grid-template-columns:repeat(5,1fr); gap:28px 24px;
+  }
+  figure{margin:0; display:flex; flex-direction:column; align-items:center; gap:14px}
+  .tile{
+    width:100%; aspect-ratio:1/1;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:22px;
+    display:flex; align-items:center; justify-content:center;
+    overflow:hidden;
+  }
+  .tile svg{width:78%; height:78%; display:block}
+  figcaption{font-size:11px; letter-spacing:.22em; color:var(--dim)}
+  /* tiny-size legibility strip */
+  .small{display:flex; gap:18px; align-items:center; margin-top:8px}
+  .small .b{background:var(--panel); border:1px solid var(--line); border-radius:6px; display:flex; align-items:center; justify-content:center}
+  .small .b svg{display:block}
+  .small span{font-size:10px; color:var(--dim); letter-spacing:.1em}
+</style>
+</head>
+<body>
+  <header>
+    <h1>ELAI — BRAND ICON · FLAT CONCENTRIC RINGS + GLOW CORE</h1>
+    <p>Ten hand-drawn SVG variations: a soft teal glow core inside thin, flat, head-on concentric hairline rings — no tilt, no orbiting dots, glow-only center. Real vectors (not a render), palette-locked to DESIGN.md §3 (#0a0f0e ground, white rings, one teal #2BBBA4, the central radial glow the only gradient). Pick a number; I redraw the winner as the final favicon / app-icon SVG.</p>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="small" id="small"></div>
+
+<script>
+const C = 50; // center
+// per-tile config: rings [{r, stroke('w'|'t'), sw, op, dash, fade}], glow{r, core}
+const TILES = [
+  { rings:[{r:22,stroke:'w',sw:0.7,op:.60},{r:32,stroke:'w',sw:0.7,op:.55},{r:42,stroke:'w',sw:0.7,op:.50}], glow:{r:17,core:2.4} },          // 01 three even rings, tight core
+  { rings:[{r:26,stroke:'w',sw:0.7,op:.55},{r:40,stroke:'w',sw:0.7,op:.45}], glow:{r:23,core:3.0} },                                            // 02 two airy WHITE rings, soft bloom
+  { rings:[{r:26,stroke:'t',sw:0.8,op:.65},{r:40,stroke:'t',sw:0.8,op:.55}], glow:{r:23,core:3.0} },                                            // 03 tile-02 but TWO TEAL rings
+  { rings:[{r:31,stroke:'w',sw:0.9,op:.62}], glow:{r:19,core:2.8} },                                                                            // 04 single clean ring
+  { rings:[{r:23,stroke:'w',sw:0.8,op:.6,fade:true},{r:34,stroke:'w',sw:0.8,op:.55,fade:true},{r:45,stroke:'w',sw:0.8,op:.5,fade:true}], glow:{r:18,core:2.6} }, // 05 rings fade out vertically
+  { rings:[{r:24,stroke:'w',sw:0.9,op:.6,dash:'9 7'},{r:37,stroke:'w',sw:0.9,op:.5,dash:'7 9'}], glow:{r:17,core:2.4} },                        // 06 arc-segment rings (gaps)
+  { rings:[{r:25,stroke:'w',sw:0.7,op:.55},{r:34,stroke:'w',sw:0.7,op:.5}], glow:{r:28,core:3.4} },                                             // 07 tight rings, large halo
+  { rings:[{r:20,stroke:'w',sw:0.5,op:.5},{r:31,stroke:'w',sw:0.75,op:.55},{r:42,stroke:'w',sw:1.0,op:.55}], glow:{r:17,core:2.4} },            // 08 thickening outward
+  { rings:[{r:30,stroke:'w',sw:0.6,op:.35},{r:44,stroke:'w',sw:0.6,op:.28}], glow:{r:36,core:4.2} },                                            // 09 BIG glow (~70% of tile) with faint outer rings
+  { rings:[], glow:{r:40,core:4.6} },                                                                                                            // 10 GLOW ONLY — no rings, big bloom
+];
+
+function ringStroke(s){ return s==='t' ? 'var(--teal)' : 'var(--text)'; }
+
+function svgFor(t, i, size){
+  const gid = 'g'+i+'_'+size;
+  const bid = 'b'+i+'_'+size;
+  const mid = 'm'+i+'_'+size;
+  const needMask = t.rings.some(r=>r.fade);
+  let defs = `
+    <radialGradient id="${gid}" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#34C2AA" stop-opacity="0.95"/>
+      <stop offset="22%" stop-color="#2BBBA4" stop-opacity="0.55"/>
+      <stop offset="55%" stop-color="#2BBBA4" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#2BBBA4" stop-opacity="0"/>
+    </radialGradient>`;
+  if(needMask){
+    defs += `
+    <linearGradient id="fade_${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#fff" stop-opacity="0.15"/>
+      <stop offset="42%" stop-color="#fff" stop-opacity="1"/>
+      <stop offset="58%" stop-color="#fff" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#fff" stop-opacity="0.15"/>
+    </linearGradient>
+    <mask id="${mid}"><rect x="0" y="0" width="100" height="100" fill="url(#fade_${gid})"/></mask>`;
+  }
+  const ringsSvg = t.rings.map(r=>{
+    const dash = r.dash ? ` stroke-dasharray="${r.dash}" stroke-linecap="round"` : '';
+    return `<circle cx="${C}" cy="${C}" r="${r.r}" fill="none" stroke="${ringStroke(r.stroke)}" stroke-width="${r.sw}" stroke-opacity="${r.op}"${dash}/>`;
+  }).join('');
+  const ringsGroup = needMask ? `<g mask="url(#${mid})">${ringsSvg}</g>` : ringsSvg;
+  return `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <defs>${defs}</defs>
+    ${ringsGroup}
+    <circle cx="${C}" cy="${C}" r="${t.glow.r}" fill="url(#${gid})"/>
+  </svg>`;
+}
+
+const grid = document.getElementById('grid');
+TILES.forEach((t,idx)=>{
+  const n = String(idx+1).padStart(2,'0');
+  const fig = document.createElement('figure');
+  fig.innerHTML = `<div class="tile">${svgFor(t,idx,'lg')}</div><figcaption>${n}</figcaption>`;
+  grid.appendChild(fig);
+});
+
+// 16/24/32px legibility strip for tile 01 (swap index to preview any tile small)
+const small = document.getElementById('small');
+const previewIdx = 0;
+small.innerHTML = `<span>16px / 24px / 32px favicon check (tile 01):</span>` +
+  [16,24,32].map(px=>`<div class="b" style="width:${px+8}px;height:${px+8}px">${svgForSized(previewIdx,px)}</div>`).join('');
+function svgForSized(idx,px){
+  const s = svgFor(TILES[idx],idx,'sm'+px);
+  return s.replace('<svg ', `<svg width="${px}" height="${px}" `);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SECTION 9 // ghost harness</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg: oklch(0.145 0.020 225);
+  --bg-deep: oklch(0.110 0.018 225);
+  --panel: oklch(0.175 0.022 225);
+  --raised: oklch(0.21 0.025 225);
+  --line: oklch(0.32 0.035 215 / .55);
+  --line-soft: oklch(0.27 0.03 215 / .35);
+  --accent: oklch(0.80 0.125 200);
+  --accent-hi: oklch(0.88 0.11 200);
+  --accent-dim: oklch(0.55 0.09 205);
+  --accent-wash: oklch(0.80 0.125 200 / .09);
+  --text: oklch(0.90 0.015 210);
+  --muted: oklch(0.65 0.03 215);
+  --faint: oklch(0.48 0.03 215);
+  --ok: oklch(0.80 0.14 155);
+  --warn: oklch(0.82 0.14 80);
+  --z-base:0; --z-chrome:10; --z-overlay:20;
+  --disp: "Rajdhani", sans-serif;
+  --mono: "Fira Code", monospace;
+}
+*{ box-sizing:border-box; margin:0; padding:0 }
+html,body{ height:100% }
+body{
+  background:
+    linear-gradient(oklch(0.80 0.125 200 / .022) 1px, transparent 1px) 0 0/100% 28px,
+    linear-gradient(90deg, oklch(0.80 0.125 200 / .022) 1px, transparent 1px) 0 0/28px 100%,
+    var(--bg-deep);
+  color:var(--text);
+  font:400 13px/1.55 var(--mono);
+  overflow:hidden;
+}
+.app{ display:grid; grid-template-columns: 244px minmax(390px,34%) 1fr; height:100vh; gap:1px; background:var(--line-soft) }
+.app > *{ background:var(--bg) }
+
+.side{ display:flex; flex-direction:column; background:var(--bg-deep) }
+.brand{ padding:20px 18px 16px; border-bottom:1px solid var(--line); position:relative }
+.brand::after{ content:""; position:absolute; left:18px; bottom:-1px; width:64px; height:2px; background:var(--accent) }
+.brand h1{ font:700 22px/1 var(--disp); letter-spacing:.30em; color:var(--text); text-transform:uppercase }
+.brand h1 b{ color:var(--accent) }
+.brand small{ display:block; margin-top:6px; color:var(--faint); font-size:10px; letter-spacing:.24em; text-transform:uppercase }
+.side-sec{ padding:15px 18px; border-bottom:1px solid var(--line-soft) }
+.side-sec h2{ font:700 11px var(--disp); letter-spacing:.34em; color:var(--faint); text-transform:uppercase; margin-bottom:10px; display:flex; align-items:center; gap:8px }
+.side-sec h2::after{ content:""; flex:1; height:1px; background:var(--line-soft) }
+.fsm{ list-style:none }
+.fsm li{ display:flex; align-items:center; gap:10px; padding:3.5px 0; font:600 12px var(--disp); letter-spacing:.20em; color:var(--faint); text-transform:uppercase }
+.fsm li i{ width:14px; height:8px; flex:none; border:1px solid var(--faint); transform:skewX(-18deg) }
+.fsm li.done{ color:var(--muted) } .fsm li.done i{ background:var(--muted); border-color:var(--muted) }
+.fsm li.now{ color:var(--accent-hi) } .fsm li.now i{ background:var(--accent); border-color:var(--accent-hi) }
+.fsm li.now::after{ content:"ACTIVE"; margin-left:auto; font-size:9px; color:var(--accent-dim); letter-spacing:.22em }
+.agents{ list-style:none; display:flex; flex-direction:column; gap:8px }
+.agents li{ display:grid; grid-template-columns:10px 1fr auto; gap:9px; align-items:center; font-size:12px }
+.hex{ width:9px; height:9px; clip-path:polygon(50% 0,100% 27%,100% 73%,50% 100%,0 73%,0 27%) }
+.hex.run{ background:var(--accent) } .hex.idle{ background:var(--faint); opacity:.45 } .hex.done{ background:var(--muted) }
+.agents .st{ color:var(--faint); font-size:9.5px; letter-spacing:.16em; text-transform:uppercase }
+.stat3{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
+.stat{ border:1px solid var(--line-soft); background:var(--panel); padding:9px 11px }
+.stat .v{ font:700 19px/1.1 var(--disp); color:var(--accent-hi); letter-spacing:.04em }
+.stat .l{ font-size:9px; letter-spacing:.2em; color:var(--faint); text-transform:uppercase; margin-top:3px }
+.meter .row{ display:flex; justify-content:space-between; font-size:10px; color:var(--muted); margin-bottom:5px; letter-spacing:.08em }
+.meter .row b{ color:var(--text); font-weight:500 }
+.bar{ height:3px; background:var(--raised) }
+.bar i{ display:block; height:100%; width:58%; background:var(--accent) }
+.side-foot{ margin-top:auto; padding:13px 18px; border-top:1px solid var(--line); font:600 10px var(--disp); letter-spacing:.26em; color:var(--muted); text-transform:uppercase; display:flex; gap:10px; align-items:center }
+.lnk{ width:26px; height:8px; background:repeating-linear-gradient(90deg, var(--accent) 0 3px, transparent 3px 6px) }
+@media (prefers-reduced-motion: no-preference){
+  .lnk{ animation: lk 1.1s steps(2) infinite }
+  @keyframes lk{ 50%{ opacity:.35 } }
+}
+
+.chat{ display:flex; flex-direction:column; min-width:0 }
+.chat-head{ display:flex; align-items:center; gap:10px; padding:13px 20px; border-bottom:1px solid var(--line); background:var(--bg-deep) }
+.chat-head h2{ font:700 15px var(--disp); letter-spacing:.30em; text-transform:uppercase }
+.chip{ font-size:9px; letter-spacing:.16em; padding:3px 9px; border:1px solid var(--line); color:var(--muted); text-transform:uppercase; white-space:nowrap; clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px) }
+.chip.acc{ color:var(--accent-hi); border-color:var(--accent-dim); background:var(--accent-wash) }
+.chip.pass{ color:var(--ok); border-color:oklch(0.80 0.14 155 / .4) }
+.chip.warn{ color:var(--warn); border-color:oklch(0.82 0.14 80 / .4) }
+.chat-head .chip:last-child{ margin-left:auto }
+.scroll{ flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:18px; scrollbar-width:thin; scrollbar-color:var(--raised) transparent }
+.sysline{ align-self:center; color:var(--faint); font-size:9.5px; letter-spacing:.34em; text-transform:uppercase }
+
+.msg{ display:flex; flex-direction:column; gap:6px; max-width:93% }
+.msg .who{ font:700 10.5px var(--disp); letter-spacing:.30em; text-transform:uppercase; display:flex; gap:8px; align-items:baseline }
+.msg .meta{ font-size:9px; color:var(--faint); letter-spacing:.14em; text-transform:uppercase }
+.msg.user{ align-self:flex-end; align-items:flex-end }
+.msg.user .who{ color:var(--muted) }
+.msg.user .body{
+  background:var(--accent-wash); border:1px solid var(--accent-dim); color:var(--text);
+  padding:11px 15px;
+  clip-path:polygon(14px 0,100% 0,100% 100%,0 100%,0 14px);
+}
+.msg.ai{ align-self:flex-start }
+.msg.ai .who{ color:var(--accent-hi) }
+.msg.ai .who::before{ content:"⬡"; color:var(--accent); font-size:12px }
+.msg.ai .body{
+  background:var(--panel); border:1px solid var(--line); padding:13px 16px; position:relative;
+  clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,0 100%);
+}
+.msg.ai .body::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--accent) }
+.body p{ margin:0 0 10px } .body p:last-child{ margin-bottom:0 }
+.body .k{ color:var(--accent-hi) }
+.findings{ list-style:none; margin:10px 0; display:flex; flex-direction:column; gap:6px }
+.findings li{ padding-left:18px; position:relative; color:var(--muted) }
+.findings li::before{ content:"▹"; position:absolute; left:2px; color:var(--accent) }
+.findings li b{ color:var(--text); font-weight:500 }
+.code{ margin:12px 0; border:1px solid var(--line); background:var(--bg-deep) }
+.code-h{ display:flex; justify-content:space-between; padding:6px 12px; border-bottom:1px solid var(--line-soft); font:600 10px var(--disp); letter-spacing:.22em; color:var(--faint); text-transform:uppercase }
+.code pre{ padding:12px 14px; overflow-x:auto; font-size:11.5px; line-height:1.65 }
+.cd-k{ color:var(--accent-hi) } .cd-f{ color:oklch(0.82 0.10 80) } .cd-t{ color:oklch(0.78 0.09 300) } .cd-s{ color:oklch(0.78 0.12 155) }
+.chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:12px }
+.stream .body::after{ content:"█"; color:var(--accent); margin-left:3px; font-size:11px }
+@media (prefers-reduced-motion: no-preference){
+  .stream .body::after{ animation:bl 0.9s steps(2) infinite }
+  @keyframes bl{ 50%{ opacity:0 } }
+}
+.composer{ display:flex; gap:10px; padding:14px 20px 16px; border-top:1px solid var(--line); background:var(--bg-deep) }
+.composer input{
+  flex:1; background:var(--panel); border:1px solid var(--line); color:var(--text);
+  font:400 12.5px var(--mono); padding:11px 14px; outline:none;
+  clip-path:polygon(10px 0,100% 0,100% 100%,0 100%,0 10px);
+}
+.composer input::placeholder{ color:var(--faint) }
+.composer input:focus{ border-color:var(--accent-dim); background:var(--raised) }
+.composer button{
+  background:var(--accent); border:0; color:oklch(0.15 0.02 225); cursor:pointer;
+  font:700 12px var(--disp); letter-spacing:.30em; padding:0 22px; text-transform:uppercase;
+  clip-path:polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%);
+}
+.composer button:hover{ background:var(--accent-hi) }
+
+.cnv{ display:flex; flex-direction:column; min-width:0; background:var(--bg-deep) }
+.cnv-head{ display:flex; align-items:center; gap:14px; padding:13px 22px; border-bottom:1px solid var(--line) }
+.cnv-head h2{ font:700 15px var(--disp); letter-spacing:.30em; text-transform:uppercase }
+.cnv-head .sub{ color:var(--faint); font-size:9.5px; letter-spacing:.22em; text-transform:uppercase }
+.modes{ margin-left:auto; display:flex; gap:6px }
+.modes button{
+  background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer;
+  font:700 11px var(--disp); letter-spacing:.26em; padding:7px 16px; text-transform:uppercase;
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);
+}
+.modes button[aria-pressed="true"]{ background:var(--accent-wash); color:var(--accent-hi); border-color:var(--accent-dim) }
+.stage{ position:relative; flex:1; min-height:0 }
+.stage::before,.stage::after{
+  content:""; position:absolute; width:26px; height:26px; z-index:var(--z-chrome); pointer-events:none;
+  border:2px solid var(--accent-dim);
+}
+.stage::before{ left:14px; top:12px; border-right:0; border-bottom:0 }
+.stage::after{ right:14px; bottom:14px; border-left:0; border-top:0 }
+canvas{ position:absolute; inset:0; width:100%; height:100%; display:block }
+.hud{
+  position:absolute; left:18px; bottom:16px; z-index:var(--z-chrome);
+  border:1px solid var(--line); background:oklch(0.12 0.02 225 / .88);
+  padding:9px 13px; font-size:10px; color:var(--muted); letter-spacing:.1em; max-width:360px;
+  clip-path:polygon(10px 0,100% 0,100% 100%,0 100%,0 10px);
+}
+.hud b{ color:var(--accent-hi); font-weight:600 }
+.hud .h2{ display:block; font:700 9px var(--disp); color:var(--faint); letter-spacing:.3em; text-transform:uppercase; margin-bottom:3px }
+.legend{ position:absolute; right:18px; top:14px; z-index:var(--z-chrome); display:flex; gap:14px; font:600 9px var(--disp); color:var(--faint); letter-spacing:.22em; text-transform:uppercase }
+.legend i{ display:inline-block; width:9px; height:9px; margin-right:5px; clip-path:polygon(50% 0,100% 27%,100% 73%,50% 100%,0 73%,0 27%); border:0; background:transparent; outline:1px solid var(--accent) }
+.legend i.f{ background:var(--accent); outline:0 }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="brand">
+      <h1>SEC<b>·9</b></h1>
+      <small>ghost harness · net is vast</small>
+    </div>
+    <div class="side-sec">
+      <h2>mission fsm</h2>
+      <ul class="fsm">
+        <li class="done"><i></i>IDLE</li>
+        <li class="done"><i></i>PLANNING</li>
+        <li class="done"><i></i>TESTING_FIRST</li>
+        <li class="now"><i></i>EXECUTING</li>
+        <li><i></i>AUDITING</li>
+        <li><i></i>MEMORIZING</li>
+        <li><i></i>COMPLETE</li>
+      </ul>
+    </div>
+    <div class="side-sec">
+      <h2>operatives</h2>
+      <ul class="agents">
+        <li><span class="hex run"></span><span>executor</span><span class="st">deployed</span></li>
+        <li><span class="hex idle"></span><span>auditor</span><span class="st">standby</span></li>
+        <li><span class="hex done"></span><span>ctx-compiler</span><span class="st">extracted</span></li>
+        <li><span class="hex idle"></span><span>memory-writer</span><span class="st">queued</span></li>
+      </ul>
+    </div>
+    <div class="side-sec">
+      <h2>telemetry</h2>
+      <div class="stat3">
+        <div class="stat"><div class="v">4 821</div><div class="l">ssb seq</div></div>
+        <div class="stat"><div class="v">0</div><div class="l">taint flows</div></div>
+        <div class="stat"><div class="v">7/7</div><div class="l">gates green</div></div>
+        <div class="stat"><div class="v">12ms</div><div class="l">ipc p99</div></div>
+      </div>
+    </div>
+    <div class="side-sec">
+      <h2>budget</h2>
+      <div class="meter">
+        <div class="row"><span>context</span><b>58% · 18.6k</b></div>
+        <div class="bar"><i></i></div>
+      </div>
+      <div class="meter" style="margin-top:11px">
+        <div class="row"><span>spend ceiling</span><b>$0.41 / $2.00</b></div>
+        <div class="bar"><i style="width:21%"></i></div>
+      </div>
+    </div>
+    <div class="side-foot"><span class="lnk"></span> uplink · journal bound</div>
+  </aside>
+
+  <section class="chat">
+    <header class="chat-head">
+      <h2>COMMS</h2>
+      <span class="chip acc">op · b15-phase0</span>
+      <span class="chip">local · qwen-7b</span>
+      <span class="chip pass">encrypted</span>
+    </header>
+    <div class="scroll" id="scroll">
+      <div class="sysline">— secure channel · session 04:11:07 —</div>
+
+      <div class="msg user">
+        <div class="who">major · operator</div>
+        <div class="body">trace why the auditor blocked b15 phase0, i suspect the wiring contract fields. propose the fix, the gate stays frozen</div>
+      </div>
+
+      <div class="msg ai">
+        <div class="who">s9 core · elai</div>
+        <div class="body">
+          <p>Confirmed, the block is upstream of the contract. I pulled the raw checker artifact from the journal at <span class="k">seq 4788</span> rather than trusting the auditor's summary.</p>
+          <ul class="findings">
+            <li><b>produces</b> declares <b>VramTierEvent</b>; the splitter has emitted <b>PhaseSizingEvent</b> since the rebaseline. Stale field, correct code.</li>
+            <li><b>reachable_from</b> targets <b>runtime_builder::wire_probe</b>, a seam that no longer exists. Dead seam, hard fail per R1.</li>
+            <li>Gate untouched. It is frozen and it will stay frozen.</li>
+          </ul>
+          <div class="code">
+            <div class="code-h"><span>fulb_phase_sizing_splitter_contract.rs</span><span>patch · +2 −2</span></div>
+            <pre><span class="cd-k">let</span> contract = WiringContract {
+    produces:       <span class="cd-s">"PhaseSizingEvent"</span>,
+    consumes:       <span class="cd-s">"VramTierProbe"</span>,
+    reachable_from: <span class="cd-s">"runtime_builder::activate_profile"</span>,
+    observable:     Observable::<span class="cd-t">SsbRow</span>(<span class="cd-s">"phase_sizing_applied"</span>),
+};</pre>
+          </div>
+          <div class="chips">
+            <span class="chip pass">L1 veto · pass</span>
+            <span class="chip pass">grounded 3/3</span>
+            <span class="chip acc">evidence seq 4788</span>
+          </div>
+        </div>
+        <div class="meta">seq 4790 · 1.4k tok · observe → verify</div>
+      </div>
+
+      <div class="msg user">
+        <div class="who">major · operator</div>
+        <div class="body">apply it. rerun the contract only, no full sweep</div>
+      </div>
+
+      <div class="msg ai stream">
+        <div class="who">s9 core · elai</div>
+        <div class="body">
+          <p>Applied. Auditor deployed on <span class="k">-p contracts</span>, single-test scope, isolated workspace. Standing by for the artifact</p>
+          <div class="chips">
+            <span class="chip warn">executing · auditor live</span>
+            <span class="chip">scope 1 test</span>
+          </div>
+        </div>
+        <div class="meta">seq 4821 · streaming</div>
+      </div>
+    </div>
+    <div class="composer">
+      <input id="inp" type="text" placeholder="transmit to the core…" autocomplete="off">
+      <button id="send">send</button>
+    </div>
+  </section>
+
+  <section class="cnv">
+    <header class="cnv-head">
+      <h2>TACNET</h2>
+      <span class="sub" id="cnvsub">system graph · journal derived</span>
+      <div class="modes" role="group" aria-label="canvas mode">
+        <button id="mGraph" aria-pressed="true">graph</button>
+        <button id="mDepth" aria-pressed="false">shell</button>
+      </div>
+    </header>
+    <div class="stage" id="stage">
+      <canvas id="cv"></canvas>
+      <div class="legend"><span><i class="f"></i>hot path</span><span><i></i>reachable</span></div>
+      <div class="hud" id="hud"><span class="h2">tacnet overview</span><b>hover a node</b> · edges are verified wiring claims, not guesses</div>
+    </div>
+  </section>
+
+</div>
+<script>
+(() => {
+const rm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const stage = document.getElementById("stage"), hud = document.getElementById("hud"), sub = document.getElementById("cnvsub");
+let W=0,H=0,DPR=1, mode="graph", t=0;
+
+const ACC="oklch(0.80 0.125 200)", ACCHI="oklch(0.90 0.11 200)", DIM="oklch(0.55 0.09 205)";
+const TXT="oklch(0.90 0.015 210)", MUT="oklch(0.64 0.03 215)", FNT="oklch(0.45 0.03 215)";
+
+function resize(){
+  DPR=Math.min(devicePixelRatio||1,2);
+  W=stage.clientWidth; H=stage.clientHeight;
+  cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+  if(rm) draw();
+}
+new ResizeObserver(resize).observe(stage);
+
+const N=[
+  ["ORCH","orchestrator",.50,.42,24,1],["FSM","fsm",.31,.29,14,0],["SSB","ssb journal",.68,.29,19,1],
+  ["GATE","gate stack",.69,.58,17,1],["GRC","grc",.31,.58,14,0],["KNOW","knowledge",.15,.43,15,0],
+  ["DKG","dkg",.07,.30,9,0],["VEC","vectors",.07,.56,9,0],["SBX","sandbox",.50,.73,15,1],
+  ["EXE","executor",.36,.88,12,1],["AUD","auditor",.64,.88,12,0],["SID","sidecar",.86,.44,13,0],
+  ["CLD","cloud",.87,.18,10,0],["DSH","dashboard",.50,.12,12,0],["MEM","memory·vcg",.18,.74,12,0]
+].map(([id,label,x,y,r,hot],i)=>({id,label,x,y,r,hot,ph:i*1.7}));
+const IX=Object.fromEntries(N.map((n,i)=>[n.id,i]));
+const E=[["ORCH","FSM",0],["ORCH","SSB",1],["ORCH","GATE",1],["ORCH","GRC",0],["ORCH","KNOW",0],
+["ORCH","SBX",1],["ORCH","SID",0],["SSB","DSH",0],["SSB","GATE",1],["SSB","MEM",0],["GATE","AUD",0],
+["GRC","EXE",0],["KNOW","DKG",0],["KNOW","VEC",0],["SBX","EXE",1],["SBX","AUD",0],["SID","CLD",0],
+["MEM","KNOW",0],["FSM","DSH",0]].map(([a,b,hot])=>({a:IX[a],b:IX[b],hot}));
+
+let hover=-1, mx=-1, my=-1;
+const pad=70;
+const px=n=>pad+n.x*(W-2*pad)+(rm?0:Math.sin(t*.0007+n.ph)*2.5);
+const py=n=>54+n.y*(H-118)+(rm?0:Math.cos(t*.0009+n.ph)*2.5);
+
+function hexPath(x,y,r){
+  ctx.beginPath();
+  for(let k=0;k<6;k++){
+    const a=Math.PI/6 + k*Math.PI/3;
+    const X=x+Math.cos(a)*r, Y=y+Math.sin(a)*r;
+    k?ctx.lineTo(X,Y):ctx.moveTo(X,Y);
+  }
+  ctx.closePath();
+}
+function drawGraph(){
+  ctx.clearRect(0,0,W,H);
+  for(const e of E){
+    const a=N[e.a], b=N[e.b], lit=hover===e.a||hover===e.b;
+    ctx.strokeStyle=lit?ACCHI:(e.hot?DIM:"oklch(0.34 0.04 215 / .5)");
+    ctx.lineWidth=lit?1.6:(e.hot?1.2:1);
+    const ax=px(a),ay=py(a),bx=px(b),by=py(b);
+    const mxp=(ax+bx)/2;
+    ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(mxp,ay+(by-ay)*.5); ctx.lineTo(bx,by); ctx.stroke();
+    if(e.hot&&!rm){
+      const k=(t*.0004+e.a*.13)%1;
+      let qx,qy;
+      if(k<.5){ qx=ax+(mxp-ax)*k*2; qy=ay+((ay+(by-ay)*.5)-ay)*k*2 }
+      else{ qx=mxp+(bx-mxp)*(k-.5)*2; qy=(ay+(by-ay)*.5)+(by-(ay+(by-ay)*.5))*(k-.5)*2 }
+      ctx.fillStyle=ACCHI; ctx.beginPath(); ctx.arc(qx,qy,1.8,0,6.29); ctx.fill();
+    }
+  }
+  hover=-1;
+  for(let i=0;i<N.length;i++){
+    const n=N[i]; if(Math.hypot(mx-px(n),my-py(n))<n.r+13) hover=i;
+  }
+  for(let i=0;i<N.length;i++){
+    const n=N[i], x=px(n), y=py(n), lit=i===hover;
+    hexPath(x,y,n.r);
+    ctx.fillStyle=lit?"oklch(0.24 0.05 210)":(n.hot?"oklch(0.20 0.035 215)":"oklch(0.17 0.022 220)");
+    ctx.strokeStyle=lit?ACCHI:(n.hot?ACC:"oklch(0.38 0.04 215)");
+    ctx.lineWidth=lit?1.7:1.1;
+    ctx.fill(); ctx.stroke();
+    if(n.hot){ hexPath(x,y,3.5); ctx.fillStyle=lit?ACCHI:ACC; ctx.fill() }
+    ctx.font="600 10px 'Rajdhani'"; ctx.textAlign="center";
+    ctx.fillStyle=lit?TXT:(n.hot?MUT:FNT);
+    ctx.fillText(n.label.toUpperCase(), x, y+n.r+14);
+  }
+  hud.innerHTML = hover>=0
+    ? `<span class="h2">tacnet node</span><b>${N[hover].label.toUpperCase()}</b> · ${E.filter(e=>e.a===hover||e.b===hover).length} verified edges · ${N[hover].hot?"hot path":"reachable"}`
+    : `<span class="h2">tacnet overview</span><b>hover a node</b> · edges are verified wiring claims, not guesses`;
+}
+
+let rx=-.35, ry=.5, dragging=false, lx=0, ly=0;
+const KATA="アイウエオカキクケコサシスセソタチツテトナニヌネノ";
+const pulses=Array.from({length:14},(_,i)=>({m:(Math.random()*8)|0, k:Math.random(), s:.001+Math.random()*.002, shell:i%3}));
+
+function proj(x,y,z){
+  let c=Math.cos(ry), s=Math.sin(ry);
+  let x1=x*c-z*s, z1=x*s+z*c;
+  c=Math.cos(rx); s=Math.sin(rx);
+  let y1=y*c-z1*s, z2=y*s+z1*c;
+  const f=640/(640+z2+360);
+  return [W/2+x1*f, H/2+y1*f, f];
+}
+function sph(r,th,ph){ return [r*Math.sin(ph)*Math.cos(th), r*Math.cos(ph), r*Math.sin(ph)*Math.sin(th)] }
+
+function drawDepth(){
+  ctx.clearRect(0,0,W,H);
+  const base=Math.min(W,H)*.36;
+  const shells=[{r:base*.42,sp:1.6,al:.55},{r:base*.68,sp:-.9,al:.38},{r:base*.95,sp:.5,al:.26}];
+  const spin = rm?0:t*.00018;
+
+  shells.forEach((sh,si)=>{
+    const o=spin*sh.sp + si*.7;
+    for(let li=1;li<5;li++){
+      const ph0=li*Math.PI/5;
+      ctx.beginPath();
+      for(let k=0;k<=40;k++){
+        const p=proj(...sph(sh.r, o+k/40*Math.PI*2, ph0));
+        k?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);
+      }
+      ctx.strokeStyle=`oklch(0.78 0.12 200 / ${sh.al*.7})`; ctx.lineWidth=.9; ctx.stroke();
+    }
+    for(let lo=0;lo<8;lo++){
+      const th=o+lo*Math.PI/4;
+      ctx.beginPath();
+      for(let k=0;k<=30;k++){
+        const p=proj(...sph(sh.r, th, k/30*Math.PI));
+        k?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);
+      }
+      ctx.strokeStyle=`oklch(0.78 0.12 200 / ${sh.al})`; ctx.lineWidth=1; ctx.stroke();
+    }
+  });
+
+  if(!rm) for(const pu of pulses){
+    pu.k+=pu.s; if(pu.k>1) pu.k=0;
+    const sh=shells[pu.shell], o=spin*sh.sp+pu.shell*.7;
+    const p=proj(...sph(sh.r, o+pu.m*Math.PI/4, pu.k*Math.PI));
+    ctx.fillStyle=`oklch(0.92 0.10 200 / ${.25+.65*p[2]})`;
+    ctx.beginPath(); ctx.arc(p[0],p[1],2.1,0,6.29); ctx.fill();
+  }
+
+  const ring=base*1.22;
+  ctx.textAlign="center"; ctx.font="600 13px 'Fira Code'";
+  for(let k=0;k<26;k++){
+    const a=(rm?0:-t*.00025)+k/26*Math.PI*2;
+    const p=proj(Math.cos(a)*ring, base*.06*Math.sin(k*2.1), Math.sin(a)*ring);
+    ctx.fillStyle=`oklch(0.82 0.12 200 / ${.08+.5*p[2]*p[2]})`;
+    ctx.fillText(KATA[k%KATA.length], p[0], p[1]);
+  }
+
+  const core=proj(0,0,0);
+  ctx.fillStyle=ACCHI; ctx.beginPath(); ctx.arc(core[0],core[1],3,0,6.29); ctx.fill();
+  ctx.strokeStyle=DIM; ctx.beginPath(); ctx.arc(core[0],core[1],7,0,6.29); ctx.stroke();
+
+  ctx.font="700 11px 'Rajdhani'"; ctx.textAlign="left";
+  ctx.fillStyle=FNT; ctx.fillText("CYBERBRAIN SHELL · 3 LAYERS", 22, 30);
+  ctx.fillStyle=DIM; ctx.fillText("DRAG TO ROTATE", 22, 46);
+  hud.innerHTML=`<span class="h2">shell · barrier maze</span><b>three attack barriers</b> · pulses are live ipc frames, the core is the journal`;
+}
+
+cv.addEventListener("pointerdown",e=>{dragging=true;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId)});
+cv.addEventListener("pointermove",e=>{
+  const r=cv.getBoundingClientRect(); mx=e.clientX-r.left; my=e.clientY-r.top;
+  if(dragging&&mode==="depth"){ ry+=(e.clientX-lx)*.006; rx+=(e.clientY-ly)*.006; rx=Math.max(-1.4,Math.min(1.4,rx)); lx=e.clientX; ly=e.clientY; if(rm) draw() }
+});
+cv.addEventListener("pointerup",()=>dragging=false);
+cv.addEventListener("pointerleave",()=>{mx=my=-1});
+
+function draw(){ mode==="graph"?drawGraph():drawDepth() }
+function loop(ts){ t=ts; draw(); requestAnimationFrame(loop) }
+resize();
+if(rm){ draw(); setInterval(()=>{ if(mode==="graph") draw() },500) } else requestAnimationFrame(loop);
+
+const bG=document.getElementById("mGraph"), bD=document.getElementById("mDepth");
+function setMode(m){
+  mode=m;
+  bG.setAttribute("aria-pressed",m==="graph"); bD.setAttribute("aria-pressed",m==="depth");
+  sub.textContent = m==="graph"?"system graph · journal derived":"cyberbrain shell · barrier view";
+  if(rm) draw();
+}
+bG.onclick=()=>setMode("graph"); bD.onclick=()=>setMode("depth");
+
+const scroll=document.getElementById("scroll"), inp=document.getElementById("inp");
+const replies=[
+  "Copy. re-grounded against the journal before acting, the checker artifact is the authority here. one finding, patch staged",
+  "The net is vast, the evidence is not. verdict attached at the cited seq, gate untouched",
+  "That claim had no artifact behind it, so i ran the probe instead of speculating. results in the journal",
+  "Executor deployed with a scoped package. whisper to my ghost if the audit blocks"
+];
+let ri=0;
+function addMsg(role,html,meta){
+  const d=document.createElement("div"); d.className="msg "+role;
+  d.innerHTML=`<div class="who">${role==="user"?"major · operator":"s9 core · elai"}</div><div class="body">${html}</div>${meta?`<div class="meta">${meta}</div>`:""}`;
+  document.querySelector(".msg.stream")?.classList.remove("stream");
+  scroll.appendChild(d); scroll.scrollTop=scroll.scrollHeight;
+}
+function send(){
+  const v=inp.value.trim(); if(!v) return;
+  addMsg("user",v.replace(/</g,"&lt;")); inp.value="";
+  setTimeout(()=>addMsg("ai",`<p>${replies[ri++%replies.length]}</p><div class="chips"><span class="chip pass">grounded</span><span class="chip acc">seq ${4821+ri}</span></div>`,`seq ${4821+ri} · replied`), rm?60:650);
+}
+document.getElementById("send").onclick=send;
+inp.addEventListener("keydown",e=>{ if(e.key==="Enter") send() });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELIZA/OS — phosphor harness</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg: oklch(0.115 0.016 150);
+  --bg-deep: oklch(0.085 0.014 150);
+  --panel: oklch(0.145 0.020 150);
+  --raised: oklch(0.18 0.024 150);
+  --line: oklch(0.34 0.06 148 / .55);
+  --line-soft: oklch(0.28 0.05 148 / .35);
+  --accent: oklch(0.82 0.21 147);
+  --accent-hi: oklch(0.92 0.19 145);
+  --accent-dim: oklch(0.55 0.13 148);
+  --accent-wash: oklch(0.82 0.21 147 / .08);
+  --text: oklch(0.86 0.11 147);
+  --muted: oklch(0.62 0.08 148);
+  --faint: oklch(0.45 0.06 148);
+  --warn: oklch(0.84 0.15 95);
+  --z-base:0; --z-chrome:10; --z-overlay:20;
+  --crt: "VT323", monospace;
+  --mono: "IBM Plex Mono", monospace;
+}
+*{ box-sizing:border-box; margin:0; padding:0 }
+html,body{ height:100% }
+body{
+  background:var(--bg-deep);
+  color:var(--text);
+  font:400 17px/1.5 var(--crt);
+  overflow:hidden;
+}
+body::before{
+  content:""; position:fixed; inset:0; z-index:var(--z-overlay); pointer-events:none;
+  background:
+    radial-gradient(ellipse 120% 90% at 50% 50%, transparent 62%, oklch(0 0 0 / .5) 100%),
+    repeating-linear-gradient(0deg, oklch(0 0 0 / .14) 0 1px, transparent 1px 3px);
+}
+@media (prefers-reduced-motion: no-preference){
+  body::after{
+    content:""; position:fixed; inset:0; z-index:var(--z-overlay); pointer-events:none;
+    background: oklch(0.82 0.21 147 / .022);
+    animation: flick 4.9s steps(1) infinite;
+  }
+  @keyframes flick{ 0%,100%{opacity:0} 31%{opacity:1} 32%{opacity:0} 78%{opacity:1} 79.5%{opacity:0} }
+}
+.app{ display:grid; grid-template-columns: 236px minmax(380px,34%) 1fr; height:100vh; gap:1px; background:var(--line-soft) }
+.app > *{ background:var(--bg) }
+
+.side{ display:flex; flex-direction:column; background:var(--bg-deep) }
+.brand{ padding:18px 16px 14px; border-bottom:1px solid var(--line) }
+.brand h1{ font:400 34px/1 var(--crt); color:var(--accent-hi); letter-spacing:.04em; text-shadow:0 0 8px oklch(0.82 0.21 147 / .5) }
+.brand small{ display:block; margin-top:3px; color:var(--faint); font-size:14px; letter-spacing:.14em }
+.side-sec{ padding:13px 16px; border-bottom:1px solid var(--line-soft) }
+.side-sec h2{ font-size:15px; color:var(--muted); letter-spacing:.18em; margin-bottom:8px }
+.side-sec h2::before{ content:"── " } .side-sec h2::after{ content:" ──"; }
+.fsm{ list-style:none }
+.fsm li{ padding:1.5px 0; font-size:16px; color:var(--faint); letter-spacing:.08em }
+.fsm li::before{ content:"[ ] "; }
+.fsm li.done{ color:var(--muted) } .fsm li.done::before{ content:"[x] " }
+.fsm li.now{ color:var(--accent-hi); text-shadow:0 0 6px oklch(0.82 0.21 147 / .55) }
+.fsm li.now::before{ content:"[▮] " }
+.fsm li.now::after{ content:" ◀" }
+.agents{ list-style:none }
+.agents li{ display:flex; justify-content:space-between; font-size:16px; padding:1.5px 0 }
+.agents .nm::before{ content:"· " ; color:var(--accent-dim) }
+.agents .st{ color:var(--faint); font-size:14px; letter-spacing:.1em }
+.agents li.run .nm{ color:var(--accent-hi) }
+.agents li.run .st{ color:var(--accent-dim) }
+.ascii-meter{ font-size:15px; color:var(--muted); letter-spacing:.02em; white-space:pre; line-height:1.7 }
+.ascii-meter b{ color:var(--accent); font-weight:400 }
+.side-foot{ margin-top:auto; padding:12px 16px; border-top:1px solid var(--line); font-size:14px; color:var(--muted); letter-spacing:.12em }
+.side-foot b{ color:var(--accent); font-weight:400 }
+@media (prefers-reduced-motion: no-preference){ .blink{ animation: bl 1.1s steps(2) infinite } @keyframes bl{ 50%{opacity:0} } }
+
+.chat{ display:flex; flex-direction:column; min-width:0 }
+.chat-head{ display:flex; align-items:baseline; gap:12px; padding:12px 18px; border-bottom:1px solid var(--line); background:var(--bg-deep) }
+.chat-head h2{ font-size:22px; letter-spacing:.14em; color:var(--accent-hi) }
+.chip{ font-size:13px; letter-spacing:.12em; padding:1px 8px; border:1px solid var(--line); color:var(--muted); white-space:nowrap }
+.chip.acc{ color:var(--accent-hi); border-color:var(--accent-dim); background:var(--accent-wash) }
+.chip.warn{ color:var(--warn); border-color:oklch(0.84 0.15 95 / .4) }
+.chat-head .chip:last-child{ margin-left:auto }
+.scroll{ flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:14px; scrollbar-width:thin; scrollbar-color:var(--raised) transparent }
+.boot{ color:var(--faint); font-size:15px; line-height:1.55; white-space:pre-wrap }
+.boot b{ color:var(--muted); font-weight:400 }
+
+.msg{ max-width:94%; display:flex; flex-direction:column; gap:3px }
+.msg .who{ font-size:14px; letter-spacing:.22em; color:var(--faint) }
+.msg .meta{ font-size:13px; color:var(--faint); letter-spacing:.1em }
+.msg.user{ align-self:flex-end; align-items:flex-end }
+.msg.user .body{
+  border:1px dashed var(--accent-dim); background:var(--accent-wash);
+  color:var(--text); padding:9px 13px; font-size:18px;
+}
+.msg.user .body::before{ content:"YOU> "; color:var(--accent-dim) }
+.msg.ai{ align-self:flex-start }
+.msg.ai .who{ color:var(--accent-dim) }
+.msg.ai .body{
+  border:1px solid var(--line); border-left:3px double var(--accent);
+  background:var(--panel); padding:11px 15px; font-size:18px;
+  color:var(--accent-hi); text-shadow:0 0 7px oklch(0.82 0.21 147 / .30);
+}
+.body p{ margin:0 0 9px } .body p:last-child{ margin-bottom:0 }
+.body .k{ color:var(--warn) }
+.findings{ list-style:none; margin:8px 0; color:var(--text); text-shadow:none }
+.findings li{ padding-left:22px; position:relative; margin:3px 0 }
+.findings li::before{ content:">>"; position:absolute; left:0; color:var(--accent-dim) }
+.findings li b{ color:var(--accent-hi); font-weight:400 }
+.code{ margin:10px 0; border:1px solid var(--line); background:var(--bg-deep); text-shadow:none }
+.code-h{ display:flex; justify-content:space-between; padding:4px 11px; border-bottom:1px solid var(--line-soft); font-size:13px; letter-spacing:.14em; color:var(--faint); font-family:var(--mono) }
+.code pre{ padding:10px 13px; overflow-x:auto; font:400 12.5px/1.65 var(--mono); color:var(--text) }
+.cd-k{ color:var(--accent-hi) } .cd-t{ color:var(--warn) } .cd-s{ color:var(--muted) }
+.chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; text-shadow:none }
+.stream .body::after{ content:"▮"; margin-left:3px }
+@media (prefers-reduced-motion: no-preference){ .stream .body::after{ animation: bl 0.9s steps(2) infinite } }
+.composer{ display:flex; align-items:center; gap:0; padding:12px 18px 16px; border-top:1px solid var(--line); background:var(--bg-deep) }
+.composer .ps1{ color:var(--accent); font-size:20px; margin-right:10px; text-shadow:0 0 7px oklch(0.82 0.21 147 / .4) }
+.composer input{
+  flex:1; background:transparent; border:0; border-bottom:1px solid var(--line);
+  color:var(--accent-hi); font:400 19px var(--crt); padding:6px 2px; outline:none;
+  text-shadow:0 0 7px oklch(0.82 0.21 147 / .3); caret-color: var(--accent);
+}
+.composer input::placeholder{ color:var(--faint); text-shadow:none }
+.composer input:focus{ border-bottom-color:var(--accent-dim) }
+.composer button{
+  background:transparent; border:1px solid var(--accent-dim); color:var(--accent-hi); cursor:pointer;
+  font:400 17px var(--crt); letter-spacing:.2em; padding:5px 16px; margin-left:12px;
+}
+.composer button:hover{ background:var(--accent-wash) }
+
+.cnv{ display:flex; flex-direction:column; min-width:0; background:var(--bg-deep) }
+.cnv-head{ display:flex; align-items:baseline; gap:14px; padding:12px 20px; border-bottom:1px solid var(--line) }
+.cnv-head h2{ font-size:22px; letter-spacing:.14em; color:var(--accent-hi) }
+.cnv-head .sub{ color:var(--faint); font-size:14px; letter-spacing:.14em }
+.modes{ margin-left:auto; display:flex; gap:8px }
+.modes button{
+  background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer;
+  font:400 16px var(--crt); letter-spacing:.16em; padding:4px 14px;
+}
+.modes button[aria-pressed="true"]{ border-color:var(--accent-dim); color:var(--accent-hi); background:var(--accent-wash); text-shadow:0 0 6px oklch(0.82 0.21 147 / .4) }
+.stage{ position:relative; flex:1; min-height:0 }
+canvas{ position:absolute; inset:0; width:100%; height:100%; display:block }
+.hud{
+  position:absolute; left:16px; bottom:14px; z-index:var(--z-chrome);
+  border:1px solid var(--line); background:oklch(0.09 0.014 150 / .9);
+  padding:7px 12px; font-size:15px; color:var(--muted); letter-spacing:.06em; max-width:380px;
+}
+.hud b{ color:var(--accent-hi); font-weight:400 }
+.hud .h2{ display:block; font-size:13px; color:var(--faint); letter-spacing:.2em; margin-bottom:1px }
+.legend{ position:absolute; right:16px; top:12px; z-index:var(--z-chrome); font-size:14px; color:var(--faint); letter-spacing:.1em; display:flex; gap:14px }
+.legend b{ color:var(--accent); font-weight:400 }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="brand">
+      <h1>ELIZA/OS</h1>
+      <small>v59 · phosphor harness · est.1966</small>
+    </div>
+    <div class="side-sec">
+      <h2>MACHINE STATE</h2>
+      <ul class="fsm">
+        <li class="done">IDLE</li>
+        <li class="done">PLANNING</li>
+        <li class="done">TESTING_FIRST</li>
+        <li class="now">EXECUTING</li>
+        <li>AUDITING</li>
+        <li>MEMORIZING</li>
+        <li>COMPLETE</li>
+      </ul>
+    </div>
+    <div class="side-sec">
+      <h2>PROCESSES</h2>
+      <ul class="agents">
+        <li class="run"><span class="nm">executor</span><span class="st">RUNNING</span></li>
+        <li><span class="nm">auditor</span><span class="st">WAITING</span></li>
+        <li><span class="nm">ctx-compiler</span><span class="st">RETURNED</span></li>
+        <li><span class="nm">memory-writer</span><span class="st">QUEUED</span></li>
+      </ul>
+    </div>
+    <div class="side-sec">
+      <h2>CORE MEMORY</h2>
+      <div class="ascii-meter">CTX [<b>████████████</b>·······] 62%
+TOK  19.8K / 32.0K
+$$$ [<b>████</b>················] $0.41</div>
+    </div>
+    <div class="side-sec">
+      <h2>JOURNAL</h2>
+      <div class="ascii-meter">SEQ  <b>4821</b>  APPEND-ONLY
+GATE <b>7/7</b>   ALL GREEN
+LOCK <b>FROZEN</b> READ-ONLY</div>
+    </div>
+    <div class="side-foot">SSB LINK <b>LIVE</b> <span class="blink">▮</span></div>
+  </aside>
+
+  <section class="chat">
+    <header class="chat-head">
+      <h2>TRANSCRIPT</h2>
+      <span class="chip acc">b15-phase0</span>
+      <span class="chip">qwen-7b local</span>
+      <span class="chip">TTY-04</span>
+    </header>
+    <div class="scroll" id="scroll">
+      <div class="boot">ELIZA/OS 59.1 — CTSS COMPATIBLE MODE
+LOADING DOCTOR SCRIPT........... <b>OK</b>
+LOADING HARNESS EXTENSIONS...... <b>OK  (fsm, ssb, gates, sandbox)</b>
+JOURNAL INTEGRITY CHECK......... <b>OK  blake3 chain valid</b>
+HOW DO YOU DO. PLEASE TELL ME YOUR PROBLEM.</div>
+
+      <div class="msg user">
+        <div class="who">OPERATOR · TTY-04</div>
+        <div class="body">the auditor blocked b15 phase0. i think the wiring contract fields are stale. find out why and propose the fix, do not touch the gate</div>
+      </div>
+
+      <div class="msg ai">
+        <div class="who">ELIZA · HARNESS CORE</div>
+        <div class="body">
+          <p>I HEAR THAT THE BLOCK TROUBLES YOU. IT SHOULD NOT. IT IS CORRECT, AND IT IS UPSTREAM OF THE CONTRACT. I READ THE CHECKER ARTIFACT AT <span class="k">SEQ 4788</span> INSTEAD OF TRUSTING ANYONE'S SUMMARY, INCLUDING MY OWN.</p>
+          <ul class="findings">
+            <li><b>produces</b> declares VramTierEvent. the splitter has emitted PhaseSizingEvent since the rebaseline. stale field, correct code</li>
+            <li><b>reachable_from</b> names runtime_builder::wire_probe, a seam deleted in the rebaseline. dead seam, hard fail per R1</li>
+            <li>the gate is frozen. i did not touch it. i will not touch it</li>
+          </ul>
+          <div class="code">
+            <div class="code-h"><span>fulb_phase_sizing_splitter_contract.rs</span><span>PATCH +2 −2</span></div>
+            <pre><span class="cd-k">let</span> contract = WiringContract {
+    produces:       <span class="cd-s">"PhaseSizingEvent"</span>,
+    consumes:       <span class="cd-s">"VramTierProbe"</span>,
+    reachable_from: <span class="cd-s">"runtime_builder::activate_profile"</span>,
+    observable:     Observable::<span class="cd-t">SsbRow</span>(<span class="cd-s">"phase_sizing_applied"</span>),
+};</pre>
+          </div>
+          <div class="chips">
+            <span class="chip acc">L1 VETO PASS</span>
+            <span class="chip acc">GROUNDED 3/3</span>
+            <span class="chip">EVIDENCE SEQ 4788</span>
+          </div>
+        </div>
+        <div class="meta">SEQ 4790 · 1.4K TOK · OBSERVE→VERIFY</div>
+      </div>
+
+      <div class="msg user">
+        <div class="who">OPERATOR · TTY-04</div>
+        <div class="body">good. apply it and rerun only the contract test</div>
+      </div>
+
+      <div class="msg ai stream">
+        <div class="who">ELIZA · HARNESS CORE</div>
+        <div class="body">
+          <p>APPLIED. THE AUDITOR RUNS THE TEST, NOT I. DISPATCHED ON <span class="k">-p contracts</span>, SCOPE OF ONE. WE WILL SPEAK AGAIN WHEN THE ARTIFACT LANDS</p>
+          <div class="chips">
+            <span class="chip warn">EXECUTING · AUDITOR LIVE</span>
+            <span class="chip">SCOPE 1 TEST</span>
+          </div>
+        </div>
+        <div class="meta">SEQ 4821 · STREAMING</div>
+      </div>
+    </div>
+    <div class="composer">
+      <span class="ps1">&gt;</span>
+      <input id="inp" type="text" placeholder="please state your problem" autocomplete="off">
+      <button id="send">XMIT</button>
+    </div>
+  </section>
+
+  <section class="cnv">
+    <header class="cnv-head">
+      <h2>SCOPE</h2>
+      <span class="sub" id="cnvsub">SYSTEM GRAPH · JOURNAL DERIVED</span>
+      <div class="modes" role="group" aria-label="canvas mode">
+        <button id="mGraph" aria-pressed="true">GRAPH</button>
+        <button id="mDepth" aria-pressed="false">CORE</button>
+      </div>
+    </header>
+    <div class="stage" id="stage">
+      <canvas id="cv"></canvas>
+      <div class="legend"><span><b>▮</b> HOT PATH</span><span>▯ REACHABLE</span></div>
+      <div class="hud" id="hud"><span class="h2">SCOPE · GRAPH</span><b>HOVER A NODE</b> · edges are verified wiring claims, not guesses</div>
+    </div>
+  </section>
+
+</div>
+<script>
+(() => {
+const rm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
+const stage=document.getElementById("stage"), hud=document.getElementById("hud"), sub=document.getElementById("cnvsub");
+let W=0,H=0,DPR=1, mode="graph", t=0;
+
+const ACC="oklch(0.82 0.21 147)", ACCHI="oklch(0.93 0.19 145)", DIM="oklch(0.55 0.13 148)";
+const TXT="oklch(0.86 0.11 147)", MUT="oklch(0.62 0.08 148)", FNT="oklch(0.44 0.06 148)";
+
+function resize(){
+  DPR=Math.min(devicePixelRatio||1,2);
+  W=stage.clientWidth; H=stage.clientHeight;
+  cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+  if(rm) draw();
+}
+new ResizeObserver(resize).observe(stage);
+
+const N=[
+  ["ORCH","ORCHESTRATOR",.50,.42,1],["FSM","FSM",.31,.29,0],["SSB","SSB JOURNAL",.68,.29,1],
+  ["GATE","GATE STACK",.69,.58,1],["GRC","GRC",.31,.58,0],["KNOW","KNOWLEDGE",.15,.43,0],
+  ["DKG","DKG",.07,.30,0],["VEC","VECTORS",.07,.56,0],["SBX","SANDBOX",.50,.73,1],
+  ["EXE","EXECUTOR",.36,.88,1],["AUD","AUDITOR",.64,.88,0],["SID","SIDECAR",.86,.44,0],
+  ["CLD","CLOUD",.87,.18,0],["DSH","DASHBOARD",.50,.12,0],["MEM","MEMORY·VCG",.18,.74,0]
+].map(([id,label,x,y,hot],i)=>({id,label,x,y,hot,ph:i*1.7}));
+const IX=Object.fromEntries(N.map((n,i)=>[n.id,i]));
+const E=[["ORCH","FSM",0],["ORCH","SSB",1],["ORCH","GATE",1],["ORCH","GRC",0],["ORCH","KNOW",0],
+["ORCH","SBX",1],["ORCH","SID",0],["SSB","DSH",0],["SSB","GATE",1],["SSB","MEM",0],["GATE","AUD",0],
+["GRC","EXE",0],["KNOW","DKG",0],["KNOW","VEC",0],["SBX","EXE",1],["SBX","AUD",0],["SID","CLD",0],
+["MEM","KNOW",0],["FSM","DSH",0]].map(([a,b,hot])=>({a:IX[a],b:IX[b],hot}));
+
+let hover=-1, mx=-1, my=-1;
+const pad=76;
+const px=n=>pad+n.x*(W-2*pad);
+const py=n=>54+n.y*(H-116);
+const boxW=n=>n.label.length*8.6+22, boxH=22;
+
+function drawGraph(){
+  ctx.clearRect(0,0,W,H);
+  ctx.font="15px 'VT323'";
+  for(const e of E){
+    const a=N[e.a], b=N[e.b], lit=hover===e.a||hover===e.b;
+    ctx.strokeStyle=lit?ACCHI:(e.hot?DIM:"oklch(0.34 0.06 148 / .5)");
+    ctx.lineWidth=lit?1.5:1;
+    if(e.hot) ctx.setLineDash([]); else ctx.setLineDash([3,4]);
+    ctx.beginPath(); ctx.moveTo(px(a),py(a)); ctx.lineTo(px(b),py(b)); ctx.stroke();
+    ctx.setLineDash([]);
+    if(e.hot&&!rm){
+      const k=(t*.0003+e.a*.17)%1;
+      const qx=px(a)+(px(b)-px(a))*k, qy=py(a)+(py(b)-py(a))*k;
+      ctx.fillStyle=ACCHI;
+      ctx.fillText("*", qx-3, qy+4);
+    }
+  }
+  hover=-1;
+  for(let i=0;i<N.length;i++){
+    const n=N[i];
+    if(Math.abs(mx-px(n))<boxW(n)/2+6 && Math.abs(my-py(n))<boxH/2+8) hover=i;
+  }
+  for(let i=0;i<N.length;i++){
+    const n=N[i], x=px(n), y=py(n), lit=i===hover, bw=boxW(n);
+    ctx.fillStyle=lit?"oklch(0.20 0.045 148)":(n.hot?"oklch(0.16 0.03 148)":"oklch(0.125 0.018 150)");
+    ctx.strokeStyle=lit?ACCHI:(n.hot?ACC:"oklch(0.38 0.07 148)");
+    ctx.lineWidth=lit?1.6:1;
+    ctx.fillRect(x-bw/2,y-boxH/2,bw,boxH);
+    ctx.strokeRect(x-bw/2,y-boxH/2,bw,boxH);
+    if(n.hot){
+      ctx.strokeStyle=lit?ACCHI:DIM;
+      ctx.strokeRect(x-bw/2-3,y-boxH/2-3,bw+6,boxH+6);
+    }
+    ctx.font="16px 'VT323'"; ctx.textAlign="center";
+    ctx.fillStyle=lit?ACCHI:(n.hot?TXT:MUT);
+    if(lit||n.hot){ ctx.shadowColor="oklch(0.82 0.21 147 / .6)"; ctx.shadowBlur=7 }
+    ctx.fillText(n.label, x, y+5);
+    ctx.shadowBlur=0;
+  }
+  hud.innerHTML = hover>=0
+    ? `<span class="h2">SCOPE · NODE</span><b>${N[hover].label}</b> · ${E.filter(e=>e.a===hover||e.b===hover).length} VERIFIED EDGES · ${N[hover].hot?"HOT PATH":"REACHABLE"}`
+    : `<span class="h2">SCOPE · GRAPH</span><b>HOVER A NODE</b> · edges are verified wiring claims, not guesses`;
+}
+
+let rx=-.30, ry=.4, dragging=false, lx=0, ly=0;
+const GLYPHS="ELIZA*10<>[]#%";
+const RINGS=22, SEG=42;
+
+function proj(x,y,z){
+  let c=Math.cos(ry), s=Math.sin(ry);
+  let x1=x*c-z*s, z1=x*s+z*c;
+  c=Math.cos(rx); s=Math.sin(rx);
+  let y1=y*c-z1*s, z2=y*s+z1*c;
+  const f=650/(650+z2+380);
+  return [W/2+x1*f, H/2+y1*f, f];
+}
+function drawDepth(){
+  ctx.clearRect(0,0,W,H);
+  const base=Math.min(W,H)*.34;
+  const spin=rm?0:t*.0002;
+
+  for(let i=0;i<RINGS;i++){
+    const u=i/(RINGS-1);
+    const y=(u-.5)*base*2.5;
+    const r=base*(0.28+0.9*Math.pow(Math.sin(Math.PI*u),1.4));
+    const wob = rm?0:Math.sin(t*.0011+i*.8)*base*.015;
+    ctx.beginPath();
+    let zs=0;
+    for(let k=0;k<=SEG;k++){
+      const a=spin*(i%2?1.4:-1)+k/SEG*Math.PI*2;
+      const p=proj(Math.cos(a)*(r+wob), y, Math.sin(a)*(r+wob));
+      k?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);
+      zs+=p[2];
+    }
+    const depth=zs/(SEG+1);
+    const mid = Math.abs(u-.5)<.03;
+    ctx.strokeStyle = mid?ACCHI:`oklch(0.80 0.20 147 / ${.10+.55*Math.pow(depth,2)})`;
+    ctx.lineWidth = mid?1.7:1;
+    if(mid){ ctx.shadowColor="oklch(0.82 0.21 147 / .7)"; ctx.shadowBlur=9 }
+    ctx.stroke();
+    ctx.shadowBlur=0;
+  }
+
+  ctx.font="15px 'VT323'"; ctx.textAlign="center";
+  for(let k=0;k<64;k++){
+    const u=k/63;
+    const y=(u-.5)*base*2.9;
+    const a=(rm?0:t*.0005)+u*Math.PI*7;
+    const r=base*(0.32+0.95*Math.pow(Math.sin(Math.PI*Math.min(Math.max(u,.02),.98)),1.4))+16;
+    const p=proj(Math.cos(a)*r, y, Math.sin(a)*r);
+    ctx.fillStyle=`oklch(0.88 0.19 146 / ${.06+.7*Math.pow(p[2],2.4)})`;
+    ctx.fillText(GLYPHS[(k*7)%GLYPHS.length], p[0], p[1]);
+  }
+
+  const top=proj(0,-base*1.45,0), bot=proj(0,base*1.45,0);
+  ctx.strokeStyle=DIM; ctx.setLineDash([2,5]);
+  ctx.beginPath(); ctx.moveTo(top[0],top[1]); ctx.lineTo(bot[0],bot[1]); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle=ACCHI;
+  ctx.fillText("▲", top[0], top[1]-6);
+
+  ctx.font="18px 'VT323'"; ctx.textAlign="left";
+  ctx.fillStyle=FNT; ctx.fillText("THE CORE · REEL 07", 20, 32);
+  ctx.fillStyle=DIM; ctx.fillText("DRAG TO ROTATE", 20, 52);
+  hud.innerHTML=`<span class="h2">SCOPE · CORE</span><b>MEMORY SPOOL</b> · each ring is a superstep, the bright ring is now, glyphs are journal rows`;
+}
+
+cv.addEventListener("pointerdown",e=>{dragging=true;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId)});
+cv.addEventListener("pointermove",e=>{
+  const r=cv.getBoundingClientRect(); mx=e.clientX-r.left; my=e.clientY-r.top;
+  if(dragging&&mode==="depth"){ ry+=(e.clientX-lx)*.006; rx+=(e.clientY-ly)*.006; rx=Math.max(-1.4,Math.min(1.4,rx)); lx=e.clientX; ly=e.clientY; if(rm) draw() }
+});
+cv.addEventListener("pointerup",()=>dragging=false);
+cv.addEventListener("pointerleave",()=>{mx=my=-1});
+
+function draw(){ mode==="graph"?drawGraph():drawDepth() }
+function loop(ts){ t=ts; draw(); requestAnimationFrame(loop) }
+resize();
+if(rm){ draw(); setInterval(()=>{ if(mode==="graph") draw() },500) } else requestAnimationFrame(loop);
+
+const bG=document.getElementById("mGraph"), bD=document.getElementById("mDepth");
+function setMode(m){
+  mode=m;
+  bG.setAttribute("aria-pressed",m==="graph"); bD.setAttribute("aria-pressed",m==="depth");
+  sub.textContent = m==="graph"?"SYSTEM GRAPH · JOURNAL DERIVED":"THE CORE · MEMORY SPOOL";
+  if(rm) draw();
+}
+bG.onclick=()=>setMode("graph"); bD.onclick=()=>setMode("depth");
+
+const scroll=document.getElementById("scroll"), inp=document.getElementById("inp");
+const fallbacks=["PLEASE GO ON.","WHAT DOES THAT SUGGEST TO YOU?","I SEE. TELL ME MORE.","DOES THAT TROUBLE YOU?","AND HOW DOES THE JOURNAL FEEL ABOUT THAT? IT REMEMBERS EVERYTHING."];
+let fi=0;
+function elizaReply(s){
+  const v=s.toLowerCase();
+  let m;
+  if(m=v.match(/\bmy ([a-z0-9_ .:-]+)/)) return `TELL ME MORE ABOUT YOUR ${m[1].toUpperCase().trim()}.`;
+  if(m=v.match(/\bi(?:'| a)?m ([a-z0-9_ .:-]+)/)) return `HOW LONG HAVE YOU BEEN ${m[1].toUpperCase().trim()}?`;
+  if(m=v.match(/\b(fix|debug|trace|wire|build|run|test) (.+)/)) return `VERY WELL. I WILL ${m[1].toUpperCase()} ${m[2].toUpperCase().replace(/</g,"&lt;")}, AND THE EVIDENCE WILL BE JOURNALED WHERE YOU CAN AUDIT IT.`;
+  if(v.endsWith("?")) return "WHY DO YOU ASK? THE JOURNAL HOLDS THE ANSWER AT THE SEQ I CITE.";
+  if(v.includes("because")) return "IS THAT THE REAL REASON? SHOW ME THE ARTIFACT.";
+  return fallbacks[fi++%fallbacks.length];
+}
+function addMsg(role,html,meta){
+  const d=document.createElement("div"); d.className="msg "+role;
+  d.innerHTML=`<div class="who">${role==="user"?"OPERATOR · TTY-04":"ELIZA · HARNESS CORE"}</div><div class="body">${html}</div>${meta?`<div class="meta">${meta}</div>`:""}`;
+  document.querySelector(".msg.stream")?.classList.remove("stream");
+  scroll.appendChild(d); scroll.scrollTop=scroll.scrollHeight;
+  return d;
+}
+let seq=4821;
+function send(){
+  const v=inp.value.trim(); if(!v) return;
+  addMsg("user",v.replace(/</g,"&lt;")); inp.value="";
+  const full=elizaReply(v);
+  seq++;
+  setTimeout(()=>{
+    const d=addMsg("ai","<p></p>",`SEQ ${seq} · REPLIED`);
+    const p=d.querySelector("p");
+    if(rm){ p.textContent=full; return }
+    let i=0;
+    const tick=setInterval(()=>{
+      p.textContent=full.slice(0,++i);
+      scroll.scrollTop=scroll.scrollHeight;
+      if(i>=full.length) clearInterval(tick);
+    },14);
+  }, rm?60:500);
+}
+document.getElementById("send").onclick=send;
+inp.addEventListener("keydown",e=>{ if(e.key==="Enter") send() });
+})();
+</script>
+</body>
+</html>

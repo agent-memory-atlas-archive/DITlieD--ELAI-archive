@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — retro-terminal directions</title>
+<!-- Mockup: fonts from Google CDN so this file is standalone. Production bundles them.
+     Offline falls back to ui-monospace. References grounded in: cool-retro-term
+     (phosphor/scanline/bloom/burn-in), Ghost in the Shell 1995 (teal HUD console),
+     Serial Experiments Lain (analog decay, muted CRT). Locked: teal accent,
+     white mono-inversion for errors (never red/yellow), high contrast, no glyph symbols. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Share+Tech+Mono&family=Space+Mono:wght@400;700&family=Chakra+Petch:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0f0e; --sink:#070b0a; --line:rgba(255,255,255,.16); --line2:rgba(255,255,255,.10);
+    --text:#eef2f0; --read:#c2c9c5; --dim:#727b77; --ghost:#39413d;
+    --teal:#2BBBA4; --teal-deep:#1B7A6E; --teal-soft:rgba(43,187,164,.42); --teal-ghost:rgba(43,187,164,.12);
+    --invert-bg:#eef2f0; --invert-fg:#05100e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg); color:var(--text); font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:13px; line-height:1.55; -webkit-font-smoothing:antialiased; padding-bottom:90px}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+
+  header.top{position:sticky; top:0; z-index:50; background:var(--bg); border-bottom:1px solid var(--line); padding:13px 24px; display:flex; align-items:center; gap:18px; flex-wrap:wrap}
+  header.top .wm{font-weight:600; letter-spacing:.24em; color:var(--text)}
+  header.top .sub{color:var(--dim); font-size:11px}
+  header.top .ctl{margin-left:auto; display:flex; gap:14px; align-items:center; flex-wrap:wrap}
+  header.top nav{display:flex; gap:6px}
+  header.top nav a{color:var(--dim); text-decoration:none; font-size:11px; padding:5px 9px; border:1px solid transparent}
+  header.top nav a:hover{color:var(--text); border-color:var(--line)}
+  .fxtoggle{display:flex; align-items:center; gap:7px; color:var(--dim); font-size:11px; cursor:pointer; user-select:none}
+  .fxtoggle input{accent-color:var(--teal)}
+
+  main{max-width:1020px; margin:0 auto; padding:0 24px}
+  section.dir{padding:34px 0 18px; border-bottom:1px solid var(--line); position:relative}
+  .dir-head{display:flex; align-items:baseline; gap:14px; margin-bottom:5px; flex-wrap:wrap}
+  .dir-head h2{margin:0; font-size:15px; font-weight:600; color:var(--text)}
+  .dir-head .tag{font-size:10px; letter-spacing:.24em; text-transform:uppercase; color:var(--teal)}
+  .dir-head .axis{font-size:10px; letter-spacing:.06em; color:var(--dim); margin-left:auto}
+  .dir-why{color:var(--read); font-size:12px; margin:0 0 20px; max-width:800px}
+  .dir-why b{color:var(--text); font-weight:600}
+
+  /* shared work surface */
+  .surface{display:grid; grid-template-columns:1.4fr 1fr; gap:18px; align-items:start; position:relative}
+  @media (max-width:780px){.surface{grid-template-columns:1fr}}
+  .caplbl{font-size:9.5px; letter-spacing:.22em; text-transform:uppercase; color:var(--dim); margin-bottom:7px}
+  .panel{border:1px solid var(--line); background:var(--sink); position:relative}
+  .panel .bt{display:flex; align-items:center; justify-content:space-between; padding:9px 13px; border-bottom:1px solid var(--line)}
+  .panel .bt .t{font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--read)}
+  .panel .bt .c{font-size:11px; color:var(--dim)}
+  .phead{display:flex; align-items:center; gap:9px; padding:8px 13px; color:var(--read); font-size:12px; border-bottom:1px solid var(--line)}
+  .phead .pill{font-size:9.5px; color:var(--dim); border:1px solid var(--line); padding:1px 6px}
+
+  .rowh,.row{display:grid; grid-template-columns:1fr 68px 74px; gap:10px; align-items:center; padding:8px 13px}
+  .rowh{color:var(--read); font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; border-bottom:1px solid var(--line)}
+  .row{border-bottom:1px solid var(--line2); color:var(--text); border-left:2px solid transparent}
+  .row:last-child{border-bottom:0}
+  .row .nm{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .stt{font-size:11px; letter-spacing:.02em; color:var(--dim)}
+  .stt.run{color:var(--teal)}
+  .pg{font-variant-numeric:tabular-nums; text-align:right; color:var(--read); font-size:12px}
+  .row.live{border-left-color:var(--teal)}
+  .row.live .nm{color:var(--teal)}
+  .row.done .nm{color:var(--dim)}
+  .fail{background:var(--invert-bg); color:var(--invert-fg); font-weight:600; padding:1px 7px; letter-spacing:.02em}
+
+  .mtile{padding:11px 13px; border-bottom:1px solid var(--line2)}
+  .mtile:last-child{border-bottom:0}
+  .mtile .l1{display:flex; align-items:center; gap:9px; color:var(--text); font-size:12px}
+  .mtile .l2{color:var(--dim); font-size:11px; margin-top:4px; font-variant-numeric:tabular-nums}
+  .seg{display:flex; gap:2px; margin-top:8px}
+  .seg i{height:5px; flex:1; background:var(--ghost)}
+  .seg i.on{background:var(--teal-deep)}
+  .verdict{color:var(--teal); font-size:11px; letter-spacing:.1em}
+  .approve{background:var(--invert-bg); color:var(--invert-fg)}
+  .approve .l1{color:var(--invert-fg); font-weight:600}
+  .approve .l2{color:#33413d}
+
+  /* the one sanctioned motion: a slow phosphor breathe on the active accent */
+  .breathe{animation:br 2.4s ease-in-out infinite}
+  @keyframes br{0%,100%{opacity:1}50%{opacity:.5}}
+
+  /* scanline + phosphor FX, toggleable via body.fx-off */
+  .fx-scan::after{content:""; position:absolute; inset:0; pointer-events:none; z-index:2;
+    background:repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0,0,0,.16) 2px 3px)}
+  body.fx-off .fx-scan::after{display:none}
+  body.fx-off .glow, body.fx-off .row.live .nm, body.fx-off .verdict{text-shadow:none!important}
+  body.fx-off .seg i.on{box-shadow:none!important}
+
+  /* ============ A · CLEAN TERMINAL ============ */
+  .d-a{font-family:'IBM Plex Mono',ui-monospace,monospace}
+  .d-a .panel{background:var(--sink)}
+  .d-a .row.live .nm{text-shadow:0 0 7px var(--teal-soft)}   /* whisper of phosphor, accent only */
+  .d-a .verdict{text-shadow:0 0 6px var(--teal-soft)}
+  .d-a .stt::before{content:"[ "}
+  .d-a .stt::after{content:" ]"}
+
+  /* ============ B · GITS CONSOLE ============ */
+  .d-b{font-family:'Share Tech Mono',ui-monospace,monospace; --bg-b:#070d0c}
+  .d-b .dir-why{}
+  .d-b .surface{background:#070c0b; padding:18px; border:1px solid var(--line)}
+  .d-b .panel{background:transparent; border-color:rgba(43,187,164,.22)}
+  .d-b .panel::before,.d-b .panel::after{content:""; position:absolute; width:10px; height:10px; border:1px solid var(--teal); z-index:3}
+  .d-b .panel::before{top:-1px; left:-1px; border-right:0; border-bottom:0}
+  .d-b .panel::after{bottom:-1px; right:-1px; border-left:0; border-top:0}
+  .d-b .bt .t{color:var(--teal); text-shadow:0 0 6px var(--teal-soft); letter-spacing:.26em}
+  .d-b .kanji{position:absolute; top:8px; right:11px; writing-mode:vertical-rl; font-size:10px; color:var(--teal-soft); letter-spacing:.1em; z-index:3}
+  .d-b .row.live .nm{text-shadow:0 0 8px var(--teal-soft)}
+  .d-b .seg i.on{background:var(--teal); box-shadow:0 0 6px var(--teal-soft)}
+  .d-b .verdict{text-shadow:0 0 7px var(--teal-soft)}
+  .d-b .stt.run::before{content:"› "}
+  .d-b .dir-head h2{font-family:'Chakra Petch',sans-serif; letter-spacing:.04em}
+  .d-b .rowh{letter-spacing:.2em}
+
+  /* ============ C · ANALOG DECAY / LAIN ============ */
+  .d-c{font-family:'Space Mono',ui-monospace,monospace; --teal:#3aa89b}
+  .d-c .surface{background:#080b0b; padding:16px; position:relative; filter:saturate(.8)}
+  .d-c .panel{background:#070a09; border-color:rgba(255,255,255,.12)}
+  .d-c .bt .t{color:var(--read); letter-spacing:.16em}
+  .d-c .row.live .nm{color:#4fb8ab; text-shadow:0 0 10px rgba(58,168,155,.5)}   /* burn-in bloom, stronger */
+  .d-c .stt.run{color:#4fb8ab}
+  .d-c .verdict{color:var(--read); letter-spacing:.14em}
+  .d-c .seg i.on{background:#2f7d73}
+  .d-c .caplbl{color:#5c6662}
+  /* SMPTE-ish colorbar hairline detail + heavier scanline handled by fx-scan on the section */
+  .d-c .barcode{display:flex; height:3px; margin:0 0 12px}
+  .d-c .barcode i{flex:1}
+  .d-c .fail,.d-c .approve{background:#e6eae7}
+
+  footer.note{max-width:1020px; margin:26px auto 0; padding:0 24px; color:var(--dim); font-size:11px}
+  footer.note b{color:var(--read)}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="wm">ELAI</span>
+  <span class="sub">retro-terminal directions · same surface, three grades of costume</span>
+  <span class="ctl">
+    <label class="fxtoggle"><input type="checkbox" id="fx" checked onchange="document.body.classList.toggle('fx-off',!this.checked)"> scanlines + glow</label>
+    <nav>
+      <a href="#a">A · clean</a>
+      <a href="#b">B · GITS</a>
+      <a href="#c">C · Lain</a>
+    </nav>
+  </span>
+</header>
+
+<main>
+
+  <!-- ===== A ===== -->
+  <section class="dir d-a" id="a">
+    <div class="dir-head"><span class="tag">Direction A</span><h2>Clean terminal</h2><span class="axis">most usable · least costume · corporate-safe</span></div>
+    <p class="dir-why">A real 2026 product that <b>quotes</b> the terminal: modern mono, high-contrast teal on near-black, bracket status, and a <b>whisper</b> of phosphor glow on the active element only. Toggle the FX off (top-right) and it's a clean pro tool; on, it's a terminal. This is "old + modern" leaning modern — the one a company adopts without thinking twice.</p>
+    <div class="surface fx-scan">
+      <div>
+        <div class="caplbl">Sessions</div>
+        <div class="panel">
+          <div class="bt"><span class="t">Sessions</span><span class="c">elai-core</span></div>
+          <div class="phead"><span>elai-core</span><span class="pill">rust · claude-only</span></div>
+          <div class="rowh"><span>session</span><span>status</span><span style="text-align:right">progress</span></div>
+          <div class="row live"><span class="nm glow">fix-vram-tier</span><span class="stt run breathe">run</span><span class="pg">6 / 9</span></div>
+          <div class="row done"><span class="nm">b40-idea-framer</span><span class="stt">ok</span><span class="pg">12 / 12</span></div>
+          <div class="row"><span class="nm">patch-blake3</span><span class="stt">wait</span><span class="pg">—</span></div>
+          <div class="row"><span class="nm">sidecar-search</span><span class="stt run">run</span><span class="pg">3 / 8</span></div>
+          <div class="row"><span class="nm">dola-eval</span><span class="stt"></span><span class="pg"><span class="fail">FAIL</span></span></div>
+        </div>
+      </div>
+      <div>
+        <div class="caplbl">Monitor</div>
+        <div class="panel">
+          <div class="bt"><span class="t">Monitor</span><span class="c">autonomous ops</span></div>
+          <div class="mtile"><div class="l1 glow" style="color:var(--teal)">executor · glm-5.2</div><div class="l2">ctx 18k / 32k · 7 / 11</div><div class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="mtile"><div class="l1">auditor · sonnet</div><div class="l2"><span class="verdict">GATE PASS</span></div></div>
+          <div class="mtile"><div class="l1">worker pool</div><div class="l2">3 / 4 free · free-mistral</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== B ===== -->
+  <section class="dir d-b" id="b">
+    <div class="dir-head"><span class="tag">Direction B</span><h2>GITS console</h2><span class="axis">techno-noir HUD · teal-forward · still usable</span></div>
+    <p class="dir-why">Ghost-in-the-Shell console: corner-tick HUD frames, teal phosphor readouts with a soft bloom, a vertical kanji micro-tag, dense tabular data on a deeper ground. Atmosphere and a clear "this is a serious operator instrument," without tipping into unusable. The teal is doing the GITS cyan-teal work you already love.</p>
+    <div class="surface fx-scan">
+      <div>
+        <div class="caplbl">Sessions</div>
+        <div class="panel">
+          <span class="kanji">接続監視</span>
+          <div class="bt"><span class="t">Sessions</span><span class="c">elai-core</span></div>
+          <div class="phead"><span>elai-core</span><span class="pill">rust · claude-only</span></div>
+          <div class="rowh"><span>session</span><span>status</span><span style="text-align:right">progress</span></div>
+          <div class="row live"><span class="nm">fix-vram-tier</span><span class="stt run breathe">run</span><span class="pg">6 / 9</span></div>
+          <div class="row done"><span class="nm">b40-idea-framer</span><span class="stt">ok</span><span class="pg">12 / 12</span></div>
+          <div class="row"><span class="nm">patch-blake3</span><span class="stt">wait</span><span class="pg">—</span></div>
+          <div class="row"><span class="nm">sidecar-search</span><span class="stt run">run</span><span class="pg">3 / 8</span></div>
+          <div class="row"><span class="nm">dola-eval</span><span class="stt"></span><span class="pg"><span class="fail">FAIL</span></span></div>
+        </div>
+      </div>
+      <div>
+        <div class="caplbl">Monitor</div>
+        <div class="panel">
+          <span class="kanji">実行</span>
+          <div class="bt"><span class="t">Monitor</span><span class="c">autonomous ops</span></div>
+          <div class="mtile"><div class="l1" style="color:var(--teal)">executor · glm-5.2</div><div class="l2">ctx 18k / 32k · 7 / 11</div><div class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="mtile"><div class="l1">auditor · sonnet</div><div class="l2"><span class="verdict">GATE PASS</span></div></div>
+          <div class="mtile approve"><div class="l1">approval required</div><div class="l2">git push · elai-core → main</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== C ===== -->
+  <section class="dir d-c" id="c">
+    <div class="dir-head"><span class="tag">Direction C</span><h2>Analog decay / Lain</h2><span class="axis">moodiest · most "old" · least corporate-safe</span></div>
+    <p class="dir-why">Serial-Experiments-Lain: desaturated cooler cast, heavier scanline + burn-in bloom, a colder dimmer teal, an SMPTE colorbar hairline. "Close the world." The white-inversion FAIL becomes a stark loud punch against the murk. Beautiful and the most distinctive — but the one most likely to read as <b>costume</b> to a conservative buyer. Shown as the far end of the axis so you can see how far is too far.</p>
+    <div class="surface fx-scan">
+      <div>
+        <div class="caplbl">Sessions</div>
+        <div class="barcode"><i style="background:#c2c9c5"></i><i style="background:#c9b64f"></i><i style="background:#4fb8ab"></i><i style="background:#3aa89b"></i><i style="background:#8a5cae"></i><i style="background:#2b2f2e"></i></div>
+        <div class="panel">
+          <div class="bt"><span class="t">Sessions</span><span class="c">elai-core</span></div>
+          <div class="phead"><span>elai-core</span><span class="pill">rust · claude-only</span></div>
+          <div class="rowh"><span>session</span><span>status</span><span style="text-align:right">progress</span></div>
+          <div class="row live"><span class="nm">fix-vram-tier</span><span class="stt run breathe">run</span><span class="pg">6 / 9</span></div>
+          <div class="row done"><span class="nm">b40-idea-framer</span><span class="stt">ok</span><span class="pg">12 / 12</span></div>
+          <div class="row"><span class="nm">patch-blake3</span><span class="stt">wait</span><span class="pg">—</span></div>
+          <div class="row"><span class="nm">sidecar-search</span><span class="stt run">run</span><span class="pg">3 / 8</span></div>
+          <div class="row"><span class="nm">dola-eval</span><span class="stt"></span><span class="pg"><span class="fail">FAIL</span></span></div>
+        </div>
+      </div>
+      <div>
+        <div class="caplbl">Monitor</div>
+        <div class="panel">
+          <div class="bt"><span class="t">Monitor</span><span class="c">autonomous ops</span></div>
+          <div class="mtile"><div class="l1" style="color:#4fb8ab">executor · glm-5.2</div><div class="l2">ctx 18k / 32k · 7 / 11</div><div class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="mtile"><div class="l1">auditor · sonnet</div><div class="l2"><span class="verdict">GATE PASS</span></div></div>
+          <div class="mtile"><div class="l1">worker pool</div><div class="l2">3 / 4 free · free-mistral</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="note">
+  All three keep the locked constants: <b>teal accent</b>, <b>white mono-inversion for errors</b> (no red/yellow), high contrast as the attention mechanism, <b>no glyph symbols</b> (state is bracket text + a teal left-bar on the active row), segmented n/m progress. They differ only in how much retro-CRT costume they wear — A quotes it, B inhabits it, C is soaked in it. The <b>scanlines + glow</b> toggle (top-right) shows each with the FX stripped, so you can judge the usable core under the atmosphere. Pick a direction (or "A with a touch of B", etc), and tell me the font — I can also swap A's IBM Plex Mono for another face if it still reads wrong. Then it becomes the DESIGN-ELAI-v2 spine.
+</footer>
+</body>
+</html>

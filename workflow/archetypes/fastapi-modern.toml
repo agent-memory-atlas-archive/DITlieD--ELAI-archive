@@ -1,0 +1,24 @@
+# E-12 Tier-B framework manifest: FastAPI modern (Python 3.12+, uvicorn, ruff)
+#
+# Anti-slopsquatting bump verification: pypi.org/pypi/fastapi/json before
+# editing version_pin. Refresh source-grounding via paper-ingestor
+# mode=source on https://fastapi.tiangolo.com/ and the FastAPI 0.115
+# changelog.
+
+name = "fastapi-modern"
+version_pin = "0.115"
+language = "python"
+package_manager = "uv"
+lint_config_path = "pyproject.toml"
+test_runner = "pytest"
+
+security_checks = [
+    "secrets_scan",
+    "trufflehog_scan",
+    "owasp_static",
+    "pip_audit",
+    "ruff",
+    "otel_check",
+    "sentry_check",
+    "lsof_port",
+]

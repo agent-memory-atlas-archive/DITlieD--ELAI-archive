@@ -1,0 +1,28 @@
+# J-94 THIN-3: FROZEN immune-tier membership (mutable=0).
+# Authority for "what is immune-tier" is THIS file + its freeze row in
+# .claude/gate-manifest.txt (R8). L1 seed mutable=0 flags must match;
+# membership MUST NOT live only in mutable L1 data.
+# Removing a path from this list (or this file from the freeze list)
+# without a deliberate out-of-band re-lock is a gate_freeze BLOCK.
+
+# Security immune seeds (currently OUT of freeze list — MUST include)
+.elai_cc/crates/rules/seed/security/eval_injection.toml
+.elai_cc/crates/rules/seed/security/hardcoded_creds.toml
+.elai_cc/crates/rules/seed/security/hardcoded_key.toml
+.elai_cc/crates/rules/seed/security/missing_authz.toml
+.elai_cc/crates/rules/seed/security/secrets_in_logs.toml
+.elai_cc/crates/rules/seed/security/sqli.toml
+.elai_cc/crates/rules/seed/security/weak_crypto.toml
+.elai_cc/crates/rules/seed/security/xss.toml
+
+# Finance + repro immune seeds already freeze-listed (mirror into membership so the list is complete)
+.elai_cc/crates/rules/seed/finance/deflation_promotion.toml
+.elai_cc/crates/rules/seed/finance/drift_interlock.toml
+.elai_cc/crates/rules/seed/finance/financial_invariants.toml
+.elai_cc/crates/rules/seed/finance/holdout_budget.toml
+.elai_cc/crates/rules/seed/finance/leakage.toml
+.elai_cc/crates/rules/seed/finance/trading_nulls.toml
+.elai_cc/crates/rules/seed/repro/env_pin_manifest.toml
+.elai_cc/crates/rules/seed/repro/result_manifest.toml
+.elai_cc/crates/rules/seed/repro/seed_coverage.toml
+.elai_cc/crates/rules/seed/repro/sim_real_parity.toml

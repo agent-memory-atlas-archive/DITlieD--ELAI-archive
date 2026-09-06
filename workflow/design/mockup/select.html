@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — select a project</title>
+<!--
+  SELECT page — screen 2 (intro.html START -> here). Background IDENTICAL to intro.html and CONTINUOUS with it: the same
+  3-layer parallax starfield (a pure function of a shared wall clock + per-star hash, so at the navigation instant both
+  pages render the exact same field = no blink), the same teal bloom layer, the same concentric rings. Here the background
+  is already established (no entrance fade: canvas data-entrance=0, bloom/rings at full opacity) so arriving from the intro
+  is seamless. Menu = V2 STRIP-card layout (recent strip cards + live search + full 6-state set), centered, NO logo.
+  The .states region is fixed-height (= DATA, the tallest state) so the RECENT PROJECTS label anchors and shorter states never drift.
+  Top buttons match intro: modes top-center, NO GLOW + theme icon top-right. Dev STATE switcher top-left.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --void:#030404; --panel:#0a1012; --raised:#161c1b;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --border:rgba(255,255,255,.09); --border-bright:rgba(255,255,255,.16);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.40); --teal-ghost:rgba(43,187,164,.10);
+    --ring:rgba(43,187,164,.07); --ring-faint:rgba(43,187,164,.045);
+    --disp:'Chakra Petch',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+    --dur-fast:140ms; --dur:280ms; --ease-out:cubic-bezier(0.16,1,0.3,1); --ease-draw:cubic-bezier(0.3,0,0.2,1);
+    --r-sm:4px; --r-md:6px;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;font-family:var(--disp);color:var(--text);background:var(--void);-webkit-font-smoothing:antialiased;overflow:hidden;}
+
+  /* ───── stage: dark base + bloom layer + starfield canvas (IDENTICAL to intro.html, already-established here) ───── */
+  .stage{position:fixed;inset:0;overflow:hidden;
+    background:
+      radial-gradient(ellipse 135% 135% at 50% 50%,
+        rgba(4,13,17,1) 0%,rgba(4,13,17,.92) 18%,rgba(4,13,17,.74) 36%,rgba(4,13,17,.52) 54%,
+        rgba(4,13,17,.28) 72%,rgba(4,13,17,.08) 90%,rgba(4,13,17,0) 100%),
+      var(--void);}
+  .starfield{position:absolute;inset:0;z-index:1;width:100%;height:100%;pointer-events:none;}
+  .bloom{position:absolute;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(ellipse 54% 54% at 50% 50%,
+      rgba(43,187,164,.16) 0%, rgba(43,187,164,.06) 30%, rgba(43,187,164,.018) 50%, rgba(43,187,164,0) 68%);}
+
+  /* concentric rings (centered, present immediately for continuity) */
+  .system{position:absolute;inset:0;z-index:2;pointer-events:none;}
+  .ring{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:1px solid var(--ring);border-radius:50%;}
+  .ring.r1{width:370px;height:370px;}
+  .ring.r2{width:560px;height:560px;}
+  .ring.r3{width:750px;height:750px;border-color:var(--ring-faint);}
+
+  /* runtime modes — top center, underline-draw (same position as intro) */
+  .modes{position:fixed;left:50%;top:30px;transform:translateX(-50%);z-index:6;display:flex;}
+  .mode{position:relative;appearance:none;background:none;border:0;cursor:pointer;font-family:var(--disp);font-weight:500;font-size:12px;letter-spacing:.2em;color:var(--dim);padding:6px 18px 12px;transition:color var(--dur-fast) var(--ease-out);}
+  .mode::after{content:"";position:absolute;left:18px;right:18px;bottom:0;height:1px;background:var(--teal);transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .mode:hover{color:var(--read);}
+  .mode.on{color:var(--teal-bright);}
+  .mode.on::after{transform:scaleX(1);}
+
+  /* top-right toggle buttons (same place as intro) */
+  .tr-toggles{position:fixed;top:18px;right:20px;z-index:7;display:flex;align-items:center;gap:8px;}
+  .theme-toggle{appearance:none;cursor:pointer;background:transparent;border:1px solid var(--border);border-radius:0;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;color:var(--read);padding:8px 13px;
+    transition:color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out);}
+  .theme-toggle:hover,.theme-toggle.on{color:var(--teal);border-color:var(--teal-soft);}
+
+  /* dark / light mode swap — the RESTING icon shows the CURRENT mode; hover cross-fades to the icon
+     of the mode a click switches to: dark = MOON at rest -> SUN on hover (click goes bright);
+     light = SUN at rest -> MOON on hover (click goes dark). On every screen. */
+  .icon-toggle{appearance:none;cursor:pointer;position:relative;width:33px;height:31px;
+    background:transparent;border:1px solid var(--border);border-radius:0;color:var(--read);
+    transition:color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out);}
+  .icon-toggle:hover{color:var(--teal);border-color:var(--teal-soft);}
+  .icon-toggle .ico{position:absolute;top:50%;left:50%;transition:opacity var(--dur) var(--ease-out),transform var(--dur) var(--ease-out);}
+  .icon-toggle .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  .icon-toggle .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  .icon-toggle:hover .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  .icon-toggle:hover .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+
+  /* ───── centered selection panel (V2 strip-card menu, logo removed) ───── */
+  .panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;width:600px;max-width:92vw;
+    opacity:0;animation:rise 520ms var(--ease-out) 160ms forwards;}
+  @keyframes rise{from{opacity:0;transform:translate(-50%,calc(-50% + 10px));}to{opacity:1;transform:translate(-50%,-50%);}}
+  .recent-label{display:flex;align-items:center;gap:9px;font-size:10px;letter-spacing:.22em;color:var(--read);margin-bottom:12px;}
+  .recent-label::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--teal);box-shadow:0 0 7px var(--teal-soft);}
+  .k{font-size:9.5px;letter-spacing:.16em;color:var(--read);}
+  .recent{display:flex;flex-direction:column;gap:8px;}
+
+  /* the state region is anchored: fixed min-height = the DATA (tallest) state, so the
+     RECENT PROJECTS label stays put and shorter states (ONE/EMPTY/...) fill from the top, never re-centering */
+  .states{min-height:330px;}
+  .state{display:none;}
+  [data-state="populated"] .st-populated,[data-state="single"] .st-single,[data-state="empty"] .st-empty,
+  [data-state="loading"] .st-loading,[data-state="error"] .st-error,
+  [data-state="offline"] .st-offline{display:block;}
+
+  /* STRIP card */
+  .card-strip{border:1px solid var(--border);border-radius:var(--r-md);padding:14px 18px;display:flex;flex-direction:column;gap:13px;cursor:pointer;
+    background:rgba(8,13,13,.42);backdrop-filter:blur(2px);
+    transition:border-color var(--dur-fast) var(--ease-out),background var(--dur-fast) var(--ease-out);}
+  .card-strip:hover{border-color:var(--teal-soft);background:var(--raised);}
+  .cs-name{font-size:15px;font-weight:600;color:var(--text);white-space:nowrap;}
+  .cs-stats{display:grid;grid-template-columns:130px 122px 84px 86px 78px 60px;}
+  .cs-stats .cell{display:flex;flex-direction:column;gap:4px;padding:0 16px;}
+  .cs-stats .cell:first-child{padding-left:0;}
+  .cs-stats .cell:nth-child(n+3){align-items:center;text-align:center;}
+  .cs-stats .cell:not(:last-child){border-right:1px solid var(--border);}
+  .cs-stats .v{font-size:13px;color:var(--text);}
+
+  .new-project{appearance:none;width:100%;cursor:pointer;font-family:var(--disp);background:transparent;border:1px solid var(--border);border-radius:var(--r-md);
+    padding:13px 0;font-size:13px;font-weight:500;letter-spacing:.14em;color:var(--text);margin-top:9px;transition:background var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);}
+  .new-project:hover{background:var(--teal-ghost);border-color:var(--teal-soft);color:var(--teal-bright);}
+
+  /* search (shown only when >3 projects) + scrollable list */
+  .search-wrap{margin-bottom:10px;}
+  .search{appearance:none;width:100%;font-family:var(--disp);background:rgba(8,13,13,.42);border:1px solid var(--border);border-radius:var(--r-md);
+    padding:9px 12px;font-size:12px;letter-spacing:.04em;color:var(--text);transition:border-color var(--dur-fast) var(--ease-out);}
+  .search::placeholder{color:var(--read);opacity:.7;}
+  .search:focus{outline:none;border-color:var(--teal-soft);}
+  .recent.scroll{max-height:230px;overflow-y:auto;padding-right:6px;}
+  .recent.scroll::-webkit-scrollbar{width:6px;}
+  .recent.scroll::-webkit-scrollbar-thumb{background:var(--border-bright);border-radius:3px;}
+  .recent.scroll::-webkit-scrollbar-track{background:transparent;}
+  /* empty — focal point + next action, not a bare "no data" */
+  .empty-box{border:1px dashed var(--border-bright);border-radius:var(--r-md);padding:30px 24px;display:flex;flex-direction:column;align-items:flex-start;gap:9px;background:rgba(8,13,13,.42);}
+  .empty-glyph{font-size:20px;color:var(--ghost);line-height:1;}
+  .empty-title{margin:0;font-size:16px;font-weight:600;color:var(--text);}
+  .empty-sub{margin:0;font-size:12px;color:var(--read);}
+  .new-project.cta{margin-top:6px;border-color:var(--teal-soft);color:var(--teal-bright);}
+  .new-project.cta:hover{background:var(--teal-ghost);}
+  /* loading — skeleton, opacity pulse only (no layout tween) */
+  .skel{height:58px;border:1px solid var(--border);border-radius:var(--r-md);background:rgba(8,13,13,.5);animation:skelpulse 1.4s ease-in-out infinite;}
+  @keyframes skelpulse{0%,100%{opacity:.45;}50%{opacity:.85;}}
+  /* error — MONO INVERSION, the loudest thing on the surface, zero foreign hue */
+  .fail-chip{display:flex;align-items:center;gap:9px;background:var(--text);color:var(--void);font-weight:600;font-size:13px;letter-spacing:.02em;padding:13px 16px;border-radius:var(--r-md);}
+  .fail-chip .fg{font-weight:700;}
+  /* offline — warn glyph, shape only, drawn in --text */
+  .warn-box{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:var(--r-md);padding:14px 16px;font-size:13px;color:var(--text);background:rgba(8,13,13,.42);}
+  .warn-glyph{color:var(--text);font-size:15px;line-height:1;}
+
+  /* dev STATE switcher — top-LEFT (the slot the logo used to occupy) */
+  .switcher{position:fixed;top:16px;left:18px;z-index:7;display:flex;flex-direction:column;align-items:flex-start;gap:7px;}
+  .switcher .lbl{font-size:8px;letter-spacing:.26em;color:var(--ghost);}
+  .switcher .btns{display:flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;}
+  .vbtn{appearance:none;background:none;border:0;border-right:1px solid var(--border);padding:7px 13px;font-family:var(--disp);font-size:10px;letter-spacing:.1em;color:var(--read);cursor:pointer;transition:background var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);}
+  .vbtn:last-child{border-right:0;}
+  .vbtn:hover{color:var(--text);}
+  .vbtn.active{background:var(--teal-ghost);color:var(--teal);}
+
+  /* ───── inverted (light) background variant — toggled by the theme icon (same as intro) ───── */
+  [data-theme="light"]{
+    --void:#e9ede9; --text:#0b0f0e; --read:#2d342f; --dim:#646b66; --ghost:#a9b0ab;
+    --raised:#dfe5e0;
+    --border:rgba(0,0,0,.14); --border-bright:rgba(0,0,0,.22);
+    --ring:rgba(27,122,110,.24); --ring-faint:rgba(27,122,110,.14); --teal-soft:rgba(27,122,110,.40);
+  }
+  [data-theme="light"] .stage{
+    background:
+      radial-gradient(ellipse 135% 135% at 50% 50%, #eef2ef 0%, #e8ede9 40%, #d6ddd9 80%, #cad2cd 100%),
+      var(--void);}
+  [data-theme="light"] .bloom{
+    background:radial-gradient(ellipse 56% 56% at 50% 50%,
+      rgba(43,187,164,.22) 0%, rgba(43,187,164,.09) 30%, rgba(43,187,164,.025) 50%, rgba(43,187,164,0) 68%);}
+  [data-theme="light"] .card-strip,[data-theme="light"] .search,[data-theme="light"] .empty-box,
+  [data-theme="light"] .warn-box,[data-theme="light"] .skel{background:rgba(255,255,255,.5);}
+
+  /* NO GLOW: simply drop the teal bloom layer (works in either theme — same as intro) */
+  [data-bloom="none"] .bloom{display:none;}
+
+  @keyframes fadeIn{to{opacity:1;}}
+  @media (prefers-reduced-motion:reduce){
+    .panel{animation:none;opacity:1;transform:translate(-50%,-50%);}
+    .skel{animation:none;opacity:.65;}
+  }
+</style>
+</head>
+<body>
+  <main class="stage" aria-label="ELAI — select a project">
+    <div class="bloom" aria-hidden="true"></div>
+    <canvas class="starfield" id="sky" data-entrance="0" aria-hidden="true"></canvas>
+    <div class="system" aria-hidden="true">
+      <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+    </div>
+
+    <div class="switcher state-switcher" aria-label="State preview">
+      <span class="lbl">STATE</span>
+      <div class="btns" role="group">
+        <button class="vbtn active" data-state="populated" type="button">DATA</button>
+        <button class="vbtn" data-state="single" type="button">ONE</button>
+        <button class="vbtn" data-state="empty" type="button">EMPTY</button>
+        <button class="vbtn" data-state="loading" type="button">LOADING</button>
+        <button class="vbtn" data-state="error" type="button">ERROR</button>
+        <button class="vbtn" data-state="offline" type="button">OFFLINE</button>
+      </div>
+    </div>
+
+    <div class="tr-toggles">
+      <button class="theme-toggle" id="bloomToggle" type="button">NO GLOW</button>
+      <button class="icon-toggle" id="themeToggle" type="button" title="Toggle light / dark" aria-label="Toggle light / dark mode">
+        <svg class="ico ico-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/>
+          <line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/>
+          <line x1="5.2" y1="5.2" x2="6.9" y2="6.9"/><line x1="17.1" y1="17.1" x2="18.8" y2="18.8"/>
+          <line x1="18.8" y1="5.2" x2="17.1" y2="6.9"/><line x1="6.9" y1="17.1" x2="5.2" y2="18.8"/>
+        </svg>
+        <svg class="ico ico-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 14.6A8 8 0 0 1 9.4 4 7 7 0 1 0 20 14.6Z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="modes" role="group" aria-label="Execution mode">
+      <button class="mode on" type="button">LOCAL</button>
+      <button class="mode" type="button">CLOUD</button>
+      <button class="mode" type="button">HYBRID</button>
+    </div>
+
+    <section class="panel" aria-label="Recent projects">
+      <div class="recent-label">RECENT PROJECTS</div>
+
+      <div class="states">
+        <!-- ═══ DATA (>3 projects: search + scroll) ═══ -->
+        <div class="state st-populated">
+          <div class="search-wrap">
+            <input class="search" type="text" placeholder="Search projects…" aria-label="Search projects" />
+          </div>
+          <div class="recent scroll">
+            <div class="card-strip" role="button" tabindex="0" data-name=".elai_cc">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">.elai_cc</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">rust + ts</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">14</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">1,284</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">main</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">4m</span></div>
+              </div>
+            </div>
+            <div class="card-strip" role="button" tabindex="0" data-name="liteGAME">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">liteGAME</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">rust + unity</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">9</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">612</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">dev</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">2h</span></div>
+              </div>
+            </div>
+            <div class="card-strip" role="button" tabindex="0" data-name="apps_workflow">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">apps_workflow</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">ts</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">5</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">340</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">main</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">1d</span></div>
+              </div>
+            </div>
+            <div class="card-strip" role="button" tabindex="0" data-name="regret">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">regret</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">rust</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">3</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">188</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">main</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">3d</span></div>
+              </div>
+            </div>
+            <div class="card-strip" role="button" tabindex="0" data-name="sidecar-infra">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">sidecar-infra</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">python</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">7</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">421</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">main</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">5d</span></div>
+              </div>
+            </div>
+            <div class="card-strip" role="button" tabindex="0" data-name="canvas-mcp">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">canvas-mcp</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">ts</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">2</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">96</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">dev</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">1w</span></div>
+              </div>
+            </div>
+          </div>
+          <button class="new-project" type="button">+ NEW PROJECT</button>
+        </div>
+
+        <!-- ═══ SINGLE (one project · same card scale, no search/scroll) ═══ -->
+        <div class="state st-single">
+          <div class="recent">
+            <div class="card-strip" role="button" tabindex="0" data-name=".elai_cc">
+              <div class="cs-stats">
+                <div class="cell"><span class="k">PROJECT</span><span class="v cs-name">.elai_cc</span></div>
+                <div class="cell"><span class="k">STACK</span><span class="v">rust + ts</span></div>
+                <div class="cell"><span class="k">SESSIONS</span><span class="v">14</span></div>
+                <div class="cell"><span class="k">SYMBOLS</span><span class="v">1,284</span></div>
+                <div class="cell"><span class="k">BRANCH</span><span class="v">main</span></div>
+                <div class="cell"><span class="k">UPDATED</span><span class="v">4m</span></div>
+              </div>
+            </div>
+          </div>
+          <button class="new-project" type="button">+ NEW PROJECT</button>
+        </div>
+
+        <!-- ═══ EMPTY ═══ -->
+        <div class="state st-empty">
+          <div class="empty-box">
+            <span class="empty-glyph">○</span>
+            <p class="empty-title">No projects yet</p>
+            <p class="empty-sub">Open a folder to start your first ELAI session.</p>
+            <button class="new-project cta" type="button">+ NEW PROJECT</button>
+          </div>
+        </div>
+
+        <!-- ═══ LOADING ═══ -->
+        <div class="state st-loading" aria-busy="true">
+          <div class="recent">
+            <div class="skel"></div><div class="skel"></div><div class="skel"></div>
+          </div>
+        </div>
+
+        <!-- ═══ ERROR (mono inversion) ═══ -->
+        <div class="state st-error">
+          <div class="fail-chip"><span class="fg">✕</span> Couldn't read recent projects</div>
+          <button class="new-project" type="button">RETRY</button>
+        </div>
+
+        <!-- ═══ OFFLINE / disconnected ═══ -->
+        <div class="state st-offline">
+          <div class="warn-box"><span class="warn-glyph">▲</span><span>Backend disconnected. The local engine isn't responding.</span></div>
+          <button class="new-project" type="button">RETRY CONNECTION</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    /* ───── starfield: identical code + seed to intro.html, a pure function of a shared wall clock so the field
+       is the same at any instant on both screens (no blink). Here data-entrance=0 -> already at full (continuous). ───── */
+    (function(){
+      const canvas=document.getElementById('sky'); if(!canvas) return;
+      const ctx=canvas.getContext('2d'); const root=document.documentElement;
+      const reduce=window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+      const ENTRANCE=+(canvas.dataset.entrance||0);
+      const dpr=Math.min(window.devicePixelRatio||1,2);
+      const LAYERS=[
+        {rMin:0.35,rMax:0.85,aMax:0.55,pMin:2600,pMax:6200},
+        {rMin:0.80,rMax:1.55,aMax:0.74,pMin:3600,pMax:8200},
+        {rMin:1.70,rMax:2.90,aMax:0.96,pMin:4800,pMax:11000}
+      ];
+      let stars=[],W=0,H=0,start=null,raf=0;
+      function hash(a,b){let h=(a^0x9e3779b9)>>>0;h=Math.imul(h^(b+0x85ebca6b|0),0xc2b2ae35);h^=h>>>15;h=Math.imul(h,0x27d4eb2f);h^=h>>>13;return (h>>>0)/4294967296;}
+      function build(){
+        W=canvas.clientWidth;H=canvas.clientHeight;
+        canvas.width=Math.round(W*dpr);canvas.height=Math.round(H*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);
+        const scale=(W*H)/(1920*960);
+        const counts=[Math.round(9*scale)+2,Math.round(5*scale)+2,Math.round(2*scale)+1];
+        stars=[];let idx=0;
+        LAYERS.forEach((L,li)=>{for(let i=0;i<counts[li];i++){
+          const p=L.pMin+hash(idx*131+7,1)*(L.pMax-L.pMin);
+          stars.push({i:idx,li,p,off:hash(idx*131+19,2)*p});idx++;}});
+      }
+      function paint(entrance){
+        const light=root.getAttribute('data-theme')==='light';
+        const col=light?'12,16,15':'255,255,255';
+        ctx.clearRect(0,0,W,H);ctx.fillStyle='rgb('+col+')';
+        const now=Date.now();
+        for(const s of stars){const L=LAYERS[s.li];
+          const tn=now+s.off,c=Math.floor(tn/s.p),lt=tn-c*s.p;
+          const life=reduce?0.7:Math.sin(Math.PI*lt/s.p); if(life<=0)continue;
+          const x=hash(s.i*8,c)*W,y=hash(s.i*8+1,c)*H;
+          const r=L.rMin+hash(s.i*8+2,c)*(L.rMax-L.rMin);
+          const am=L.aMax*(0.55+0.45*hash(s.i*8+3,c));
+          const a=am*life*entrance; if(a<0.012)continue;
+          ctx.globalAlpha=a;ctx.beginPath();ctx.arc(x,y,r,0,6.2832);ctx.fill();}
+        ctx.globalAlpha=1;
+      }
+      function loop(ts){if(start===null)start=ts;
+        const entrance=ENTRANCE<=0?1:Math.min(1,(ts-start)/ENTRANCE);
+        paint(entrance);raf=requestAnimationFrame(loop);}
+      function init(){build(); if(reduce){paint(1);} else {cancelAnimationFrame(raf);start=null;raf=requestAnimationFrame(loop);}}
+      let rt;window.addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(init,180);});
+      document.addEventListener('elai-themechange',()=>{if(reduce)paint(1);});
+      init();
+    })();
+
+    const root=document.documentElement;
+
+    // carry the mode chosen on the intro (?mode=)
+    const params=new URLSearchParams(location.search);
+    const incoming=(params.get('mode')||sessionStorage.getItem('elai.mode')||'LOCAL').toUpperCase();
+    const modes=[...document.querySelectorAll('.mode')];
+    modes.forEach(b=>b.classList.toggle('on',b.textContent.trim()===incoming));
+    modes.forEach(b=>b.addEventListener('click',()=>modes.forEach(x=>x.classList.toggle('on',x===b))));
+    function activeMode(){const on=document.querySelector('.mode.on');return on?on.textContent.trim():'LOCAL';}
+
+    // theme toggle (dark <-> light) — the sun/moon icon, shared with intro
+    const themeBtn=document.getElementById('themeToggle');
+    themeBtn.addEventListener('click',()=>{
+      const light=root.getAttribute('data-theme')==='light';
+      root.setAttribute('data-theme', light?'dark':'light');
+      document.dispatchEvent(new Event('elai-themechange'));});
+
+    // glow toggle (teal bloom on <-> off), same as intro
+    const bloomBtn=document.getElementById('bloomToggle');
+    bloomBtn.addEventListener('click',()=>{
+      const none=root.getAttribute('data-bloom')==='none';
+      root.setAttribute('data-bloom', none?'center':'none');
+      bloomBtn.classList.toggle('on',!none);});
+
+    // dev STATE preview switcher (data / single / empty / loading / error / offline)
+    function setState(s){root.setAttribute('data-state',s);
+      document.querySelectorAll('.state-switcher .vbtn').forEach(b=>b.classList.toggle('active',b.dataset.state===s));}
+    document.querySelectorAll('.state-switcher .vbtn').forEach(b=>b.addEventListener('click',()=>setState(b.dataset.state)));
+    setState('populated');
+
+    // open a project -> dashboard (carry project + mode)
+    function openProject(name){sessionStorage.setItem('elai.project',name||'');sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?'+new URLSearchParams({project:name||'',mode:activeMode()});}
+    document.querySelectorAll('[data-name]').forEach(row=>{const name=row.getAttribute('data-name');
+      row.addEventListener('click',()=>openProject(name));row.addEventListener('keydown',e=>{if(e.key==='Enter')openProject(name);});});
+
+    // + NEW PROJECT (data / single / empty) -> dashboard new
+    document.querySelectorAll('.st-populated .new-project, .st-single .new-project, .st-empty .new-project').forEach(b=>b.addEventListener('click',()=>{sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?new=1&mode='+encodeURIComponent(activeMode());}));
+    // RETRY / RETRY CONNECTION -> back to populated
+    document.querySelectorAll('.st-error .new-project, .st-offline .new-project').forEach(b=>b.addEventListener('click',()=>setState('populated')));
+
+    // live name filter (DATA state)
+    const search=document.querySelector('.st-populated .search');
+    if(search) search.addEventListener('input',()=>{const q=search.value.trim().toLowerCase();
+      document.querySelectorAll('.st-populated .card-strip').forEach(c=>{
+        c.style.display=c.getAttribute('data-name').toLowerCase().includes(q)?'':'none';});});
+
+    // logo removed — keep a non-intrusive way back to the intro hero (no visible chrome)
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')location.href='./intro.html';});
+  </script>
+</body>
+</html>

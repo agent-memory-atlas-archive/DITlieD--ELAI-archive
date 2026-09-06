@@ -1,0 +1,329 @@
+<!--
+  design read: a cold CRT terminal readout of ELAI's wiring state for the owner, lain "layer NN:" episode-card language, leaning system over aesthetic. the mind is abstracted to a monochrome ASCII-density sphere pinned in the corner; the burndown is the dominant descending list. the most SIGNAL-compatible of the three.
+  dials: STRUCTURE_VARIANCE 4 / MOTION_INTENSITY 3 / VISUAL_DENSITY 8
+-->
+<title>ELAI status // layer 07</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500;700&family=VT323&display=swap');
+
+  :root{
+    --ground:#060a12;
+    --sink:#04070d;
+    --surface:#0a111c;
+    --surface-2:#0d1626;
+    --line:#152034;
+    --line-2:#1e2c45;
+    --text:#e9f1f8;
+    --text-2:#bccadb;
+    --dim:#7f8da0;
+    --dim-2:#576274;
+    --teal:#35f1e2;
+    --teal-dim:#1c8f86;
+    --teal-deep:#0c4a46;
+    --violet:#8f6bff;
+    --chip:#eaf7f4;
+    --chip-ink:#06120f;
+    --font-ui:'Hanken Grotesk',system-ui,sans-serif;
+    --font-data:'JetBrains Mono',monospace;
+    --font-crt:'VT323',monospace;
+    --r:2px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scrollbar-width:thin;scrollbar-color:var(--line-2) var(--ground)}
+  body{background:var(--ground);color:var(--text);font-family:var(--font-ui);font-size:13.5px;
+    min-height:100vh;position:relative}
+
+  /* scanline + phosphor CRT overlay */
+  .crt{position:fixed;inset:0;z-index:60;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0px,rgba(0,0,0,0) 2px,rgba(3,6,11,.32) 3px,rgba(3,6,11,.32) 3px);
+    mix-blend-mode:multiply}
+  .crt::after{content:"";position:absolute;inset:0;
+    background:radial-gradient(120% 100% at 50% 0%,transparent 55%,rgba(3,5,9,.6) 100%)}
+
+  .wrap{max-width:1200px;margin:0 auto;padding:22px 26px 60px;display:grid;
+    grid-template-columns:1fr 336px;gap:26px;align-items:start}
+
+  /* top status line */
+  .statusbar{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;
+    border-bottom:1px solid var(--line-2);padding-bottom:12px;margin-bottom:8px;flex-wrap:wrap;gap:8px}
+  .sb-l{font-family:var(--font-crt);font-size:30px;line-height:.9;color:var(--teal);letter-spacing:.02em}
+  .sb-l b{color:var(--text)}
+  .sb-r{font-family:var(--font-data);font-size:10.5px;color:var(--dim);letter-spacing:.04em;text-align:right}
+  .sb-r .now{color:var(--text-2)}
+
+  .col-main{display:flex;flex-direction:column;gap:20px}
+
+  .layer{border:1px solid var(--line);background:var(--surface);border-radius:var(--r)}
+  .lhead{display:flex;align-items:baseline;gap:12px;padding:9px 13px;border-bottom:1px solid var(--line);
+    background:var(--surface-2)}
+  .lno{font-family:var(--font-crt);font-size:21px;color:var(--teal-dim);line-height:.9}
+  .ltitle{font-weight:600;font-size:13px;color:var(--text);flex:1}
+  .lstamp{font-family:var(--font-data);font-size:9.5px;color:var(--dim-2)}
+  .lstamp.stale{color:var(--chip-ink);background:var(--chip);padding:1px 6px;border-radius:var(--r);font-weight:500}
+  .lbody{padding:6px 13px 12px}
+
+  /* the dominant burndown list */
+  .bd-open{font-family:var(--font-data);font-size:11px;color:var(--dim);padding:8px 0 4px;letter-spacing:.03em}
+  .bd-open b{font-size:44px;color:var(--text);font-weight:700;vertical-align:-6px;margin-right:8px;line-height:.7}
+  .prow{display:grid;grid-template-columns:9px 62px 1fr auto;gap:11px;align-items:start;
+    padding:7px 0;border-bottom:1px solid var(--line)}
+  .prow:last-child{border-bottom:0}
+  .pmk{width:9px;height:9px;margin-top:4px}
+  .pmk.conf{background:var(--teal)}
+  .pmk.susp{background:transparent;border:1px dashed var(--dim)}
+  .pid{font-family:var(--font-data);font-size:12px;color:var(--teal);font-weight:500}
+  .pt{font-size:12.5px;color:var(--text-2);line-height:1.3}
+  .pmeta{font-family:var(--font-data);font-size:9.5px;color:var(--dim);margin-top:2px}
+  .pdead{font-family:var(--font-data);font-size:9.5px;text-align:right;white-space:nowrap;margin-top:3px}
+  .pdead.conf{color:var(--teal)}
+  .pdead.susp{color:var(--dim-2)}
+
+  .buckets{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin-top:11px;
+    background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  .bkt{background:var(--sink);padding:8px 10px}
+  .bkt .n{font-family:var(--font-data);font-size:16px;color:var(--text-2);font-weight:500}
+  .bkt .l{font-size:9.5px;color:var(--dim);margin-top:2px}
+
+  /* benchmarks */
+  .brow{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:center;
+    padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+  .brow:last-child{border-bottom:0}
+  .brow .bn{color:var(--text-2)}
+  .brow .harn{font-family:var(--font-data);font-size:9.5px;color:var(--dim-2)}
+  .brow .harn.no{color:var(--chip-ink);background:var(--chip);padding:1px 5px;border-radius:var(--r);font-weight:600}
+  .brow .val{font-family:var(--font-data);font-size:11px;color:var(--dim);text-align:right;min-width:96px}
+  .brow .val.err{background:var(--chip);color:var(--chip-ink);padding:1px 7px;border-radius:var(--r);font-weight:700}
+  .brow .val.gpu{color:var(--dim-2)}
+
+  /* rework */
+  .rrow{display:flex;align-items:center;gap:11px;padding:6px 0;border-bottom:1px solid var(--line)}
+  .rrow:last-child{border-bottom:0}
+  .rbar{width:34px;height:9px;flex:none}
+  .rbar.keep{background:var(--teal-deep);border-right:2px solid var(--teal-dim)}
+  .rbar.redo{background:transparent;border:1px solid var(--teal);box-shadow:inset -4px 0 0 var(--teal)}
+  .rbar.ns{background:transparent;border:1px dashed var(--dim-2)}
+  .rv{font-size:12.5px;color:var(--text-2);flex:1}
+  .rs{font-family:var(--font-data);font-size:10px;color:var(--dim)}
+
+  /* health */
+  .hrow{display:flex;align-items:baseline;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line)}
+  .hrow:last-child{border-bottom:0}
+  .hl{font-size:12.5px;color:var(--text-2)}
+  .hv{font-family:var(--font-data);font-size:14px;color:var(--text)}
+  .hv.err{font-size:10px;background:var(--chip);color:var(--chip-ink);padding:1px 7px;border-radius:var(--r);font-weight:700}
+  .herr{font-family:var(--font-data);font-size:9.5px;color:var(--dim);margin-top:6px}
+
+  /* usage */
+  .mline{display:flex;align-items:center;gap:12px;padding:6px 0}
+  .mlab{font-size:12px;color:var(--text-2);width:110px;flex:none}
+  .track{flex:1;height:7px;background:var(--sink);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  .fill{height:100%;background:var(--teal-deep);border-right:2px solid var(--teal-dim)}
+  .mpct{font-family:var(--font-data);font-size:12px;color:var(--text);width:38px;text-align:right;flex:none}
+  .lanes{margin-top:10px;border-top:1px solid var(--line);padding-top:9px;display:grid;gap:4px}
+  .lane{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:baseline}
+  .lane .ln{font-size:11.5px;color:var(--dim)}
+  .lane .tok{font-family:var(--font-data);font-size:10.5px;color:var(--text-2)}
+  .lane .tok .a{color:var(--dim-2)}
+
+  /* right column — the ASCII mind */
+  .col-side{position:sticky;top:22px;display:flex;flex-direction:column;gap:16px}
+  .mindbox{border:1px solid var(--line-2);background:var(--sink);border-radius:var(--r);padding:14px 12px;position:relative;overflow:hidden}
+  .mindbox .mh{font-family:var(--font-crt);font-size:19px;color:var(--teal-dim);margin-bottom:6px}
+  #ascii{font-family:var(--font-data);font-size:9.5px;line-height:9.5px;letter-spacing:.5px;
+    color:var(--teal);white-space:pre;display:block;text-shadow:0 0 5px rgba(53,241,226,.4)}
+  .mlegend{margin-top:10px;font-family:var(--font-data);font-size:9.5px;color:var(--dim);line-height:1.7}
+  .mlegend b{color:var(--teal)}
+  .mcount{margin-top:12px;border-top:1px solid var(--line);padding-top:10px;font-family:var(--font-data);font-size:10px;color:var(--dim)}
+  .mcount b{color:var(--text);font-size:15px}
+
+  .foot{grid-column:1/-1;margin-top:8px;font-family:var(--font-data);font-size:9.5px;color:var(--dim-2);
+    letter-spacing:.16em;text-align:center;border-top:1px solid var(--line);padding-top:14px}
+
+  @media (max-width:940px){
+    .wrap{grid-template-columns:1fr}
+    .col-side{position:static}
+  }
+  @media (prefers-reduced-motion:reduce){
+    #ascii{text-shadow:none}
+    .crt{background:none}
+  }
+</style>
+
+<div class="crt"></div>
+<div class="wrap">
+  <div class="statusbar">
+    <div class="sb-l">layer 07: <b>status</b></div>
+    <div class="sb-r">TEIKOKU · ELAI wiring readout<br><span class="now" id="sb-now">generated —</span> · present day. present time.</div>
+  </div>
+
+  <div class="col-main" id="col-main"></div>
+
+  <aside class="col-side">
+    <div class="mindbox">
+      <div class="mh">the mind</div>
+      <div id="ascii"></div>
+      <div class="mlegend"><b>#</b> wired &amp; connected · <b>+</b> wired · <b>·</b> intentional dark · <b>□</b> open gap</div>
+      <div class="mcount"><b id="mc-wired">0</b> / <span id="mc-total">0</span> nodes lit · <span id="mc-open">0</span> gaps remain</div>
+    </div>
+  </aside>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>
+const status = {
+  generated_at_ago:"4m",
+  open_count:7,
+  open_items:[
+    {id:"I-33",t:"zero-caller symbol",meta:"production_caller_check · P0",dead:"CONFIRMED"},
+    {id:"H-10",t:"PagerankPanel orphan",meta:"svelte_mount_reachability · P0",dead:"CONFIRMED"},
+    {id:"C-15",t:"entropy-gate regression",meta:"wiring_contract_check · P1",dead:"CONFIRMED"},
+    {id:"B-4",t:"stale doc-comment",meta:"doc_freshness · P1",dead:"SUSPECTED"},
+    {id:"H-Tr3",t:"gates built, not intercepting",meta:"gate_freeze_check · P1",dead:"SUSPECTED"},
+    {id:"I-41",t:"dead framing surface",meta:"python_wire_check · P1",dead:"SUSPECTED"},
+    {id:"D-17",t:"verifier retention unproven",meta:"ssb_journal · P1",dead:"SUSPECTED"},
+  ],
+  buckets:{registered_dark:41,gpu_blocked:12,user_deferred:8,verify_debt:11},
+  letters:[
+    {L:"B",total:45,wired:40},{L:"C",total:45,wired:37},{L:"D",total:30,wired:19},
+    {L:"E",total:55,wired:47},{L:"F",total:13,wired:13},{L:"G",total:9,wired:7},
+    {L:"H",total:52,wired:41},{L:"I",total:54,wired:38},{L:"J",total:30,wired:22},
+    {L:"K",total:18,wired:9},{L:"L",total:14,wired:6},{L:"M",total:12,wired:3},{L:"N",total:8,wired:1},
+  ],
+  benchmarks:[
+    {name:"SAFEDELTA",harness:true,run:false,gpu:true},
+    {name:"QDELTA",harness:true,run:false,gpu:false},
+    {name:"gate-tax",harness:true,run:false,gpu:false},
+    {name:"routing-economics",harness:true,run:false,gpu:false},
+    {name:"hallucination-delta",harness:false,run:false,gpu:false,error:true},
+  ],
+  health:{dead_ipc:5,orphan_error:"svelte_mount_reachability: exit 2"},
+  ui_rework:[
+    {v:"Command",s:"keep"},{v:"Activity",s:"redo"},{v:"Monitor",s:"redo"},
+    {v:"Explore",s:"not-started"},{v:"Review",s:"keep"},{v:"Plan",s:"redo"},{v:"Settings",s:"keep"},
+  ],
+  usage:{five_hour:45,weekly:48,weekly_model:36,lanes:[
+    {lane:"claude",tin:"2.1M",tout:"340K"},
+    {lane:"free-gemini",tin:"8.4M",tout:"1.2M"},
+    {lane:"codex",tin:"900K",tout:"210K"},
+  ]},
+  stamps:{burndown:"4m",bench:"6m",rework:"2h 40m",health:"4m",usage:"31s"},
+};
+
+/* ---------- render the descending layers ---------- */
+const M=document.getElementById('col-main');
+function layer(no,title,stamp,stale,inner){
+  return `<section class="layer"><div class="lhead">
+    <span class="lno">${no}</span><span class="ltitle">${title}</span>
+    <span class="lstamp${stale?' stale':''}">${stale?'STALE · ':''}as of ${stamp} ago</span>
+    </div><div class="lbody">${inner}</div></section>`;
+}
+
+const burndown =
+  `<div class="bd-open"><b>${status.open_count}</b>open — genuine gaps &amp; defects that count against done</div>` +
+  status.open_items.map(o=>{
+    const c=o.dead==='CONFIRMED';
+    return `<div class="prow">
+      <span class="pmk ${c?'conf':'susp'}"></span>
+      <span class="pid">${o.id}</span>
+      <span><span class="pt">${o.t}</span><span class="pmeta">${o.meta}</span></span>
+      <span class="pdead ${c?'conf':'susp'}">${o.dead}<br>DEAD</span></div>`;
+  }).join('') +
+  `<div class="buckets">
+    <div class="bkt"><div class="n">${status.buckets.registered_dark}</div><div class="l">registered-dark</div></div>
+    <div class="bkt"><div class="n">${status.buckets.gpu_blocked}</div><div class="l">gpu-blocked</div></div>
+    <div class="bkt"><div class="n">${status.buckets.user_deferred}</div><div class="l">user-deferred</div></div>
+    <div class="bkt"><div class="n">${status.buckets.verify_debt}</div><div class="l">verify-debt</div></div>
+  </div>`;
+
+const bench = status.benchmarks.map(b=>{
+  let vcls='',v; const hcls=b.harness?'':' no';
+  if(b.error){vcls=' err';v='ERROR';}
+  else if(b.gpu){vcls=' gpu';v='NOT RUN';}
+  else{v='NOT RUN';}
+  return `<div class="brow"><span class="bn">${b.name}</span>
+    <span class="harn${hcls}">${b.harness?'harness ok':'no harness'}${b.gpu?' · gpu-blocked':''}</span>
+    <span class="val${vcls}">${v}</span></div>`;
+}).join('');
+
+const rework = status.ui_rework.map(r=>{
+  const cl=r.s==='keep'?'keep':r.s==='redo'?'redo':'ns';
+  return `<div class="rrow"><span class="rbar ${cl}"></span><span class="rv">${r.v}</span><span class="rs">${r.s}</span></div>`;
+}).join('');
+
+const health =
+  `<div class="hrow"><span class="hl">dead IPC wires</span><span class="hv">${status.health.dead_ipc}</span></div>
+   <div class="hrow"><span class="hl">orphan components</span><span class="hv err">ERROR · exit 2</span></div>
+   <div class="herr">${status.health.orphan_error}</div>`;
+
+const u=status.usage;
+const usage =
+  `<div class="mline"><span class="mlab">5h window</span><span class="track"><span class="fill" style="width:${u.five_hour}%"></span></span><span class="mpct">${u.five_hour}%</span></div>
+   <div class="mline"><span class="mlab">weekly</span><span class="track"><span class="fill" style="width:${u.weekly}%"></span></span><span class="mpct">${u.weekly}%</span></div>
+   <div class="mline"><span class="mlab">weekly · model</span><span class="track"><span class="fill" style="width:${u.weekly_model}%"></span></span><span class="mpct">${u.weekly_model}%</span></div>
+   <div class="lanes">` + u.lanes.map(l=>
+     `<div class="lane"><span class="ln">${l.lane}</span><span class="tok">${l.tin} in <span class="a">/</span> ${l.tout} out</span></div>`
+   ).join('') + `</div>`;
+
+M.innerHTML =
+  layer('06','punch-list burndown',status.stamps.burndown,false,burndown) +
+  layer('05','benchmarks board',status.stamps.bench,false,bench) +
+  layer('04','ui-rework backlog',status.stamps.rework,true,rework) +
+  layer('03','dashboard health',status.stamps.health,false,health) +
+  layer('02','usage · max plan',status.stamps.usage,false,usage);
+
+document.getElementById('sb-now').textContent='generated '+status.generated_at_ago+' ago';
+document.getElementById('foot').textContent='wiring numbers from the deterministic checkers + ssb.db, never from prose — retired when ELAI J-31 ships';
+
+/* ---------- the ASCII-density mind ---------- */
+function buildNodes(){
+  const nodes=[], n=status.letters.length;
+  status.letters.forEach((L)=>{ for(let k=0;k<L.total;k++) nodes.push({lit:k<L.wired,open:false}); });
+  const unlit=nodes.filter(x=>!x.lit); unlit.forEach(x=>x.defer=true);
+  const step=Math.max(1,Math.floor(unlit.length/status.open_count));
+  for(let j=0;j<status.open_count;j++){ const t=unlit[j*step]; if(t){t.open=true;t.defer=false;} }
+  const N=nodes.length, GA=Math.PI*(3-Math.sqrt(5));
+  nodes.forEach((nd,i)=>{ const y=1-(i/(N-1))*2, r=Math.sqrt(Math.max(0,1-y*y)), th=i*GA;
+    nd.p=[Math.cos(th)*r,y,Math.sin(th)*r]; });
+  return nodes;
+}
+const nodes=buildNodes();
+const totalNodes=nodes.length, wiredNodes=nodes.filter(n=>n.lit).length;
+document.getElementById('mc-wired').textContent=wiredNodes;
+document.getElementById('mc-total').textContent=totalNodes;
+document.getElementById('mc-open').textContent=status.open_count;
+
+const COLS=44, ROWS=24;
+const pre=document.getElementById('ascii');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+function rotY(p,a){const c=Math.cos(a),s=Math.sin(a);return [p[0]*c+p[2]*s,p[1],-p[0]*s+p[2]*c];}
+function rotX(p,a){const c=Math.cos(a),s=Math.sin(a);return [p[0],p[1]*c-p[2]*s,p[1]*s+p[2]*c];}
+
+function renderAscii(ang){
+  const grid=new Array(ROWS).fill(0).map(()=>new Array(COLS).fill(' '));
+  const zb=new Array(ROWS).fill(0).map(()=>new Array(COLS).fill(-9));
+  nodes.forEach(nd=>{
+    let q=rotX(nd.p,-0.34); q=rotY(q,ang);
+    const cxp=(q[0]*0.46+0.5), cyp=(q[1]*0.46+0.5);
+    const cxi=Math.round(cxp*(COLS-1)), cyi=Math.round((1-cyp)*(ROWS-1));
+    if(cxi<0||cxi>=COLS||cyi<0||cyi>=ROWS) return;
+    if(q[2]<zb[cyi][cxi]) return;
+    zb[cyi][cxi]=q[2];
+    const near=(q[2]+1)/2;
+    let ch;
+    if(nd.open) ch='□';
+    else if(nd.lit) ch=near>0.62?'#':near>0.3?'+':':';
+    else ch=near>0.5?'·':'.';
+    grid[cyi][cxi]=ch;
+  });
+  pre.textContent=grid.map(r=>r.join('')).join('\n');
+}
+
+if(reduce){
+  renderAscii(-0.5);
+}else{
+  let a=0;
+  (function loop(){ a+=0.006; renderAscii(a); requestAnimationFrame(loop); })();
+}
+</script>

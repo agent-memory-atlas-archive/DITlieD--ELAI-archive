@@ -1,0 +1,42 @@
+# E-12 Tier-B framework manifest: Encore (encore.dev) — TypeScript/Go cloud framework
+#
+# Anti-slopsquatting verification (CLAUDE.md HARD RULE):
+#   * canonical repo: https://github.com/encoredev/encore (org "encoredev"
+#     verified via WebFetch 2026-05-31)
+#   * canonical docs: https://encore.dev/docs
+#   * npm dist tag (TypeScript SDK install surface): encore.dev (registry
+#     metadata at registry.npmjs.org/encore.dev confirms `latest` dist-tag
+#     = 1.57.5 with license MPL-2.0; the project also ships a `encore` Go
+#     CLI binary — verify via `encore version` on the target host)
+#   * canonical version tag returned by GitHub Releases on 2026-05-31:
+#     v1.57.5 (released 2025-05-26 per github.com/encoredev/encore/releases/latest;
+#     7 commits to main since this release, indicating active maintenance;
+#     within 24-month freshness window per CLAUDE.md anti-slopsquatting protocol).
+#   * license: MPL-2.0 (verified via registry.npmjs.org/encore.dev 2026-05-31).
+#
+# VERIFIED 2026-05-31 via github.com/encoredev/encore/releases/latest +
+# registry.npmjs.org/encore.dev per s-22600 Tranche A ITEM 5
+# anti-slopsquat sweep.
+
+name = "encore"
+version_pin = "v1.57.5"
+language = "typescript"
+package_manager = "npm"
+lint_config_path = "biome.json"
+test_runner = "vitest"
+
+# Encore is API-first; the manifest mirrors the DeveloperApi archetype
+# checks (OTel + Sentry coverage substitute for Lighthouse on
+# server-only deploys, but encore ships an admin dashboard so
+# lighthouse stays in scope at low priority). Order matters — runners
+# dispatch in this sequence.
+security_checks = [
+    "secrets_scan",
+    "trufflehog_scan",
+    "owasp_static",
+    "npm_audit",
+    "biome",
+    "otel_check",
+    "sentry_check",
+    "lsof_port",
+]

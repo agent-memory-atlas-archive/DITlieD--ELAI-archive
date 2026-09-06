@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAVI // the wired harness</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Doto:wght@600;800;900&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg: oklch(0.125 0.012 30);
+  --bg-deep: oklch(0.095 0.010 30);
+  --panel: oklch(0.155 0.014 30);
+  --raised: oklch(0.19 0.016 30);
+  --line: oklch(0.30 0.025 30 / .55);
+  --line-soft: oklch(0.26 0.02 30 / .35);
+  --accent: oklch(0.60 0.215 27);
+  --accent-hi: oklch(0.70 0.20 27);
+  --accent-dim: oklch(0.42 0.13 27);
+  --accent-wash: oklch(0.60 0.215 27 / .10);
+  --text: oklch(0.89 0.012 35);
+  --muted: oklch(0.62 0.02 30);
+  --faint: oklch(0.46 0.02 30);
+  --ok: oklch(0.75 0.14 150);
+  --warn: oklch(0.80 0.15 85);
+  --z-base: 0; --z-chrome: 10; --z-overlay: 20;
+  --mono: "IBM Plex Mono", monospace;
+  --dot: "Doto", monospace;
+}
+*{ box-sizing:border-box; margin:0; padding:0 }
+html,body{ height:100% }
+body{
+  background: var(--bg-deep);
+  color: var(--text);
+  font: 400 13.5px/1.55 var(--mono);
+  overflow:hidden;
+}
+body::after{
+  content:""; position:fixed; inset:0; z-index:var(--z-overlay); pointer-events:none;
+  background: repeating-linear-gradient(0deg, oklch(0 0 0 / .09) 0 1px, transparent 1px 3px);
+  mix-blend-mode:multiply;
+}
+.app{ display:grid; grid-template-columns: 232px minmax(380px, 34%) 1fr; height:100vh; gap:1px; background:var(--line-soft) }
+.app > *{ background:var(--bg) }
+
+.side{ display:flex; flex-direction:column; background:var(--bg-deep); position:relative; z-index:var(--z-chrome) }
+.brand{ padding:22px 18px 16px; border-bottom:1px solid var(--line) }
+.brand h1{ font:900 26px/1 var(--dot); letter-spacing:.08em; color:var(--accent-hi) }
+.brand h1 span{ color:var(--text) }
+.brand small{ display:block; margin-top:7px; color:var(--faint); font-size:10.5px; letter-spacing:.22em; text-transform:uppercase }
+.side-sec{ padding:16px 18px; border-bottom:1px solid var(--line-soft) }
+.side-sec h2{ font:800 11px var(--dot); letter-spacing:.3em; color:var(--muted); text-transform:uppercase; margin-bottom:11px }
+.fsm{ list-style:none; display:flex; flex-direction:column; gap:2px }
+.fsm li{ position:relative; padding:4px 0 4px 20px; color:var(--faint); font-size:11.5px; letter-spacing:.12em }
+.fsm li::before{ content:""; position:absolute; left:4px; top:50%; width:7px; height:7px; transform:translateY(-50%) rotate(45deg); border:1px solid var(--faint) }
+.fsm li.done{ color:var(--muted) }
+.fsm li.done::before{ background:var(--muted); border-color:var(--muted) }
+.fsm li.now{ color:var(--accent-hi) }
+.fsm li.now::before{ background:var(--accent); border-color:var(--accent-hi); box-shadow:0 0 0 3px var(--accent-wash) }
+.fsm li.now::after{ content:"◂ layer"; position:absolute; right:0; top:4px; font-size:9.5px; color:var(--accent-dim); letter-spacing:.1em }
+.agents{ list-style:none; display:flex; flex-direction:column; gap:9px }
+.agents li{ display:flex; align-items:baseline; gap:9px; font-size:12px }
+.dot{ width:6px; height:6px; flex:none; align-self:center }
+.dot.run{ background:var(--accent) }
+.dot.idle{ background:transparent; border:1px solid var(--faint) }
+.dot.done{ background:var(--muted) }
+.agents .nm{ color:var(--text) }
+.agents .st{ margin-left:auto; color:var(--faint); font-size:10px; letter-spacing:.14em; text-transform:uppercase }
+.meter{ margin-top:4px }
+.meter .row{ display:flex; justify-content:space-between; font-size:10.5px; color:var(--muted); margin-bottom:5px }
+.meter .row b{ color:var(--text); font-weight:500 }
+.bar{ height:4px; background:var(--raised); position:relative; overflow:hidden }
+.bar i{ position:absolute; inset:0 auto 0 0; width:62%; background:linear-gradient(90deg, var(--accent-dim), var(--accent)) }
+.side-foot{ margin-top:auto; padding:14px 18px; border-top:1px solid var(--line); display:flex; align-items:center; gap:9px; font-size:10.5px; color:var(--muted); letter-spacing:.12em }
+.pulse{ width:8px; height:8px; background:var(--accent); border-radius:50% }
+@media (prefers-reduced-motion: no-preference){
+  .pulse{ animation: pl 2.2s ease-out infinite }
+  @keyframes pl{ 0%{ box-shadow:0 0 0 0 var(--accent-wash) } 70%{ box-shadow:0 0 0 8px transparent } 100%{ box-shadow:0 0 0 0 transparent } }
+}
+
+.chat{ display:flex; flex-direction:column; min-width:0 }
+.chat-head{ display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--bg-deep) }
+.chat-head h2{ font:800 14px var(--dot); letter-spacing:.2em; color:var(--text) }
+.chip{ font-size:9.5px; letter-spacing:.14em; padding:3px 8px; border:1px solid var(--line); color:var(--muted); text-transform:uppercase; white-space:nowrap }
+.chip.acc{ color:var(--accent-hi); border-color:var(--accent-dim) }
+.chip.pass{ color:var(--ok); border-color: oklch(0.75 0.14 150 / .4) }
+.chip.warn{ color:var(--warn); border-color: oklch(0.80 0.15 85 / .4) }
+.chat-head .chip:last-child{ margin-left:auto }
+.scroll{ flex:1; overflow-y:auto; padding:22px 20px 10px; display:flex; flex-direction:column; gap:20px; scrollbar-width:thin; scrollbar-color:var(--raised) transparent }
+.sysline{ align-self:center; color:var(--faint); font-size:10.5px; letter-spacing:.28em; text-transform:uppercase }
+.sysline::before,.sysline::after{ content:" ······ "; color:var(--line) }
+
+.msg{ display:flex; flex-direction:column; gap:7px; max-width:92% }
+.msg .who{ font:800 10px var(--dot); letter-spacing:.3em; text-transform:uppercase; display:flex; gap:8px; align-items:center }
+.msg .meta{ font-size:9.5px; color:var(--faint); letter-spacing:.12em }
+.msg.user{ align-self:flex-end; align-items:flex-end }
+.msg.user .who{ color:var(--muted) }
+.msg.user .body{
+  background:var(--accent-wash); border:1px solid var(--accent-dim);
+  border-right:3px solid var(--accent);
+  padding:11px 14px; color:var(--text);
+}
+.msg.ai{ align-self:flex-start }
+.msg.ai .who{ color:var(--accent-hi) }
+.msg.ai .who::before{ content:"▚"; color:var(--accent) }
+.msg.ai .body{
+  background:var(--panel); border:1px solid var(--line);
+  border-left:3px solid var(--accent);
+  padding:13px 16px;
+}
+.body p{ margin:0 0 10px }
+.body p:last-child{ margin-bottom:0 }
+.body .k{ color:var(--accent-hi) }
+.findings{ list-style:none; margin:10px 0; display:flex; flex-direction:column; gap:6px }
+.findings li{ padding-left:16px; position:relative; color:var(--muted) }
+.findings li::before{ content:"▸"; position:absolute; left:0; color:var(--accent) }
+.findings li b{ color:var(--text); font-weight:500 }
+.code{ margin:12px 0; border:1px solid var(--line); background:var(--bg-deep) }
+.code-h{ display:flex; justify-content:space-between; padding:6px 12px; border-bottom:1px solid var(--line-soft); font-size:9.5px; letter-spacing:.18em; color:var(--faint); text-transform:uppercase }
+.code pre{ padding:12px 14px; overflow-x:auto; font-size:12px; line-height:1.6 }
+.cd-k{ color:var(--accent-hi) } .cd-f{ color:oklch(0.78 0.10 60) } .cd-t{ color:oklch(0.72 0.08 200) } .cd-s{ color:oklch(0.74 0.11 150) } .cd-c{ color:var(--faint); font-style:italic }
+.chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:12px }
+.stream .body::after{ content:"▮"; color:var(--accent); margin-left:2px }
+@media (prefers-reduced-motion: no-preference){
+  .stream .body::after{ animation: bl 1s steps(2) infinite }
+  @keyframes bl{ 50%{ opacity:0 } }
+}
+.composer{ display:flex; gap:10px; padding:14px 20px 18px; border-top:1px solid var(--line); background:var(--bg-deep) }
+.composer input{
+  flex:1; background:var(--panel); border:1px solid var(--line); color:var(--text);
+  font:400 13px var(--mono); padding:11px 14px; outline:none;
+}
+.composer input::placeholder{ color:var(--faint) }
+.composer input:focus{ border-color:var(--accent-dim); background:var(--raised) }
+.composer button{
+  background:var(--accent); border:0; color:oklch(0.14 0.02 30);
+  font:800 11px var(--dot); letter-spacing:.24em; padding:0 20px; cursor:pointer; text-transform:uppercase;
+}
+.composer button:hover{ background:var(--accent-hi) }
+
+.cnv{ display:flex; flex-direction:column; min-width:0; background:var(--bg-deep) }
+.cnv-head{ display:flex; align-items:center; gap:14px; padding:14px 22px; border-bottom:1px solid var(--line) }
+.cnv-head h2{ font:800 14px var(--dot); letter-spacing:.2em }
+.cnv-head .sub{ color:var(--faint); font-size:10px; letter-spacing:.18em; text-transform:uppercase }
+.modes{ margin-left:auto; display:flex; border:1px solid var(--line) }
+.modes button{
+  background:transparent; border:0; color:var(--muted); cursor:pointer;
+  font:800 10px var(--dot); letter-spacing:.24em; padding:8px 16px; text-transform:uppercase;
+}
+.modes button+button{ border-left:1px solid var(--line) }
+.modes button[aria-pressed="true"]{ background:var(--accent-wash); color:var(--accent-hi) }
+.stage{ position:relative; flex:1; min-height:0 }
+canvas{ position:absolute; inset:0; width:100%; height:100%; display:block }
+.hud{
+  position:absolute; left:18px; bottom:16px; z-index:var(--z-chrome);
+  border:1px solid var(--line); background:oklch(0.10 0.012 30 / .85);
+  padding:9px 13px; font-size:10.5px; color:var(--muted); letter-spacing:.1em; max-width:340px;
+}
+.hud b{ color:var(--accent-hi); font-weight:600 }
+.hud .h2{ color:var(--faint); font-size:9px; letter-spacing:.26em; text-transform:uppercase; display:block; margin-bottom:3px }
+.legend{ position:absolute; right:18px; top:14px; z-index:var(--z-chrome); display:flex; gap:14px; font-size:9.5px; color:var(--faint); letter-spacing:.16em; text-transform:uppercase }
+.legend i{ display:inline-block; width:8px; height:8px; margin-right:5px; transform:rotate(45deg); border:1px solid var(--accent) }
+.legend i.f{ background:var(--accent) }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="brand">
+      <h1>NAVI<span>_07</span></h1>
+      <small>close the world · open the next</small>
+    </div>
+    <div class="side-sec">
+      <h2>protocol · fsm</h2>
+      <ul class="fsm">
+        <li class="done">IDLE</li>
+        <li class="done">PLANNING</li>
+        <li class="done">TESTING_FIRST</li>
+        <li class="now">EXECUTING</li>
+        <li>AUDITING</li>
+        <li>MEMORIZING</li>
+        <li>COMPLETE</li>
+      </ul>
+    </div>
+    <div class="side-sec">
+      <h2>presences</h2>
+      <ul class="agents">
+        <li><span class="dot run"></span><span class="nm">executor</span><span class="st">in layer</span></li>
+        <li><span class="dot idle"></span><span class="nm">auditor</span><span class="st">waiting</span></li>
+        <li><span class="dot done"></span><span class="nm">ctx-compiler</span><span class="st">returned</span></li>
+        <li><span class="dot idle"></span><span class="nm">memory-writer</span><span class="st">queued</span></li>
+      </ul>
+    </div>
+    <div class="side-sec">
+      <h2>budget</h2>
+      <div class="meter">
+        <div class="row"><span>context</span><b>62% · 19.8k</b></div>
+        <div class="bar"><i></i></div>
+      </div>
+      <div class="meter" style="margin-top:12px">
+        <div class="row"><span>spend ceiling</span><b>$0.41 / $2.00</b></div>
+        <div class="bar"><i style="width:21%"></i></div>
+      </div>
+    </div>
+    <div class="side-foot"><span class="pulse"></span> SSB LIVE · seq 4821</div>
+  </aside>
+
+  <section class="chat">
+    <header class="chat-head">
+      <h2>SESSION</h2>
+      <span class="chip acc">b15-phase0</span>
+      <span class="chip">local · qwen-7b</span>
+      <span class="chip pass">journal bound</span>
+    </header>
+    <div class="scroll" id="scroll">
+      <div class="sysline">present day · present time · session opened 04:11:07</div>
+
+      <div class="msg user">
+        <div class="who">operator</div>
+        <div class="body">trace why the auditor blocked b15 phase0, the wiring contract fields again i think. propose the fix, dont touch the gate</div>
+      </div>
+
+      <div class="msg ai">
+        <div class="who">navi · elai</div>
+        <div class="body">
+          <p>The block is real and it is upstream of the contract. I re-grounded the verdict against the journal, not the auditor's prose: <span class="k">seq 4788</span> carries the raw checker output.</p>
+          <ul class="findings">
+            <li><b>produces</b> names <b>VramTierEvent</b>, but the splitter emits <b>PhaseSizingEvent</b> since the b15 rebaseline. The contract field is stale, the code is right.</li>
+            <li><b>reachable_from</b> still points at the pre-rebaseline seam <b>runtime_builder::wire_probe</b>, which no longer exists. Dead seam, hard fail by R1.</li>
+            <li>The gate itself is frozen and untouched. Nothing to change there.</li>
+          </ul>
+          <div class="code">
+            <div class="code-h"><span>fulb_phase_sizing_splitter_contract.rs</span><span>proposed · +2 −2</span></div>
+            <pre><span class="cd-k">let</span> contract = WiringContract {
+    produces:       <span class="cd-s">"PhaseSizingEvent"</span>,
+    consumes:       <span class="cd-s">"VramTierProbe"</span>,
+    reachable_from: <span class="cd-s">"runtime_builder::activate_profile"</span>,
+    observable:     Observable::<span class="cd-t">SsbRow</span>(<span class="cd-s">"phase_sizing_applied"</span>),
+};</pre>
+          </div>
+          <div class="chips">
+            <span class="chip pass">L1 veto · pass</span>
+            <span class="chip pass">grounded 3/3</span>
+            <span class="chip acc">evidence: seq 4788</span>
+          </div>
+        </div>
+        <div class="meta">seq 4790 · 1.4k tok · grounded observe → verify</div>
+      </div>
+
+      <div class="msg user">
+        <div class="who">operator</div>
+        <div class="body">good. apply it and rerun the contract only, no full suite</div>
+      </div>
+
+      <div class="msg ai stream">
+        <div class="who">navi · elai</div>
+        <div class="body">
+          <p>Applied. Dispatching the auditor on <span class="k">-p contracts</span>, single test scope. The layer is thin here, you will feel it when it passes</p>
+          <div class="chips">
+            <span class="chip warn">executing · auditor spawned</span>
+            <span class="chip">scope: 1 test</span>
+          </div>
+        </div>
+        <div class="meta">seq 4821 · streaming</div>
+      </div>
+    </div>
+    <div class="composer">
+      <input id="inp" type="text" placeholder="speak into the wired…" autocomplete="off">
+      <button id="send">send</button>
+    </div>
+  </section>
+
+  <section class="cnv">
+    <header class="cnv-head">
+      <h2>CANVAS</h2>
+      <span class="sub" id="cnvsub">system graph · journal derived</span>
+      <div class="modes" role="group" aria-label="canvas mode">
+        <button id="mGraph" aria-pressed="true">graph</button>
+        <button id="mDepth" aria-pressed="false">depth</button>
+      </div>
+    </header>
+    <div class="stage" id="stage">
+      <canvas id="cv"></canvas>
+      <div class="legend"><span><i class="f"></i>hot path</span><span><i></i>reachable</span></div>
+      <div class="hud" id="hud"><span class="h2">layer 07 · the wired</span><b>hover a node</b> · edges are verified wiring claims, not guesses</div>
+    </div>
+  </section>
+
+</div>
+<script>
+(() => {
+const rm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const stage = document.getElementById("stage");
+const hud = document.getElementById("hud");
+const sub = document.getElementById("cnvsub");
+let W=0,H=0,DPR=1, mode="graph", t=0;
+
+const css = n => getComputedStyle(document.body).getPropertyValue(n).trim();
+const ACC = "oklch(0.60 0.215 27)", ACCHI = "oklch(0.72 0.21 27)", DIM = "oklch(0.42 0.13 27)";
+const TXT = "oklch(0.89 0.012 35)", MUT = "oklch(0.60 0.02 30)", FNT = "oklch(0.42 0.02 30)";
+
+function resize(){
+  DPR = Math.min(devicePixelRatio||1, 2);
+  W = stage.clientWidth; H = stage.clientHeight;
+  cv.width = W*DPR; cv.height = H*DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  if(rm) draw();
+}
+new ResizeObserver(resize).observe(stage);
+
+const N = [
+  ["ORCH","orchestrator",.50,.42,26,1],["FSM","fsm",.31,.29,15,0],["SSB","ssb journal",.68,.29,20,1],
+  ["GATE","gate stack",.69,.58,18,1],["GRC","grc",.31,.58,15,0],["KNOW","knowledge",.15,.43,16,0],
+  ["DKG","dkg",.07,.30,10,0],["VEC","vectors",.07,.56,10,0],["SBX","sandbox",.50,.73,16,1],
+  ["EXE","executor",.36,.88,13,1],["AUD","auditor",.64,.88,13,0],["SID","sidecar",.86,.44,14,0],
+  ["CLD","cloud",.87,.18,11,0],["DSH","dashboard",.50,.12,13,0],["MEM","memory·vcg",.18,.74,13,0]
+].map(([id,label,x,y,r,hot],i)=>({id,label,x,y,r,hot,ph:i*1.7}));
+const IX = Object.fromEntries(N.map((n,i)=>[n.id,i]));
+const E = [["ORCH","FSM",0],["ORCH","SSB",1],["ORCH","GATE",1],["ORCH","GRC",0],["ORCH","KNOW",0],
+["ORCH","SBX",1],["ORCH","SID",0],["SSB","DSH",0],["SSB","GATE",1],["SSB","MEM",0],["GATE","AUD",0],
+["GRC","EXE",0],["KNOW","DKG",0],["KNOW","VEC",0],["SBX","EXE",1],["SBX","AUD",0],["SID","CLD",0],
+["MEM","KNOW",0],["FSM","DSH",0]].map(([a,b,hot])=>({a:IX[a],b:IX[b],hot}));
+
+let hover=-1, mx=-1, my=-1;
+const pad = 70;
+const px = n => pad + n.x*(W-2*pad) + (rm?0:Math.sin(t*.0007+n.ph)*3);
+const py = n => 54 + n.y*(H-118) + (rm?0:Math.cos(t*.0009+n.ph)*3);
+
+function drawGraph(){
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle = "oklch(0.22 0.015 30 / .5)";
+  ctx.lineWidth = 1;
+  for(let gx=0; gx<W; gx+=46){ ctx.beginPath(); ctx.moveTo(gx,0); ctx.lineTo(gx,H); ctx.stroke() }
+
+  for(const e of E){
+    const a=N[e.a], b=N[e.b];
+    const lit = hover===e.a || hover===e.b;
+    ctx.strokeStyle = lit ? ACCHI : (e.hot ? DIM : "oklch(0.32 0.03 30 / .55)");
+    ctx.lineWidth = lit ? 1.6 : (e.hot ? 1.2 : 1);
+    ctx.beginPath(); ctx.moveTo(px(a),py(a)); ctx.lineTo(px(b),py(b)); ctx.stroke();
+    if(e.hot && !rm){
+      const k = (t*.00035 + e.a*.13) % 1;
+      const qx = px(a)+(px(b)-px(a))*k, qy = py(a)+(py(b)-py(a))*k;
+      ctx.fillStyle = ACCHI; ctx.fillRect(qx-1.5,qy-1.5,3,3);
+    }
+  }
+  hover=-1;
+  for(let i=0;i<N.length;i++){
+    const n=N[i], x=px(n), y=py(n);
+    if(Math.hypot(mx-x,my-y) < n.r+14) hover=i;
+  }
+  for(let i=0;i<N.length;i++){
+    const n=N[i], x=px(n), y=py(n), lit = i===hover, s = n.r;
+    ctx.save(); ctx.translate(x,y); ctx.rotate(Math.PI/4);
+    ctx.fillStyle = lit ? "oklch(0.24 0.06 27)" : (n.hot? "oklch(0.19 0.035 27)" : "oklch(0.165 0.015 30)");
+    ctx.strokeStyle = lit ? ACCHI : (n.hot ? ACC : "oklch(0.36 0.03 30)");
+    ctx.lineWidth = lit ? 1.6 : 1.1;
+    ctx.fillRect(-s/1.6,-s/1.6,s*1.25,s*1.25); ctx.strokeRect(-s/1.6,-s/1.6,s*1.25,s*1.25);
+    ctx.restore();
+    if(n.hot){ ctx.fillStyle = lit?ACCHI:ACC; ctx.fillRect(x-2,y-2,4,4) }
+    ctx.font = "600 10px 'IBM Plex Mono'";
+    ctx.textAlign="center";
+    ctx.fillStyle = lit ? TXT : (n.hot ? MUT : FNT);
+    ctx.fillText(n.label.toUpperCase(), x, y+s+15);
+  }
+  hud.innerHTML = hover>=0
+    ? `<span class="h2">node · layer 07</span><b>${N[hover].label.toUpperCase()}</b> · ${E.filter(e=>e.a===hover||e.b===hover).length} verified edges · ${N[hover].hot?"on the hot path":"reachable"}`
+    : `<span class="h2">layer 07 · the wired</span><b>hover a node</b> · edges are verified wiring claims, not guesses`;
+}
+
+let rx=-.42, ry=.62, vx=0, vy=0, dragging=false, lx=0, ly=0, glitchT=0, glitchL=-1;
+const LAYERS=7, corners=[[-1,-1],[1,-1],[1,1],[-1,1]];
+const parts = Array.from({length:46},(_,i)=>({a:Math.random()*6.28, r:.35+Math.random()*.6, y:Math.random(), s:.3+Math.random()*.7}));
+
+function proj(x,y,z){
+  let c=Math.cos(ry), s=Math.sin(ry);
+  let x1 = x*c - z*s, z1 = x*s + z*c;
+  c=Math.cos(rx); s=Math.sin(rx);
+  let y1 = y*c - z1*s, z2 = y*s + z1*c;
+  const f = 620/(620+z2+340);
+  return [W/2 + x1*f, H/2 + y1*f, f];
+}
+function drawDepth(){
+  ctx.clearRect(0,0,W,H);
+  const base = Math.min(W,H)*.30;
+  if(!rm){ glitchT--; if(glitchT<-240 && Math.random()<.02){ glitchT=7; glitchL=(Math.random()*LAYERS)|0 } }
+  const spin = rm ? 0 : t*.00022;
+
+  const layer = i => {
+    const y = (i-(LAYERS-1)/2)*base*.42;
+    const r = base*(1.15 - Math.abs(i-(LAYERS-1)/2)*.17);
+    const a = spin*(i%2?1:-1) + i*.42;
+    const gx = (glitchT>0 && glitchL===i) ? (Math.random()*30-15) : 0;
+    return corners.map(([cx,cz])=>{
+      const x = (cx*Math.cos(a)-cz*Math.sin(a))*r + gx;
+      const z = (cx*Math.sin(a)+cz*Math.cos(a))*r;
+      return [x,y,z];
+    });
+  };
+  const P = Array.from({length:LAYERS}, (_,i)=>layer(i).map(p=>proj(...p)));
+
+  for(let i=0;i<LAYERS-1;i++) for(let k=0;k<4;k++){
+    const a=P[i][k], b=P[i+1][(k+1)%4];
+    ctx.strokeStyle=`oklch(0.55 0.18 27 / ${.10+.12*Math.min(a[2],b[2])})`;
+    ctx.lineWidth=.8; ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke();
+  }
+  const ax0=proj(0,-base*1.7,0), ax1=proj(0,base*1.7,0);
+  ctx.strokeStyle="oklch(0.45 0.10 27 / .35)"; ctx.setLineDash([2,6]);
+  ctx.beginPath(); ctx.moveTo(ax0[0],ax0[1]); ctx.lineTo(ax1[0],ax1[1]); ctx.stroke(); ctx.setLineDash([]);
+
+  for(let i=0;i<LAYERS;i++){
+    const q=P[i], depth=(q[0][2]+q[2][2])/2;
+    const mid = i===(LAYERS-1)/2|0 && i===3;
+    ctx.strokeStyle = i===3 ? ACCHI : `oklch(0.62 0.20 27 / ${.28+.5*depth})`;
+    ctx.lineWidth = i===3 ? 1.8 : 1.1;
+    ctx.beginPath(); ctx.moveTo(q[0][0],q[0][1]);
+    for(let k=1;k<=4;k++) ctx.lineTo(q[k%4][0],q[k%4][1]);
+    ctx.stroke();
+    for(const p of q){ ctx.fillStyle=`oklch(0.72 0.21 27 / ${.4+.6*p[2]})`; ctx.fillRect(p[0]-1.5,p[1]-1.5,3,3) }
+  }
+  if(!rm) for(const p of parts){
+    p.y -= .0016*p.s; if(p.y<0) p.y=1;
+    const yy=(p.y-.5)*base*3, rr=base*(1.15-Math.abs(p.y-.5)*2*.6)*p.r;
+    const q=proj(Math.cos(p.a+spin*2)*rr, yy, Math.sin(p.a+spin*2)*rr);
+    ctx.fillStyle=`oklch(0.70 0.20 27 / ${.15+.5*q[2]*p.s})`;
+    ctx.fillRect(q[0],q[1],1.6,1.6);
+  }
+  ctx.font="800 10px 'Doto'"; ctx.textAlign="left";
+  ctx.fillStyle=FNT; ctx.fillText("PROTOCOL 7 · LAYER STACK", 20, 26);
+  ctx.fillStyle=DIM; ctx.fillText("DRAG TO ROTATE", 20, 42);
+  hud.innerHTML = `<span class="h2">depth · protocol 7</span><b>seven layers</b> · the active layer is the fsm state, threads are causal seq edges`;
+}
+
+cv.addEventListener("pointerdown", e=>{ dragging=true; lx=e.clientX; ly=e.clientY; cv.setPointerCapture(e.pointerId) });
+cv.addEventListener("pointermove", e=>{
+  const r=cv.getBoundingClientRect(); mx=e.clientX-r.left; my=e.clientY-r.top;
+  if(dragging && mode==="depth"){ ry += (e.clientX-lx)*.006; rx += (e.clientY-ly)*.006; rx=Math.max(-1.4,Math.min(1.4,rx)); lx=e.clientX; ly=e.clientY; if(rm) draw() }
+});
+cv.addEventListener("pointerup", ()=>dragging=false);
+cv.addEventListener("pointerleave", ()=>{ mx=my=-1 });
+
+function draw(){ mode==="graph" ? drawGraph() : drawDepth() }
+function loop(ts){ t=ts; draw(); requestAnimationFrame(loop) }
+resize();
+if(rm){ draw(); setInterval(()=>{ if(mode==="graph") draw() }, 500) } else requestAnimationFrame(loop);
+
+const bG=document.getElementById("mGraph"), bD=document.getElementById("mDepth");
+function setMode(m){
+  mode=m;
+  bG.setAttribute("aria-pressed", m==="graph"); bD.setAttribute("aria-pressed", m==="depth");
+  sub.textContent = m==="graph" ? "system graph · journal derived" : "depth · protocol 7 stack";
+  if(rm) draw();
+}
+bG.onclick=()=>setMode("graph"); bD.onclick=()=>setMode("depth");
+
+const scroll=document.getElementById("scroll"), inp=document.getElementById("inp");
+const replies=[
+  "Heard. i re-grounded it against the journal first, the wired does not accept unverified claims. one finding, one fix, evidence at the seq i cited",
+  "No matter where you go, the state is journaled. dispatching the executor with a scoped context package now",
+  "That claim was ungrounded, so i ran the checker instead of guessing. verdict attached, the gate stays frozen",
+  "The layer between plan and code is thin tonight. contract updated, auditor queued, nothing else touched"
+];
+let ri=0;
+function addMsg(role, html, meta){
+  const d=document.createElement("div"); d.className="msg "+role;
+  d.innerHTML = `<div class="who">${role==="user"?"operator":"navi · elai"}</div><div class="body">${html}</div>${meta?`<div class="meta">${meta}</div>`:""}`;
+  document.querySelector(".msg.stream")?.classList.remove("stream");
+  scroll.appendChild(d); scroll.scrollTop=scroll.scrollHeight;
+}
+function send(){
+  const v=inp.value.trim(); if(!v) return;
+  addMsg("user", v.replace(/</g,"&lt;")); inp.value="";
+  setTimeout(()=>addMsg("ai", `<p>${replies[ri++%replies.length]}</p><div class="chips"><span class="chip pass">grounded</span><span class="chip acc">seq ${4821+ri}</span></div>`, `seq ${4821+ri} · replied`), rm?60:700);
+}
+document.getElementById("send").onclick=send;
+inp.addEventListener("keydown", e=>{ if(e.key==="Enter") send() });
+})();
+</script>
+</body>
+</html>

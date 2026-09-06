@@ -56,3 +56,22 @@ excluded runtime/session data, bundled tool archives, downloaded repositories,
 raw paper PDFs and upstream prompt dumps are outside this bounded inventory.
 
 The synthetic calibration seed and synthetic minified fixtures produced no separate release issue in this review.
+
+
+## Recovered design and research material
+
+The [recovery index](docs/RECOVERED-DOCUMENTS.md) adds original planning text,
+research syntheses and standalone HTML visual studies. Public citations and
+attribution remain in those documents. Source references are not an assertion
+that all referenced implementations or media are redistributed here.
+
+Three original ELAI concept boards under `workflow/design/cook-elai-renders/`
+are preserved unchanged, including their embedded provenance metadata. They are
+concept artwork, not screenshots of a functioning product. The 31 third-party
+product screenshots listed in the [reference index](workflow/design/harness-references/INDEX.md)
+are omitted; their redistribution terms were not established. Some HTML studies
+load Google Fonts externally; font files are not vendored by this recovery.
+
+The recovered benchmark documents retain reported results without importing
+raw external QA datasets, provider logs or generated run corpora. The root MIT
+license covers original project material, not third-party works referenced in it.

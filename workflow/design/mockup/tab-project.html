@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-tab="project">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — dashboard · PROJECT</title>
+<!--
+  DASHBOARD — PROJECT tab (code intelligence) in the settled intro/select-terminal language.
+  Shell (topbar, icon rail, chat pane, statusbar, drawers, settings modal, :root tokens, shared component
+  CSS) copied VERBATIM from workflow/design/dashboard-app.html — unchanged. Only <section class="canvas-pane">
+  is replaced with the PROJECT view, and the PROJECT tab is set active (data-tab="project" on <html>, .on on its button).
+  PROJECT view = the symbol/dependency CODE-GRAPH (nodes ranked by PageRank, curved call/import edges, a disconnected
+  dimmed dead-code island), a 5-lens bar (structure/security/history/cost/dead-code) that recolors the graph in JS, a
+  SYMBOL DETAIL panel (signature + file:line + PageRank + Callers/Callees with the 4 SCIP confidence tiers), an
+  IMPACT / blast-radius cone (by_depth hop bands), repurposed canvas-top/bot strips (DKG counts + active lens + legend),
+  and a dev STATE switcher in the statusbar (POPULATED / INDEXING / NOT-INDEXED / ERROR). New CSS only under the .pj-* prefix.
+  Field names grounded in HANDLER-SHAPES.md: get_graph_view_data (VizData nodes/edges/layout), get_pagerank_top
+  ({known, rows[{symbol,path,score}]}), symbol_graph_query (SymbolGraphQueryReport: kind/symbol/result_count/results[SymbolMatch]/
+  graph_path/node_count), symbol_graph_status ({graph_path,graph_present,node_count,lru_capacity}), get_impact_overlay
+  ({files[], by_depth{}, total_files, max_depth_reached, truncated}), list_entry_points ({entry_points[BackendEntryPoint], summary}).
+  The 4 resolution tiers (Local/Imported/Re-export/Unresolved) are the SCIP SymbolMatch confidence tiers. Same demo project
+  as dashboard-app.html (zero-knowledge password manager / .elai_cc). All values are representative mock; nothing wired. Esc closes overlays.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#0a0f0e; --graph:#0a0f0e; --panel:#0e1413; --surface:#151c1a; --raised:#1b2220; --sink:#070b0a;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --border:rgba(255,255,255,.08); --border2:rgba(255,255,255,.14);
+    --teal:#2BBBA4; --tealb:#34C2AA; --teal-deep:#1B7A6E;
+    --tealsoft:rgba(43,187,164,.35); --tealghost:rgba(43,187,164,.10); --tealfaint:rgba(43,187,164,.05);
+    --disp:'Chakra Petch',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+    --dur-fast:140ms; --dur:240ms; --ease-out:cubic-bezier(0.16,1,0.3,1);
+    --r-sm:5px; --r-md:8px; --r-lg:11px;
+    --rail:48px; --chat:368px; --summary:196px; --drawer:286px;
+  }
+  [data-theme="light"]{
+    --bg:#eef1ef; --graph:#eef1ef; --panel:#ffffff; --surface:#f7f9f7; --raised:#eef1ee; --sink:#e6eae7;
+    --text:#0b0f0e; --read:#2d342f; --dim:#646b66; --ghost:#a9b0ab;
+    --border:rgba(0,0,0,.10); --border2:rgba(0,0,0,.17);
+    --teal:#138a78; --tealb:#0f7e6f; --teal-deep:#0c6256;
+    --tealsoft:rgba(19,138,120,.38); --tealghost:rgba(19,138,120,.12); --tealfaint:rgba(19,138,120,.06);
+  }
+  *{margin:0;box-sizing:border-box;}
+  html,body{height:100%;}
+  body{font-family:var(--mono);background:var(--bg);color:var(--text);height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;}
+  .app{display:grid;grid-template-rows:48px 1fr 24px;height:100vh;}
+
+  /* ─────────────── TOPBAR (identical language to select-terminal) ─────────────── */
+  .topbar{display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--bg);}
+  .brand{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.16em;color:var(--read);font-weight:600;}
+  .brand .sep{color:var(--ghost);}
+  .brand .title{color:var(--dim);letter-spacing:.1em;font-weight:400;}
+  /* primary nav = segmented control, same shape as select's LOCAL/CLOUD/HYBRID pill */
+  .tabs{display:flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;}
+  .tab{appearance:none;background:transparent;border:0;border-right:1px solid var(--border);cursor:pointer;font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.14em;color:var(--dim);padding:7px 16px;transition:color var(--dur-fast),background var(--dur-fast);}
+  .tab:last-child{border-right:0;}
+  .tab:hover{color:var(--read);background:rgba(255,255,255,.04);}
+  .tab.on{color:var(--tealb);background:var(--tealghost);}
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:18px;}
+  .runbar{display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.14em;color:var(--dim);}
+  .runbar .frac{color:var(--tealb);}
+  .segbar{display:flex;gap:2px;}
+  .seg{width:9px;height:8px;border-radius:1px;background:var(--ghost);}
+  .seg.f{background:var(--teal-deep);}
+  .seg.a{background:var(--tealb);animation:segpulse 1.6s ease-in-out infinite;}
+  @keyframes segpulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+
+  /* theme toggle (sun/moon) — carried verbatim from intro/select */
+  .icon-toggle{appearance:none;cursor:pointer;position:relative;width:32px;height:30px;background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);color:var(--read);transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .icon-toggle:hover{color:var(--teal);border-color:var(--tealsoft);}
+  .icon-toggle .ico{position:absolute;top:50%;left:50%;transition:opacity var(--dur) var(--ease-out),transform var(--dur) var(--ease-out);}
+  .icon-toggle .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  .icon-toggle .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  .icon-toggle:hover .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  .icon-toggle:hover .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+
+  /* ─────────────── BODY GRID: rail | canvas | chat ─────────────── */
+  .body{position:relative;display:grid;grid-template-columns:var(--rail) 1fr var(--chat);min-height:0;}
+
+  /* icon rail */
+  .rail{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0;border-right:1px solid var(--border);background:var(--panel);z-index:30;}
+  .rail .spring{flex:1;}
+  .rbtn{appearance:none;position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;border-radius:var(--r-sm);color:var(--dim);cursor:pointer;transition:color var(--dur-fast),background var(--dur-fast),border-color var(--dur-fast);}
+  .rbtn:hover{color:var(--read);background:var(--tealfaint);}
+  .rbtn.on{color:var(--tealb);background:var(--tealghost);border-color:var(--tealsoft);}
+  .rbtn svg{width:18px;height:18px;}
+  /* hover tooltip */
+  .rbtn::after{content:attr(data-label);position:absolute;left:42px;top:50%;transform:translateY(-50%) translateX(-4px);white-space:nowrap;font-size:10px;letter-spacing:.08em;color:var(--read);background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:4px 9px;opacity:0;pointer-events:none;transition:opacity var(--dur-fast),transform var(--dur-fast);z-index:50;}
+  .rbtn:hover::after{opacity:1;transform:translateY(-50%) translateX(0);}
+
+  /* ─────────────── CANVAS PANE (top strip · graph · bottom strip) ─────────────── */
+  .canvas-pane{position:relative;display:grid;grid-template-rows:auto 1fr auto;min-width:0;background:var(--graph);}
+
+  /* canvas TOP strip — mission + progress + gates (was the side summary) */
+  .canvas-top{display:flex;align-items:center;gap:18px;min-height:40px;padding:8px 18px;border-bottom:1px solid var(--border);background:var(--bg);}
+  .canvas-top .mission{font-size:11px;color:var(--read);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+  .ck{font-size:8px;letter-spacing:.22em;color:var(--dim);margin-right:9px;}
+  .canvas-top .cright{margin-left:auto;display:flex;align-items:center;gap:22px;font-size:10px;letter-spacing:.1em;color:var(--dim);white-space:nowrap;}
+  .canvas-top .cright b{font-family:var(--disp);font-weight:500;font-size:15px;color:var(--text);letter-spacing:.02em;}
+  .gtl{display:inline-flex;gap:9px;align-items:center;}
+  .gtl .ok{color:var(--tealb);}.gtl .wa{color:var(--text);}
+  .gtl .fa{background:var(--text);color:var(--bg);padding:0 5px;border-radius:3px;font-weight:600;}
+
+  /* canvas BOTTOM strip — last activity + quinary legend */
+  .canvas-bot{display:flex;align-items:center;gap:18px;min-height:30px;padding:6px 18px;border-top:1px solid var(--border);background:var(--bg);}
+  .canvas-bot .lastact{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+  .canvas-bot .lastact::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);flex:none;}
+  .canvas-bot .lastact b{color:var(--read);font-weight:400;}
+  .legend-inline{margin-left:auto;display:flex;gap:13px;font-size:9px;letter-spacing:.05em;color:var(--dim);white-space:nowrap;}
+  .legend-inline b{color:var(--read);font-weight:400;}
+
+  /* graph surface — flat matte, no stars/glow (DESIGN: work surface); pans inside the canvas */
+  .graph{position:relative;overflow:auto;background:var(--graph);}
+  .graphspace{position:relative;width:1140px;height:600px;margin:0 auto;}
+  .graphspace svg.edges{position:absolute;inset:0;width:100%;height:100%;}
+  .edge{stroke:var(--border2);stroke-width:1.5;fill:none;}
+  .edge.live{stroke:var(--tealb);stroke-dasharray:7 9;animation:march 1.1s linear infinite;}
+  @keyframes march{to{stroke-dashoffset:-32;}}
+
+  .node{position:absolute;width:192px;border-radius:var(--r-md);border:1px solid var(--border);background:var(--surface);padding:10px 12px;transition:border-color var(--dur-fast),transform var(--dur-fast);cursor:pointer;}
+  .node:hover{border-color:var(--tealsoft);transform:translateY(-1px);}
+  .node .nhead{display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.14em;color:var(--dim);margin-bottom:6px;}
+  .node .glyph{width:18px;height:18px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;flex:none;}
+  .node .ntitle{font-size:11px;letter-spacing:.03em;margin-bottom:8px;color:var(--text);}
+  .node .chips{display:flex;gap:5px;flex-wrap:wrap;}
+  .node .chipx{font-size:8px;letter-spacing:.1em;padding:2px 7px;border-radius:999px;border:1px solid var(--border);color:var(--dim);}
+  .node .chipx.t{color:var(--tealb);border-color:var(--tealsoft);}
+  .node.done{opacity:.82;border-left:3px solid var(--teal);}
+  .node.done .glyph{background:var(--teal);color:var(--bg);}
+  .node.active{border:1.5px solid var(--tealb);background:var(--tealghost);animation:nodepulse 2.2s ease-in-out infinite;}
+  .node.active .glyph{border:1.5px solid var(--tealb);color:var(--tealb);}
+  @keyframes nodepulse{0%,100%{box-shadow:0 0 0 0 var(--tealghost);}50%{box-shadow:0 0 0 5px var(--tealghost);}}
+  .node.pending{border-style:dashed;}
+  .node.pending .glyph{border:1px solid var(--ghost);color:var(--dim);}
+  .node.pending .ntitle{color:var(--dim);}
+  .node.warn .glyph{border:1px solid var(--text);color:var(--text);}
+  .node.fail{background:var(--text);border-color:var(--text);}
+  .node.fail .nhead,.node.fail .ntitle{color:var(--bg);}
+  .node.fail .glyph{background:var(--bg);color:var(--text);font-weight:700;}
+  .node.fail .chipx{color:var(--bg);border-color:rgba(0,0,0,.3);}
+  .capsule{position:absolute;display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:999px;border:1px solid var(--tealsoft);background:var(--surface);font-size:10px;letter-spacing:.12em;cursor:pointer;}
+  .capsule .cg{color:var(--tealb);}.capsule .cc{color:var(--dim);}
+
+  /* tab placeholder (PROJECT/APP/KNOWLEDGE — filled in detail pass) */
+  .tabhost{display:none;position:absolute;inset:0;align-items:center;justify-content:center;background:var(--graph);}
+  .tabhost .ph{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;color:var(--dim);}
+  .tabhost .ph .pg{width:46px;height:46px;border:1px dashed var(--border2);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;color:var(--ghost);}
+  .tabhost .ph h2{font-family:var(--disp);font-size:18px;font-weight:500;letter-spacing:.04em;color:var(--read);}
+  .tabhost .ph p{font-size:11px;letter-spacing:.04em;max-width:340px;line-height:1.6;}
+  /* tab visibility — the host overlay (opaque) covers the progress chrome on other tabs */
+  [data-tab="project"] #host-project,[data-tab="app"] #host-app,[data-tab="knowledge"] #host-knowledge{display:flex;}
+
+  /* ─────────────── CHAT (right, resizable) ─────────────── */
+  .chat{position:relative;display:flex;flex-direction:column;min-width:0;border-left:1px solid var(--border);background:var(--panel);}
+  /* drag handle on the chat's left edge */
+  .resizer{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:18;display:flex;justify-content:center;}
+  .resizer::before{content:"";width:1px;height:100%;background:transparent;transition:background var(--dur-fast);}
+  .resizer:hover::before,.resizer.drag::before{background:var(--tealsoft);}
+  .chat-head{display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid var(--border);}
+  .chat-head .ct{font-size:10px;letter-spacing:.18em;color:var(--read);}
+  .chat-head .cw{font-size:8.5px;letter-spacing:.06em;color:var(--ghost);}
+  .chat-head .model{margin-left:auto;font-size:9px;letter-spacing:.1em;color:var(--dim);border:1px solid var(--border);border-radius:999px;padding:3px 9px;}
+  .chat-head .model b{color:var(--tealb);font-weight:500;}
+  /* normal block flow (NOT flex) so message text wraps reliably */
+  .chat-log{flex:1;overflow-y:auto;padding:16px 15px;}
+  .chat-log::-webkit-scrollbar{width:8px;}.chat-log::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px;}
+  .msg{font-size:12px;line-height:1.55;}
+  .msg + .msg{margin-top:14px;}
+  .msg.user{margin-left:auto;width:fit-content;max-width:84%;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md) var(--r-md) 2px var(--r-md);padding:9px 12px;color:var(--text);}
+  .msg.elai{max-width:92%;}
+  .msg.elai .who{font-size:8px;letter-spacing:.2em;color:var(--dim);margin-bottom:5px;display:flex;align-items:center;gap:6px;}
+  .msg.elai .who::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);}
+  .msg.elai .mtext{color:var(--read);}
+  /* front-door style ELAI cards (ACK / notice / RESULT) */
+  .card{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);padding:10px 12px;margin-top:8px;}
+  .card .ct{font-size:8px;letter-spacing:.18em;color:var(--dim);margin-bottom:6px;display:flex;align-items:center;gap:7px;}
+  .card .ct .dot{width:6px;height:6px;border-radius:50%;background:var(--tealb);}
+  .card .ct.exec .dot{animation:segpulse 1.6s ease-in-out infinite;}
+  .card .line{font-size:11px;color:var(--text);}
+  .card .deeplink{margin-top:8px;font-size:10px;letter-spacing:.04em;color:var(--tealb);cursor:pointer;display:inline-flex;align-items:center;gap:5px;}
+  .card .deeplink:hover{color:var(--text);}
+  .chat-input{padding:12px 15px;border-top:1px solid var(--border);}
+  /* contained input box with a teal focus ring (Claude-Code style) */
+  .input-box{display:flex;align-items:flex-end;gap:6px;background:var(--sink);border:1px solid var(--border2);border-radius:var(--r-md);padding:7px 7px 7px 11px;transition:border-color var(--dur-fast),box-shadow var(--dur-fast);}
+  .input-box:focus-within{border-color:var(--teal);box-shadow:0 0 0 1px var(--tealsoft);}
+  .input-box textarea{flex:1;resize:none;height:30px;min-height:30px;background:none;border:0;outline:none;padding:5px 0;font-family:var(--mono);font-size:12px;line-height:1.4;color:var(--text);}
+  .input-box textarea::placeholder{color:var(--dim);}
+  .attach,.send{appearance:none;cursor:pointer;height:30px;width:30px;flex:none;background:transparent;border:0;border-radius:var(--r-sm);color:var(--dim);display:flex;align-items:center;justify-content:center;transition:color var(--dur-fast),background var(--dur-fast);}
+  .attach:hover{color:var(--read);background:var(--tealghost);}
+  .send{color:var(--read);}
+  .send:hover{color:var(--tealb);background:var(--tealghost);}
+  /* live usage meter (J-28/29 concept) */
+  .usage{padding:9px 15px 11px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px;}
+  .usage .urow{display:flex;align-items:center;justify-content:space-between;font-size:9px;letter-spacing:.08em;color:var(--dim);}
+  .usage .urow b{color:var(--read);font-weight:400;}
+  .ubar{height:4px;border-radius:2px;background:var(--sink);overflow:hidden;display:flex;}
+  .ubar i{display:block;height:100%;}
+  .ubar .used{width:21%;background:var(--teal-deep);}
+  .ubar .cache{width:6%;background:var(--tealb);}
+
+  /* ─────────────── STATUSBAR ─────────────── */
+  .statusbar{display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 calc(var(--rail) + 8px);font-size:9px;letter-spacing:.12em;color:var(--dim);border-top:1px solid var(--border);background:var(--panel);}
+  .statusbar .fsm{display:inline-flex;align-items:center;gap:7px;}
+  .statusbar .fsm .dot{width:6px;height:6px;border-radius:50%;background:var(--tealb);animation:segpulse 1.6s ease-in-out infinite;}
+  .statusbar .right span+span{margin-left:14px;}
+  .statusbar .ok{color:var(--tealb);}.statusbar .fa{color:var(--text);}
+
+  /* ─────────────── LEFT DRAWERS (slide left-to-right from the rail) ─────────────── */
+  .drawer{position:absolute;top:0;bottom:0;left:var(--rail);width:var(--drawer);background:var(--panel);border-right:1px solid var(--border2);z-index:25;
+    transform:translateX(-100%);opacity:0;pointer-events:none;transition:transform var(--dur) var(--ease-out),opacity var(--dur) var(--ease-out);
+    padding:16px 16px 18px;overflow-y:auto;}
+  .drawer.open{transform:translateX(0);opacity:1;pointer-events:auto;box-shadow:18px 0 46px rgba(0,0,0,.45);}
+  .drawer .dh{font-size:9px;letter-spacing:.22em;color:var(--read);display:flex;align-items:center;gap:7px;margin-bottom:14px;}
+  .drawer .dh::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);}
+  .drawer .dh .x{margin-left:auto;cursor:pointer;color:var(--dim);font-size:13px;}
+  .drawer .dh .x:hover{color:var(--text);}
+  /* file tree */
+  .ftree{font-size:11px;line-height:2;color:var(--dim);}
+  .ftree .row{padding:1px 6px;border-radius:4px;cursor:pointer;white-space:nowrap;}
+  .ftree .row:hover{background:var(--tealfaint);color:var(--read);}
+  .ftree .dir{color:var(--text);}
+  .ftree .hot{color:var(--tealb);}
+  .ftree .ind{padding-left:16px;}.ftree .ind2{padding-left:32px;}
+  /* generic drawer placeholder (filled in detail pass) */
+  .dnote{font-size:10.5px;line-height:1.7;color:var(--dim);border:1px dashed var(--border2);border-radius:var(--r-md);padding:14px;background:var(--sink);}
+  .dnote b{color:var(--read);font-weight:500;}
+  .dlist{margin-top:12px;display:flex;flex-direction:column;gap:7px;}
+  .dlist .di{font-size:10.5px;color:var(--read);border:1px solid var(--border);border-radius:var(--r-sm);padding:9px 11px;display:flex;justify-content:space-between;align-items:center;}
+  .dlist .di .k{font-size:8.5px;color:var(--ghost);letter-spacing:.1em;}
+
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.42);opacity:0;pointer-events:none;transition:opacity var(--dur);z-index:20;}
+  .scrim.on{opacity:1;pointer-events:auto;}
+
+  /* ─────────────── SETTINGS MODAL ─────────────── */
+  .modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:60;opacity:0;pointer-events:none;transition:opacity var(--dur);}
+  .modal.open{opacity:1;pointer-events:auto;}
+  .modal .card2{width:560px;max-width:92vw;max-height:80vh;overflow-y:auto;background:var(--panel);border:1px solid var(--border2);border-radius:var(--r-lg);box-shadow:0 24px 70px rgba(0,0,0,.55);}
+  .modal .mh{display:flex;align-items:center;gap:9px;padding:16px 20px;border-bottom:1px solid var(--border);}
+  .modal .mh h2{font-family:var(--disp);font-size:15px;font-weight:600;letter-spacing:.04em;color:var(--text);}
+  .modal .mh .x{margin-left:auto;cursor:pointer;color:var(--dim);font-size:16px;}
+  .modal .mh .x:hover{color:var(--text);}
+  .modal .mbody{padding:18px 20px;}
+  .modal .mnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;}
+  .modal .mnav button{appearance:none;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 12px;cursor:pointer;transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .modal .mnav button.on{color:var(--tealb);border-color:var(--tealsoft);background:var(--tealghost);}
+  .modal .mnav button:hover{color:var(--read);}
+
+  /* ════════════════ PROJECT TAB (.pj-* scoped — never touches shared tokens/classes) ════════════════ */
+  /* PROJECT canvas pane: lens bar + (graph | symbol detail) split + impact cone */
+  .pj{display:grid;grid-template-rows:auto 1fr;min-width:0;background:var(--graph);}
+  /* lens bar — segmented control, same visual language as the topbar tabs */
+  .pj-lensbar{display:flex;align-items:center;gap:14px;min-height:42px;padding:7px 18px;border-bottom:1px solid var(--border);background:var(--bg);}
+  .pj-lenslabel{font-size:8px;letter-spacing:.22em;color:var(--dim);}
+  .pj-lenses{display:flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;}
+  .pj-lens{appearance:none;background:transparent;border:0;border-right:1px solid var(--border);cursor:pointer;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.12em;color:var(--dim);padding:6px 14px;transition:color var(--dur-fast),background var(--dur-fast);}
+  .pj-lens:last-child{border-right:0;}
+  .pj-lens:hover{color:var(--read);background:rgba(255,255,255,.04);}
+  .pj-lens.on{color:var(--tealb);background:var(--tealghost);}
+  .pj-lenshint{margin-left:auto;font-size:9.5px;letter-spacing:.05em;color:var(--dim);white-space:nowrap;}
+  .pj-lenshint b{color:var(--read);font-weight:400;}
+
+  /* the split: graph on the left, symbol-detail panel on the right (before the chat) */
+  .pj-split{display:grid;grid-template-columns:1fr var(--summary);min-height:0;}
+  @media (max-width:1180px){.pj-split{grid-template-columns:1fr;}.pj-detail{display:none;}}
+
+  /* graph viewport — pannable schematic, flat work surface */
+  .pj-graph{position:relative;overflow:auto;background:var(--graph);}
+  .pj-graphspace{position:relative;width:980px;height:620px;margin:0 auto;}
+  .pj-graphspace svg.pj-edges{position:absolute;inset:0;width:100%;height:100%;}
+  .pj-edge{stroke:var(--border2);stroke-width:1.4;fill:none;transition:stroke var(--dur-fast),opacity var(--dur-fast);}
+  .pj-edge.call{stroke:var(--border2);}
+  .pj-edge.import{stroke:var(--ghost);stroke-dasharray:2 4;}
+  .pj-edge.live{stroke:var(--tealb);stroke-dasharray:7 9;animation:march 1.1s linear infinite;}
+  .pj-edge.dead{stroke:var(--ghost);opacity:.45;stroke-dasharray:3 5;}
+  /* impact-cone highlight on edges (set by the impact selection) */
+  .pj-edge.cone{stroke:var(--tealsoft);opacity:1;}
+
+  /* symbol node card — reuses the node language; sized by PageRank via a left rank-bar + chip */
+  .pj-node{position:absolute;width:184px;border-radius:var(--r-md);border:1px solid var(--border);background:var(--surface);padding:9px 11px;cursor:pointer;
+    transition:border-color var(--dur-fast),transform var(--dur-fast),opacity var(--dur-fast);}
+  .pj-node:hover{border-color:var(--tealsoft);transform:translateY(-1px);}
+  .pj-node .ph{display:flex;align-items:center;gap:8px;font-size:8.5px;letter-spacing:.13em;color:var(--dim);margin-bottom:6px;}
+  .pj-node .gl{width:18px;height:18px;border-radius:5px;border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:10px;flex:none;color:var(--read);}
+  .pj-node .sym{font-size:11px;letter-spacing:.02em;color:var(--text);margin-bottom:7px;word-break:break-word;}
+  .pj-node .chips{display:flex;gap:5px;flex-wrap:wrap;}
+  .pj-node .cx{font-size:8px;letter-spacing:.08em;padding:2px 6px;border-radius:999px;border:1px solid var(--border);color:var(--dim);}
+  .pj-node .cx.t{color:var(--tealb);border-color:var(--tealsoft);}
+  /* PageRank rank-bar on the left edge — width tier encodes score band */
+  .pj-node .rank{position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 2px 2px 0;background:var(--teal-deep);}
+  .pj-node.r-hi .rank{background:var(--teal);box-shadow:0 0 0 1px var(--tealsoft);}
+  .pj-node.r-md .rank{background:var(--teal-deep);}
+  .pj-node.r-lo .rank{background:var(--ghost);}
+  /* glyph fills by symbol kind */
+  .pj-node[data-kind="fn"] .gl{color:var(--tealb);}
+  .pj-node[data-kind="struct"] .gl{color:var(--read);}
+  .pj-node[data-kind="trait"] .gl{color:var(--read);border-style:dashed;}
+  .pj-node[data-kind="mod"] .gl{color:var(--dim);}
+  /* selected symbol — teal outline pulse (active language) */
+  .pj-node.sel{border:1.5px solid var(--tealb);background:var(--tealghost);animation:nodepulse 2.2s ease-in-out infinite;}
+  /* the just-edited symbol — marching/active accent even when not selected */
+  .pj-node.hot .gl{border-color:var(--tealb);color:var(--tealb);}
+  .pj-node.hot{border-color:var(--tealsoft);}
+  /* dead-code island members — visibly dimmed + dashed, topology-suspected */
+  .pj-node.dead{opacity:.5;border-style:dashed;background:var(--panel);}
+  .pj-node.dead .sym{color:var(--dim);}
+  .pj-node.dead .gl{border-style:dashed;color:var(--ghost);}
+  /* dead-code island enclosure ring */
+  .pj-island{position:absolute;border:1px dashed var(--ghost);border-radius:var(--r-lg);background:rgba(255,255,255,.012);}
+  .pj-island .il{position:absolute;top:-9px;left:14px;font-size:8px;letter-spacing:.18em;color:var(--dim);background:var(--graph);padding:0 8px;}
+
+  /* per-lens recolor: a thin top accent rail + a kind/flag chip the lens lights up.
+     Driven by [data-lens] on the .pj container (set in JS). Default lens = structure (neutral). */
+  .pj-flag{display:none;font-size:8px;letter-spacing:.08em;padding:2px 6px;border-radius:999px;border:1px solid var(--border);color:var(--dim);}
+  /* SECURITY lens: vibegate-flagged symbols invert (mono-inversion = the loud alarm) */
+  .pj[data-lens="security"] .pj-node[data-flag="vibegate"]{background:var(--text);border-color:var(--text);}
+  .pj[data-lens="security"] .pj-node[data-flag="vibegate"] .ph,
+  .pj[data-lens="security"] .pj-node[data-flag="vibegate"] .sym{color:var(--bg);}
+  .pj[data-lens="security"] .pj-node[data-flag="vibegate"] .gl{background:var(--bg);color:var(--text);border-color:var(--bg);}
+  .pj[data-lens="security"] .pj-node[data-flag="vibegate"] .cx{color:var(--bg);border-color:rgba(0,0,0,.3);}
+  .pj[data-lens="security"] .pj-node[data-flag="vibegate"] .rank{background:var(--bg);}
+  .pj[data-lens="security"] .pj-node[data-flag="vibegate"] .fl-sec{display:inline-block;color:var(--bg);border-color:rgba(0,0,0,.35);}
+  .pj[data-lens="security"] .pj-node[data-flag="clean"]{opacity:.62;}
+  /* HISTORY lens: churn — recently-edited symbols carry a teal age chip; cold ones recede */
+  .pj[data-lens="history"] .pj-node .fl-hist{display:inline-block;}
+  .pj[data-lens="history"] .pj-node[data-churn="cold"]{opacity:.6;}
+  .pj[data-lens="history"] .pj-node[data-churn="hot"] .fl-hist{color:var(--tealb);border-color:var(--tealsoft);}
+  /* COST lens: $/symbol chip lights; the priciest symbol gets a teal rank emphasis */
+  .pj[data-lens="cost"] .pj-node .fl-cost{display:inline-block;}
+  .pj[data-lens="cost"] .pj-node[data-cost="hi"] .fl-cost{color:var(--tealb);border-color:var(--tealsoft);}
+  .pj[data-lens="cost"] .pj-node[data-cost="lo"]{opacity:.7;}
+  /* DEAD-CODE lens: light the island, recede everything connected */
+  .pj[data-lens="dead"] .pj-node:not(.dead){opacity:.42;}
+  .pj[data-lens="dead"] .pj-node.dead{opacity:1;border-color:var(--text);border-style:solid;}
+  .pj[data-lens="dead"] .pj-node.dead .sym{color:var(--text);}
+  .pj[data-lens="dead"] .pj-node.dead .fl-dead{display:inline-block;color:var(--text);border-color:var(--border2);}
+  .pj[data-lens="dead"] .pj-island{border-color:var(--text);background:rgba(255,255,255,.025);}
+
+  /* SYMBOL DETAIL panel (right of the graph) */
+  .pj-detail{border-left:1px solid var(--border);background:var(--panel);display:flex;flex-direction:column;min-width:0;overflow-y:auto;}
+  .pj-detail::-webkit-scrollbar{width:8px;}.pj-detail::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px;}
+  .pj-dsec{padding:14px 15px;border-bottom:1px solid var(--border);}
+  .pj-dsec:last-child{border-bottom:0;}
+  .pj-slabel{font-size:8px;letter-spacing:.22em;color:var(--dim);display:flex;align-items:center;gap:6px;margin-bottom:9px;}
+  .pj-slabel::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--tealb);flex:none;}
+  .pj-symname{font-family:var(--disp);font-size:15px;font-weight:500;letter-spacing:.01em;color:var(--text);margin-bottom:5px;word-break:break-word;}
+  .pj-symkind{font-size:9px;letter-spacing:.12em;color:var(--dim);}
+  .pj-sig{font-size:10.5px;line-height:1.55;color:var(--read);background:var(--sink);border:1px solid var(--border);border-radius:var(--r-sm);padding:9px 10px;white-space:pre-wrap;word-break:break-word;}
+  .pj-sig .kw{color:var(--tealb);}
+  .pj-sig .ty{color:var(--read);}
+  .pj-floc{display:flex;align-items:center;gap:7px;margin-top:9px;font-size:10px;color:var(--dim);}
+  .pj-floc .fp{color:var(--read);}
+  .pj-floc .ln{color:var(--tealb);}
+  /* PageRank readout */
+  .pj-prk{display:flex;align-items:baseline;gap:8px;}
+  .pj-prk .v{font-family:var(--disp);font-size:24px;font-weight:300;letter-spacing:.02em;color:var(--text);}
+  .pj-prk .of{font-size:10px;color:var(--dim);}
+  .pj-prbar{margin-top:9px;height:4px;border-radius:2px;background:var(--sink);overflow:hidden;}
+  .pj-prbar i{display:block;height:100%;background:var(--teal);}
+  /* callers / callees list with the 4 SCIP confidence tiers */
+  .pj-rel{display:flex;flex-direction:column;gap:5px;}
+  .pj-relrow{display:flex;align-items:center;gap:8px;font-size:10px;padding:5px 7px;border:1px solid var(--border);border-radius:var(--r-sm);color:var(--read);cursor:pointer;transition:border-color var(--dur-fast),background var(--dur-fast);}
+  .pj-relrow:hover{border-color:var(--tealsoft);background:var(--tealfaint);}
+  .pj-relrow .rs{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* tier dot — shape+position encodes confidence, teal saturation only whispers */
+  .pj-tier{font-size:7.5px;letter-spacing:.1em;padding:1px 5px;border-radius:3px;border:1px solid var(--border);color:var(--dim);flex:none;}
+  .pj-tier.local{color:var(--tealb);border-color:var(--tealsoft);}      /* highest confidence: same-crate resolved */
+  .pj-tier.imported{color:var(--read);border-color:var(--border2);}     /* cross-crate import resolved */
+  .pj-tier.reexport{color:var(--dim);border-style:dashed;}              /* via pub use re-export */
+  .pj-tier.unresolved{color:var(--text);border-color:var(--text);background:rgba(255,255,255,.04);} /* name-only, no SCIP edge */
+  .pj-relcount{margin-left:auto;font-size:8.5px;color:var(--ghost);letter-spacing:.1em;}
+  /* tier legend chip-row under the relations */
+  .pj-tierkey{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px;font-size:8px;letter-spacing:.04em;color:var(--dim);}
+  .pj-tierkey span{display:inline-flex;align-items:center;gap:4px;}
+  .pj-tierkey i{width:7px;height:7px;border-radius:2px;flex:none;}
+  .pj-tierkey i.local{background:var(--teal);}
+  .pj-tierkey i.imported{background:var(--read);}
+  .pj-tierkey i.reexport{background:var(--ghost);}
+  .pj-tierkey i.unresolved{background:var(--text);}
+
+  /* IMPACT / blast-radius cone — hop-banded by_depth list */
+  .pj-impact{display:flex;flex-direction:column;gap:8px;}
+  .pj-imptop{display:flex;align-items:baseline;justify-content:space-between;}
+  .pj-imptop .tf{font-family:var(--disp);font-size:18px;font-weight:400;color:var(--text);}
+  .pj-imptop .tf small{font-size:10px;color:var(--dim);font-weight:400;}
+  .pj-imptop .mx{font-size:9px;letter-spacing:.1em;color:var(--dim);}
+  .pj-hop{display:grid;grid-template-columns:40px 1fr;gap:9px;align-items:start;}
+  .pj-hopn{font-size:8px;letter-spacing:.12em;color:var(--tealb);padding-top:3px;text-align:right;}
+  .pj-hopn small{display:block;color:var(--ghost);letter-spacing:.04em;}
+  .pj-hopfiles{display:flex;flex-direction:column;gap:3px;}
+  .pj-hf{font-size:9.5px;color:var(--read);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .pj-hf .c{color:var(--ghost);}
+  .pj-trunc{font-size:9px;color:var(--text);border:1px solid var(--border2);border-radius:var(--r-sm);padding:5px 8px;letter-spacing:.04em;display:inline-flex;align-items:center;gap:6px;background:var(--sink);}
+  .pj-trunc::before{content:"▲";color:var(--text);font-size:8px;}
+
+  /* empty-detail prompt (no symbol selected) */
+  .pj-dempty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;text-align:center;color:var(--dim);padding:24px 18px;}
+  .pj-dempty .pg{width:38px;height:38px;border:1px dashed var(--border2);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;color:var(--ghost);}
+  .pj-dempty p{font-size:10px;line-height:1.6;max-width:170px;}
+
+  /* ── PROJECT graph STATE overlays (POPULATED default; INDEXING / NOT-INDEXED / ERROR set via [data-pjstate] on .pj) ── */
+  .pj-state{display:none;position:absolute;inset:0;z-index:6;background:var(--graph);}
+  .pj[data-pjstate="indexing"] .pj-state.indexing,
+  .pj[data-pjstate="empty"] .pj-state.empty,
+  .pj[data-pjstate="error"] .pj-state.error{display:flex;}
+  .pj[data-pjstate="indexing"] .pj-graphspace,
+  .pj[data-pjstate="empty"] .pj-graphspace,
+  .pj[data-pjstate="error"] .pj-graphspace{visibility:hidden;}
+  .pj-statewrap{margin:auto;display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;padding:30px;max-width:420px;}
+  .pj-statewrap h3{font-family:var(--disp);font-size:17px;font-weight:500;letter-spacing:.03em;color:var(--read);}
+  .pj-statewrap p{font-size:11px;line-height:1.6;color:var(--dim);max-width:330px;}
+  .pj-statebadge{width:44px;height:44px;border-radius:var(--r-md);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;color:var(--dim);}
+  /* INDEXING: skeleton + n/m fraction (never a lone %) */
+  .pj-skel{display:flex;flex-direction:column;gap:8px;width:300px;}
+  .pj-skelrow{height:30px;border-radius:var(--r-sm);border:1px solid var(--border);background:linear-gradient(90deg,var(--sink),var(--surface),var(--sink));background-size:300% 100%;animation:pjshimmer 1.6s ease-in-out infinite;}
+  .pj-skelrow:nth-child(2){width:84%;}.pj-skelrow:nth-child(3){width:68%;}
+  @keyframes pjshimmer{0%{background-position:120% 0;}100%{background-position:-120% 0;}}
+  .pj-idxbar{width:300px;height:5px;border-radius:3px;background:var(--sink);overflow:hidden;}
+  .pj-idxbar i{display:block;height:100%;width:64%;background:var(--teal-deep);}
+  .pj-idxfrac{font-size:10px;letter-spacing:.1em;color:var(--dim);}
+  .pj-idxfrac b{color:var(--tealb);font-weight:400;}
+  /* NOT-INDEXED: focal action button */
+  .pj-cta{appearance:none;cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--bg);background:var(--teal);border:0;border-radius:var(--r-sm);padding:10px 20px;font-weight:600;transition:background var(--dur-fast);}
+  .pj-cta:hover{background:var(--tealb);}
+  /* ERROR: mono-inversion banner (state language; never red) */
+  .pj-errbadge{background:var(--text);color:var(--bg);border:0;}
+  .pj-errcode{font-size:10px;letter-spacing:.06em;color:var(--read);background:var(--sink);border:1px solid var(--border);border-radius:var(--r-sm);padding:7px 11px;}
+  .pj-errcode b{color:var(--text);}
+  .pj-retry{appearance:none;cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--read);background:transparent;border:1px solid var(--border2);border-radius:var(--r-sm);padding:8px 16px;transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .pj-retry:hover{color:var(--tealb);border-color:var(--tealsoft);}
+
+  /* dev STATE switcher in the statusbar (like select-terminal-styles dev switcher) */
+  .pj-statesw{display:inline-flex;align-items:center;gap:5px;}
+  .pj-statesw .dl{font-size:8px;letter-spacing:.14em;color:var(--ghost);}
+  .pj-statesw button{appearance:none;cursor:pointer;font-family:var(--mono);font-size:8px;letter-spacing:.08em;color:var(--dim);background:transparent;border:1px solid var(--border);border-radius:3px;padding:2px 7px;transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .pj-statesw button.on{color:var(--tealb);border-color:var(--tealsoft);background:var(--tealghost);}
+  .pj-statesw button:hover{color:var(--read);}
+
+  @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important;}}
+</style>
+</head>
+<body>
+  <main class="app">
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div class="brand">ELAI <span class="sep">·</span> <span class="title">.elai_cc</span></div>
+      <div class="tabs" role="group" aria-label="View">
+        <button class="tab" data-tab="progress" type="button">PROGRESS</button>
+        <button class="tab on" data-tab="project" type="button">PROJECT</button>
+        <button class="tab" data-tab="app" type="button">APP</button>
+        <button class="tab" data-tab="knowledge" type="button">KNOWLEDGE</button>
+      </div>
+      <div class="tb-right">
+        <div class="runbar">RUNNING
+          <span class="segbar">
+            <span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span>
+            <span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg f"></span><span class="seg a"></span>
+            <span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span>
+          </span>
+          <span class="frac">9/14</span>
+        </div>
+        <button class="icon-toggle" id="themeToggle" type="button" title="Toggle light / dark" aria-label="Toggle light / dark mode">
+          <svg class="ico ico-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/>
+            <line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/>
+            <line x1="5.2" y1="5.2" x2="6.9" y2="6.9"/><line x1="17.1" y1="17.1" x2="18.8" y2="18.8"/>
+            <line x1="18.8" y1="5.2" x2="17.1" y2="6.9"/><line x1="6.9" y1="17.1" x2="5.2" y2="18.8"/>
+          </svg>
+          <svg class="ico ico-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 14.6A8 8 0 0 1 9.4 4 7 7 0 1 0 20 14.6Z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- BODY: rail | canvas | chat -->
+    <div class="body">
+      <!-- icon rail -->
+      <nav class="rail" aria-label="Workspace">
+        <button class="rbtn" data-drawer="files" data-label="Files" type="button" aria-label="Files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
+        </button>
+        <button class="rbtn on" data-drawer="intel" data-label="Project intel" type="button" aria-label="Project intelligence">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="13" cy="18" r="2.4"/><path d="M8 8.5 11 16M16 8 13.6 15.6M8.2 6.6 15.6 6.2"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="sessions" data-label="Sessions / branches" type="button" aria-label="Sessions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M6 7.2v9.6M6 12h6a4 4 0 0 0 4-2.4"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="receipts" data-label="Receipts / RRA" type="button" aria-label="Receipts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l3 3v15l-2.2-1.4L13.6 21l-2.2-1.4L9.2 21 7 19.6 4 21V5a2 2 0 0 1 2-2Z"/><path d="M8 8h7M8 11.5h7M8 15h4"/></svg>
+        </button>
+        <button class="rbtn" data-drawer="monitors" data-label="Monitors" type="button" aria-label="Monitors">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h3l2.5-6 4 13 2.5-8 1.6 4H21"/></svg>
+        </button>
+        <span class="spring"></span>
+        <button class="rbtn" data-modal="settings" data-label="Settings" type="button" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6"/></svg>
+        </button>
+      </nav>
+
+      <!-- canvas pane = PROJECT view -->
+      <section class="canvas-pane">
+        <div class="pj" id="pj" data-lens="structure" data-pjstate="populated">
+
+          <!-- LENS BAR -->
+          <div class="pj-lensbar">
+            <span class="pj-lenslabel">LENS</span>
+            <div class="pj-lenses" role="group" aria-label="Graph lens">
+              <button class="pj-lens on" data-lens="structure" type="button">STRUCTURE</button>
+              <button class="pj-lens" data-lens="security" type="button">SECURITY</button>
+              <button class="pj-lens" data-lens="history" type="button">HISTORY</button>
+              <button class="pj-lens" data-lens="cost" type="button">COST</button>
+              <button class="pj-lens" data-lens="dead" type="button">DEAD-CODE</button>
+            </div>
+            <span class="pj-lenshint" id="pjLensHint">call + import topology · <b>node size = PageRank</b></span>
+          </div>
+
+          <!-- SPLIT: graph | symbol detail -->
+          <div class="pj-split">
+
+            <!-- GRAPH viewport -->
+            <div class="pj-graph">
+              <div class="pj-graphspace" id="pjGraphspace">
+
+                <!-- edges: solid = call, dotted = import, dead = dimmed/dashed -->
+                <svg class="pj-edges" id="pjEdges">
+                  <!-- vault_crud(hot) -> aes_seal (live call, just-written) -->
+                  <path class="pj-edge call live" data-from="vault_crud" data-to="aes_seal" d="M 250 168 C 300 168, 300 96, 350 96"/>
+                  <!-- vault_crud -> key_derive (call) -->
+                  <path class="pj-edge call" data-from="vault_crud" data-to="key_derive" d="M 250 196 C 300 196, 300 250, 350 250"/>
+                  <!-- vault_crud -> SsbActionType (import) -->
+                  <path class="pj-edge import" data-from="vault_crud" data-to="ssb_action" d="M 250 210 C 300 210, 300 396, 350 396"/>
+                  <!-- key_derive -> Argon2Params (call) -->
+                  <path class="pj-edge call" data-from="key_derive" data-to="argon2" d="M 542 262 C 596 262, 596 330, 650 330"/>
+                  <!-- aes_seal -> SealedBlob (import) -->
+                  <path class="pj-edge import" data-from="aes_seal" data-to="sealed_blob" d="M 542 108 C 596 108, 596 150, 650 150"/>
+                  <!-- SsbActionType -> ssb_emit (call) -->
+                  <path class="pj-edge call" data-from="ssb_action" data-to="ssb_emit" d="M 542 408 C 596 408, 596 452, 650 452"/>
+                  <!-- aes_seal -> zeroize (call) -->
+                  <path class="pj-edge call" data-from="aes_seal" data-to="zeroize" d="M 542 96 C 600 96, 600 60, 650 60"/>
+                  <!-- dead-island internal edge (legacy_pbkdf2 -> legacy_kdf_params), disconnected from live graph -->
+                  <path class="pj-edge dead" data-from="legacy_pbkdf2" data-to="legacy_params" d="M 250 520 C 300 520, 300 556, 350 556"/>
+                </svg>
+
+                <!-- collapsed FOUNDATION cluster (finished, reads by absence) -->
+                <div class="capsule" style="left:34px;top:300px" title="core crate — 312 resolved symbols, collapsed"><span class="cg">✓</span> CORE CRATE <span class="cc">· 312 SYMBOLS</span></div>
+
+                <!-- ROOT: vault_crud (just-edited = hot; highest PageRank = r-hi) -->
+                <div class="pj-node r-hi hot" id="n-vault_crud" style="left:58px;top:150px" data-kind="fn" data-flag="clean" data-churn="hot" data-cost="hi"
+                     data-sym="vault_crud::upsert_entry" data-fq="crates/orchestrator · fn"
+                     data-sig="<span class='kw'>pub fn</span> upsert_entry(\n  vault: <span class='ty'>&mut Vault</span>,\n  entry: <span class='ty'>PlainEntry</span>,\n  dek: <span class='ty'>&SecretKey</span>,\n) -> <span class='ty'>Result&lt;EntryId&gt;</span>"
+                     data-path="crates/orchestrator/src/vault_crud.rs" data-line="148"
+                     data-pr="0.094" data-callers="6" data-callees="5" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">ƒ</span>ORCHESTRATOR · FN</div>
+                  <div class="sym">vault_crud::upsert_entry</div>
+                  <div class="chips">
+                    <span class="cx t">PR 0.094</span><span class="cx">6 callers</span><span class="cx">rust</span>
+                    <span class="pj-flag fl-hist">edited 12s ago</span>
+                    <span class="pj-flag fl-cost">$0.11 / sym</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead"></span>
+                  </div>
+                </div>
+
+                <!-- aes_seal (security-flagged in SECURITY lens) -->
+                <div class="pj-node r-hi" id="n-aes_seal" style="left:350px;top:64px" data-kind="fn" data-flag="vibegate" data-churn="hot" data-cost="hi"
+                     data-sym="aes_gcm::seal" data-fq="crates/crypto · fn"
+                     data-sig="<span class='kw'>pub fn</span> seal(\n  dek: <span class='ty'>&SecretKey</span>,\n  nonce: <span class='ty'>Nonce</span>,\n  plain: <span class='ty'>&[u8]</span>,\n) -> <span class='ty'>SealedBlob</span>"
+                     data-path="crates/crypto/src/aes_gcm.rs" data-line="72"
+                     data-pr="0.081" data-callers="4" data-callees="3" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">ƒ</span>CRYPTO · FN</div>
+                  <div class="sym">aes_gcm::seal</div>
+                  <div class="chips">
+                    <span class="cx t">PR 0.081</span><span class="cx">4 callers</span><span class="cx">rust</span>
+                    <span class="pj-flag fl-hist">edited 1h ago</span>
+                    <span class="pj-flag fl-cost">$0.08 / sym</span>
+                    <span class="pj-flag fl-sec">vibegate ▲</span>
+                    <span class="pj-flag fl-dead"></span>
+                  </div>
+                </div>
+
+                <!-- key_derive (struct-ish fn, mid rank) -->
+                <div class="pj-node r-md" id="n-key_derive" style="left:350px;top:218px" data-kind="fn" data-flag="clean" data-churn="warm" data-cost="md"
+                     data-sym="key_derive::derive_dek" data-fq="crates/crypto · fn"
+                     data-sig="<span class='kw'>pub fn</span> derive_dek(\n  master: <span class='ty'>&Zeroizing&lt;[u8;32]&gt;</span>,\n  params: <span class='ty'>&Argon2Params</span>,\n) -> <span class='ty'>SecretKey</span>"
+                     data-path="crates/crypto/src/key_derive.rs" data-line="56"
+                     data-pr="0.063" data-callers="3" data-callees="2" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">ƒ</span>CRYPTO · FN</div>
+                  <div class="sym">key_derive::derive_dek</div>
+                  <div class="chips">
+                    <span class="cx t">PR 0.063</span><span class="cx">3 callers</span><span class="cx">rust</span>
+                    <span class="pj-flag fl-hist">edited 3d ago</span>
+                    <span class="pj-flag fl-cost">$0.05 / sym</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead"></span>
+                  </div>
+                </div>
+
+                <!-- SsbActionType (struct/enum) -->
+                <div class="pj-node r-md" id="n-ssb_action" style="left:350px;top:364px" data-kind="struct" data-flag="clean" data-churn="cold" data-cost="lo"
+                     data-sym="ssb::SsbActionType" data-fq="crates/orchestrator · enum"
+                     data-sig="<span class='kw'>pub enum</span> SsbActionType {\n  VaultEntryUpserted,\n  SealRotated,\n  <span class='ty'>/* 462 variants */</span>\n}"
+                     data-path="crates/orchestrator/src/ssb.rs" data-line="2990"
+                     data-pr="0.058" data-callers="38" data-callees="1" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">◇</span>ORCHESTRATOR · ENUM</div>
+                  <div class="sym">ssb::SsbActionType</div>
+                  <div class="chips">
+                    <span class="cx t">PR 0.058</span><span class="cx">38 callers</span><span class="cx">rust</span>
+                    <span class="pj-flag fl-hist">edited 6d ago</span>
+                    <span class="pj-flag fl-cost">$0.02 / sym</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead"></span>
+                  </div>
+                </div>
+
+                <!-- Argon2Params (struct, leaf-ish) -->
+                <div class="pj-node r-lo" id="n-argon2" style="left:650px;top:298px" data-kind="struct" data-flag="clean" data-churn="cold" data-cost="lo"
+                     data-sym="key_derive::Argon2Params" data-fq="crates/crypto · struct"
+                     data-sig="<span class='kw'>pub struct</span> Argon2Params {\n  m_cost: <span class='ty'>u32</span>,\n  t_cost: <span class='ty'>u32</span>,\n  p_cost: <span class='ty'>u32</span>,\n}"
+                     data-path="crates/crypto/src/key_derive.rs" data-line="18"
+                     data-pr="0.031" data-callers="2" data-callees="0" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">◇</span>CRYPTO · STRUCT</div>
+                  <div class="sym">key_derive::Argon2Params</div>
+                  <div class="chips">
+                    <span class="cx">PR 0.031</span><span class="cx">2 callers</span><span class="cx">rust</span>
+                    <span class="pj-flag fl-hist">edited 21d ago</span>
+                    <span class="pj-flag fl-cost">$0.01 / sym</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead"></span>
+                  </div>
+                </div>
+
+                <!-- SealedBlob (struct) -->
+                <div class="pj-node r-lo" id="n-sealed_blob" style="left:650px;top:118px" data-kind="struct" data-flag="clean" data-churn="cold" data-cost="lo"
+                     data-sym="aes_gcm::SealedBlob" data-fq="crates/crypto · struct"
+                     data-sig="<span class='kw'>pub struct</span> SealedBlob {\n  nonce: <span class='ty'>[u8; 12]</span>,\n  ct: <span class='ty'>Vec&lt;u8&gt;</span>,\n  tag: <span class='ty'>[u8; 16]</span>,\n}"
+                     data-path="crates/crypto/src/aes_gcm.rs" data-line="24"
+                     data-pr="0.029" data-callers="5" data-callees="0" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">◇</span>CRYPTO · STRUCT</div>
+                  <div class="sym">aes_gcm::SealedBlob</div>
+                  <div class="chips">
+                    <span class="cx">PR 0.029</span><span class="cx">5 callers</span><span class="cx">rust</span>
+                    <span class="pj-flag fl-hist">edited 9d ago</span>
+                    <span class="pj-flag fl-cost">$0.01 / sym</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead"></span>
+                  </div>
+                </div>
+
+                <!-- ssb_emit (TS binding leaf, cross-lang) -->
+                <div class="pj-node r-lo" id="n-ssb_emit" style="left:650px;top:420px" data-kind="fn" data-flag="clean" data-churn="warm" data-cost="lo"
+                     data-sym="ssbEmit (binding)" data-fq="dashboard-v2 · ts fn"
+                     data-sig="<span class='kw'>export async function</span> ssbEmit(\n  kind: <span class='ty'>SsbActionType</span>,\n  body: <span class='ty'>unknown</span>,\n): <span class='ty'>Promise&lt;number&gt;</span>"
+                     data-path="crates/dashboard-v2/src/lib/api/ssb.ts" data-line="41"
+                     data-pr="0.024" data-callers="11" data-callees="1" data-lang="ts">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">ƒ</span>DASHBOARD · TS FN</div>
+                  <div class="sym">ssbEmit (binding)</div>
+                  <div class="chips">
+                    <span class="cx">PR 0.024</span><span class="cx">11 callers</span><span class="cx">ts</span>
+                    <span class="pj-flag fl-hist">edited 4d ago</span>
+                    <span class="pj-flag fl-cost">$0.01 / sym</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead"></span>
+                  </div>
+                </div>
+
+                <!-- zeroize (imported leaf, low rank) -->
+                <div class="pj-node r-lo" id="n-zeroize" style="left:650px;top:30px" data-kind="trait" data-flag="clean" data-churn="cold" data-cost="lo"
+                     data-sym="zeroize::Zeroize" data-fq="zeroize 1.8 · trait"
+                     data-sig="<span class='kw'>pub trait</span> Zeroize {\n  <span class='kw'>fn</span> zeroize(&mut self);\n}"
+                     data-path="~/.cargo/.../zeroize/src/lib.rs" data-line="—"
+                     data-pr="0.018" data-callers="7" data-callees="0" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">◬</span>ZEROIZE · TRAIT</div>
+                  <div class="sym">zeroize::Zeroize</div>
+                  <div class="chips">
+                    <span class="cx">PR 0.018</span><span class="cx">7 callers</span><span class="cx">extern</span>
+                    <span class="pj-flag fl-hist">vendored</span>
+                    <span class="pj-flag fl-cost">—</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead"></span>
+                  </div>
+                </div>
+
+                <!-- ── DEAD-CODE ISLAND (disconnected, topology-suspected) ── -->
+                <div class="pj-island" style="left:42px;top:472px;width:520px;height:128px"><span class="il">DEAD-CODE ISLAND · TOPOLOGY-SUSPECTED · 0 PRODUCTION CALLERS</span></div>
+
+                <div class="pj-node r-lo dead" id="n-legacy_pbkdf2" style="left:58px;top:504px" data-kind="fn" data-flag="clean" data-churn="cold" data-cost="lo"
+                     data-sym="legacy::pbkdf2_derive" data-fq="crates/crypto · fn"
+                     data-sig="<span class='kw'>fn</span> pbkdf2_derive(\n  pw: <span class='ty'>&[u8]</span>,\n  salt: <span class='ty'>&[u8]</span>,\n) -> <span class='ty'>[u8; 32]</span>"
+                     data-path="crates/crypto/src/legacy.rs" data-line="44"
+                     data-pr="0.000" data-callers="0" data-callees="1" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">ƒ</span>CRYPTO · FN</div>
+                  <div class="sym">legacy::pbkdf2_derive</div>
+                  <div class="chips">
+                    <span class="cx">PR 0.000</span><span class="cx">0 callers</span><span class="cx">rust</span>
+                    <span class="pj-flag fl-hist">edited 184d ago</span>
+                    <span class="pj-flag fl-cost">—</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead">dead · suspected</span>
+                  </div>
+                </div>
+
+                <div class="pj-node r-lo dead" id="n-legacy_params" style="left:350px;top:520px" data-kind="struct" data-flag="clean" data-churn="cold" data-cost="lo"
+                     data-sym="legacy::Pbkdf2Params" data-fq="crates/crypto · struct"
+                     data-sig="<span class='kw'>struct</span> Pbkdf2Params {\n  rounds: <span class='ty'>u32</span>,\n}"
+                     data-path="crates/crypto/src/legacy.rs" data-line="12"
+                     data-pr="0.000" data-callers="1" data-callees="0" data-lang="rust">
+                  <span class="rank"></span>
+                  <div class="ph"><span class="gl">◇</span>CRYPTO · STRUCT</div>
+                  <div class="sym">legacy::Pbkdf2Params</div>
+                  <div class="chips">
+                    <span class="cx">PR 0.000</span><span class="cx">1 caller</span><span class="cx">rust</span>
+                    <span class="pj-flag fl-hist">edited 184d ago</span>
+                    <span class="pj-flag fl-cost">—</span>
+                    <span class="pj-flag fl-sec">clean</span>
+                    <span class="pj-flag fl-dead">dead · suspected</span>
+                  </div>
+                </div>
+
+              </div><!-- /pj-graphspace -->
+
+              <!-- ── PROJECT graph STATE overlays ── -->
+              <div class="pj-state indexing">
+                <div class="pj-statewrap">
+                  <div class="pj-statebadge">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg>
+                  </div>
+                  <h3>indexing .elai_cc</h3>
+                  <p>building the DKG symbol graph from 18 tree-sitter grammars. The lens views unlock when the SCIP pass resolves cross-crate edges.</p>
+                  <div class="pj-skel"><div class="pj-skelrow"></div><div class="pj-skelrow"></div><div class="pj-skelrow"></div></div>
+                  <div class="pj-idxbar"><i></i></div>
+                  <div class="pj-idxfrac">indexed <b>201</b> / 312 files · <b>847</b> / ~1,284 symbols</div>
+                </div>
+              </div>
+
+              <div class="pj-state empty">
+                <div class="pj-statewrap">
+                  <div class="pj-statebadge">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="13" cy="18" r="2.2"/><path d="M8 8.5 11 16M16 8 13.6 15.6"/></svg>
+                  </div>
+                  <h3>no symbol graph yet</h3>
+                  <p>this project has not been indexed. Build the dependency-knowledge graph to explore symbols, PageRank hotspots, dead-code islands, and blast radius.</p>
+                  <button class="pj-cta" type="button">Index this project</button>
+                  <div class="pj-idxfrac" style="color:var(--ghost)">graph_present <b style="color:var(--dim)">false</b> · node_count 0</div>
+                </div>
+              </div>
+
+              <div class="pj-state error">
+                <div class="pj-statewrap">
+                  <div class="pj-statebadge pj-errbadge">✕</div>
+                  <h3>index pass failed</h3>
+                  <p>the SCIP resolver exited before the graph completed. The last good graph is unavailable, so no topology is shown rather than a stale one.</p>
+                  <div class="pj-errcode">scip-rust · <b>exit 101</b> · panicked resolving crates/crypto/src/aes_gcm.rs</div>
+                  <button class="pj-retry" type="button">Re-run index</button>
+                </div>
+              </div>
+
+            </div><!-- /pj-graph -->
+
+            <!-- SYMBOL DETAIL panel -->
+            <aside class="pj-detail" id="pjDetail" aria-label="Symbol detail">
+              <!-- empty (no selection) state -->
+              <div class="pj-dempty" id="pjDetailEmpty">
+                <div class="pg">
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+                </div>
+                <p>select a symbol in the graph to see its signature, PageRank, callers and callees.</p>
+              </div>
+
+              <!-- populated detail (hidden until a node is selected) -->
+              <div id="pjDetailFull" style="display:none">
+                <div class="pj-dsec">
+                  <div class="pj-symname" id="pjDName">vault_crud::upsert_entry</div>
+                  <div class="pj-symkind" id="pjDKind">crates/orchestrator · fn</div>
+                </div>
+                <div class="pj-dsec">
+                  <div class="pj-slabel">DEFINITION</div>
+                  <div class="pj-sig" id="pjDSig"></div>
+                  <div class="pj-floc"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9"/><path d="M14 3h7v7"/></svg><span class="fp" id="pjDPath">crates/orchestrator/src/vault_crud.rs</span><span class="ln" id="pjDLine">:148</span></div>
+                </div>
+                <div class="pj-dsec">
+                  <div class="pj-slabel">PAGERANK</div>
+                  <div class="pj-prk"><span class="v" id="pjDPr">0.094</span><span class="of">rank 3 / 1,284 · seed all</span></div>
+                  <div class="pj-prbar"><i id="pjDPrBar" style="width:94%"></i></div>
+                </div>
+                <div class="pj-dsec">
+                  <div class="pj-slabel">CALLERS <span class="pj-relcount" id="pjDCallersN">result_count 6</span></div>
+                  <div class="pj-rel" id="pjDCallers">
+                    <div class="pj-relrow"><span class="pj-tier local">LOCAL</span><span class="rs">handlers::save_entry</span></div>
+                    <div class="pj-relrow"><span class="pj-tier local">LOCAL</span><span class="rs">handlers::import_csv</span></div>
+                    <div class="pj-relrow"><span class="pj-tier imported">IMPORT</span><span class="rs">cli::vault::add</span></div>
+                    <div class="pj-relrow"><span class="pj-tier imported">IMPORT</span><span class="rs">ipc::vault_upsert_cmd</span></div>
+                    <div class="pj-relrow"><span class="pj-tier reexport">RE-EXP</span><span class="rs">api::vault::*</span></div>
+                    <div class="pj-relrow"><span class="pj-tier unresolved">UNRES</span><span class="rs">dyn EntryStore::put (?)</span></div>
+                  </div>
+                </div>
+                <div class="pj-dsec">
+                  <div class="pj-slabel">CALLEES <span class="pj-relcount" id="pjDCalleesN">result_count 5</span></div>
+                  <div class="pj-rel" id="pjDCallees">
+                    <div class="pj-relrow"><span class="pj-tier local">LOCAL</span><span class="rs">aes_gcm::seal</span></div>
+                    <div class="pj-relrow"><span class="pj-tier local">LOCAL</span><span class="rs">key_derive::derive_dek</span></div>
+                    <div class="pj-relrow"><span class="pj-tier imported">IMPORT</span><span class="rs">ssb::SsbActionType</span></div>
+                    <div class="pj-relrow"><span class="pj-tier imported">IMPORT</span><span class="rs">zeroize::Zeroize::zeroize</span></div>
+                    <div class="pj-relrow"><span class="pj-tier reexport">RE-EXP</span><span class="rs">prelude::SecretKey</span></div>
+                  </div>
+                  <div class="pj-tierkey">
+                    <span><i class="local"></i> local</span><span><i class="imported"></i> imported</span>
+                    <span><i class="reexport"></i> re-export</span><span><i class="unresolved"></i> unresolved</span>
+                  </div>
+                </div>
+                <div class="pj-dsec">
+                  <div class="pj-slabel">IMPACT · BLAST RADIUS</div>
+                  <div class="pj-impact" id="pjDImpact">
+                    <div class="pj-imptop">
+                      <span class="tf" id="pjDTotalFiles">14<small> files</small></span>
+                      <span class="mx" id="pjDMaxDepth">max_depth 3</span>
+                    </div>
+                    <div class="pj-hop">
+                      <div class="pj-hopn">hop 1<small>direct</small></div>
+                      <div class="pj-hopfiles">
+                        <div class="pj-hf">handlers/<span class="c">vault.rs</span></div>
+                        <div class="pj-hf">cli/<span class="c">vault.rs</span></div>
+                        <div class="pj-hf">ipc/<span class="c">vault_cmd.rs</span></div>
+                      </div>
+                    </div>
+                    <div class="pj-hop">
+                      <div class="pj-hopn">hop 2</div>
+                      <div class="pj-hopfiles">
+                        <div class="pj-hf">orchestrator/<span class="c">task_runner.rs</span></div>
+                        <div class="pj-hf">dashboard-v2/<span class="c">ReviewWindow.svelte</span></div>
+                        <div class="pj-hf">+ 4 more</div>
+                      </div>
+                    </div>
+                    <div class="pj-hop">
+                      <div class="pj-hopn">hop 3</div>
+                      <div class="pj-hopfiles">
+                        <div class="pj-hf">orchestrator/<span class="c">fsm.rs</span></div>
+                        <div class="pj-hf">+ 3 more</div>
+                      </div>
+                    </div>
+                    <div class="pj-trunc">truncated — graph capped at depth 3</div>
+                  </div>
+                </div>
+              </div>
+            </aside><!-- /pj-detail -->
+
+          </div><!-- /pj-split -->
+        </div><!-- /pj -->
+      </section>
+
+      <!-- CHAT (right, resizable) — shared chrome, unchanged (user talking to ELAI the orchestrator) -->
+      <aside class="chat" aria-label="Chat">
+        <div class="resizer" id="chatResizer" title="Drag to resize chat"></div>
+        <div class="chat-head">
+          <span class="ct">CHAT</span>
+          <span class="cw" id="cwReadout">—</span>
+        </div>
+        <div class="chat-log">
+          <div class="msg user">where does upsert_entry actually get called from? want to be sure the CSV import path hits the AES seal too</div>
+          <div class="msg elai">
+            <div class="who">ELAI</div>
+            <div class="mtext">Pulled the symbol graph for <b>vault_crud::upsert_entry</b>. It has 6 callers across 4 resolution tiers — handlers::import_csv is one of them, and it does reach aes_gcm::seal through the same path.</div>
+            <div class="card"><div class="ct"><span class="dot"></span>SYMBOL · upsert_entry</div><div class="line">PR 0.094 · 6 callers · 5 callees · blast radius 14 files</div><span class="deeplink">focus in code-graph →</span></div>
+          </div>
+          <div class="msg elai">
+            <div class="who">ELAI</div>
+            <div class="mtext">One thing the dead-code lens flagged while I was in there: <b>legacy::pbkdf2_derive</b> has 0 production callers — topology-suspected dead. Want me to open a removal plan?</div>
+            <div class="card"><div class="ct"><span class="dot"></span>NOTICE · DEAD-CODE</div><div class="line">legacy.rs · pbkdf2_derive + Pbkdf2Params · island of 2</div></div>
+          </div>
+        </div>
+        <div class="chat-input">
+          <div class="input-box">
+            <button class="attach" type="button" aria-label="Attach"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+            <textarea placeholder="ask about a symbol, or message ELAI"></textarea>
+            <button class="send" type="button" aria-label="Send"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg></button>
+          </div>
+        </div>
+        <div class="usage">
+          <div class="urow"><span>CONTEXT WINDOW</span><span><b>41.2k</b> / 200k</span></div>
+          <div class="ubar"><i class="used"></i><i class="cache"></i></div>
+          <div class="urow"><span>this turn <b>1.24k tok</b> · 6% cached</span><span>cloud · $0.04</span></div>
+        </div>
+      </aside>
+
+      <!-- LEFT DRAWERS -->
+      <div class="drawer" id="drawer-files">
+        <div class="dh">FILES <span class="x" data-close>✕</span></div>
+        <div class="ftree">
+          <div class="row dir">crates/</div>
+          <div class="row ind dir">orchestrator/</div>
+          <div class="row ind2 hot">vault_crud.rs ●</div>
+          <div class="row ind2">ssb.rs</div>
+          <div class="row ind dir">crypto/</div>
+          <div class="row ind2">aes_gcm.rs</div>
+          <div class="row ind2">key_derive.rs</div>
+          <div class="row ind2">legacy.rs</div>
+          <div class="row ind dir">dashboard-v2/</div>
+          <div class="row ind2">CanvasWindow.svelte</div>
+          <div class="row ind2">SymbolGraphWindow.svelte</div>
+          <div class="row dir">python/</div>
+          <div class="row ind dir">elai_inference/</div>
+          <div class="row ind2">server.py</div>
+          <div class="row dir">docs/</div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-intel">
+        <div class="dh">PROJECT INTELLIGENCE <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>code-intelligence overview.</b> the same DKG that backs this tab's graph — PageRank hotspots, dead-code islands, and the lens flags, summarized.</div>
+        <div class="dlist">
+          <div class="di">symbols indexed<span class="k">1,284</span></div>
+          <div class="di">files indexed<span class="k">312</span></div>
+          <div class="di">grammars<span class="k">18</span></div>
+          <div class="di">top hotspot<span class="k">ssb.rs · 38 callers</span></div>
+          <div class="di">dead-code islands<span class="k">3 · suspected</span></div>
+          <div class="di">vibegate flags<span class="k">1 · aes_gcm::seal</span></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-sessions">
+        <div class="dh">SESSIONS / BRANCHES <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>session DAG + branch / merge.</b> fork, merge, close, progress sparkline per branch. Built next from get_session_branches.</div>
+        <div class="dlist">
+          <div class="di">main<span class="k">HEAD · 9/14</span></div>
+          <div class="di">try/aes-gcm<span class="k">+2 ahead</span></div>
+          <div class="di">archive/keys<span class="k">closed</span></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-receipts">
+        <div class="dh">RECEIPTS / RRA <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>reproducible-run artifacts + attestation.</b> root hash, guarantee level, gate count, objective-hash chain. Built next from get_run_artifact · get_attestations.</div>
+        <div class="dlist">
+          <div class="di">B-13 receipt<span class="k">reproducible</span></div>
+          <div class="di">B-12 receipt<span class="k">verified · 3 gates</span></div>
+        </div>
+      </div>
+
+      <div class="drawer" id="drawer-monitors">
+        <div class="dh">MONITORS <span class="x" data-close>✕</span></div>
+        <div class="dnote"><b>the telemetry long-tail.</b> cost cockpit, trust/taint, SSB transcript, critic decisions, benches, gates. Each becomes a real panel in the next pass (CONTRACT-SHEET §2).</div>
+        <div class="dlist">
+          <div class="di">cost · velocity cap<span class="k">live</span></div>
+          <div class="di">trust telemetry<span class="k">flag-dark</span></div>
+          <div class="di">SAFEDELTA<span class="k">bench-pending</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STATUSBAR -->
+    <footer class="statusbar">
+      <span class="fsm"><span class="dot"></span>FSM EXECUTING · s-7f3a · symbol-graph · lru 64/64</span>
+      <span class="right">
+        <span class="pj-statesw">
+          <span class="dl">GRAPH STATE</span>
+          <button data-pjstate="populated" class="on" type="button">populated</button>
+          <button data-pjstate="indexing" type="button">indexing</button>
+          <button data-pjstate="empty" type="button">not-indexed</button>
+          <button data-pjstate="error" type="button">error</button>
+        </span>
+        <span>cloud · sonnet 4.6</span><span>ctx 21%</span>
+      </span>
+    </footer>
+
+    <div class="scrim" id="scrim"></div>
+
+    <!-- SETTINGS MODAL -->
+    <div class="modal" id="modal-settings">
+      <div class="card2">
+        <div class="mh"><h2>Settings</h2><span class="x" data-close>✕</span></div>
+        <div class="mbody">
+          <div class="mnav">
+            <button class="on" type="button">Models</button><button type="button">Sidecar</button><button type="button">Gates</button>
+            <button type="button">Cloud</button><button type="button">Runtime</button><button type="button">Skills</button><button type="button">UX</button>
+          </div>
+          <div class="dnote"><b>model routing &amp; runtime.</b> per-role targets, gate mode, sidecar boot/quantization, cloud ceiling / BYOK, calibrated routing tier matrix. Detailed controls land here in the next pass (SettingsWindow handlers).</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const root=document.documentElement;
+
+    // theme toggle (sun/moon)
+    document.getElementById('themeToggle').addEventListener('click',()=>{
+      const light=root.getAttribute('data-theme')==='light';
+      root.setAttribute('data-theme', light?'dark':'light');});
+
+    // tab switching (chrome parity — PROJECT is the live tab here)
+    const tabs=[...document.querySelectorAll('.tab')];
+    tabs.forEach(t=>t.addEventListener('click',()=>{
+      root.setAttribute('data-tab',t.dataset.tab);
+      tabs.forEach(x=>x.classList.toggle('on',x===t));}));
+
+    // drawers + scrim
+    const scrim=document.getElementById('scrim');
+    const railBtns=[...document.querySelectorAll('.rbtn[data-drawer]')];
+    function closeAll(){
+      document.querySelectorAll('.drawer.open').forEach(d=>d.classList.remove('open'));
+      document.querySelectorAll('.modal.open').forEach(m=>m.classList.remove('open'));
+      railBtns.forEach(b=>b.classList.remove('on'));
+      scrim.classList.remove('on');
+    }
+    railBtns.forEach(b=>b.addEventListener('click',()=>{
+      const id='drawer-'+b.dataset.drawer; const d=document.getElementById(id);
+      const wasOpen=d.classList.contains('open');
+      closeAll();
+      if(!wasOpen){d.classList.add('open');b.classList.add('on');scrim.classList.add('on');}
+    }));
+    // settings modal
+    document.querySelector('.rbtn[data-modal]').addEventListener('click',()=>{
+      const m=document.getElementById('modal-settings');const wasOpen=m.classList.contains('open');
+      closeAll(); if(!wasOpen){m.classList.add('open');scrim.classList.add('on');}
+    });
+    document.querySelectorAll('[data-close]').forEach(x=>x.addEventListener('click',closeAll));
+    scrim.addEventListener('click',closeAll);
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')closeAll();});
+
+    // settings mnav toggle
+    document.querySelectorAll('.modal .mnav button').forEach(b=>b.addEventListener('click',()=>{
+      document.querySelectorAll('.modal .mnav button').forEach(x=>x.classList.toggle('on',x===b));}));
+
+    /* ───────── PROJECT tab interactions ───────── */
+    const pj=document.getElementById('pj');
+
+    // LENS BAR — recolor/annotate the graph by setting [data-lens] on .pj
+    const lensHints={
+      structure:'call + import topology · <b>node size = PageRank</b>',
+      security :'<b>vibegate</b>-flagged symbols inverted · clean recede',
+      history  :'churn — <b>hot</b> symbols lit, cold recede',
+      cost     :'<b>$ / symbol</b> attribution · priciest emphasised',
+      dead     :'<b>dead-code island</b> lit · live graph recedes'
+    };
+    const lensHint=document.getElementById('pjLensHint');
+    const lensBtns=[...document.querySelectorAll('.pj-lens')];
+    lensBtns.forEach(b=>b.addEventListener('click',()=>{
+      const L=b.dataset.lens;
+      pj.setAttribute('data-lens',L);
+      lensBtns.forEach(x=>x.classList.toggle('on',x===b));
+      lensHint.innerHTML=lensHints[L];
+    }));
+
+    // SYMBOL DETAIL — clicking a graph node fills the right panel + lights the impact cone
+    const nodes=[...document.querySelectorAll('.pj-node')];
+    const dEmpty=document.getElementById('pjDetailEmpty');
+    const dFull=document.getElementById('pjDetailFull');
+    const edges=[...document.querySelectorAll('.pj-edge')];
+    function clearCone(){edges.forEach(e=>e.classList.remove('cone'));}
+    function lightCone(id){
+      // light edges whose from/to touches the selected node id (id = "n-<key>")
+      const key=id.replace(/^n-/,'');
+      edges.forEach(e=>{
+        if(e.dataset.from===key||e.dataset.to===key) e.classList.add('cone');
+      });
+    }
+    function selectNode(n){
+      nodes.forEach(x=>x.classList.remove('sel'));
+      n.classList.add('sel');
+      clearCone(); lightCone(n.id);
+      // fill detail from data-* (real handler field names)
+      dEmpty.style.display='none'; dFull.style.display='block';
+      document.getElementById('pjDName').textContent=n.dataset.sym;
+      document.getElementById('pjDKind').textContent=n.dataset.fq;
+      document.getElementById('pjDSig').innerHTML=n.dataset.sig;
+      document.getElementById('pjDPath').textContent=n.dataset.path;
+      document.getElementById('pjDLine').textContent=':'+n.dataset.line;
+      document.getElementById('pjDPr').textContent=n.dataset.pr;
+      // PageRank bar scaled to the top observed score (0.094)
+      const pr=parseFloat(n.dataset.pr)||0;
+      document.getElementById('pjDPrBar').style.width=Math.max(3,Math.round(pr/0.094*100))+'%';
+      document.getElementById('pjDCallersN').textContent='result_count '+n.dataset.callers;
+      document.getElementById('pjDCalleesN').textContent='result_count '+n.dataset.callees;
+      // scroll detail to top on a new selection
+      document.getElementById('pjDetail').scrollTop=0;
+    }
+    nodes.forEach(n=>n.addEventListener('click',()=>selectNode(n)));
+
+    // a caller/callee row jumps focus would re-query; here it just re-highlights the matching node if present
+    document.querySelectorAll('.pj-relrow').forEach(r=>r.addEventListener('click',()=>{
+      const label=r.querySelector('.rs').textContent.trim();
+      const hit=nodes.find(n=>n.dataset.sym===label||n.dataset.sym.split('::').pop()===label.split('::').pop());
+      if(hit){hit.scrollIntoView({block:'center',inline:'center',behavior:'smooth'});selectNode(hit);}
+    }));
+
+    // chat deep-link → focus the hot symbol in the code-graph
+    document.querySelector('.card .deeplink')?.addEventListener('click',()=>{
+      const hot=document.getElementById('n-vault_crud');
+      hot.scrollIntoView({block:'center',inline:'center',behavior:'smooth'});
+      selectNode(hot);
+    });
+
+    // dev STATE switcher in the statusbar — POPULATED / INDEXING / NOT-INDEXED / ERROR
+    const stateBtns=[...document.querySelectorAll('.pj-statesw button')];
+    stateBtns.forEach(b=>b.addEventListener('click',()=>{
+      pj.setAttribute('data-pjstate',b.dataset.pjstate);
+      stateBtns.forEach(x=>x.classList.toggle('on',x===b));
+    }));
+
+    // chat resize — drag the left edge; default ~47% of the free area (rail excluded)
+    const RAIL=48, MINCHAT=340, MINCANVAS=380;
+    const cwReadout=document.getElementById('cwReadout');
+    function setChat(px){const free=window.innerWidth-RAIL;px=Math.round(Math.max(MINCHAT,Math.min(px,free-MINCANVAS)));root.style.setProperty('--chat',px+'px');if(cwReadout)cwReadout.textContent=px+'px';}
+    const rz=document.getElementById('chatResizer');let drag=false;
+    rz.addEventListener('pointerdown',e=>{drag=true;rz.classList.add('drag');rz.setPointerCapture(e.pointerId);e.preventDefault();});
+    rz.addEventListener('pointermove',e=>{if(drag)setChat(window.innerWidth-e.clientX);});
+    rz.addEventListener('pointerup',()=>{drag=false;rz.classList.remove('drag');});
+    setChat(Math.round((window.innerWidth-RAIL)*0.47));
+    window.addEventListener('resize',()=>setChat(parseInt(getComputedStyle(root).getPropertyValue('--chat'))||400));
+  </script>
+</body>
+</html>

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — session select</title>
+<!--
+  SELECT (terminal) — the CHOSEN project-selection direction, ported clean out of select-solid.html (no style switcher).
+  One solid app surface (#0a0f0e, the v3 evidence-terminal window colour) = the inside of the Tauri+Svelte5 desktop app.
+  The intro keeps the galaxy; START dissolves the cosmos into THIS screen's exact bg (intro's .curtain), then the app
+  BOOTS in: topbar drops, the session rows "print" top-to-bottom like ls output. Tamed mono — readable aligned columns,
+  one "~/" accent, NO ❯/✓/sweep symbol-soup. Theme icon (sun/moon) kept. Modes carried via ?mode= from the intro.
+  Real data = ProjectSummary{name,path,last_opened_iso}; STACK/SESSIONS/SYMBOLS/BRANCH mock-invented. Pure mock, not wired.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#0a0f0e; --panel:#0e1413; --raised:#151c1a; --sink:#070b0a;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.15);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.40); --teal-ghost:rgba(43,187,164,.10);
+    --disp:'Chakra Petch',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+    --dur-fast:140ms; --dur:240ms; --ease-out:cubic-bezier(0.16,1,0.3,1);
+    --r-sm:5px; --r-md:9px;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;font-family:var(--disp);color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased;overflow:hidden;}
+
+  [data-theme="light"]{
+    --bg:#eef1ef; --panel:#ffffff; --raised:#f4f6f4; --sink:#e4e8e5;
+    --text:#0b0f0e; --read:#2d342f; --dim:#646b66; --ghost:#a9b0ab;
+    --line:rgba(0,0,0,.10); --line2:rgba(0,0,0,.16); --teal-soft:rgba(27,122,110,.40);
+  }
+
+  .app{position:fixed;inset:0;display:flex;flex-direction:column;}
+
+  /* topbar */
+  .topbar{flex:0 0 auto;display:flex;align-items:center;gap:18px;height:48px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--bg);
+    animation:bIn 420ms var(--ease-out) both;}
+  .brand{display:flex;align-items:center;gap:9px;font-size:12px;letter-spacing:.16em;color:var(--read);font-weight:600;}
+  .brand .sep{color:var(--ghost);}
+  .brand .title{color:var(--dim);letter-spacing:.1em;font-weight:400;}
+  .spacer{flex:1;}
+  .modes{display:flex;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;}
+  .mode{appearance:none;background:transparent;border:0;border-right:1px solid var(--line);cursor:pointer;font-family:var(--disp);font-size:11px;font-weight:500;letter-spacing:.12em;color:var(--dim);padding:7px 15px;transition:color var(--dur-fast),background var(--dur-fast);}
+  .mode:last-child{border-right:0;}
+  .mode:hover{color:var(--read);background:rgba(255,255,255,.04);}
+  .mode.on{color:var(--teal-bright);background:var(--teal-ghost);}
+
+  /* theme icon — current mode at rest, hover previews the swap */
+  .icon-toggle{appearance:none;cursor:pointer;position:relative;width:32px;height:30px;background:transparent;border:1px solid var(--line);border-radius:var(--r-sm);color:var(--read);transition:color var(--dur-fast),border-color var(--dur-fast);}
+  .icon-toggle:hover{color:var(--teal);border-color:var(--teal-soft);}
+  .icon-toggle .ico{position:absolute;top:50%;left:50%;transition:opacity var(--dur) var(--ease-out),transform var(--dur) var(--ease-out);}
+  .icon-toggle .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  .icon-toggle .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  .icon-toggle:hover .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  .icon-toggle:hover .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-sun{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+  [data-theme="light"] .icon-toggle .ico-moon{opacity:0;transform:translate(-50%,-50%) rotate(-70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-sun{opacity:0;transform:translate(-50%,-50%) rotate(70deg) scale(.5);}
+  [data-theme="light"] .icon-toggle:hover .ico-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1);}
+
+  /* content */
+  .content{flex:1;min-width:0;overflow-y:auto;}
+  .content::-webkit-scrollbar{width:9px;}.content::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px;}.content::-webkit-scrollbar-track{background:transparent;}
+  .wrap{width:100%;max-width:820px;margin:0 auto;padding:48px 30px 40px;font-family:var(--mono);}
+
+  .head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:16px;
+    animation:bIn 360ms var(--ease-out) 130ms both;}
+  .head h1{margin:0;font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;color:var(--read);}
+  .head h1::before{content:"~/ ";color:var(--teal);}
+  .head .ct{font-family:var(--mono);font-size:12px;color:var(--dim);}
+
+  .search{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--sink);padding:9px 13px;margin-bottom:16px;transition:border-color var(--dur-fast);
+    animation:bIn 360ms var(--ease-out) 200ms both;}
+  .search:focus-within{border-color:var(--teal-soft);}
+  .search svg{flex:0 0 auto;color:var(--dim);}
+  .search input{flex:1;background:none;border:0;outline:none;font-family:var(--mono);font-size:12.5px;color:var(--text);}
+  .search input::placeholder{color:var(--dim);}
+
+  /* the session list — bordered console box, aligned mono columns */
+  .list{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--sink);overflow:hidden;
+    animation:bFade 300ms var(--ease-out) 180ms both;}
+  .item{display:grid;grid-template-columns:1.4fr .9fr .5fr .7fr .6fr auto;align-items:center;column-gap:18px;padding:11px 16px;cursor:pointer;
+    animation:bIn 280ms var(--ease-out) both;}
+  .item+.item{border-top:1px solid var(--line);}
+  .item:hover{background:rgba(43,187,164,.06);}
+  .item:focus-visible{outline:1px solid var(--teal-soft);outline-offset:-1px;}
+  /* rows "print" top-to-bottom after the box has faded in (no opacity overlap) */
+  .item:nth-child(1){animation-delay:470ms}.item:nth-child(2){animation-delay:520ms}.item:nth-child(3){animation-delay:570ms}
+  .item:nth-child(4){animation-delay:620ms}.item:nth-child(5){animation-delay:670ms}.item:nth-child(6){animation-delay:720ms}
+  .i-name{font-family:var(--mono);font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;transition:color var(--dur-fast);}
+  .item:hover .i-name{color:var(--teal-bright);}
+  .f{font-family:var(--mono);font-size:12px;color:var(--dim);white-space:nowrap;}
+  .i-up{font-family:var(--mono);font-size:12px;color:var(--read);text-align:right;white-space:nowrap;}
+
+  .newproj{appearance:none;cursor:pointer;font-family:var(--mono);background:transparent;border:1px solid var(--line2);border-radius:var(--r-sm);
+    color:var(--read);padding:11px 18px;font-size:12.5px;letter-spacing:.06em;margin-top:14px;transition:background var(--dur-fast),border-color var(--dur-fast),color var(--dur-fast);
+    animation:bIn 360ms var(--ease-out) 800ms both;}
+  .newproj:hover{border-color:var(--teal-soft);color:var(--teal-bright);background:var(--teal-ghost);}
+
+  @keyframes bIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+  @keyframes bFade{from{opacity:0;}to{opacity:1;}}
+  @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important;}}
+</style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">ELAI <span class="sep">·</span> <span class="title">session select</span></div>
+      <div class="spacer"></div>
+      <div class="modes" role="group" aria-label="Execution mode">
+        <button class="mode on" type="button">LOCAL</button>
+        <button class="mode" type="button">CLOUD</button>
+        <button class="mode" type="button">HYBRID</button>
+      </div>
+      <button class="icon-toggle" id="themeToggle" type="button" title="Toggle light / dark" aria-label="Toggle light / dark mode">
+        <svg class="ico ico-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/>
+          <line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/>
+          <line x1="5.2" y1="5.2" x2="6.9" y2="6.9"/><line x1="17.1" y1="17.1" x2="18.8" y2="18.8"/>
+          <line x1="18.8" y1="5.2" x2="17.1" y2="6.9"/><line x1="6.9" y1="17.1" x2="5.2" y2="18.8"/>
+        </svg>
+        <svg class="ico ico-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 14.6A8 8 0 0 1 9.4 4 7 7 0 1 0 20 14.6Z"/>
+        </svg>
+      </button>
+    </header>
+
+    <div class="content">
+      <div class="wrap">
+        <div class="head">
+          <h1>recent sessions</h1>
+          <span class="ct">6 projects</span>
+        </div>
+
+        <div class="search">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14" stroke-linecap="round"/></svg>
+          <input type="text" placeholder="filter by name" aria-label="Filter projects" />
+        </div>
+
+        <div class="list">
+          <article class="item" role="button" tabindex="0" data-name=".elai_cc">
+            <span class="i-name">.elai_cc</span><span class="f">rust + ts</span><span class="f">14</span><span class="f">1,284</span><span class="f">main</span><span class="i-up">4m</span>
+          </article>
+          <article class="item" role="button" tabindex="0" data-name="liteGAME">
+            <span class="i-name">liteGAME</span><span class="f">rust + unity</span><span class="f">9</span><span class="f">612</span><span class="f">dev</span><span class="i-up">2h</span>
+          </article>
+          <article class="item" role="button" tabindex="0" data-name="apps_workflow">
+            <span class="i-name">apps_workflow</span><span class="f">ts</span><span class="f">5</span><span class="f">340</span><span class="f">main</span><span class="i-up">1d</span>
+          </article>
+          <article class="item" role="button" tabindex="0" data-name="regret">
+            <span class="i-name">regret</span><span class="f">rust</span><span class="f">3</span><span class="f">188</span><span class="f">main</span><span class="i-up">3d</span>
+          </article>
+          <article class="item" role="button" tabindex="0" data-name="sidecar-infra">
+            <span class="i-name">sidecar-infra</span><span class="f">python</span><span class="f">7</span><span class="f">421</span><span class="f">main</span><span class="i-up">5d</span>
+          </article>
+          <article class="item" role="button" tabindex="0" data-name="canvas-mcp">
+            <span class="i-name">canvas-mcp</span><span class="f">ts</span><span class="f">2</span><span class="f">96</span><span class="f">dev</span><span class="i-up">1w</span>
+          </article>
+        </div>
+
+        <button class="newproj" type="button">+ new project</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const root=document.documentElement;
+
+    // carry the mode chosen on the intro (?mode=)
+    const params=new URLSearchParams(location.search);
+    const incoming=(params.get('mode')||sessionStorage.getItem('elai.mode')||'LOCAL').toUpperCase();
+    const modes=[...document.querySelectorAll('.mode')];
+    modes.forEach(b=>b.classList.toggle('on',b.textContent.trim()===incoming));
+    modes.forEach(b=>b.addEventListener('click',()=>modes.forEach(x=>x.classList.toggle('on',x===b))));
+    function activeMode(){const on=document.querySelector('.mode.on');return on?on.textContent.trim():'LOCAL';}
+
+    // theme toggle (sun/moon)
+    document.getElementById('themeToggle').addEventListener('click',()=>{
+      const light=root.getAttribute('data-theme')==='light';
+      root.setAttribute('data-theme', light?'dark':'light');});
+
+    // open project / new project (mock nav to dashboard)
+    function openProject(name){sessionStorage.setItem('elai.project',name||'');sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?'+new URLSearchParams({project:name||'',mode:activeMode()});}
+    document.querySelectorAll('[data-name]').forEach(el=>{const name=el.getAttribute('data-name');
+      el.addEventListener('click',()=>openProject(name));el.addEventListener('keydown',e=>{if(e.key==='Enter')openProject(name);});});
+    document.querySelector('.newproj').addEventListener('click',()=>{sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?new=1&mode='+encodeURIComponent(activeMode());});
+
+    // live name filter
+    const search=document.querySelector('.search input');
+    if(search) search.addEventListener('input',()=>{const q=search.value.trim().toLowerCase();
+      document.querySelectorAll('.list .item').forEach(c=>{c.style.display=c.getAttribute('data-name').toLowerCase().includes(q)?'':'none';});});
+
+    // back to intro via Esc
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')location.href='./intro.html';});
+  </script>
+</body>
+</html>

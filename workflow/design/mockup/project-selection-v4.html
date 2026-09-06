@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — project selection (mock v4 · orbit · stripped frame)</title>
+<!--
+  V4 (stripped) — bare orbital frame only, for evaluating the composition:
+  background (centered bloom + drifting starfield + slow satellite), the white hairline logo core, the concentric rings,
+  the top LOCAL/CLOUD/HYBRID modes, and the bottom + NEW PROJECT button. ALL project content removed
+  (orbiting star nodes, the bottom detail readout, the dev STATE switcher, the corner tag). Tagline kept as part of the logo lockup.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --void:#030404; --panel:#0a1012; --raised:#161c1b;
+    --text:#f2f5f4; --read:#c9cecb; --dim:#79827e; --ghost:#3a423f;
+    --border:rgba(255,255,255,.09); --border-bright:rgba(255,255,255,.16);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.40); --ring:rgba(43,187,164,.07); --ring-faint:rgba(43,187,164,.045);
+    --disp:'Chakra Petch',system-ui,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --dur-fast:140ms; --dur:280ms; --ease-out:cubic-bezier(0.16,1,0.3,1); --ease-draw:cubic-bezier(0.3,0,0.2,1);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;font-family:var(--disp);color:var(--text);background:var(--void);-webkit-font-smoothing:antialiased;overflow:hidden;}
+
+  /* ───── stage: void + centered bloom + drifting starfield ───── */
+  .stage{position:fixed;inset:0;overflow:hidden;
+    background:
+      radial-gradient(ellipse 54% 54% at 50% 50%,
+        rgba(43,187,164,.16) 0%, rgba(43,187,164,.06) 30%, rgba(43,187,164,.018) 50%, rgba(43,187,164,0) 68%),
+      radial-gradient(ellipse 135% 135% at 50% 50%,
+        rgba(4,13,17,1) 0%,rgba(4,13,17,.92) 18%,rgba(4,13,17,.74) 36%,rgba(4,13,17,.52) 54%,
+        rgba(4,13,17,.28) 72%,rgba(4,13,17,.08) 90%,rgba(4,13,17,0) 100%),
+      var(--void);}
+  .stars{position:absolute;inset:-6%;z-index:0;pointer-events:none;}
+  .stars::before,.stars::after{content:"";position:absolute;inset:0;}
+  .stars::before{animation:drift-a 150s ease-in-out infinite;
+    background-image:
+      radial-gradient(1.3px 1.3px at 8% 16%,rgba(255,255,255,.5),transparent 64%),
+      radial-gradient(1.3px 1.3px at 19% 61%,rgba(255,255,255,.42),transparent 64%),
+      radial-gradient(1.3px 1.3px at 34% 82%,rgba(255,255,255,.4),transparent 64%),
+      radial-gradient(1.3px 1.3px at 43% 11%,rgba(255,255,255,.48),transparent 64%),
+      radial-gradient(1.3px 1.3px at 57% 73%,rgba(255,255,255,.42),transparent 64%),
+      radial-gradient(1.3px 1.3px at 71% 55%,rgba(255,255,255,.44),transparent 64%),
+      radial-gradient(1.3px 1.3px at 84% 34%,rgba(255,255,255,.5),transparent 64%),
+      radial-gradient(1.3px 1.3px at 91% 67%,rgba(255,255,255,.4),transparent 64%),
+      radial-gradient(1.3px 1.3px at 96% 14%,rgba(255,255,255,.42),transparent 64%),
+      radial-gradient(1.3px 1.3px at 14% 92%,rgba(255,255,255,.38),transparent 64%),
+      radial-gradient(1.1px 1.1px at 27% 38%,rgba(255,255,255,.3),transparent 64%),
+      radial-gradient(1.1px 1.1px at 63% 28%,rgba(255,255,255,.3),transparent 64%);}
+  .stars::after{animation:drift-b 110s ease-in-out infinite, twinkle 5.5s ease-in-out infinite;
+    background-image:
+      radial-gradient(2.4px 2.4px at 12% 30%,rgba(255,255,255,.96),transparent 58%),
+      radial-gradient(2px 2px at 31% 78%,rgba(255,255,255,.88),transparent 58%),
+      radial-gradient(2.4px 2.4px at 88% 22%,rgba(255,255,255,.92),transparent 58%),
+      radial-gradient(2px 2px at 82% 70%,rgba(255,255,255,.88),transparent 58%),
+      radial-gradient(2.8px 2.8px at 18% 88%,rgba(255,255,255,.9),transparent 58%),
+      radial-gradient(2.4px 2.4px at 6% 48%,rgba(255,255,255,.9),transparent 58%),
+      radial-gradient(2px 2px at 92% 86%,rgba(52,194,170,.7),transparent 58%);}
+  @keyframes drift-a{0%,100%{transform:translate(0,0)}50%{transform:translate(-15px,9px)}}
+  @keyframes drift-b{0%,100%{transform:translate(0,0)}50%{transform:translate(12px,-8px)}}
+  @keyframes twinkle{0%,100%{opacity:.95}50%{opacity:.55}}
+
+  /* slow satellite orbiting the system */
+  .sat-track{position:absolute;left:50%;top:50%;z-index:0;pointer-events:none;width:0;height:0;animation:spin 90s linear infinite;}
+  .sat{position:absolute;left:0;top:-408px;width:5px;height:5px;background:var(--teal);transform:translate(-50%,-50%) rotate(45deg);box-shadow:0 0 12px var(--teal-soft);}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* runtime modes — top center, underline-draw */
+  .modes{position:fixed;left:50%;top:30px;transform:translateX(-50%);z-index:6;display:flex;}
+  .mode{position:relative;appearance:none;background:none;border:0;cursor:pointer;font-family:var(--disp);font-weight:500;font-size:12px;letter-spacing:.2em;color:var(--dim);padding:6px 18px 12px;transition:color var(--dur-fast) var(--ease-out);}
+  .mode::after{content:"";position:absolute;left:18px;right:18px;bottom:0;height:1px;background:var(--teal);transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .mode:hover{color:var(--read);}
+  .mode.on{color:var(--teal-bright);}
+  .mode.on::after{transform:scaleX(1);}
+
+  /* ───── the orbital system: rings + core ───── */
+  .system{position:absolute;inset:0;z-index:1;pointer-events:none;}
+  .ring{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:1px solid var(--ring);border-radius:50%;}
+  .ring.r1{width:370px;height:370px;}
+  .ring.r2{width:560px;height:560px;}
+  .ring.r3{width:750px;height:750px;border-color:var(--ring-faint);}
+
+  .core{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;display:flex;flex-direction:column;align-items:center;gap:14px;pointer-events:none;}
+  .logo-wrap{cursor:pointer;pointer-events:auto;line-height:0;filter:drop-shadow(0 0 42px rgba(43,187,164,.36)) drop-shadow(0 0 12px rgba(43,187,164,.26));}
+  .logo{width:300px;height:auto;display:block;}
+  .logo line{fill:none;stroke:var(--text);stroke-width:2.4;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1400ms var(--ease-draw) forwards;}
+  .logo line:nth-child(1){animation-delay:300ms}.logo line:nth-child(2){animation-delay:640ms}.logo line:nth-child(3){animation-delay:980ms}
+  .logo line:nth-child(4){animation-delay:1320ms}.logo line:nth-child(5){animation-delay:1660ms}.logo line:nth-child(6){animation-delay:2000ms}
+  .logo line:nth-child(7){animation-delay:2340ms}.logo line:nth-child(8){animation-delay:2680ms}.logo line:nth-child(9){animation-delay:3020ms}.logo line:nth-child(10){animation-delay:3360ms}
+  @keyframes draw{to{stroke-dashoffset:0;}}
+  .tagline{margin:0;font-family:var(--disp);font-weight:300;font-size:11.5px;letter-spacing:.16em;color:#9aa39e;opacity:0;animation:fadeIn 320ms var(--ease-out) 800ms forwards;}
+
+  /* ───── bottom: + new project ───── */
+  .readout{position:fixed;left:50%;bottom:44px;transform:translateX(-50%);z-index:5;display:flex;justify-content:center;
+    opacity:0;animation:fadeIn 360ms var(--ease-out) 600ms forwards;}
+  .np{position:relative;appearance:none;cursor:pointer;background:transparent;border:1px solid var(--border);border-radius:0;
+    font-family:var(--disp);font-weight:500;font-size:12px;letter-spacing:.2em;color:var(--read);padding:13px 34px;overflow:hidden;
+    transition:color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out);}
+  .np:hover{color:var(--teal-bright);border-color:var(--teal-soft);}
+  .np::after{content:"";position:absolute;left:0;bottom:0;height:1px;width:100%;background:var(--teal);transform:scaleX(0);transform-origin:center;transition:transform var(--dur) var(--ease-out);}
+  .np:hover::after{transform:scaleX(1);}
+
+  /* ───── inverted (light) background variant — toggled by the INVERT BG button ───── */
+  [data-theme="light"]{
+    --void:#e9ede9; --text:#0b0f0e; --read:#2d342f; --dim:#646b66; --ghost:#a9b0ab;
+    --border:rgba(0,0,0,.14); --border-bright:rgba(0,0,0,.22);
+    --ring:rgba(27,122,110,.24); --ring-faint:rgba(27,122,110,.14); --teal-soft:rgba(27,122,110,.40);
+  }
+  [data-theme="light"] .stage{
+    background:
+      radial-gradient(ellipse 56% 56% at 50% 50%, rgba(43,187,164,.22) 0%, rgba(43,187,164,.09) 30%, rgba(43,187,164,.025) 50%, rgba(43,187,164,0) 68%),
+      radial-gradient(ellipse 135% 135% at 50% 50%, #eef2ef 0%, #e8ede9 40%, #d6ddd9 80%, #cad2cd 100%),
+      var(--void);}
+  [data-theme="light"] .stars{filter:invert(1);opacity:.42;}
+  [data-theme="light"] .tagline{color:#4a514c;}
+  [data-theme="light"] .mode.on{color:var(--teal-deep);}
+  [data-theme="light"] .mode.on::after,[data-theme="light"] .np::after{background:var(--teal-deep);}
+  [data-theme="light"] .np:hover{color:var(--teal-deep);}
+
+  /* ───── bloom inversion: teal pushed to the EDGES, void behind the logo (EDGE GLOW button) ───── */
+  [data-bloom="edge"] .stage{
+    background:
+      radial-gradient(ellipse farthest-corner at 50% 50%,
+        rgba(43,187,164,0) 0%, rgba(43,187,164,0) 38%, rgba(43,187,164,.05) 58%, rgba(43,187,164,.14) 80%, rgba(43,187,164,.27) 100%),
+      var(--void);}
+
+  /* top-right toggle buttons (adapt to the active theme via tokens) */
+  .tr-toggles{position:fixed;top:18px;right:20px;z-index:7;display:flex;gap:8px;}
+  .theme-toggle{appearance:none;cursor:pointer;background:transparent;border:1px solid var(--border);border-radius:0;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;color:var(--read);padding:8px 13px;
+    transition:color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out);}
+  .theme-toggle:hover,.theme-toggle.on{color:var(--teal);border-color:var(--teal-soft);}
+
+  @keyframes fadeIn{to{opacity:1;}}
+  @media (prefers-reduced-motion:reduce){
+    .logo line{animation:none;stroke-dashoffset:0;}
+    .stars::before,.stars::after,.sat-track{animation:none;}
+    .tagline,.readout{animation:none;opacity:1;}
+  }
+</style>
+</head>
+<body>
+  <main class="stage" aria-label="ELAI project selection">
+    <div class="stars" aria-hidden="true"></div>
+    <div class="sat-track" aria-hidden="true"><span class="sat"></span></div>
+
+    <div class="tr-toggles">
+      <button class="theme-toggle" id="bloomToggle" type="button">EDGE GLOW</button>
+      <button class="theme-toggle" id="themeToggle" type="button">INVERT BG</button>
+    </div>
+
+    <div class="modes" role="group" aria-label="Execution mode">
+      <button class="mode on" type="button">LOCAL</button>
+      <button class="mode" type="button">CLOUD</button>
+      <button class="mode" type="button">HYBRID</button>
+    </div>
+
+    <div class="system">
+      <div class="ring r1"></div>
+      <div class="ring r2"></div>
+      <div class="ring r3"></div>
+
+      <div class="core">
+        <div class="logo-wrap" id="logo" title="ELAI — click to replay" aria-label="ELAI">
+          <svg class="logo" viewBox="-3 -3 236 66" role="img" aria-label="ELAI logo">
+            <line pathLength="1" x1="0" y1="0" x2="0" y2="60"/><line pathLength="1" x1="0" y1="0" x2="34" y2="0"/>
+            <line pathLength="1" x1="0" y1="30" x2="25" y2="30"/><line pathLength="1" x1="0" y1="60" x2="34" y2="60"/>
+            <line pathLength="1" x1="76" y1="0" x2="76" y2="60"/><line pathLength="1" x1="76" y1="60" x2="106" y2="60"/>
+            <line pathLength="1" x1="150" y1="60" x2="170" y2="0"/><line pathLength="1" x1="170" y1="0" x2="190" y2="60"/>
+            <line pathLength="1" x1="162.7" y1="38" x2="177.3" y2="38"/><line pathLength="1" x1="228" y1="0" x2="228" y2="60"/>
+          </svg>
+        </div>
+        <p class="tagline">Evidence Logic for Autonomous Intelligence</p>
+      </div>
+    </div>
+
+    <div class="readout">
+      <button class="np" id="primary" type="button">+ NEW PROJECT</button>
+    </div>
+  </main>
+
+  <script>
+    const root=document.documentElement;
+
+    // background theme toggle (dark <-> inverted/light)
+    const themeBtn=document.getElementById('themeToggle');
+    themeBtn.addEventListener('click',()=>{
+      const light=root.getAttribute('data-theme')==='light';
+      root.setAttribute('data-theme', light?'dark':'light');
+      themeBtn.classList.toggle('on',!light);});
+
+    // bloom inversion toggle (center glow <-> edge glow: teal to the edges, void behind the logo)
+    const bloomBtn=document.getElementById('bloomToggle');
+    bloomBtn.addEventListener('click',()=>{
+      const edge=root.getAttribute('data-bloom')==='edge';
+      root.setAttribute('data-bloom', edge?'center':'edge');
+      bloomBtn.classList.toggle('on',!edge);});
+
+    // logo replay
+    document.getElementById('logo').addEventListener('click',()=>{
+      document.querySelectorAll('.logo line').forEach(ln=>{ln.style.animation='none';void ln.getBoundingClientRect();ln.style.animation='';});});
+
+    // runtime modes
+    const modes=[...document.querySelectorAll('.mode')];
+    modes.forEach(b=>b.addEventListener('click',()=>modes.forEach(x=>x.classList.toggle('on',x===b))));
+    function activeMode(){const on=document.querySelector('.mode.on');return on?on.textContent.trim():'LOCAL';}
+
+    // new project
+    document.getElementById('primary').addEventListener('click',()=>{
+      sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?new=1&mode='+encodeURIComponent(activeMode());});
+  </script>
+</body>
+</html>

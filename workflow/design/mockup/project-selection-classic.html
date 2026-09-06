@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ELAI — project selection (classic layout · our colors)</title>
+<!--
+  COPY of elai-mockup.html #boot LAYOUT (recent-card design maintainer likes), recolored to OUR palette:
+  teal logo + our bg (#040d11 -> black + teal bloom) + white stars + Chakra + our real project text.
+  Original elai-mockup.html is untouched. This is a recoloured reference to compare against the variations.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --void:#030404; --haze:#040d11; --panel:#0a1012; --raised:#161c1b;
+    --text:#f2f5f4; --read:#c9cecb; --ghost:#3a423f;
+    --border:rgba(255,255,255,.12); --border-bright:rgba(255,255,255,.20);
+    --teal:#2BBBA4; --teal-bright:#34C2AA; --teal-deep:#1B7A6E;
+    --teal-soft:rgba(43,187,164,.40); --teal-ghost:rgba(43,187,164,.10);
+    --font:'Chakra Petch',system-ui,sans-serif;
+    --dur-fast:120ms; --ease-out:cubic-bezier(0.16,1,0.3,1); --ease-draw:cubic-bezier(0.3,0,0.2,1);
+    --r-sm:4px; --r-md:6px;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;font-family:var(--font);color:var(--text);background:var(--void);-webkit-font-smoothing:antialiased;overflow:hidden;}
+
+  .stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:
+      radial-gradient(ellipse 64% 46% at 50% 32%,
+        rgba(43,187,164,.13) 0%, rgba(43,187,164,.06) 32%, rgba(43,187,164,.018) 52%, rgba(43,187,164,0) 68%),
+      radial-gradient(ellipse 138% 120% at 50% 34%,
+        rgba(4,13,17,1) 0%,rgba(4,13,17,.94) 14%,rgba(4,13,17,.84) 28%,rgba(4,13,17,.70) 40%,
+        rgba(4,13,17,.54) 52%,rgba(4,13,17,.38) 64%,rgba(4,13,17,.24) 75%,rgba(4,13,17,.12) 85%,
+        rgba(4,13,17,.04) 93%,rgba(4,13,17,0) 100%),
+      var(--void);
+    overflow:hidden;}
+  .stage::before{content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:
+      radial-gradient(1.5px 1.5px at 8% 16%,rgba(255,255,255,.60),transparent 64%),
+      radial-gradient(1.5px 1.5px at 19% 61%,rgba(255,255,255,.50),transparent 64%),
+      radial-gradient(1.5px 1.5px at 27% 28%,rgba(255,255,255,.55),transparent 64%),
+      radial-gradient(1.5px 1.5px at 34% 82%,rgba(255,255,255,.45),transparent 64%),
+      radial-gradient(1.5px 1.5px at 43% 11%,rgba(255,255,255,.58),transparent 64%),
+      radial-gradient(1.5px 1.5px at 57% 73%,rgba(255,255,255,.50),transparent 64%),
+      radial-gradient(1.5px 1.5px at 63% 21%,rgba(255,255,255,.55),transparent 64%),
+      radial-gradient(1.5px 1.5px at 71% 55%,rgba(255,255,255,.52),transparent 64%),
+      radial-gradient(1.5px 1.5px at 84% 34%,rgba(255,255,255,.60),transparent 64%),
+      radial-gradient(1.5px 1.5px at 91% 67%,rgba(255,255,255,.48),transparent 64%),
+      radial-gradient(1.5px 1.5px at 96% 14%,rgba(255,255,255,.50),transparent 64%),
+      radial-gradient(1.5px 1.5px at 14% 92%,rgba(255,255,255,.44),transparent 64%);}
+  .stage::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:
+      radial-gradient(3px 3px at 12% 30%,rgba(255,255,255,1),transparent 58%),
+      radial-gradient(2.5px 2.5px at 31% 78%,rgba(255,255,255,.92),transparent 58%),
+      radial-gradient(3px 3px at 68% 18%,rgba(255,255,255,.98),transparent 58%),
+      radial-gradient(2.5px 2.5px at 82% 58%,rgba(255,255,255,.92),transparent 58%),
+      radial-gradient(3.5px 3.5px at 47% 89%,rgba(255,255,255,.95),transparent 58%),
+      radial-gradient(3px 3px at 6% 48%,rgba(255,255,255,.95),transparent 58%);}
+
+  /* centered boot column (elai-mockup proportions) */
+  .boot-inner{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:30px;max-width:520px;width:100%;padding:0 24px;}
+
+  /* TEAL logo (the classic charm) with our teal glow */
+  .logo-wrap{cursor:pointer;line-height:0;filter:drop-shadow(0 0 30px rgba(43,187,164,.42)) drop-shadow(0 0 9px rgba(43,187,164,.34));}
+  .logo{width:min(300px,52vw);height:auto;display:block;overflow:visible;}
+  .logo line{fill:none;stroke:var(--teal-bright);stroke-width:2.4;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1400ms var(--ease-draw) forwards;}
+  .logo line:nth-child(1){animation-delay:300ms}.logo line:nth-child(2){animation-delay:640ms}.logo line:nth-child(3){animation-delay:980ms}
+  .logo line:nth-child(4){animation-delay:1320ms}.logo line:nth-child(5){animation-delay:1660ms}.logo line:nth-child(6){animation-delay:2000ms}
+  .logo line:nth-child(7){animation-delay:2340ms}.logo line:nth-child(8){animation-delay:2680ms}.logo line:nth-child(9){animation-delay:3020ms}.logo line:nth-child(10){animation-delay:3360ms}
+  @keyframes draw{to{stroke-dashoffset:0;}}
+
+  .tagline{margin:-12px 0 0;font-size:13px;font-weight:400;letter-spacing:.12em;color:var(--read);}
+
+  /* merged mode-row (elai-mockup) */
+  .mode-row{display:flex;border:1px solid var(--border-bright);border-radius:var(--r-md);overflow:hidden;}
+  .mode-seg{appearance:none;background:transparent;border:0;border-right:1px solid var(--border);cursor:pointer;font-family:var(--font);font-size:13px;font-weight:500;letter-spacing:.16em;color:var(--read);padding:9px 22px;transition:background var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);}
+  .mode-seg:last-child{border-right:0;}
+  .mode-seg:hover{color:var(--text);}
+  .mode-seg.on{color:var(--teal-bright);background:var(--teal-ghost);}
+
+  /* recent — the elai-mockup card design: name + meta on the left, time on the right */
+  .recent{width:100%;display:flex;flex-direction:column;gap:8px;margin-top:6px;}
+  .recent-label{display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:.24em;color:var(--read);margin-bottom:4px;}
+  .recent-label::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--teal-bright);}
+  .recent-row{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:13px 16px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--panel);cursor:pointer;
+    transition:border-color var(--dur-fast) var(--ease-out),background var(--dur-fast) var(--ease-out);}
+  .recent-row:hover{border-color:var(--teal-soft);background:var(--raised);}
+  .rr-left{display:flex;flex-direction:column;gap:6px;min-width:0;}
+  .rr-name{font-size:15px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .rr-meta{font-size:12px;color:var(--read);letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .rr-time{font-size:12px;color:var(--read);flex:none;white-space:nowrap;}
+
+  /* + new project (elai-mockup ghost button), brighter dashed */
+  .ghost-btn{font-family:var(--font);font-size:12px;letter-spacing:.16em;padding:13px 0;width:100%;
+    border:1px dashed var(--border-bright);border-radius:var(--r-md);background:transparent;color:var(--read);cursor:pointer;margin-top:4px;
+    transition:border-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);}
+  .ghost-btn:hover{border-color:var(--teal-soft);color:var(--teal-bright);}
+
+  @media (prefers-reduced-motion:reduce){.logo line{animation:none;stroke-dashoffset:0;}}
+</style>
+</head>
+<body>
+  <main class="stage" aria-label="ELAI project selection (classic)">
+    <div class="boot-inner">
+      <div class="logo-wrap" id="logo" title="ELAI — click to replay" aria-label="ELAI">
+        <svg class="logo" viewBox="-3 -3 236 66" role="img" aria-label="ELAI logo">
+          <line pathLength="1" x1="0" y1="0" x2="0" y2="60"/><line pathLength="1" x1="0" y1="0" x2="34" y2="0"/>
+          <line pathLength="1" x1="0" y1="30" x2="25" y2="30"/><line pathLength="1" x1="0" y1="60" x2="34" y2="60"/>
+          <line pathLength="1" x1="76" y1="0" x2="76" y2="60"/><line pathLength="1" x1="76" y1="60" x2="106" y2="60"/>
+          <line pathLength="1" x1="150" y1="60" x2="170" y2="0"/><line pathLength="1" x1="170" y1="0" x2="190" y2="60"/>
+          <line pathLength="1" x1="162.7" y1="38" x2="177.3" y2="38"/><line pathLength="1" x1="228" y1="0" x2="228" y2="60"/>
+        </svg>
+      </div>
+
+      <p class="tagline">Evidence Logic for Autonomous Intelligence</p>
+
+      <div class="mode-row" role="group" aria-label="Execution mode">
+        <button class="mode-seg on" type="button">LOCAL</button>
+        <button class="mode-seg" type="button">CLOUD</button>
+        <button class="mode-seg" type="button">HYBRID</button>
+      </div>
+
+      <div class="recent">
+        <div class="recent-label">RECENT PROJECTS</div>
+        <div class="recent-row" role="button" tabindex="0">
+          <div class="rr-left"><span class="rr-name">.elai_cc</span><span class="rr-meta">rust + ts · 14 sessions · 1,284 symbols</span></div>
+          <span class="rr-time">4m ago</span>
+        </div>
+        <div class="recent-row" role="button" tabindex="0">
+          <div class="rr-left"><span class="rr-name">liteGAME</span><span class="rr-meta">rust + unity · 9 sessions · 612 symbols</span></div>
+          <span class="rr-time">2h ago</span>
+        </div>
+        <div class="recent-row" role="button" tabindex="0">
+          <div class="rr-left"><span class="rr-name">apps_workflow</span><span class="rr-meta">ts · 5 sessions · 340 symbols</span></div>
+          <span class="rr-time">yesterday</span>
+        </div>
+        <button class="ghost-btn" type="button">+ NEW PROJECT</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    document.getElementById('logo').addEventListener('click',()=>{
+      document.querySelectorAll('.logo line').forEach(ln=>{ln.style.animation='none';void ln.getBoundingClientRect();ln.style.animation='';});});
+    const modes=[...document.querySelectorAll('.mode-seg')];
+    modes.forEach(m=>m.addEventListener('click',()=>{modes.forEach(x=>x.classList.remove('on'));m.classList.add('on');}));
+    function activeMode(){const m=document.querySelector('.mode-seg.on');return m?m.textContent.trim():'LOCAL';}
+    document.querySelectorAll('.recent-row').forEach(row=>{const name=row.querySelector('.rr-name').textContent.trim();
+      row.addEventListener('click',()=>{sessionStorage.setItem('elai.project',name);sessionStorage.setItem('elai.mode',activeMode());
+        location.href='./dashboard.html?'+new URLSearchParams({project:name,mode:activeMode()});});});
+    document.querySelector('.ghost-btn').addEventListener('click',()=>{sessionStorage.setItem('elai.mode',activeMode());
+      location.href='./dashboard.html?new=1&mode='+encodeURIComponent(activeMode());});
+  </script>
+</body>
+</html>

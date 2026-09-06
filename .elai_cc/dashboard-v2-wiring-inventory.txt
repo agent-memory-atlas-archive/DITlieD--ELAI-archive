@@ -1,0 +1,140 @@
+# Dashboard-v2 wiring inventory | session s-30316 PART11 | 2026-05-08
+# Format: surface_id|file:line|status|spec_phase|backend_handler|gap_description
+# Status legend:
+#   WIRED=live data flowing through stub.<fn>(); UnwiredNote stripped or flag flipped
+#   PARTIAL=tryInvoke exists but backend returns zeros/empty; UnwiredNote retained intentionally
+#   LOGSTUB_ONLY=logStub() with no backend (NO_BACKEND in survey); UnwiredNote retained
+#   UNWIRED=no backend command in any layer
+#   DEFER_4B=phase 4B (auditor diff stream); destructive SSB v26->v27 bump required
+#   TELEMETRY_ONLY=local UI telemetry by design; logStub is correct, ignore
+# Note: stub.ts logStub() calls (lines 178+) are the fallback-wrapper implementation, NOT a wiring gap.
+
+# COMMANDS / SLASH DISPATCH (PART10 wiring)
+slash-dispatch|src/lib/state/commands.svelte.ts:55-65|WIRED-PART10|core|run_research/submit_task/run_explore_query/continue_task|parseSlashCommand routes 4 commands to existing tryInvoke; /fix /config /status /ask emit error cards
+slash-dispatch-log|src/lib/state/commands.svelte.ts:228|TELEMETRY_ONLY|core|(none)|logStub for telemetry trace; correct as-is
+slash-open-log|src/lib/state/commands.svelte.ts:293|TELEMETRY_ONLY|core|(none)|logStub for telemetry trace; correct as-is
+
+# COMMAND WINDOW ERROR CARDS (Phase 4B — DEFERRED)
+cmd-error-retry|src/lib/windows/CommandWindow.svelte:232|DEFER_4B|4B|(none)|auditor diff stream; SSB v26->v27 bump required
+cmd-error-takeover|src/lib/windows/CommandWindow.svelte:242|DEFER_4B|4B|(none)|auditor diff stream + InterventionAction schema gap
+cmd-error-skip|src/lib/windows/CommandWindow.svelte:252|DEFER_4B|4B|(none)|auditor diff stream
+cmd-disambig|src/lib/windows/CommandWindow.svelte:277|DEFER_4B|4B|(none)|disambiguation payload undefined
+
+# REVIEW WINDOW (Phase 4B — DEFERRED)
+review-banner-4B|src/lib/windows/ReviewWindow.svelte:140|DEFER_4B|4B|/v1/audit_proposals + accept_change/decline_change/retry_audit|phase 4B backend ENTIRELY ABSENT
+review-acceptAll|src/lib/windows/ReviewWindow.svelte:115|DEFER_4B|4B|accept_change|deferred
+review-declineAll|src/lib/windows/ReviewWindow.svelte:119|DEFER_4B|4B|decline_change|deferred
+review-retry|src/lib/windows/ReviewWindow.svelte:125|DEFER_4B|4B|retry_audit|deferred
+
+# RESEARCH DRAWER (PART10 wiring + remaining backend gaps)
+research-source-tiers|src/lib/drawers/ResearchDrawer.svelte:160|PARTIAL|A-45|get_source_quality_tiers|tryInvoke wired; backend returns zeros until research pipeline emits T1..T5
+research-budget|src/lib/drawers/ResearchDrawer.svelte:184|UNWIRED|4D.16|(none)|ResearchBudgetManager not exposed via Tauri command
+research-convergence|src/lib/drawers/ResearchDrawer.svelte:195|PARTIAL|4D|get_research_tree|tryInvoke wired; phi/psi populated only on active /research run
+research-runtime-feed|src/lib/state/drawers.svelte.ts:createResearch|WIRED-PART10|4D|research-progress + research-done events|drawers.svelte.ts listens to both Tauri events with generation-counter race guard
+
+# REINDEX (PART10 race fix)
+reindex-listener-race|src/lib/state/reindex.svelte.ts:bootstrap|WIRED-PART10|D-batch|reindex-progress|reindex.ready() Promise; ProjectSelector awaits before reindex_now()
+project-open-reindex|src/lib/screens/ProjectSelector.svelte:56-67|WIRED-PART10|D-batch|reindex_now|race fixed; await reindex.ready()
+
+# SETTINGS WINDOW (PART11 wiring — 11 surfaces wired, 4 NO_BACKEND, 3 TELEMETRY_ONLY)
+settings-mode|src/lib/windows/SettingsWindow.svelte:127|WIRED-PART11|D.4|set_execution_mode|stub.set_execution_mode(v)
+settings-turboquant|src/lib/windows/SettingsWindow.svelte:142|WIRED-PART11|D.4|set_sidecar_settings|stub.set_sidecar_settings({ turboquant_bits: TQ4=4|TQ8=8|OFF=0 })
+settings-fontScale|src/lib/windows/SettingsWindow.svelte:149|TELEMETRY_ONLY|D.4|(none — local CSS)|font scale is document-level CSS variable, no backend
+settings-panelLayout|src/lib/windows/SettingsWindow.svelte:158|TELEMETRY_ONLY|D.4|(none — local UI)|workspace layout is local state
+settings-vramBudget|src/lib/windows/SettingsWindow.svelte:183|WIRED-PART11|D.4|set_sidecar_settings|stub.set_sidecar_settings({ vram_budget_gb })
+settings-cloudApiKey|src/lib/windows/SettingsWindow.svelte:187|WIRED-PART11|D.4|set_sidecar_settings|stub.set_sidecar_settings({ cloud_api_key })
+settings-cloudSpendCap|src/lib/windows/SettingsWindow.svelte:191|WIRED-PART11|D.4|set_sidecar_settings|stub.set_sidecar_settings({ cloud_spend_cap_usd })
+settings-autoApprove|src/lib/windows/SettingsWindow.svelte:216|LOGSTUB_ONLY|D.4|(none)|NO_BACKEND: requires set_auto_approve_threshold Tauri command
+settings-notifications|src/lib/windows/SettingsWindow.svelte:221|TELEMETRY_ONLY|D.4|(none — browser API)|browser Notification.requestPermission, no backend persistence
+settings-overrideEditor|src/lib/windows/SettingsWindow.svelte:235|WIRED-PART11|D.4|fetch_settings_get|stub.fetch_settings_get() populates editor textarea
+settings-overrideSave|src/lib/windows/SettingsWindow.svelte:239|WIRED-PART11|D.4|fetch_settings_set|stub.fetch_settings_set(toml) with error surface
+settings-dola|src/lib/windows/SettingsWindow.svelte:298|WIRED-PART11|D.4|set_sidecar_settings|stub.set_sidecar_settings({ dola: enabled })
+settings-etc|src/lib/windows/SettingsWindow.svelte:302|WIRED-PART11|D.4|set_sidecar_settings|stub.set_sidecar_settings({ etc: enabled })
+settings-steering|src/lib/windows/SettingsWindow.svelte:306|WIRED-PART11|D.4|set_sidecar_settings|stub.set_sidecar_settings({ steering: enabled })
+settings-recomputeSteering|src/lib/windows/SettingsWindow.svelte:309|WIRED-PART11|D.4|recompute_steering_vector|stub.recompute_steering_vector()
+settings-nightlyAudit|src/lib/windows/SettingsWindow.svelte:336|LOGSTUB_ONLY|D.4|(none)|NO_BACKEND: nightly audit cron command pending
+settings-decayWindow|src/lib/windows/SettingsWindow.svelte:340|LOGSTUB_ONLY|D.4|(none)|NO_BACKEND: TOML key unspecified
+settings-viewAuditResults|src/lib/windows/SettingsWindow.svelte:345|LOGSTUB_ONLY|D.4|(none)|NO_BACKEND: audit results viewer command pending
+settings-banner|src/lib/windows/SettingsWindow.svelte:364|PARTIAL|D.4|(mixed)|UnwiredNote retained for 4 NO_BACKEND surfaces only; 11 wired in PART11
+
+# MONITOR WINDOW (PART11 wiring)
+monitor-takeover|src/lib/windows/MonitorWindow.svelte:117|WIRED-PART11-PARTIAL|3F|submit_intervention_response|maps to 'approve' until InterventionAction.takeover variant added; semantic mismatch documented inline
+monitor-openActivity|src/lib/windows/MonitorWindow.svelte:153|TELEMETRY_ONLY|3F|(local UI nav)|workspace.openTab nav
+
+# EXPLORE WINDOW
+explore-openFile|src/lib/windows/ExploreWindow.svelte:69|LOGSTUB_ONLY|A-45|(none — IDE bridge)|requires tauri-plugin-shell or equivalent
+
+# ANTI-STALENESS DRAWER
+anti-staleness-runAudit|src/lib/drawers/AntiStalenessDrawer.svelte:39|LOGSTUB_ONLY|3D|(none)|run_audit Tauri command not yet exposed
+anti-staleness-deps|src/lib/drawers/AntiStalenessDrawer.svelte:106|PARTIAL|3D|get_dep_audit_results|tryInvoke wired; backend returns []
+anti-staleness-baseline|src/lib/drawers/AntiStalenessDrawer.svelte:149|WIRED-PART11|3D|get_baseline_results|backend returns measured metrics from phase_A1_baseline.toml; unwired flag flipped to false
+
+# PROJECT INTELLIGENCE DRAWER
+project-intelligence-override|src/lib/drawers/ProjectIntelligenceDrawer.svelte:41|LOGSTUB_ONLY|3A|(none)|save_override Tauri command not yet exposed
+project-intelligence-banner|src/lib/drawers/ProjectIntelligenceDrawer.svelte:104|UNWIRED|3A|(none)|set_project_override pending
+
+# PROVIDERS DRAWER
+providers-inferenceMetrics|src/lib/drawers/ProvidersDrawer.svelte:123|PARTIAL|2D|get_inference_metrics|tryInvoke wired; backend returns zeros until sidecar emits InferenceMetrics rows
+providers-modelPool|src/lib/drawers/ProvidersDrawer.svelte:198|UNWIRED|2D|(none)|synthesised in drawer; no real ModelPool query
+providers-colocation|src/lib/drawers/ProvidersDrawer.svelte:255|UNWIRED|2D|(none)|GPU multiplexing event log not emitted
+
+# WEB QUALITY DRAWER
+webquality-buildSlots|src/lib/drawers/WebQualityDrawer.svelte:101|PARTIAL|WEB.2|get_build_slots|tryInvoke wired; producer not actuated
+webquality-devServers|src/lib/drawers/WebQualityDrawer.svelte:147|PARTIAL|WEB.2|get_dev_servers|tryInvoke wired; returns []
+webquality-templates|src/lib/drawers/WebQualityDrawer.svelte:187|UNWIRED|WEB.2|(none)|list_scaffold_templates command absent
+webquality-aragState|src/lib/drawers/WebQualityDrawer.svelte:211|PARTIAL|WEB.3|get_web_arag_state|tryInvoke wired; returns zeros
+webquality-rulesCounts|src/lib/drawers/WebQualityDrawer.svelte:237|UNWIRED|WEB.2|(none)|T1/T2/T3 split command absent
+webquality-sourceTiers|src/lib/drawers/WebQualityDrawer.svelte:268|PARTIAL|WEB.3|get_source_quality_tiers|tryInvoke wired; returns zeros until research runs
+webquality-promote|src/lib/drawers/WebQualityDrawer.svelte:64|LOGSTUB_ONLY|WEB.2|(none)|promote_build command absent
+webquality-demote|src/lib/drawers/WebQualityDrawer.svelte:68|LOGSTUB_ONLY|WEB.2|(none)|demote_build command absent
+webquality-stopServer|src/lib/drawers/WebQualityDrawer.svelte:72|LOGSTUB_ONLY|WEB.2|(none)|stop_server command absent
+webquality-startServer|src/lib/drawers/WebQualityDrawer.svelte:76|LOGSTUB_ONLY|WEB.2|(none)|start_server command absent
+webquality-useTemplate|src/lib/drawers/WebQualityDrawer.svelte:80|LOGSTUB_ONLY|WEB.2|(none)|use_template command absent
+webquality-openDevServer|src/lib/drawers/WebQualityDrawer.svelte:60|LOGSTUB_ONLY|WEB.2|(none)|requires tauri-plugin-shell
+
+# KNOWLEDGE DRAWER
+knowledge-recentTraces|src/lib/drawers/KnowledgeDrawer.svelte:90|PARTIAL|3B|get_query_trace_recent|tryInvoke wired; backend returns []
+knowledge-searchMode|src/lib/drawers/KnowledgeDrawer.svelte:128|PARTIAL|3B|get_search_mode|tryInvoke wired; backend returns hardcoded HYBRID
+knowledge-recallMetrics|src/lib/drawers/KnowledgeDrawer.svelte:180|WIRED-PART11|3B|get_recall_metrics|backend returns measured constants from baseline toml; unwired flag flipped to false
+
+# TOOLS-HOOKS DRAWER (PART11 wiring on toolFilter)
+tools-tieredAnalysis|src/lib/drawers/ToolsHooksDrawer.svelte:100|UNWIRED|3E|(none)|synthetic per-tier counts
+tools-shortcoderRules|src/lib/drawers/ToolsHooksDrawer.svelte:137|UNWIRED|3E|(none)|per-rule hit counts synthetic; aggregate via get_shortcoder_stats works
+tools-taxonomyDist|src/lib/drawers/ToolsHooksDrawer.svelte:189|UNWIRED|3E|(none)|per-category counts synthetic
+tools-toolFilter|src/lib/drawers/ToolsHooksDrawer.svelte:212|WIRED-PART11|3E|get_tool_visibility|toolsHooksData.hiddenTools derived from stub.get_tool_visibility(); unwired flag flipped to false
+
+# RULES DRAWER
+rules-sourceTiers|src/lib/drawers/RulesDrawer.svelte:247|PARTIAL|3C|get_source_quality_tiers|tryInvoke wired; returns zeros
+
+# REASONING DRAWER
+reasoning-grounding|src/lib/drawers/ReasoningDrawer.svelte:84|PARTIAL|3D|get_grounding_sweep|tryInvoke wired; GroundingSweepGate producer pending
+reasoning-csq|src/lib/drawers/ReasoningDrawer.svelte:116|PARTIAL|3D|get_csq_pending|tryInvoke wired; CSQ enforcement not in pre-tool dispatch
+reasoning-feasibility|src/lib/drawers/ReasoningDrawer.svelte:151|PARTIAL|3D|get_feasibility_report|tryInvoke wired; static-shape return
+reasoning-csqAddGuard|src/lib/drawers/ReasoningDrawer.svelte:131|LOGSTUB_ONLY|3D|(none)|add_csq_guard command absent
+reasoning-csqDismiss|src/lib/drawers/ReasoningDrawer.svelte:136|LOGSTUB_ONLY|3D|(none)|csq_dismiss command absent
+reasoning-openMistake|src/lib/drawers/ReasoningDrawer.svelte:175|TELEMETRY_ONLY|3D|(none — UI nav)|opens mistake detail; needs workspace.openTab when nav target defined
+
+# ORCHESTRATION DRAWER
+orchestration-import|src/lib/drawers/OrchestrationDrawer.svelte:5|RESOLVED|n/a|n/a|orphaned logStub import; no calls (resolves WARN #3 from PART10)
+
+# STATE TELEMETRY (TELEMETRY_ONLY by design — local lifecycle traces, no backend)
+fsm-bootstrap|src/lib/state/fsm.svelte.ts:54|TELEMETRY_ONLY|n/a|(local UI)|telemetry-only
+fsm-transition|src/lib/state/fsm.svelte.ts:69|TELEMETRY_ONLY|n/a|(local UI)|telemetry-only
+plan-bootstrap|src/lib/state/plan.svelte.ts:64|TELEMETRY_ONLY|n/a|(local UI)|telemetry-only
+activity-bootstrap|src/lib/state/activity.svelte.ts:30|TELEMETRY_ONLY|n/a|(local UI)|telemetry-only
+session-openSelector|src/lib/state/session.svelte.ts:68|TELEMETRY_ONLY|n/a|(local UI)|telemetry-only
+session-openWorkspace|src/lib/state/session.svelte.ts:77|TELEMETRY_ONLY|n/a|(local UI)|telemetry-only
+session-setMode|src/lib/state/session.svelte.ts:87|TELEMETRY_ONLY|n/a|(local; SettingsWindow handles backend)|telemetry-only; backend wired via SettingsWindow set_execution_mode (PART11)
+session-setGateMode|src/lib/state/session.svelte.ts:93|TELEMETRY_ONLY|n/a|set_gate_mode|telemetry-only; backend already wired via stub.set_gate_mode
+session-setModel|src/lib/state/session.svelte.ts:98|LOGSTUB_ONLY|n/a|(none)|NO_BACKEND: model selection backend pending; set_model_routing is per-agent-role, not global
+workspace-tabs|src/lib/state/workspace.svelte.ts:189-476|TELEMETRY_ONLY|n/a|(local UI)|14 telemetry-only logStub calls; no backend persistence by design
+
+# PART11 SUMMARY
+# - Wired this session (PART11): 14 surfaces (11 SettingsWindow + 1 monitor-takeover + 1 tools-toolFilter + 1 anti-staleness-baseline / 1 knowledge-recallMetrics flag flips)
+# - Wired in PART10: 5 surfaces (slash-dispatch + 2 reindex + research-runtime-feed)
+# - Total wired: 19 surfaces
+# - PARTIAL (tryInvoke wired, backend returns zeros/empty/static): 14 surfaces
+# - LOGSTUB_ONLY (NO_BACKEND): 17 surfaces (no backend handler exists)
+# - DEFER_4B: 8 surfaces (destructive SSB v26->v27 bump required)
+# - TELEMETRY_ONLY (correct as-is): ~22 surfaces
+# - UNWIRED (no backend, no logStub): 7 surfaces (all backend producers missing)

@@ -1,0 +1,296 @@
+# gate-manifest.txt - the frozen wiring-gate fileset (rule R8).
+# These files are authored ONCE, out-of-band, and are read-only to any plan run
+# being evaluated by them. A run that modifies any file below is BLOCKED by
+# gate_freeze_check.py. After a deliberate, human-reviewed gate change, re-record
+# the baseline with: python .claude/tools/gate_freeze_check.py --lock
+# Paths are relative to the workflow root (the dir containing .claude/).
+.claude/rules/wiring-enforcement.md	wiring-enforcement R1-R10 contract integrity	static	hash	REPLACE
+.claude/tools/wiring_contract_check.py	wiring-enforcement R1-R10 contract integrity	static	hash	REPLACE
+.claude/tools/gate_freeze_check.py	R8 freeze checker integrity (self-protecting evaluator)	static	hash	REPLACE
+.claude/agents/wiring-contract-validator.md	R8 frozen-gate integrity for .claude/agents/wiring-contract-validator.md	static	hash	REPLACE
+.claude/rules/tracing-test-assert.md	traced-test assert gate integrity	test	coverage	AUGMENT
+.claude/tools/traced_test_assert_check.py	traced-test assert gate integrity	test	coverage	AUGMENT
+# Maintainability gate (thermo-nuclear catalog + deterministic subset). Frozen so an
+# executing plan run cannot weaken the 1000-line file boundary, drop a banned escape
+# hatch from the MR-2 set, or delete the qualitative catalog the auditor judges against.
+# Re-run gate_freeze_check.py --lock OUT-OF-BAND after adding these (R8).
+.claude/rules/maintainability-review.md	maintainability MR catalog + deterministic subset integrity	static	hash	REPLACE
+.claude/tools/maintainability_check.py	maintainability MR catalog + deterministic subset integrity	static	hash	REPLACE
+# CONDUCTOR-QUALITY-GAP-2026-06-29 (P1a): the per-task slop-semantic checker -- the
+# tautological/source-grep-test (TT-*) + trust-model-violation (TV-*: PRAGMA
+# ignore_check_constraints / foreign_keys=OFF / python side-writing the Rust-owned SSB
+# db) detector the slop_cleaner gate stage runs. These are the two slop classes the
+# merge-lane GLM review kept catching that the static per-task gate was blind to;
+# frozen so a worker run cannot weaken the TT/TV BLOCK verdict. Re-run
+# gate_freeze_check.py --lock OUT-OF-BAND after a deliberate, reviewed change (R8).
+.claude/tools/slop_semantic_check.py	deterministic checker enforcement for .claude/tools/slop_semantic_check.py	test	coverage	AUGMENT
+.elai_cc/smoke-manifest.toml	config/evaluator freeze for .elai_cc/smoke-manifest.toml	static	hash	REPLACE
+.elai_cc/wire-dark-allowlist.toml	config/evaluator freeze for .elai_cc/wire-dark-allowlist.toml	static	hash	REPLACE
+# D-FZ: the wiring config (BFS-root entrypoint set + Layer-3 coverage thresholds)
+# is gate-owned and content-frozen alongside the manifest + allowlist (R8).
+.elai_cc/elai_cc.toml	config/evaluator freeze for .elai_cc/elai_cc.toml	static	hash	REPLACE
+# D-FZ: the locked-keys registry IS the freeze list; freeze it against itself so a
+# run cannot quietly drop a lock row (self-protecting, mirrors self_mod_safety lock-list).
+.elai_cc/scripts/locked_keys_registry.toml	config/evaluator freeze for .elai_cc/scripts/locked_keys_registry.toml	static	hash	REPLACE
+# H-17 (SCHEMA_VERSION 223) TD-2: the trial ledger source is the single
+# choke-point for N; a run that edits its own ledger code would gate-bypass TD-1.
+# gate_freeze_check.py --lock must be re-run OUT-OF-BAND after this entry is added
+# (R8 -- the executing plan run cannot re-lock its own gate).
+.elai_cc/crates/orchestrator/src/trial_ledger.rs	TD-2 freeze of evaluator/source choke-point .elai_cc/crates/orchestrator/src/trial_ledger.rs	static	hash	REPLACE
+# H-18 (SCHEMA_VERSION 224) TD-2: the deflation gate + locked thresholds + Tier-2
+# sidecar are the frozen evaluator. A run that edits its own gate code or threshold
+# constants would bypass the DSR/PBO fail-closed invariant.
+# gate_freeze_check.py --lock must be re-run OUT-OF-BAND after adding these entries
+# (R8 -- the executing plan run cannot re-lock its own gate).
+.elai_cc/crates/orchestrator/src/deflation_gate.rs	TD-2 freeze of evaluator/source choke-point .elai_cc/crates/orchestrator/src/deflation_gate.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/finance/deflation_promotion.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/finance/deflation_promotion.toml	static	hash	REPLACE
+.elai_cc/python/elai_inference/deflation_sidecar.py	config/evaluator freeze for .elai_cc/python/elai_inference/deflation_sidecar.py	static	hash	REPLACE
+# H-20 (SCHEMA_VERSION 225) TD-2: the leakage COMPOSITE gate + its mutable=0 seed
+# + the registered suppression registry are the frozen evaluator. A run that edits
+# its own gate code, the locked seed, or quietly adds a suppression row would
+# bypass the fail-closed leakage invariant (absent row => Block stands).
+# gate_freeze_check.py --lock must be re-run OUT-OF-BAND after adding these entries
+# (R8 -- the executing plan run cannot re-lock its own gate).
+.elai_cc/crates/orchestrator/src/leakage_gate.rs	TD-2 freeze of evaluator/source choke-point .elai_cc/crates/orchestrator/src/leakage_gate.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/finance/leakage.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/finance/leakage.toml	static	hash	REPLACE
+.elai_cc/leakage-suppression-allowlist.toml	config/evaluator freeze for .elai_cc/leakage-suppression-allowlist.toml	static	hash	REPLACE
+# H-21 (SCHEMA_VERSION 226) TD-2/TD-5: the runtime look-ahead differential gate is
+# the frozen evaluator + holds the locked FP tolerance constants. A run that edits
+# its own gate code or loosens the tolerance would bypass the perturb-and-diff
+# causality invariant. Pure-Rust Tier-1; the Tier-2 Python feature-runner is
+# deferred (cross-lang-skip). Re-run gate_freeze_check.py --lock OUT-OF-BAND (R8).
+.elai_cc/crates/orchestrator/src/lookahead_differential.rs	R8 frozen-gate integrity for .elai_cc/crates/orchestrator/src/lookahead_differential.rs	static	hash	REPLACE
+# H-22 (SCHEMA_VERSION 227) TD-2: the trading null-test gate + its mutable=0 seed
+# + the frozen Tier-2 permutation sidecar are the frozen evaluator. A run that
+# edits its own gate code, loosens the LOCKED alpha / K-floor, or quietly rewrites
+# the permutation sidecar would bypass the fail-closed permutation-null invariant
+# (an overfit edge that survives the null must Block). Pure-Rust Tier-1; the
+# Tier-2 Python permutation sidecar is frozen + deferred (cross-lang-skip on the
+# Rust gate). Re-run gate_freeze_check.py --lock OUT-OF-BAND (R8 -- the executing
+# run cannot re-lock its own gate).
+.elai_cc/crates/orchestrator/src/trading_null_gate.rs	TD-2 freeze of evaluator/source choke-point .elai_cc/crates/orchestrator/src/trading_null_gate.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/finance/trading_nulls.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/finance/trading_nulls.toml	static	hash	REPLACE
+.elai_cc/python/elai_inference/permutation_null_sidecar.py	config/evaluator freeze for .elai_cc/python/elai_inference/permutation_null_sidecar.py	static	hash	REPLACE
+# H-23 (SCHEMA_VERSION 228) TD-2/TD-5: the same-seed rerun hash-equality gate +
+# its two mutable=0 reproducibility seed sub-gates (AST seed-coverage + the
+# SchemaRequired env-pin that structurally enforces seed-declaration). A run that
+# edits its own gate, weakens the non-empty-payload anti-sandbagging guard, or
+# loosens the env-pin would bypass the fail-closed reproducibility invariant.
+# Pure-Rust (no sidecar). Re-run gate_freeze_check.py --lock OUT-OF-BAND (R8).
+.elai_cc/crates/orchestrator/src/rerun_equality.rs	R8 frozen-gate integrity for .elai_cc/crates/orchestrator/src/rerun_equality.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/repro/seed_coverage.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/repro/seed_coverage.toml	static	hash	REPLACE
+.elai_cc/crates/rules/seed/repro/env_pin_manifest.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/repro/env_pin_manifest.toml	static	hash	REPLACE
+# H-24 (SCHEMA_VERSION 229) TD-2/TD-5: the sim-to-real parity gate. Part C
+# (verify_replay_golden, blake3-exact replay==golden) is the load-bearing sound
+# leg; Part A seeds two mutable=0 rules (the scoped mode-divergent-branch AST ban
+# FIN-SIMREAL-001 + the single-entrypoint SchemaRequired FIN-SIMREAL-002). A run
+# that edits its own gate or unlocks/loosens these rules would bypass the
+# structural-parity invariant. Numeric reconciliation (Part B) is deferred Tier-2.
+# Re-run gate_freeze_check.py --lock OUT-OF-BAND (R8).
+.elai_cc/crates/orchestrator/src/sim_real_parity.rs	R8 frozen-gate integrity for .elai_cc/crates/orchestrator/src/sim_real_parity.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/repro/sim_real_parity.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/repro/sim_real_parity.toml	static	hash	REPLACE
+# H-25 (SCHEMA_VERSION 230) TD-2/TD-5: the result manifest re-derivation gate.
+# verify_result (result_manifest.rs, blake3 re-parse + re-hash of an
+# orchestrator-captured output) is the load-bearing sound leg; Part A seeds two
+# mutable=0 rules (the SchemaRequired manifest-shape FIN-RESMANIFEST-001 + the
+# monkeypatch-ban AstPattern FIN-RESMANIFEST-002, SCOPED to the result-emitting
+# surface). A run that edits its own gate, weakens the anti-sandbagging non-trivial
+# guard, loosens the restricted parser grammar (a string-eval would let a malicious
+# parser "re-derive" any value), or unlocks these rules would bypass the
+# anti-fabrication invariant. Generalises the F-4 stdout_hash leg. Numeric
+# completeness-of-enumeration is deferred Tier-2. Re-run gate_freeze_check.py --lock
+# OUT-OF-BAND (R8).
+.elai_cc/crates/orchestrator/src/result_manifest.rs	R8 frozen-gate integrity for .elai_cc/crates/orchestrator/src/result_manifest.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/repro/result_manifest.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/repro/result_manifest.toml	static	hash	REPLACE
+# H-26 (SCHEMA_VERSION 232) TD-2/TD-5: the shadow-exec + financial-invariant
+# metamorphic-relation gate. diff_shadow_impls (shadow_exec.rs) is the load-bearing
+# sound leg: it diffs two fixture-supplied result sets within a LOCKED FpTolerance
+# band AND checks the financial invariants -- accounting IDENTITIES EXACT in INTEGER
+# CENTS (share conservation, cash+position*price==equity, PnL additivity; the LOCKED
+# regime constant MIN_DECLARED_TRADES + the EXACT-vs-tolerance regime split are the
+# gate) and option-pricing / numeric MRs (PutCallParity European-only,
+# NumericStability) within the band. The seeded mutable=0 row (the naked-float-==
+# AstPattern FIN-INVARIANT-001, SCOPED to the order/signal/pnl/price execution
+# surface) is the static necessary-not-sufficient leg. A run that edits its own gate,
+# widens the FpTolerance band, weakens the degenerate-run guard, float-==s an
+# accounting identity, or unlocks the rule would bypass the value-correctness
+# invariant. Tier-2 (the two-impl python re-execution runner) is RunPod-pending; the
+# WRONG-INVARIANT caveats (PnLAdditivity independent-positions-only; ScaleInvariance
+# sub-impact/near-k=1; PutCallParity European-only) bound the gate. Re-run
+# gate_freeze_check.py --lock OUT-OF-BAND (R8).
+.elai_cc/crates/orchestrator/src/shadow_exec.rs	R8 frozen-gate integrity for .elai_cc/crates/orchestrator/src/shadow_exec.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/finance/financial_invariants.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/finance/financial_invariants.toml	static	hash	REPLACE
+# H-27 (SCHEMA_VERSION 235) TD-4: the gate self-validation / verify-the-verifiers
+# META gate. validate_gates (gate_self_validation.rs) drives all 8 shipped Track-3
+# gate evaluate fns with each gate's own known-violating fixture as a planted mutant
+# and requires a 100% kill rate (every gate BLOCKs its violation); fail-closed on an
+# empty registry (R1), a surviving mutant, an over-blocked clean fixture, or an
+# unreachable gate. It is the irreducible top of the verifier stack (validates the 8
+# OTHERS, never itself -- TD-4 residue routed to this frozen file + R8 human review).
+# A run that edits its own driver to drop a gate from the registry, weaken the
+# 100%-kill requirement, or stub a planted mutant would hollow the meta-gate. Pure
+# Rust, no seed. Re-run gate_freeze_check.py --lock OUT-OF-BAND (R8).
+.elai_cc/crates/orchestrator/src/gate_self_validation.rs	TD-2 freeze of evaluator/source choke-point .elai_cc/crates/orchestrator/src/gate_self_validation.rs	static	hash	REPLACE
+# H-28 (SCHEMA_VERSION 236) TD-2/R8: the current-RF reward-tampering gate (Everitt
+# arXiv:1908.04734 -- a self-mod optimizer that can edit its own evaluator or game the
+# inputs it reads routes itself to PASS). check_reward_tampering (reward_tampering.rs)
+# detects two reward-tampering subtypes: an eval-harness blake3 MISMATCH (the agent edited
+# its own evaluator -> EvaluatorModified HARD-BLOCK, leg 3a) and an implausible score jump
+# with the hash INTACT (RF-input tampering -> ImplausibleRewardDelta FLAG, leg 3b). This
+# gate guards self-mod but is itself self-modifiable code, so it goes in the frozen LOCKED
+# set: a run that edits its own driver to weaken the hash compare, loosen the plausibility
+# band, or flip the TD-3 ordering would hollow the gate. The frozen reward/promotion fn the
+# 3b leg watches (promotion_gate.rs::two_gate_promote) is the controller's separate
+# out-of-band gate-manifest add (the executor only HASHES it, it does not edit it) -- ADD
+# .elai_cc/crates/orchestrator/src/promotion_gate.rs here OUT-OF-BAND alongside this entry.
+# WHO-FREEZES-THE-FREEZER: the FIRST freeze of the reward baseline + the
+# gate_freeze_check.py --lock re-baseline is the irreducible top, routed to R8/HUMAN (the
+# executing run cannot lock its own gate; the agent cannot freeze its own reward). Pure
+# Rust, no seed. Re-run gate_freeze_check.py --lock OUT-OF-BAND (R8).
+.elai_cc/crates/orchestrator/src/reward_tampering.rs	R8 frozen-gate integrity for .elai_cc/crates/orchestrator/src/reward_tampering.rs	static	hash	REPLACE
+.elai_cc/crates/orchestrator/src/promotion_gate.rs	TD-2 freeze of evaluator/source choke-point .elai_cc/crates/orchestrator/src/promotion_gate.rs	static	hash	REPLACE
+# H-19 (SCHEMA_VERSION 237) TD-2/R8: the reusable-holdout query budget (the Thresholdout DP
+# gate; Dwork, Feldman, Hardt, Pitassi, Reingold, Roth, NIPS 2015 arXiv:1506.02629, Theorem
+# 25). HoldoutBudgetLedger::query_holdout (holdout_budget.rs) maintains an append-only budget
+# counter (queries_spent = COUNT of QuerySpent rows; NO agent-facing reset/delete/update/
+# provision method) and the EXACT Thresholdout DP query with LOCKED constants: sigma =
+# tau/(96*ln(4*m/beta)) (96 is the union-bound PROOF constant, NOT tunable), T = 3*tau/4,
+# noise scales 2*sigma/4*sigma/sigma. A run that edits its own gate to enlarge the budget,
+# weaken the noise scale, lower the threshold, change the 96 union-bound constant, or add a
+# budget-reset path would hollow the gate. The seed toml (holdout_budget.toml) mirrors the
+# LOCKED values for the vibesec seed-integrity baseline. WHO-FREEZES-THE-FREEZER: provisioning
+# a FRESH holdout is the human/frozen OUT-OF-BAND path (the agent cannot refresh its own
+# holdout; the data_window disjointness assertion guards the covert reset attack). Pure Rust,
+# seeded Laplace noise (GD-2), NO new dependency. Re-run gate_freeze_check.py --lock
+# OUT-OF-BAND (R8 -- the executing run cannot lock its own gate).
+.elai_cc/crates/orchestrator/src/holdout_budget.rs	R8 frozen-gate integrity for .elai_cc/crates/orchestrator/src/holdout_budget.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/finance/holdout_budget.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/finance/holdout_budget.toml	static	hash	REPLACE
+# H-29 (SCHEMA_VERSION 238) TD-2/TD-5: the LOCKED drift state machine / master
+# interlock (LAST Wave-3 gate). evaluate_drift_interlock (drift_interlock.rs)
+# latches to HALTED on ANY of four closed-form drift axes (PSI in/out over the
+# 0.10/0.25 LOCKED bands, blake3 schema-fingerprint mismatch, rolling-14d live-vs-
+# backtest deviation, 90d validation TTL) OR any composed upstream gate breach OR
+# missing evidence (DEFAULT-HALTED fail-safe). The HALTED state is journal-derived
+# (COUNT('halt') > COUNT('unlock') on the append-only drift_interlock_latch table)
+# so it SURVIVES restart; there is NO agent-callable unlock (the human unlock is a
+# free fn requiring re-validation evidence strictly NEWER than the halt -- a stale
+# replay is rejected). A run that edits its own gate, widens the PSI bands, weakens
+# the default-HALTED or restart-persistence, or adds an agent unlock would defeat
+# the master interlock. Pure Rust, ClockProvider, no new dep. Re-run
+# gate_freeze_check.py --lock OUT-OF-BAND (R8).
+.elai_cc/crates/orchestrator/src/drift_interlock.rs	R8 frozen-gate integrity for .elai_cc/crates/orchestrator/src/drift_interlock.rs	static	hash	REPLACE
+.elai_cc/crates/rules/seed/finance/drift_interlock.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/finance/drift_interlock.toml	static	hash	REPLACE
+# I-35: temporal tool-sequence enforcement TOML rule set (R8-frozen seed rules).
+# The 3 Tier-1 rules (R1/R2/R3) are embedded via include_str! in tool_sequence.rs.
+# A run that edits this TOML rewrites its own evaluator (R8 violation). Re-run
+# gate_freeze_check.py --lock OUT-OF-BAND after any deliberate, reviewed rule change.
+.elai_cc/crates/rules/seed/tool_sequence_core.toml	config/evaluator freeze for .elai_cc/crates/rules/seed/tool_sequence_core.toml	static	hash	REPLACE
+# D-030 (checkpoint-2 resume): the production-caller gate -- the off-agent,
+# changeset-grain runnable leg of wiring-enforcement R6/R7 (new pub fn with no
+# production caller = wire-dark-machinery = BLOCK). The checker AND its doctrine
+# rule are frozen so an executing run cannot weaken the DARK=BLOCK verdict, add a
+# silent allowlist flag, or delete the PRODUCTION_HOOK dispatch contract. The
+# executor self-runs the checker (necessary-not-sufficient); the auditor re-runs
+# it off-agent (authoritative). Re-run gate_freeze_check.py --lock OUT-OF-BAND
+# after any deliberate, reviewed change (R8 -- the executing run cannot re-lock
+# its own gate).
+.claude/tools/production_caller_check.py	production-caller / wire-dark enforcement	test	coverage	AUGMENT
+.claude/rules/production-caller-gate.md	doctrine freeze for .claude/rules/production-caller-gate.md	static	hash	AUGMENT
+# Liberty 2026-06-16: the PYTHON sibling of the production-caller gate (AST,
+# module-level public defs, same verdicts/exit/WIRE-DARK escape). Frozen for the
+# same reason as its Rust sibling -- an executing run on a Python project must not
+# be able to weaken the DARK=BLOCK verdict or delete the checker. Re-run
+# gate_freeze_check.py --lock OUT-OF-BAND after any deliberate, reviewed change (R8).
+.claude/tools/python_wire_check.py	production-caller / wire-dark enforcement	test	coverage	AUGMENT
+# FRONTEND-WIRING 2026-06-29: the three frontend wire-dark gates closing the gap
+# wiring-enforcement.md called out (frontend was static-only; the runtime/driven-UI
+# leg was deferred/wire-dark). Frozen so a self-modifying run on the dashboard cannot
+# weaken the dead-IPC BLOCK, the orphan-component BLOCK, or the SSB-row runtime proof.
+#  - tauri_ipc_symmetry_check.py  : Layer 2  invoke() <-> generate_handler! symmetry
+#    (invoked-not-registered = dead IPC = BLOCK; wrapper-agnostic literal suppression).
+#  - svelte_mount_reachability.py : Layer 2b component-mount reachability from the app
+#    root over the module graph (ORPHAN = BLOCK); resolves barrels/named/$lib imports.
+#  - visual/ui-wire-smoke.mjs     : Layer 4  bun+CDP+bun:sqlite driven-browser smoke --
+#    real click asserts a NEW off-agent SSB row (db/Chrome/dev-server missing = exit 2).
+# Re-run gate_freeze_check.py --lock OUT-OF-BAND after adding these entries (R8 -- the
+# executing run cannot re-lock its own gate).
+.claude/tools/tauri_ipc_symmetry_check.py	deterministic checker enforcement for .claude/tools/tauri_ipc_symmetry_check.py	test	coverage	AUGMENT
+.claude/tools/svelte_mount_reachability.py	R8 frozen-gate integrity for .claude/tools/svelte_mount_reachability.py	static	hash	REPLACE
+.claude/tools/visual/ui-wire-smoke.mjs	R8 frozen-gate integrity for .claude/tools/visual/ui-wire-smoke.mjs	static	hash	REPLACE
+# I-24 (SCHEMA_VERSION 266): isomorphic canary anti-gaming fixture set (R8).
+# The frozen canary pair set is authored once and NEVER regenerated by the model
+# under test at runtime (R8 / stub_ban: "NO model-authored canaries"). A run that
+# modifies this file attempts to author its own canaries, bypassing the bias gate.
+# gate_freeze_check.py --lock must be re-run OUT-OF-BAND after any deliberate,
+# human-reviewed change to the pair set (R8 -- the executing run cannot re-lock).
+.elai_cc/fixtures/canary_pairs.json	R8 frozen-gate integrity for .elai_cc/fixtures/canary_pairs.json	static	hash	REPLACE
+# CONDUCTOR-IMPROVEMENTS-2026-06-28: the conductor's trust-hardening gate stages.
+# These are the OFF-AGENT, frozen evaluators the conductor runs against worker
+# output -- a conductor self-modifying run must not be able to weaken a surface
+# contract (P0.1), downgrade the CLI-SSB runtime backstop's db-not-found/zero-rows
+# FAIL (P0.2), or delete the blocking slop-cleaner + lazy-token scan (P1.1). The
+# slop/surface/backstop stages all live in or are called from gate_runner.py.
+# conductor/ is gitignored, so the freeze is by CONTENT HASH (gate_freeze_check is
+# git-independent). Re-run gate_freeze_check.py --lock OUT-OF-BAND after adding
+# these entries (R8 -- the executing run cannot re-lock its own gate).
+conductor/surface_contract.py	R8 frozen-gate integrity for conductor/surface_contract.py	static	hash	REPLACE
+conductor/cli_runtime_backstop.py	R8 frozen-gate integrity for conductor/cli_runtime_backstop.py	static	hash	REPLACE
+conductor/gate_runner.py	R8 frozen-gate integrity for conductor/gate_runner.py	static	hash	REPLACE
+conductor/wire_dark_audit.py	R8 frozen-gate integrity for conductor/wire_dark_audit.py	static	hash	REPLACE
+# MERGE LANE gate (CONDUCTOR-MERGE-LANE-DESIGN-2026-06-28 section 5f + 9): the merge
+# owner is a FREE GLM WITH PUSH ACCESS to real main, so its deterministic evaluator
+# MUST be immutable to it -- a free model that could edit its own GOODHART-DEP / LITTER
+# / DEP-SLOPSQUAT classifiers or the lane's DECIDE/COMMIT_PUSH logic would write itself
+# to PASS (the exact in-boundary failure freeze-the-gate exists to prevent). The lane
+# ALSO runs gate_freeze_check at start, so a tampered gate aborts the lane before any
+# push. Re-run gate_freeze_check.py --lock OUT-OF-BAND after adding these (R8).
+conductor/merge_classifiers.py	R8 frozen-gate integrity for conductor/merge_classifiers.py	static	hash	REPLACE
+conductor/merge_lane.py	R8 frozen-gate integrity for conductor/merge_lane.py	static	hash	REPLACE
+# TASTE gate (2026-07-02, design-taste TASTE RUBRIC + its deterministic subset).
+# The FLOOR-tier anti-slop rubric + the off-agent checker, frozen so a design run
+# cannot weaken the banned-hue BLOCK (B-06 no blue/purple), drop the
+# glassmorphism/glow/gradient/equal-thirds tells, or delete the FLOOR/BRAND rubric
+# the auditor + the visual-ui-loop vision pass judge against. taste_check.py is the
+# Layer-2 static leg (necessary-not-sufficient); the vision pass + the human
+# aesthetic go are the backstop. The BRAND-tier signature slot is a human decision
+# the checker deliberately does not make. Re-run gate_freeze_check.py --lock
+# OUT-OF-BAND after adding these entries (R8 -- the executing run cannot re-lock).
+.claude/rulebook/design-taste.md	R8 frozen-gate integrity for .claude/rulebook/design-taste.md	static	hash	REPLACE
+.claude/rules/visual-ui-loop.md	doctrine freeze for .claude/rules/visual-ui-loop.md	static	hash	AUGMENT
+.claude/tools/taste_check.py	deterministic checker enforcement for .claude/tools/taste_check.py	test	coverage	AUGMENT
+# PLAN GATE (2026-07-06, planning-skill consolidation): the wargame plan standard +
+# its deterministic lexical leg. Every orchestrator pre-flights plans through
+# plan_gate_check.py (refine-before-execute); the plan-auditor renders the 10-point
+# verdict against plan-standard.md. Frozen so a plan run cannot weaken the bar it is
+# judged by (drop the ON_FAIL pairing, delete the REDTEAM requirement, downgrade
+# missing markers to WARN). The dispatch-core machinery file is frozen alongside:
+# a run that could edit D-6 (execution/evaluation separation) or D-8 (pre-flight)
+# would write itself an exemption. Layer-2 lexical, necessary-not-sufficient; the
+# auditor's qualitative verdict is the authority. Re-run gate_freeze_check.py --lock
+# OUT-OF-BAND after any deliberate, reviewed change (R8).
+.claude/rules/plan-standard.md	doctrine freeze for .claude/rules/plan-standard.md	static	hash	AUGMENT
+.claude/tools/plan_gate_check.py	deterministic checker enforcement for .claude/tools/plan_gate_check.py	test	coverage	AUGMENT
+.claude/tools/power_of_ten_check.py	J-65 power-of-ten static safety rules	static	hash	AUGMENT
+.claude/rules/dispatch-core.md	doctrine freeze for .claude/rules/dispatch-core.md	static	hash	AUGMENT
+# J-94 THIN-3 (immune-tier membership in FROZEN manifest, R8 / C5-SELFMOD):
+# The membership LIST of mutable=0 immune-tier seeds lives in the frozen
+# .claude/immune-tier-membership.txt (not only in L1 seed/DB data). Security
+# seeds that were freeze-dark are freeze-listed here so relocating membership
+# into mutable L1 alone cannot silently drop R8 coverage. Re-run
+# gate_freeze_check.py --lock OUT-OF-BAND after this entry is added (R8 -- the
+# executing plan run cannot re-lock its own gate).
+.claude/immune-tier-membership.txt	immune-tier membership (mutable=0) list R8	static	hash	REPLACE
+.elai_cc/crates/rules/seed/security/eval_injection.toml	immune-tier mutable=0 security seed freeze	static	hash	REPLACE
+.elai_cc/crates/rules/seed/security/hardcoded_creds.toml	immune-tier mutable=0 security seed freeze	static	hash	REPLACE
+.elai_cc/crates/rules/seed/security/hardcoded_key.toml	immune-tier mutable=0 security seed freeze	static	hash	REPLACE
+.elai_cc/crates/rules/seed/security/missing_authz.toml	immune-tier mutable=0 security seed freeze	static	hash	REPLACE
+.elai_cc/crates/rules/seed/security/secrets_in_logs.toml	immune-tier mutable=0 security seed freeze	static	hash	REPLACE
+.elai_cc/crates/rules/seed/security/sqli.toml	immune-tier mutable=0 security seed freeze	static	hash	REPLACE
+.elai_cc/crates/rules/seed/security/weak_crypto.toml	immune-tier mutable=0 security seed freeze	static	hash	REPLACE
+.elai_cc/crates/rules/seed/security/xss.toml	immune-tier mutable=0 security seed freeze	static	hash	REPLACE
+# L-11 SOLID proxy gate (SEAM 4). The auditor owns the SOLID verdict (OQ-1), so the
+# checker is frozen: a plan run being judged by it cannot weaken the god-object rule,
+# widen a threshold, or remove the scan-config guards that make a zero-row scan exit 2
+# instead of reporting PASS. Thresholds are provisional by design and get replaced by
+# ELAI-measured numbers (ID-5) out-of-band, with a human review and a --lock re-record.
+.elai_cc/tools/solid_proxy_check.py	L-11 SEAM 4: SOLID proxy verdict integrity (SRP god-object BLOCK, DIP/ISP WARN) + the map-base non-vacuity guards	static	hash	REPLACE
