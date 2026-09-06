@@ -64,8 +64,10 @@ kept locally; omission is not evidence that they were erased.
 
 The feature catalog generator in `scripts/archive/` reads the exhaustive feature
 list and original plan headings. Its output preserves source IDs and links so a
-reader can inspect the larger feature bundle behind each phrase. Consult the
-catalog for its exact coverage and regeneration command.
+reader can inspect the larger feature bundle behind each phrase. It updates
+`docs/FEATURE-CATALOG.md` and the managed catalog in `RESEARCH-OVERVIEW.md`;
+the short root README is maintained separately. Consult the catalog for its
+exact coverage and regeneration command.
 
 ## Publication boundary
 

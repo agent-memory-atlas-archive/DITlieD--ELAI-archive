@@ -5,6 +5,8 @@ The exhaustive feature list is the primary inventory.  Original PHASE and B-Q
 plan files are used to repair source coverage and preserve document links.  The
 script deliberately reads headings and first non-empty source lines only; it
 does not infer implementation state from plan bodies.
+Output goes to the canonical catalog and RESEARCH-OVERVIEW.md; the short root
+README is maintained separately.
 
 Stdlib-only usage from the repository root::
 
@@ -28,7 +30,7 @@ FAMILIES = ("PHASE",) + tuple("BCDEFGHIJKLMNOPQ")
 LETTER_FAMILIES = tuple("BCDEFGHIJKLMNOPQ")
 EXHAUSTIVE_RELATIVE = Path("docs/thefinalglance/ELAI-EXHAUSTIVE-SUPER-FEATURE-LIST.md")
 CATALOG_RELATIVE = Path("docs/FEATURE-CATALOG.md")
-README_RELATIVE = Path("README.md")
+README_RELATIVE = Path("RESEARCH-OVERVIEW.md")
 README_START = "<!-- FEATURE-CATALOG:START -->"
 README_END = "<!-- FEATURE-CATALOG:END -->"
 
@@ -951,7 +953,7 @@ def render_catalog(data: CatalogData) -> str:
 
 
 def render_readme_contents(data: CatalogData) -> str:
-    virtual_from = Path("README.md")
+    virtual_from = README_RELATIVE
     lines = [
         "## Historical feature catalog",
         "",
@@ -988,11 +990,11 @@ def replace_readme_block(readme: str, block: str) -> str:
     start_positions = [match.start() for match in re.finditer(re.escape(README_START), readme)]
     end_positions = [match.start() for match in re.finditer(re.escape(README_END), readme)]
     if len(start_positions) != 1 or len(end_positions) != 1:
-        raise RuntimeError("README must contain exactly one FEATURE-CATALOG start marker and one end marker")
+        raise RuntimeError("Overview must contain exactly one FEATURE-CATALOG start marker and one end marker")
     start = start_positions[0]
     end = end_positions[0]
     if end < start:
-        raise RuntimeError("README feature catalog markers are out of order")
+        raise RuntimeError("Overview feature catalog markers are out of order")
     block_end = end + len(README_END)
     return readme[:start] + block.rstrip("\n") + readme[block_end:]
 
@@ -1019,17 +1021,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=script_root)
     parser.add_argument("--catalog", type=Path, default=None)
-    parser.add_argument("--readme", type=Path, default=None, help="README containing the managed marker block")
+    parser.add_argument("--readme", type=Path, default=None, help="document containing the managed marker block (default: RESEARCH-OVERVIEW.md)")
     parser.add_argument(
         "--readme-snippet",
         type=Path,
         default=None,
-        help="optional path for a standalone copy of the generated README marker block",
+        help="optional path for a standalone copy of the generated overview marker block",
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="verify the catalog and managed README block without writing; an optional snippet is checked only when supplied",
+        help="verify the catalog and managed overview block without writing; an optional snippet is checked only when supplied",
     )
     return parser.parse_args(argv)
 
@@ -1047,7 +1049,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ensure_no_private_paths(catalog)
     ensure_no_private_paths(readme_block)
     if not readme_path.is_file():
-        raise RuntimeError(f"README not found: {readme_path}")
+        raise RuntimeError(f"Overview not found: {readme_path}")
     readme_existing = readme_path.read_text(encoding="utf-8", errors="replace")
     readme_expected = replace_readme_block(readme_existing, readme_block)
     write_or_check(catalog_path, catalog, args.check)
@@ -1063,7 +1065,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"{len(data.excluded_headings)} excluded supporting headings"
     )
     print(f"catalog: {repo_relative(catalog_path, repo_root) if catalog_path.is_relative_to(repo_root) else 'external output'}")
-    print(f"README: {repo_relative(readme_path, repo_root) if readme_path.is_relative_to(repo_root) else 'external output'}")
+    print(f"Overview: {repo_relative(readme_path, repo_root) if readme_path.is_relative_to(repo_root) else 'external output'}")
     if args.readme_snippet is not None:
         print(f"readme snippet: {repo_relative(snippet_path, repo_root) if snippet_path.is_relative_to(repo_root) else 'temporary output'}")
     return 0

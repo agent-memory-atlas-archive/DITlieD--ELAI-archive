@@ -2,6 +2,10 @@
 
 !/.gitignore
 !/README.md
+!/RESEARCH-OVERVIEW.md
+!/POSTMORTEM.md
+!/SALVAGE-MAP.md
+!/BENCHMARKS.md
 !/.elai_cc/
 !/.elai_cc/**
 
@@ -34,6 +38,8 @@
 !/docs/**/*.md
 !/docs/**/*.txt
 !/docs/**/*.toml
+!/docs/assets/social-preview.svg
+!/docs/assets/social-preview.png
 !/workflow/
 !/workflow/reasoning/
 !/workflow/reasoning/**/

@@ -7,11 +7,14 @@ or delivers its planned features.
 
 ## Contents
 
-The prepared snapshot contains 6,459 selected files plus
-`ARCHIVE-MANIFEST.sha256`, approximately 128 MiB in total. It includes experimental
+The initial history edition contained 6,459 selected files plus
+`ARCHIVE-MANIFEST.sha256`, approximately 128 MiB in total. It included experimental
 source and 2,727 Markdown/text documents across the original planning, research,
 historical agent instructions and memory-note directories. Downloaded repositories,
-private conversations and runtime artifacts are outside that selection.
+private conversations and runtime artifacts remain outside the selection.
+Later sharing preparation adds the short README, preserved detailed overview,
+postmortem, salvage map, benchmark guide and architecture-preview assets.
+The current manifest lists the exact current file set, excluding itself.
 
 The [feature catalog](docs/FEATURE-CATALOG.md) contains 659 phrases across 17
 families: foundational PHASE and B–Q. Each phrase names a plan unit that may bundle
@@ -27,7 +30,7 @@ see [third-party notices](THIRD_PARTY_NOTICES.md).
 
 Hosting description:
 
-> ABANDONED: overengineered agent slop and a headless research playground. Do not download expecting a working product. Unsupported; no maintenance planned.
+> Abandoned, unsupported research archive for a local-first, model-agnostic LLM agent harness exploring orchestration, code retrieval, off-agent verification, deterministic replay, sandboxing, context management, and model routing. MIT.
 
 ## Preparation evidence
 
@@ -47,8 +50,10 @@ Hosting description:
   as `.bin`. Their contents or imagery were inspected separately. The tar path
   traversal fixture is deliberately adversarial test data; it was inspected
   without extraction. A small readable formula PDF is also synthetic fixture data.
+  Sharing preparation also includes a newly authored architecture diagram as
+  editable SVG and a visually reviewed PNG; it describes the historical design goal.
 - Catalog regeneration passed `--check`. Local targets and numeric source-line
-  references in the new README, catalog and guides were checked. Historical links,
+  references in the README, detailed overview, catalog and guides were checked. Historical links,
   external URLs and old claimed evidence were not exhaustively validated.
 - The exported file set matched the selected Git index. The checksum manifest
   covers every exported file except itself; every listed hash was verified.
