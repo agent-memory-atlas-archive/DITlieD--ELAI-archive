@@ -1,0 +1,32 @@
+# Reference configuration only. Adapt paths and a provider before any live use.
+# The dispatch script expects conductor.elai-walk.toml; this example is not loaded automatically.
+backbone = "sqlite"
+
+[paths]
+workflow_root = "/workspace/ELAI"
+conductor_root = "/workspace/ELAI/conductor"
+repo_root = "/workspace/ELAI"
+state_db = "../state/control.db"
+worktree_root = "../worktrees"
+artifact_root = "../artifacts"
+devin_bin = "configure-provider-executable"
+plan_corpus_root = "/workspace/ELAI/docs"
+finish_dir = "../artifacts/finish"
+
+[server]
+host = "127.0.0.1"
+port = 8766
+
+[limits]
+worker_cap = 1
+daily_paid_attempt_cap = 0
+run_cost_ceiling_cents = 1000
+
+[safety]
+allow_local_commits = false
+allow_push = false
+allow_gate_lock_refresh = false
+block_dirty_integration_checkout = true
+
+# No worker accounts or endpoint credentials are supplied.
+# Add only the slots required by your own installation after reviewing the code.

@@ -24,6 +24,8 @@ Their HaluEval, MMLU, and HotpotQA source/license records under `third-party-lic
 
 ## Reviewed material with no separate third-party notice
 
+- The selected [Conductor source](conductor/README.md), ELAI gate-checker scripts and build-offload support are included as original project/workspace tooling under the root MIT license. No separate upstream license headers were identified in this selected text. Provider CLI implementations, downloaded runtimes, package source, private build profiles and accounts are not vendored. Their names and protocols in the adapters are references, not a redistribution of those external products. See [the snapshot record](conductor/SNAPSHOT.json) for the selected file set and adaptations.
+
 - `.elai_cc/calibration/seed/calibration_seed.jsonl` is documented as a 20-tuple synthetic corpus in `.elai_cc/calibration/seed/README.md`. The UniCR and conformal-prediction references are citations, not copied text or data.
 - The dashboard source uses ordinary package dependencies such as Svelte, Three.js, Lucide, Troika, Cytoscape, Sigma, Graphology, JetBrains Mono, and Tauri. Their source is not vendored in the tracked archive; this review does not attempt a complete Cargo/npm dependency license inventory.
 - The dashboard file `.elai_cc/crates/dashboard-v2/src/lib/streaming/frame_pacer.ts` names Vercel AI SDK `smoothStream` as a design reference and explicitly says “no code reuse.” `.elai_cc/crates/dashboard-v2/src/lib/orbit/lcg.ts` copies a pattern from the local `Starfield.svelte`; `.elai_cc/crates/dashboard-v2/src/lib/orbit/node-mandala.ts` borrows geometry from the local `planet-scan.ts`. These are internal references or stated inspiration; no external copied JS component was identified.

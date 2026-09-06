@@ -51,4 +51,8 @@ an isolated component result is not evidence that the whole agent was useful.
 These reports are worth preserving as experiments, including failed and inconclusive
 ones. Reusing a subsystem still requires your own measurements and validation.
 
+The later [Conductor inclusion](CONDUCTOR.md) has a separate
+[fixture-test verification record](conductor/TESTING.md). Those checks concern the
+external development tooling; they are not a rerun of ELAI's application benchmarks.
+
 [Introduction](README.md) · [Postmortem](POSTMORTEM.md) · [Salvage map](SALVAGE-MAP.md)

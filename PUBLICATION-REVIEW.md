@@ -14,6 +14,8 @@ historical agent instructions and memory-note directories. Downloaded repositori
 private conversations and runtime artifacts remain outside the selection.
 Later sharing preparation adds the short README, preserved detailed overview,
 postmortem, salvage map, benchmark guide and architecture-preview assets.
+The [Conductor addition](CONDUCTOR.md) preserves selected external development
+automation, its local dependencies, tests, schema migrations and gate/build support.
 The current manifest lists the exact current file set, excluding itself.
 
 The [feature catalog](docs/FEATURE-CATALOG.md) contains 659 phrases across 17
@@ -82,8 +84,13 @@ or secrets have been identified. The exact starting Claw import revision remains
 unknown; the current upstream MIT notice is retained. There is no complete
 file-by-file provenance or transitive dependency license audit.
 
-No ELAI application build, product test suite, model inference or historical
-automation was run for this preparation. Changes to comments, fixture identities
+No ELAI application build, product test suite, model inference or live historical
+automation was run for this preparation. The later Conductor snapshot was exercised
+only through isolated fixture checks: 491 passed and 15 failed. The source baseline
+also fails all 15 cases; no new failing case appeared after privacy and relocation
+edits. See [the full verification record](conductor/TESTING.md). Those failures are
+retained, including the sandbox-contract mismatch; the tooling is not certified.
+Changes to comments, fixture identities
 and private endpoint defaults were reviewed as privacy edits. Endpoint placeholders
 are intentionally unusable as the former services. Sanitization also invalidates
 historical byte hashes, signatures and line offsets. Use the new manifest for

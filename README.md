@@ -44,6 +44,7 @@ relationships were retained; see the [history review](HISTORY-REVIEW.md).
 - [Postmortem](POSTMORTEM.md) — why the project expanded and what I would do differently.
 - [Salvage map](SALVAGE-MAP.md) — concrete places to start reading or extracting.
 - [Benchmark guide](BENCHMARKS.md) — what was committed and what the results actually cover.
+- [Conductor](CONDUCTOR.md) — the external automation that coordinated ELAI's development, with a guide to the selected source.
 - [Detailed research overview](RESEARCH-OVERVIEW.md) — the former long README, including the full catalog.
 - [Systems specification](docs/thefinalglance/ELAI-SPEC-OVERVIEW.md) — the intended architecture.
 - [Archive guide](ARCHIVE.md) and [publication review](PUBLICATION-REVIEW.md) — selection, privacy edits and limitations.

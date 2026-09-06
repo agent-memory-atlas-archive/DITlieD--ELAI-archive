@@ -1,0 +1,23 @@
+-- 006_worker_pool_and_harness.sql
+-- TEIKOKU P3-A (master-plan sub-phases 3.1 + 3.4): generalize the conductor into the
+-- pack-aware core engine and add the per-pool concurrency envelope.
+--
+-- Two schema changes to worker_slots, both applied idempotently in
+-- ControlDB._ensure_compatible_schema (same compatibility-marker pattern as
+-- 004_active_worker_pid.sql / 005_events_project_session.sql, because init() re-runs
+-- every migration via executescript() on every boot, so a raw ALTER / table rebuild
+-- here would error on the second boot):
+--
+--   1. ADD COLUMN worker_slots.pool TEXT
+--      The rate-limit pool a slot belongs to (devin | free_api.groq | ...), keyed to
+--      the measured envelope in ~/teikoku/workers.toml. Per-pool concurrency (3.4) is a
+--      live COUNT(*) over leases JOIN worker_slots GROUPED BY pool, capped at the pool
+--      max_concurrency from workers.toml; the lease table is the source of truth.
+--
+--   2. WIDEN worker_slots.harness CHECK from ('devin-cli') to
+--      ('devin-cli','codex','free-api')
+--      SQLite CHECK constraints are immutable, so this is a 12-step table rebuild
+--      (new table with the widened CHECK + the pool column, INSERT SELECT, DROP, RENAME)
+--      guarded by detecting the old single-value CHECK in sqlite_master. This also fixes
+--      the latent CHECK-vs-config mismatch (the config seeds harness=codex, which the
+--      old CHECK rejected on a fresh init).

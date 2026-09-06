@@ -1,0 +1,10 @@
+-- 005_events_project_session.sql
+-- TEIKOKU P2-A (master-plan 2.1): generalize the conductor `events` table into a
+-- per-project append-only memory log by adding project_id + session_id.
+--
+-- Compatibility migration marker (same pattern as 004_active_worker_pid.sql):
+-- SQLite has no `ADD COLUMN IF NOT EXISTS`, and init() re-runs every migration on
+-- every boot via executescript(), so a raw ALTER here would error on the second boot.
+-- The idempotent column-add + index is therefore handled in
+-- ControlDB._ensure_compatible_schema (alongside the existing account_id / worker_pid adds).
+-- This file documents the intent and reserves the migration slot.

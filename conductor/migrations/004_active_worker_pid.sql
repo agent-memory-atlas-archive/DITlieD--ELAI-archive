@@ -1,0 +1,2 @@
+-- Compatibility migration marker.
+-- The idempotent worker_pid column add is handled in ControlDB._ensure_compatible_schema.

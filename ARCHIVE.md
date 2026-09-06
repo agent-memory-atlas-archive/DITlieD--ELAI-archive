@@ -12,6 +12,10 @@ exhaustive feature list, B–Q plan waves, summaries and extraction ledgers.
 research notes. Historical agent-role and skill Markdown and selected
 `memory-bank/` notes preserve how the experiments were developed.
 
+The selected [Conductor snapshot](CONDUCTOR.md) adds external development
+automation and its supporting code. It includes later changes to that tooling;
+it is not a reconstruction of the exact automation used for each ELAI commit.
+
 ## Status and evidence
 
 Statements such as “shipped”, “verified”, “safe”, “deterministic”, “cannot lie”,
@@ -24,7 +28,10 @@ claim here does not endorse or reproduce it.
 This publication preparation validates the archive's selection, privacy edits,
 catalog generation and packaging. It does not certify the application, historical
 metrics, external citations or security controls. No historical automation or
-application code was launched as part of preparing the archive.
+application code was launched as part of the initial preparation. The later
+Conductor inclusion runs selected fixture checks in a temporary filesystem with
+no network or home-directory access; [its verification record](conductor/TESTING.md)
+distinguishes those checks from operating the historical automation.
 
 ## Privacy edits and historical references
 
