@@ -1,9 +1,12 @@
-# ELAI — abandoned agent-harness research
+# ELAI: agent-harness research
 
 > [!WARNING]
-> **Abandoned and unsupported. Do not download this expecting a working product.**
-> This is an unfinished code and research archive. Historical implementation,
-> security and benchmark claims have not been revalidated. No maintenance is planned.
+> **Restart planned following a development hiatus.**
+> I intend to resume work on the full ELAI project. This repository currently
+> contains unfinished research code. Historical implementation, security and
+> benchmark claims have not been revalidated. Do not expect a working product.
+> This status update announces that commitment; it does not establish new
+> functionality, completed fixes or a release date.
 
 ELAI explored a local-first, model-agnostic agent harness: models propose actions,
 while software owns planning, state, permissions, execution, evidence,
@@ -13,7 +16,7 @@ it is not a claim that every path enforced it correctly.
 I used it to try too many ideas headlessly, not as software I relied on for actual
 work. Retrieval, orchestration, verification, sandboxing, memory, model routing,
 self-improvement and UI experiments kept accumulating. It became overengineered,
-and I abandoned it. The lesson is simple: **build software you want to use that
+and I stopped development at that time. I now intend to return to the project. The lesson is simple: **build software you want to use that
 solves your problems, not all the problems you know about.**
 
 ## Five ideas worth investigating
@@ -53,6 +56,7 @@ relationships were retained; see the [history review](HISTORY-REVIEW.md).
 Older files also call the project **LIA**. Read, fork or extract whatever is useful,
 expecting to do your own validation. Original code and documents use [MIT](LICENSE);
 [third-party notices](THIRD_PARTY_NOTICES.md) cover retained upstream material.
-No releases, support, fixes or pull-request review are promised.
+I plan to resume development and maintenance across the project. Release timing
+and support availability are not yet established.
 
 [Architecture preview](docs/assets/social-preview.png) · [Editable diagram](docs/assets/social-preview.svg)
